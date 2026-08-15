@@ -19,6 +19,7 @@ from .udp_transport import Endpoint, UdpTransport
 
 logger = logging.getLogger(__name__)
 HANDSHAKE_TIMEOUT = 10
+MAX_KNOWN_PEERS = 512
 
 
 def _key_fingerprint(key: bytes) -> str:
@@ -108,9 +109,13 @@ class PeerManager:
         return self.identity.peer_id < remote_peer_id
 
     def record_lan_candidate(self, peer_id: str, address: str, tcp_port: int) -> None:
+        if peer_id not in self._known_endpoints and len(self._known_endpoints) >= MAX_KNOWN_PEERS:
+            return
         self._known_endpoints.setdefault(peer_id, {})["lan_tcp"] = (address, tcp_port)
 
     async def record_remote_candidate(self, peer_id: str, endpoint: Endpoint) -> None:
+        if peer_id not in self._known_endpoints and len(self._known_endpoints) >= MAX_KNOWN_PEERS:
+            raise ValueError("Too many known peers")
         self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = endpoint
 
     async def connect_to_peer(self, peer_id: str, address: str, tcp_port: int) -> None:
@@ -150,7 +155,7 @@ class PeerManager:
                 writer.close()
                 return
             self.peers[peer.peer_id] = peer
-            self._known_endpoints.setdefault(peer.peer_id, {})["lan_tcp"] = peer.endpoint
+            self._known_endpoints.setdefault(peer.peer_id, {}).setdefault("lan_tcp", peer.endpoint)
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
             self._start_receive_loop(peer)
             logger.info("Authenticated incoming LAN connection from %s", peer.peer_id)
@@ -201,13 +206,14 @@ class PeerManager:
         if active is peer:
             await self.db.set_peer_online(peer_id, False)
 
-    def _handshake_payload(self) -> HandshakePayload:
+    def _handshake_payload(self, challenge: bytes = b"") -> HandshakePayload:
         payload = HandshakePayload(
             peer_id=self.identity.peer_id,
             signing_public_key=self.identity.signing_public_key_bytes(),
             encryption_public_key=self.identity.encryption_public_key_bytes(),
             display_name=self.identity.display_name,
             nonce=__import__("secrets").token_bytes(32),
+            challenge=challenge,
             signature=b"",
         )
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
@@ -234,24 +240,49 @@ class PeerManager:
 
     async def _outbound_handshake(self, peer: PeerConnection) -> None:
         logger.debug("Starting authenticated LAN key exchange with %s at %s:%d", peer.peer_id, peer.address, peer.port)
-        await self._send_packet(peer, Packet(PacketType.HANDSHAKE, self._handshake_payload().encode()))
+        initial = self._handshake_payload()
+        await self._send_packet(peer, Packet(PacketType.HANDSHAKE, initial.encode()))
         packet = await self._recv_packet(peer)
         if packet is None or packet.type != PacketType.HANDSHAKE_ACK:
             raise ValueError("Expected handshake acknowledgement")
-        self._apply_handshake(peer, HandshakePayload.decode(packet.payload), expected_peer_id=peer.peer_id)
+        acknowledgement = HandshakePayload.decode(packet.payload)
+        self._apply_handshake(
+            peer, acknowledgement, expected_peer_id=peer.peer_id, expected_challenge=initial.nonce
+        )
+        confirmation = self._handshake_payload(acknowledgement.nonce)
+        await self._send_packet(peer, Packet(PacketType.HANDSHAKE_CONFIRM, confirmation.encode()))
 
     async def _inbound_handshake(self, peer: PeerConnection) -> None:
         logger.debug("Waiting for authenticated LAN key exchange from %s:%d", peer.address, peer.port)
         packet = await self._recv_packet(peer)
         if packet is None or packet.type != PacketType.HANDSHAKE:
             raise ValueError("Expected handshake")
-        self._apply_handshake(peer, HandshakePayload.decode(packet.payload))
-        await self._send_packet(peer, Packet(PacketType.HANDSHAKE_ACK, self._handshake_payload().encode()))
+        initial = HandshakePayload.decode(packet.payload)
+        self._apply_handshake(peer, initial, expected_challenge=b"")
+        acknowledgement = self._handshake_payload(initial.nonce)
+        await self._send_packet(peer, Packet(PacketType.HANDSHAKE_ACK, acknowledgement.encode()))
+        packet = await self._recv_packet(peer)
+        if packet is None or packet.type != PacketType.HANDSHAKE_CONFIRM:
+            raise ValueError("Expected handshake confirmation")
+        self._apply_handshake(
+            peer,
+            HandshakePayload.decode(packet.payload),
+            expected_peer_id=peer.peer_id,
+            expected_challenge=acknowledgement.nonce,
+        )
 
-    def _apply_handshake(self, peer: PeerConnection, payload: HandshakePayload, expected_peer_id: str | None = None) -> None:
+    def _apply_handshake(
+        self,
+        peer: PeerConnection,
+        payload: HandshakePayload,
+        expected_peer_id: str | None = None,
+        expected_challenge: bytes | None = None,
+    ) -> None:
         peer_id = hashlib.sha256(payload.signing_public_key).hexdigest()
         if payload.peer_id != peer_id or expected_peer_id and peer_id != expected_peer_id:
             raise ValueError("Handshake peer ID does not match signing key")
+        if expected_challenge is not None and payload.challenge != expected_challenge:
+            raise ValueError("Handshake challenge mismatch")
         try:
             Ed25519PublicKey.from_public_bytes(payload.signing_public_key).verify(payload.signature, payload.signed_bytes())
         except InvalidSignature as exc:
@@ -325,8 +356,16 @@ class PeerManager:
             return
         if peer.writer is None:
             raise ConnectionError("Peer is not connected")
-        peer.writer.write(packet.encode())
-        await peer.writer.drain()
+        try:
+            peer.writer.write(packet.encode())
+            await peer.writer.drain()
+        except (ConnectionError, OSError):
+            peer.state = PeerState.DISCONNECTED
+            remote = self._udp_peers.get(peer.peer_id)
+            if not remote or remote.state != PeerState.CONNECTED:
+                raise
+            self.peers[peer.peer_id] = remote
+            await self.udp.send_packet(peer.peer_id, packet)
 
     async def _recv_packet(self, peer: PeerConnection) -> Packet | None:
         if peer.reader is None:
@@ -347,16 +386,16 @@ class PeerManager:
 
     def get_network_info(self, peer_id: str) -> dict:
         active = self.get_connected_peer(peer_id)
-        known = dict(self._known_endpoints.get(peer_id, {}))
-        if active:
-            known[active.transport] = active.endpoint
+        known = list(self._known_endpoints.get(peer_id, {}).items())
+        if active and (active.transport, active.endpoint) not in known:
+            known.append((active.transport, active.endpoint))
         endpoints = [
             {
                 "transport": transport,
                 "endpoint": _format_endpoint(endpoint),
                 "active": bool(active and active.transport == transport and active.endpoint == endpoint),
             }
-            for transport, endpoint in sorted(known.items())
+            for transport, endpoint in sorted(known)
         ]
         return {
             "active_transport": active.transport if active else None,

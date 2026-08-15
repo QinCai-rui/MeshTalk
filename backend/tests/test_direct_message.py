@@ -7,6 +7,7 @@ from meshtalk.database import Database
 from meshtalk.identity import Identity
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerManager
+from meshtalk.protocol import HEADER_SIZE, Packet, PacketType
 
 
 class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
@@ -80,3 +81,17 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(peer.display_name, "Updated Name")
         stored_peer = await remote_db.get_peer(local_identity.peer_id)
         self.assertEqual(stored_peer["display_name"], "Updated Name")
+
+    async def test_lan_peer_is_not_connected_before_challenge_confirmation(self):
+        reader, writer = await asyncio.open_connection("127.0.0.1", 34992)
+        initial = self.manager_a._handshake_payload()
+        writer.write(Packet(PacketType.HANDSHAKE, initial.encode()).encode())
+        await writer.drain()
+        header = await asyncio.wait_for(reader.readexactly(HEADER_SIZE), 1)
+        length, packet_type = Packet.decode_header(header)
+        await reader.readexactly(length)
+
+        self.assertEqual(packet_type, PacketType.HANDSHAKE_ACK)
+        self.assertIsNone(self.manager_b.get_connected_peer(self.identity_a.peer_id))
+        writer.close()
+        await writer.wait_closed()

@@ -14,10 +14,11 @@ from .database import Database
 from .encryption import decrypt_as_recipient, encrypt_for_recipient
 from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
-from .protocol import MessagePayload, Packet, PacketType
+from .protocol import MAX_PACKET_SIZE, MessagePayload, Packet, PacketType
 
 logger = logging.getLogger(__name__)
 MESSAGE_EXPIRY = 86400
+MAX_MESSAGE_CONTENT_SIZE = 30 * 1024
 
 
 class MessageRouter:
@@ -27,8 +28,8 @@ class MessageRouter:
         self.on_delivered = on_delivered
 
     async def send_message(self, recipient_id: str, plaintext: bytes) -> str:
-        if len(plaintext) > 64 * 1024:
-            raise ValueError("Message exceeds 64 KiB limit")
+        if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:
+            raise ValueError("Message exceeds 30 KiB limit")
         peer = self.peer_manager.get_connected_peer(recipient_id)
         if peer is None or peer.encryption_public_key is None:
             raise ValueError("Recipient is not directly connected")
@@ -36,6 +37,9 @@ class MessageRouter:
         message = MessagePayload(str(uuid.uuid4()), self.identity.peer_id, recipient_id, now, now + MESSAGE_EXPIRY, 0, 0, b"")
         message.encrypted_content = encrypt_for_recipient(peer.encryption_public_key, plaintext, message.associated_data())
         message.signature = self.identity.signing_private_key.sign(message.signed_bytes())
+        encoded_message = message.encode()
+        if len(encoded_message) > MAX_PACKET_SIZE:
+            raise ValueError("Encrypted message exceeds packet limit")
         await self.db.save_message({
             "message_id": message.message_id, "sender_id": message.sender_id, "recipient_id": message.recipient_id,
             "content": plaintext.decode("utf-8"), "encrypted_content": message.encrypted_content,
@@ -43,7 +47,7 @@ class MessageRouter:
             "read_at": now,
         })
         await self.db.mark_message_seen(message.message_id)
-        await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE, message.encode()))
+        await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE, encoded_message))
         return message.message_id
 
     async def handle_packet(self, peer: PeerConnection, packet: Packet) -> None:

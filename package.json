@@ -3,9 +3,9 @@
   "private": true,
   "workspaces": ["tui", "cli", "control"],
   "scripts": {
-    "dev:tui": "bun run --filter tui dev",
-    "dev:cli": "bun run --filter cli dev",
-    "dev:control": "bun run --filter control dev",
+    "dev:tui": "bun run --filter meshtalk-tui dev",
+    "dev:cli": "bun run --filter meshtalk-cli dev",
+    "dev:control": "bun run --filter meshtalk-control dev",
     "build": "bun run --filter '*' build"
   }
 }

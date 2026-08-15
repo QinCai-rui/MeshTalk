@@ -9,8 +9,9 @@ Packet types:
   MESSAGE_ACK    0x04
     PING           0x05
     PONG           0x06
-    GOODBYE        0x07
-    PROFILE        0x08
+    GOODBYE          0x07
+    PROFILE          0x08
+    HANDSHAKE_CONFIRM 0x09
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ class PacketType(enum.IntEnum):
     PONG = 0x06
     GOODBYE = 0x07
     PROFILE = 0x08
+    HANDSHAKE_CONFIRM = 0x09
 
 
 @dataclass
@@ -102,6 +104,7 @@ class HandshakePayload:
     encryption_public_key: bytes
     display_name: str
     nonce: bytes
+    challenge: bytes
     signature: bytes
 
     def signed_bytes(self) -> bytes:
@@ -111,6 +114,7 @@ class HandshakePayload:
             "encryption_public_key": self.encryption_public_key.hex(),
             "display_name": self.display_name,
             "nonce": self.nonce.hex(),
+            "challenge": self.challenge.hex(),
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
@@ -120,6 +124,7 @@ class HandshakePayload:
             "encryption_public_key": self.encryption_public_key.hex(),
             "display_name": self.display_name,
             "nonce": self.nonce.hex(),
+            "challenge": self.challenge.hex(),
             "signature": self.signature.hex(),
         }).encode()
 
@@ -132,12 +137,13 @@ class HandshakePayload:
             encryption_public_key=bytes.fromhex(obj["encryption_public_key"]),
             display_name=obj["display_name"],
             nonce=bytes.fromhex(obj["nonce"]),
+            challenge=bytes.fromhex(obj["challenge"]),
             signature=bytes.fromhex(obj["signature"]),
         )
         if len(payload.signing_public_key) != 32 or len(payload.encryption_public_key) != 32:
             raise ValueError("Invalid handshake public key length")
-        if len(payload.nonce) != 32 or len(payload.signature) != 64:
-            raise ValueError("Invalid handshake nonce or signature")
+        if len(payload.nonce) != 32 or len(payload.challenge) not in (0, 32) or len(payload.signature) != 64:
+            raise ValueError("Invalid handshake nonce, challenge, or signature")
         return payload
 
 

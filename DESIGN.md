@@ -80,6 +80,10 @@ signs the handshake, which includes the ephemeral key and persistent message
 encryption key. Both sides derive independent transport encryption and
 authentication keys using HKDF-SHA256.
 
+Transmit and receive keys are direction-specific, and a session is not exposed
+to the application until each side proves key possession with an authenticated
+confirmation. This prevents reflected handshake traffic from confirming a peer.
+
 Application packets are split into datagrams small enough to avoid IP
 fragmentation. Every fragment is encrypted with AES-256-GCM and authenticates
 its session ID, packet ID, fragment index, and fragment count. Complete packets

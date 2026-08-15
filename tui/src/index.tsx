@@ -5,6 +5,7 @@ import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 
 const MIN_COMPOSER_HEIGHT = 3
 const MAX_COMPOSER_HEIGHT = 8
+const MAX_MESSAGE_BYTES = 30 * 1024
 
 function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
@@ -146,7 +147,7 @@ function ChatApp() {
       return
     }
     setScrollFocused(false)
-    setDraftLength((drafts[selectedPeerId] ?? "").length)
+    setDraftLength(new TextEncoder().encode(drafts[selectedPeerId] ?? "").length)
     setComposerHeight(MIN_COMPOSER_HEIGHT)
     setPeers((current) => current.map((peer) =>
       peer.peer_id === selectedPeerId ? { ...peer, unread_count: 0 } : peer
@@ -213,8 +214,8 @@ function ChatApp() {
       setStatus("Select an online peer before sending.")
       return
     }
-    if (new TextEncoder().encode(content).length > 64 * 1024) {
-      setStatus("Message exceeds the 64 KiB limit.")
+    if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) {
+      setStatus("Message exceeds the 30 KiB limit.")
       return
     }
     setIsSending(true)
@@ -305,9 +306,11 @@ function ChatApp() {
                 <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>
                   {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.is_online ? "online" : "offline"}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}
                 </text>
-                <text truncate fg="#718096">
-                  {peer.active_endpoint ? `${transportName(peer.active_transport)} ${peer.active_endpoint}` : "No active endpoint"}
-                </text>
+                {peer.endpoints.length ? peer.endpoints.map((endpoint) => (
+                  <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>
+                    {endpoint.active ? "* " : "  "}{transportName(endpoint.transport)} {endpoint.endpoint}
+                  </text>
+                )) : <text fg="#718096">No known endpoint</text>}
               </box>
             ))}
           </scrollbox>
@@ -366,7 +369,7 @@ function ChatApp() {
             onContentChange={() => {
               const composer = composerRef.current
               const content = composer?.plainText ?? ""
-              setDraftLength(content.length)
+              setDraftLength(new TextEncoder().encode(content).length)
               setComposerHeight(getComposerHeight(composer))
               if (selectedPeerId) setDrafts((current) => ({ ...current, [selectedPeerId]: content }))
             }}
@@ -379,8 +382,8 @@ function ChatApp() {
             wrapMode="word"
             selectionBg="#365b85"
           />
-          <text fg={draftLength > 64 * 1024 ? "#ff7777" : "#888888"}>
-            {isSending ? "Sending..." : `${draftLength.toLocaleString()} / 65,536 bytes`}
+          <text fg={draftLength > MAX_MESSAGE_BYTES ? "#ff7777" : "#888888"}>
+            {isSending ? "Sending..." : `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`}
           </text>
         </box>
         <text fg={status.includes("error") || status.includes("lost") || status.includes("exceeds") ? "#ff7777" : "#888888"}>{status}</text>

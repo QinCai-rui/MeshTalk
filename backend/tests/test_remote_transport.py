@@ -9,8 +9,9 @@ from meshtalk.database import Database
 from meshtalk.identity import Identity
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerManager
-from meshtalk.rendezvous import decrypt_endpoint_card, encrypt_endpoint_card
+from meshtalk.rendezvous import RendezvousService, decrypt_endpoint_card, encrypt_endpoint_card
 from meshtalk.settings import Room, Settings
+from meshtalk.udp_transport import Attempt, READY, UdpTransport
 
 
 class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
@@ -84,3 +85,58 @@ class PrivateRoomTest(unittest.TestCase):
             loaded = Settings(path)
             self.assertEqual(loaded.rooms[room.id], room)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
+class CandidateValidationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_private_target_is_rejected_before_punching_or_display(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            local_identity = Identity.generate("Local")
+            remote_identity = Identity.generate("Remote")
+            settings = Settings(Path(temporary) / "settings.json")
+            room = settings.create_room()
+            expected = []
+            recorded = []
+
+            class FakeUdp:
+                def expect_peer(self, peer_id, endpoint):
+                    expected.append((peer_id, endpoint))
+
+            async def record(peer_id, endpoint):
+                recorded.append((peer_id, endpoint))
+
+            service = RendezvousService(local_identity, settings, FakeUdp(), record)
+            payload = encrypt_endpoint_card(remote_identity, room, ("192.168.1.20", 42424))
+            with self.assertRaises(ValueError):
+                await service._handle_card(room, payload)
+            self.assertEqual(expected, [])
+            self.assertEqual(recorded, [])
+
+
+class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_reflected_ready_does_not_confirm_session(self):
+        local = Identity.generate("Local")
+        remote = Identity.generate("Remote")
+        connected = []
+
+        async def on_connected(*args):
+            connected.append(args)
+
+        async def ignore(*args):
+            pass
+
+        transport = UdpTransport(local, on_connected, ignore, ignore)
+        remote_transport = UdpTransport(remote, ignore, ignore, ignore)
+        endpoint = ("127.0.0.1", 45454)
+        sent = []
+        transport._sendto = lambda data, address: sent.append((data, address))
+        transport.expect_peer(remote.peer_id, endpoint)
+        remote_attempt = Attempt(local.peer_id, ("127.0.0.1", 35353))
+        hello = remote_transport._make_hello(remote_attempt)
+
+        transport.datagram_received(hello, endpoint)
+        reflected_ready = next(data for data, _ in sent if data[4] == READY)
+        transport.datagram_received(reflected_ready, endpoint)
+
+        self.assertFalse(transport._sessions[remote.peer_id].confirmed)
+        self.assertEqual(connected, [])
+        await transport.stop()

@@ -65,7 +65,8 @@ class Settings:
 
     @property
     def control_url(self) -> str:
-        return os.environ.get("MESHTALK_CONTROL_URL", self._control_url)
+        configured = os.environ.get("MESHTALK_CONTROL_URL", self._control_url)
+        return self._validate_control_url(configured) if configured else ""
 
     @property
     def stun_server(self) -> tuple[str, int]:
@@ -78,14 +79,18 @@ class Settings:
         return self._stun_host, self._stun_port
 
     def set_control_url(self, url: str) -> None:
+        self._control_url = self._validate_control_url(url)
+        self.save()
+
+    @staticmethod
+    def _validate_control_url(url: str) -> str:
         url = url.strip().rstrip("/")
         parsed = urlparse(url)
         if parsed.scheme not in ("ws", "wss") or not parsed.hostname:
             raise ValueError("Control URL must use ws:// or wss://")
         if parsed.scheme == "ws" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
             raise ValueError("Remote control URLs must use wss://")
-        self._control_url = url
-        self.save()
+        return url
 
     def create_room(self) -> Room:
         room = Room.create()
@@ -124,10 +129,13 @@ class Settings:
     def _load(self) -> None:
         if not self.path.exists():
             return
+        self.path.chmod(0o600)
         data = json.loads(self.path.read_text())
         if data.get("version") != 1:
             raise ValueError("Unsupported settings version")
         self._control_url = data.get("control_url", "")
+        if self._control_url:
+            self._control_url = self._validate_control_url(self._control_url)
         stun = data.get("stun_server", {})
         self._stun_host = stun.get("host", DEFAULT_STUN_HOST)
         self._stun_port = int(stun.get("port", DEFAULT_STUN_PORT))

@@ -35,6 +35,7 @@ DATA = 2
 ACK = 3
 PING = 4
 PONG = 5
+READY = 6
 STUN_COOKIE = 0x2112A442
 FRAGMENT_SIZE = 950
 MAX_FRAGMENTS = (MAX_PACKET_SIZE + HEADER_SIZE + FRAGMENT_SIZE - 1) // FRAGMENT_SIZE
@@ -44,6 +45,10 @@ AUTH_HEADER = struct.Struct("!4sB8sQ")
 RETRY_INTERVAL = 0.45
 MAX_RETRIES = 10
 SESSION_TIMEOUT = 90.0
+EXPECTED_PEER_TIMEOUT = 600.0
+MAX_EXPECTED_PEERS = 512
+MAX_ATTEMPTS = 128
+MAX_SESSIONS = 256
 
 Endpoint = tuple[str, int]
 ConnectedCallback = Callable[[str, str, int, str, bytes, bytes], Awaitable[None]]
@@ -102,6 +107,7 @@ class Attempt:
     nonce: bytes = field(default_factory=lambda: os.urandom(32))
     hello: bytes = b""
     task: asyncio.Task | None = None
+    created_at: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -116,11 +122,19 @@ class Session:
     peer_id: str
     endpoint: Endpoint
     session_id: bytes
-    encryption_key: bytes
-    authentication_key: bytes
+    transmit_encryption_key: bytes
+    receive_encryption_key: bytes
+    transmit_authentication_key: bytes
+    receive_authentication_key: bytes
     display_name: str
     encryption_public_key: bytes
     signing_public_key: bytes
+    local_hello: bytes
+    remote_nonce: bytes
+    remote_session_public_key: bytes
+    confirmed: bool = False
+    connected_notified: bool = False
+    created_at: float = field(default_factory=time.monotonic)
     last_seen: float = field(default_factory=time.monotonic)
     reassemblies: dict[int, Reassembly] = field(default_factory=dict)
     seen: dict[int, float] = field(default_factory=dict)
@@ -140,6 +154,7 @@ class UdpTransport:
         self.on_disconnected = on_disconnected
         self._transport: asyncio.DatagramTransport | None = None
         self._attempts: dict[str, Attempt] = {}
+        self._expected_endpoints: dict[str, tuple[Endpoint, float]] = {}
         self._sessions: dict[str, Session] = {}
         self._sessions_by_id: dict[bytes, Session] = {}
         self._stun_waiters: dict[bytes, asyncio.Future[bytes]] = {}
@@ -179,7 +194,7 @@ class UdpTransport:
 
     def endpoint_for(self, peer_id: str) -> Endpoint | None:
         session = self._sessions.get(peer_id)
-        return session.endpoint if session else None
+        return session.endpoint if session and session.confirmed else None
 
     def expect_peer(self, peer_id: str, endpoint: Endpoint) -> None:
         if peer_id == self.identity.peer_id:
@@ -188,18 +203,18 @@ class UdpTransport:
         ipaddress.ip_address(host)
         if not 1 <= port <= 65535:
             raise ValueError("Invalid peer UDP port")
+        if peer_id not in self._expected_endpoints and len(self._expected_endpoints) >= MAX_EXPECTED_PEERS:
+            raise ValueError("Too many expected UDP peers")
+        self._expected_endpoints[peer_id] = (endpoint, time.monotonic())
         session = self._sessions.get(peer_id)
-        if session and session.endpoint == endpoint:
+        if session and session.confirmed and session.endpoint == endpoint:
             return
         existing = self._attempts.get(peer_id)
         if existing and existing.endpoint == endpoint and existing.task and not existing.task.done():
             return
         if existing and existing.task:
             existing.task.cancel()
-        attempt = Attempt(peer_id, endpoint)
-        attempt.hello = self._make_hello(attempt)
-        self._attempts[peer_id] = attempt
-        attempt.task = self._spawn(self._punch_loop(attempt))
+        self._start_attempt(peer_id, endpoint)
 
     async def discover_public_endpoint(self, host: str, port: int, timeout: float = 5.0) -> Endpoint:
         if not self._transport:
@@ -221,7 +236,7 @@ class UdpTransport:
 
     async def send_packet(self, peer_id: str, packet: Packet) -> None:
         session = self._sessions.get(peer_id)
-        if not session:
+        if not session or not session.confirmed:
             raise ConnectionError("Remote UDP peer is not connected")
         frame = packet.encode()
         fragments = [frame[offset:offset + FRAGMENT_SIZE] for offset in range(0, len(frame), FRAGMENT_SIZE)]
@@ -266,7 +281,7 @@ class UdpTransport:
                 self._handle_data(data, addr)
             elif message_type == ACK:
                 self._handle_ack(data, addr)
-            elif message_type in (PING, PONG):
+            elif message_type in (PING, PONG, READY):
                 self._handle_keepalive(data, addr)
         except Exception as exc:
             logger.debug("Rejected UDP datagram from %s:%d: %s", *addr, exc)
@@ -287,10 +302,19 @@ class UdpTransport:
     async def _punch_loop(self, attempt: Attempt) -> None:
         for _ in range(20):
             current = self._attempts.get(attempt.peer_id)
-            if current is not attempt or self._sessions.get(attempt.peer_id, None) and self._sessions[attempt.peer_id].endpoint == attempt.endpoint:
+            session = self._sessions.get(attempt.peer_id)
+            if current is not attempt or session and session.confirmed and session.endpoint == attempt.endpoint:
                 return
             self._sendto(attempt.hello, attempt.endpoint)
+            if session and session.endpoint == attempt.endpoint:
+                self._send_authenticated(session, READY, 0)
             await asyncio.sleep(0.4)
+        if self._attempts.get(attempt.peer_id) is attempt:
+            self._attempts.pop(attempt.peer_id, None)
+            session = self._sessions.get(attempt.peer_id)
+            if session and not session.confirmed:
+                self._sessions.pop(attempt.peer_id, None)
+                self._sessions_by_id.pop(session.session_id, None)
 
     def _handle_hello(self, payload: bytes, addr: Endpoint) -> None:
         if len(payload) > 1000:
@@ -306,50 +330,68 @@ class UdpTransport:
             raise ValueError("UDP handshake identity mismatch")
         if any(len(item) != 32 for item in (signing_key, encryption_key, session_key, nonce)) or len(signature) != 64:
             raise ValueError("Invalid UDP handshake key length")
-        attempt = self._attempts.get(peer_id)
-        if not attempt or attempt.endpoint != addr:
+        expected = self._expected_endpoints.get(peer_id)
+        if not expected or expected[0] != addr:
             raise ValueError("UDP handshake was not requested")
         try:
             Ed25519PublicKey.from_public_bytes(signing_key).verify(signature, _canonical(value))
         except InvalidSignature as exc:
             raise ValueError("Invalid UDP handshake signature") from exc
+        current = self._sessions.get(peer_id)
+        if (
+            current and current.endpoint == addr and current.remote_nonce == nonce
+            and current.remote_session_public_key == session_key
+        ):
+            self._sendto(current.local_hello, addr)
+            self._send_authenticated(current, READY, 0)
+            return
+        attempt = self._attempts.get(peer_id)
+        if not attempt or attempt.endpoint != addr:
+            attempt = self._start_attempt(peer_id, addr)
         self._sendto(attempt.hello, addr)
         shared = attempt.private_key.exchange(X25519PublicKey.from_public_bytes(session_key))
         local_first = self.identity.peer_id < peer_id
         salt = attempt.nonce + nonce if local_first else nonce + attempt.nonce
         material = HKDF(
-            algorithm=SHA256(), length=64, salt=salt, info=b"meshtalk-udp-session-v1"
+            algorithm=SHA256(), length=128, salt=salt, info=b"meshtalk-udp-session-v1"
         ).derive(shared)
         session_id = hashlib.sha256(material + b"session-id").digest()[:8]
-        current = self._sessions.get(peer_id)
         if current and current.session_id == session_id and current.endpoint == addr:
-            current.last_seen = time.monotonic()
+            self._send_authenticated(current, READY, 0)
             return
+        if not current and len(self._sessions) >= MAX_SESSIONS:
+            raise ValueError("Too many UDP sessions")
         if current:
             self._sessions_by_id.pop(current.session_id, None)
+            if current.confirmed:
+                self._spawn(self.on_disconnected(peer_id))
+        first_to_second = material[:32], material[32:64]
+        second_to_first = material[64:96], material[96:128]
+        transmit, receive = (first_to_second, second_to_first) if local_first else (second_to_first, first_to_second)
         session = Session(
-            peer_id, addr, session_id, material[:32], material[32:],
+            peer_id, addr, session_id, transmit[0], receive[0], transmit[1], receive[1],
             Identity.normalize_display_name(value["display_name"]), encryption_key, signing_key,
+            attempt.hello, nonce, session_key,
         )
         self._sessions[peer_id] = session
         self._sessions_by_id[session_id] = session
-        self._spawn(self.on_connected(peer_id, addr[0], addr[1], session.display_name, encryption_key, signing_key))
+        self._send_authenticated(session, READY, 0)
 
     def _encrypt_fragment(
         self, session: Session, message_id: int, index: int, count: int, fragment: bytes
     ) -> bytes:
         nonce = os.urandom(12)
         header = DATA_HEADER.pack(MAGIC, DATA, session.session_id, message_id, index, count, nonce)
-        return header + AESGCM(session.encryption_key).encrypt(nonce, fragment, header)
+        return header + AESGCM(session.transmit_encryption_key).encrypt(nonce, fragment, header)
 
     def _handle_data(self, data: bytes, addr: Endpoint) -> None:
         if len(data) < DATA_HEADER.size + 16:
             raise ValueError("Truncated UDP data")
         _, _, session_id, message_id, index, count, nonce = DATA_HEADER.unpack(data[:DATA_HEADER.size])
-        session = self._session_for(session_id, addr)
+        session = self._session_for(session_id, addr, require_confirmation=True)
         if not 1 <= count <= MAX_FRAGMENTS or index >= count:
             raise ValueError("Invalid UDP fragment index")
-        fragment = AESGCM(session.encryption_key).decrypt(
+        fragment = AESGCM(session.receive_encryption_key).decrypt(
             nonce, data[DATA_HEADER.size:], data[:DATA_HEADER.size]
         )
         session.last_seen = time.monotonic()
@@ -375,14 +417,19 @@ class UdpTransport:
 
     def _send_ack(self, session: Session, message_id: int) -> None:
         header = AUTH_HEADER.pack(MAGIC, ACK, session.session_id, message_id)
-        self._sendto(header + hmac.digest(session.authentication_key, header, "sha256")[:16], session.endpoint)
+        self._sendto(
+            header + hmac.digest(session.transmit_authentication_key, header, "sha256")[:16],
+            session.endpoint,
+        )
 
     def _handle_ack(self, data: bytes, addr: Endpoint) -> None:
         if len(data) != AUTH_HEADER.size + 16:
             raise ValueError("Invalid UDP acknowledgement")
         _, _, session_id, message_id = AUTH_HEADER.unpack(data[:AUTH_HEADER.size])
-        session = self._session_for(session_id, addr)
-        expected = hmac.digest(session.authentication_key, data[:AUTH_HEADER.size], "sha256")[:16]
+        session = self._session_for(session_id, addr, require_confirmation=True)
+        expected = hmac.digest(
+            session.receive_authentication_key, data[:AUTH_HEADER.size], "sha256"
+        )[:16]
         if not hmac.compare_digest(data[AUTH_HEADER.size:], expected):
             raise ValueError("Invalid UDP acknowledgement authentication")
         session.last_seen = time.monotonic()
@@ -395,21 +442,51 @@ class UdpTransport:
             raise ValueError("Invalid UDP keepalive")
         _, message_type, session_id, token = AUTH_HEADER.unpack(data[:AUTH_HEADER.size])
         session = self._session_for(session_id, addr)
-        expected = hmac.digest(session.authentication_key, data[:AUTH_HEADER.size], "sha256")[:16]
+        expected = hmac.digest(
+            session.receive_authentication_key, data[:AUTH_HEADER.size], "sha256"
+        )[:16]
         if not hmac.compare_digest(data[AUTH_HEADER.size:], expected):
             raise ValueError("Invalid UDP keepalive authentication")
+        if message_type == READY:
+            if not session.confirmed:
+                session.confirmed = True
+                session.last_seen = time.monotonic()
+                attempt = self._attempts.pop(session.peer_id, None)
+                if attempt and attempt.task:
+                    attempt.task.cancel()
+                self._send_authenticated(session, READY, 0)
+            if not session.connected_notified:
+                session.connected_notified = True
+                self._spawn(self.on_connected(
+                    session.peer_id,
+                    session.endpoint[0],
+                    session.endpoint[1],
+                    session.display_name,
+                    session.encryption_public_key,
+                    session.signing_public_key,
+                ))
+            return
+        if not session.confirmed:
+            raise ValueError("UDP session is not confirmed")
         session.last_seen = time.monotonic()
         if message_type == PING:
             self._send_authenticated(session, PONG, token)
 
     def _send_authenticated(self, session: Session, message_type: int, token: int) -> None:
         header = AUTH_HEADER.pack(MAGIC, message_type, session.session_id, token)
-        self._sendto(header + hmac.digest(session.authentication_key, header, "sha256")[:16], session.endpoint)
+        self._sendto(
+            header + hmac.digest(session.transmit_authentication_key, header, "sha256")[:16],
+            session.endpoint,
+        )
 
-    def _session_for(self, session_id: bytes, addr: Endpoint) -> Session:
+    def _session_for(
+        self, session_id: bytes, addr: Endpoint, require_confirmation: bool = False
+    ) -> Session:
         session = self._sessions_by_id.get(session_id)
         if not session or session.endpoint != addr:
             raise ValueError("Unknown UDP session")
+        if require_confirmation and not session.confirmed:
+            raise ValueError("UDP session is not confirmed")
         return session
 
     async def _maintenance_loop(self) -> None:
@@ -417,12 +494,17 @@ class UdpTransport:
             await asyncio.sleep(15)
             now = time.monotonic()
             for session in list(self._sessions.values()):
+                if not session.confirmed and now - session.created_at > 10:
+                    self._sessions.pop(session.peer_id, None)
+                    self._sessions_by_id.pop(session.session_id, None)
+                    continue
                 if now - session.last_seen > SESSION_TIMEOUT:
                     self._sessions.pop(session.peer_id, None)
                     self._sessions_by_id.pop(session.session_id, None)
                     await self.on_disconnected(session.peer_id)
                     continue
-                self._send_authenticated(session, PING, secrets.randbits(64))
+                if session.confirmed:
+                    self._send_authenticated(session, PING, secrets.randbits(64))
                 session.seen = {
                     message_id: seen_at for message_id, seen_at in session.seen.items()
                     if now - seen_at < SESSION_TIMEOUT
@@ -431,6 +513,22 @@ class UdpTransport:
                     message_id: value for message_id, value in session.reassemblies.items()
                     if now - value.created_at < 10
                 }
+            self._expected_endpoints = {
+                peer_id: value for peer_id, value in self._expected_endpoints.items()
+                if now - value[1] < EXPECTED_PEER_TIMEOUT or peer_id in self._sessions
+            }
+
+    def _start_attempt(self, peer_id: str, endpoint: Endpoint) -> Attempt:
+        if peer_id not in self._attempts and len(self._attempts) >= MAX_ATTEMPTS:
+            raise ValueError("Too many concurrent UDP punch attempts")
+        old = self._attempts.get(peer_id)
+        if old and old.task:
+            old.task.cancel()
+        attempt = Attempt(peer_id, endpoint)
+        attempt.hello = self._make_hello(attempt)
+        self._attempts[peer_id] = attempt
+        attempt.task = self._spawn(self._punch_loop(attempt))
+        return attempt
 
     def _sendto(self, data: bytes, endpoint: Endpoint) -> None:
         if not self._transport:

@@ -130,7 +130,7 @@ Status reflects verified implementation, not planned code.
 - [x] Message expiration cleanup scaffold
 - [ ] Store encrypted relay envelopes for offline recipients
 - [ ] Enforce 500 stored-message limit
-- [ ] Enforce 64 KiB message limit on reception
+- [x] Enforce transport-safe 30 KiB plaintext message limit
 - [ ] Enforce 24-hour maximum stored-message age
 - [ ] Deliver stored messages when recipient reconnects
 - [ ] Retry accounting, backoff, and durable queue states

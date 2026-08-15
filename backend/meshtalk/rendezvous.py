@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -27,6 +28,9 @@ logger = logging.getLogger(__name__)
 CandidateCallback = Callable[[str, Endpoint], Awaitable[None]]
 CARD_MAX_AGE = 180
 REFRESH_INTERVAL = 30
+MAX_CANDIDATE_CHANGES_PER_MINUTE = 12
+MAX_TRACKED_CANDIDATES = 512
+CANDIDATE_TRACKING_AGE = 600
 
 
 def _canonical(value: dict) -> bytes:
@@ -102,11 +106,13 @@ class RendezvousService:
         settings: Settings,
         udp: UdpTransport,
         on_candidate: CandidateCallback,
+        allow_loopback: bool = False,
     ) -> None:
         self.identity = identity
         self.settings = settings
         self.udp = udp
         self.on_candidate = on_candidate
+        self.allow_loopback = allow_loopback
         self.connected = False
         self.public_endpoint: Endpoint | None = None
         self.member_counts: dict[str, int] = {}
@@ -114,6 +120,9 @@ class RendezvousService:
         self._task: asyncio.Task | None = None
         self._reconnect = asyncio.Event()
         self._seen_cards: dict[tuple[str, str, str], float] = {}
+        self._last_candidates: dict[str, Endpoint] = {}
+        self._candidate_changes: dict[str, list[float]] = {}
+        self._candidate_seen: dict[str, float] = {}
 
     async def start(self) -> None:
         self._running = True
@@ -138,10 +147,10 @@ class RendezvousService:
     async def _connection_loop(self) -> None:
         backoff = 1.0
         while self._running:
+            self._reconnect.clear()
             url = self.settings.control_url
             if not url or not self.settings.rooms:
                 self.connected = False
-                self._reconnect.clear()
                 try:
                     await asyncio.wait_for(self._reconnect.wait(), 2)
                 except TimeoutError:
@@ -151,7 +160,6 @@ class RendezvousService:
                 async with connect(url, max_size=256 * 1024, ping_interval=20, ping_timeout=20) as websocket:
                     self.connected = True
                     backoff = 1.0
-                    self._reconnect.clear()
                     for room in self.settings.rooms.values():
                         await websocket.send(json.dumps({"type": "join", "room_id": room.id}))
                     await self._announce_all(websocket)
@@ -176,7 +184,10 @@ class RendezvousService:
                 self.connected = False
                 self.member_counts.clear()
             if self._running:
-                await asyncio.sleep(backoff)
+                try:
+                    await asyncio.wait_for(self._reconnect.wait(), backoff)
+                except TimeoutError:
+                    pass
                 backoff = min(backoff * 2, 30)
 
     async def _receive_loop(self, websocket) -> None:
@@ -193,8 +204,6 @@ class RendezvousService:
                     count = message.get("member_count")
                     if isinstance(count, int):
                         self.member_counts[room_id] = count
-                    if message.get("type") == "refresh":
-                        await self._announce(websocket, room)
                 elif message.get("type") == "signal" and isinstance(message.get("payload"), str):
                     await self._handle_card(room, message["payload"])
             except Exception as exc:
@@ -236,6 +245,38 @@ class RendezvousService:
             key: seen_at for key, seen_at in self._seen_cards.items() if now - seen_at < CARD_MAX_AGE
         }
         candidate = value["candidate"]
-        endpoint = candidate["host"], candidate["port"]
-        await self.on_candidate(peer_id, endpoint)
+        address = ipaddress.ip_address(candidate["host"])
+        port = candidate["port"]
+        valid_address = isinstance(address, ipaddress.IPv4Address) and address.is_global and not (
+            address.is_multicast or address.is_unspecified or address.is_reserved or address.is_link_local
+        )
+        if self.allow_loopback and address.is_loopback:
+            valid_address = True
+        if not 1 <= port <= 65535 or not valid_address:
+            raise ValueError("Endpoint card is not a public address")
+        endpoint = str(address), port
+        self._candidate_seen = {
+            tracked_peer: seen_at for tracked_peer, seen_at in self._candidate_seen.items()
+            if now - seen_at < CANDIDATE_TRACKING_AGE
+        }
+        self._last_candidates = {
+            tracked_peer: tracked for tracked_peer, tracked in self._last_candidates.items()
+            if tracked_peer in self._candidate_seen
+        }
+        self._candidate_changes = {
+            tracked_peer: changes for tracked_peer, changes in self._candidate_changes.items()
+            if tracked_peer in self._candidate_seen
+        }
+        if peer_id not in self._candidate_seen and len(self._candidate_seen) >= MAX_TRACKED_CANDIDATES:
+            raise ValueError("Too many room candidates")
+        if self._last_candidates.get(peer_id) != endpoint:
+            changes = [changed for changed in self._candidate_changes.get(peer_id, []) if now - changed < 60]
+            if len(changes) >= MAX_CANDIDATE_CHANGES_PER_MINUTE:
+                raise ValueError("Endpoint card changed too frequently")
+            changes.append(now)
         self.udp.expect_peer(peer_id, endpoint)
+        self._candidate_seen[peer_id] = now
+        if self._last_candidates.get(peer_id) != endpoint:
+            self._candidate_changes[peer_id] = changes
+            self._last_candidates[peer_id] = endpoint
+        await self.on_candidate(peer_id, endpoint)

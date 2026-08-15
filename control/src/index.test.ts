@@ -52,6 +52,6 @@ describe("opaque control service", () => {
 
     expect(await signal).toEqual({ type: "signal", room_id: roomId, payload: "opaque-encrypted-card" })
     const health = await fetch(`http://127.0.0.1:${server.port}/health`).then((response) => response.json())
-    expect(health).toEqual({ status: "ok", rooms: 1 })
+    expect(health).toEqual({ status: "ok", rooms: 1, connections: 2 })
   })
 })
