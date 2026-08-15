@@ -28,8 +28,8 @@ bun install
 bun run dev
 ```
 
-Use `Tab` to select a peer, type a message, and press `Enter` to send. Press
-`R` to refresh discovered peers and `Ctrl+C` to quit.
+Peers refresh automatically. Use `Ctrl+Up` and `Ctrl+Down` to select a peer,
+type a message, and press `Enter` to send. Press `Ctrl+C` to quit.
 
 ### CLI
 

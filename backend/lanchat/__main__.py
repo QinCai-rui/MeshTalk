@@ -58,7 +58,15 @@ async def main() -> None:
 
     async def handle_peers(req: dict) -> dict:
         peers = await db.get_all_peers()
-        return {"peers": peers}
+        return {"peers": [
+            {
+                "peer_id": peer["peer_id"],
+                "display_name": peer["display_name"],
+                "last_seen": peer["last_seen"],
+                "is_online": peer["is_online"],
+            }
+            for peer in peers
+        ]}
 
     async def handle_identity(req: dict) -> dict:
         return {

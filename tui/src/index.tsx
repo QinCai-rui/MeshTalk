@@ -36,10 +36,17 @@ function ChatApp() {
       if (response.error) throw new Error(response.error)
       setIdentity({ peer_id: response.peer_id as string, display_name: response.display_name as string })
       await refreshPeers()
-      setStatus("TAB: select peer  R: refresh  Ctrl+C: quit")
+      setStatus("Ctrl+Up/Down: select peer  Ctrl+C: quit")
     }).catch((error) => setStatus(`Backend error: ${error instanceof Error ? error.message : String(error)}`))
     return () => ipc.close()
   }, [])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void refreshPeers().catch((error) => setStatus(`Peer refresh error: ${String(error)}`))
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [ipc])
 
   useEffect(() => ipc.onEvent((event: IPCEvent) => {
     if (event.event !== "message" || event.sender_id !== selectedPeerId) return
@@ -64,10 +71,10 @@ function ChatApp() {
   }, [selectedPeerId])
 
   useKeyboard((key) => {
-    if (key.name === "r" && !key.ctrl && !key.meta) void refreshPeers().catch((error) => setStatus(String(error)))
-    if (key.name === "tab" && peers.length) {
+    if ((key.name === "up" || key.name === "down") && key.ctrl && peers.length) {
       const index = peers.findIndex((peer) => peer.peer_id === selectedPeerId)
-      setSelectedPeerId(peers[(index + 1) % peers.length].peer_id)
+      const direction = key.name === "up" ? -1 : 1
+      setSelectedPeerId(peers[(index + direction + peers.length) % peers.length].peer_id)
     }
   })
 
