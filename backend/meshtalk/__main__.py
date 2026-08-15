@@ -93,6 +93,7 @@ async def main(debug: bool = False) -> None:
                 {
                     "peer_id": peer.peer_id,
                     "display_name": peer.display_name,
+                    "is_online": 1,
                     **peer_manager.get_network_info(peer.peer_id),
                 }
                 for peer in connected
