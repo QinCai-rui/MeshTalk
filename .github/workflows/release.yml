@@ -73,13 +73,13 @@ jobs:
         run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --outfile dist/release/meshtalk${{ matrix.suffix }}
 
       - name: Package standalone release
-        run: uv run --no-project python -c "from pathlib import Path; from zipfile import ZIP_DEFLATED, ZipFile; release = Path('dist/release'); archive = ZipFile(Path('dist/${{ matrix.artifact }}.zip'), 'w', ZIP_DEFLATED); [archive.write(path, path.name) for path in release.iterdir()]; archive.close()"
+        run: tar -czf dist/${{ matrix.artifact }}.tar.gz -C dist/release .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}.zip
+          path: dist/${{ matrix.artifact }}.tar.gz
 
   release:
     needs: build

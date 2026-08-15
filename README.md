@@ -23,7 +23,7 @@ Python backend ---- LAN broadcast + TCP ---- LAN peers
 
 ## Quick Start
 
-Download the archive for your platform from the [latest release](../../releases/latest),
+Download the `.tar.gz` archive for your platform from the [latest release](../../releases/latest),
 extract it, and run the launcher. The archive contains the backend, CLI, TUI, and
 their runtimes, so it does not require Python, uv, Bun, or another package manager.
 
