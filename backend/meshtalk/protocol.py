@@ -153,18 +153,21 @@ class ProfilePayload:
 
     peer_id: str
     display_name: str
+    tui_active: bool
     signature: bytes
 
     def signed_bytes(self) -> bytes:
         return json.dumps({
             "peer_id": self.peer_id,
             "display_name": self.display_name,
+            "tui_active": self.tui_active,
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
         return json.dumps({
             "peer_id": self.peer_id,
             "display_name": self.display_name,
+            "tui_active": self.tui_active,
             "signature": self.signature.hex(),
         }).encode()
 
@@ -174,9 +177,10 @@ class ProfilePayload:
         payload = cls(
             peer_id=obj["peer_id"],
             display_name=obj["display_name"],
+            tui_active=obj["tui_active"],
             signature=bytes.fromhex(obj["signature"]),
         )
-        if len(payload.signature) != 64:
+        if not isinstance(payload.tui_active, bool) or len(payload.signature) != 64:
             raise ValueError("Invalid profile signature")
         return payload
 

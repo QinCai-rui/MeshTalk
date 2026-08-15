@@ -84,14 +84,16 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         remote_manager = self.manager_b if initiator is self.manager_a else self.manager_a
         remote_db = self.db_b if initiator is self.manager_a else self.db_a
         local_identity.display_name = "Updated Name"
-        await initiator.broadcast_profile_update()
+        await initiator.set_tui_active(True)
         await asyncio.sleep(0.05)
 
         peer = remote_manager.get_connected_peer(local_identity.peer_id)
         self.assertIsNotNone(peer)
         self.assertEqual(peer.display_name, "Updated Name")
+        self.assertTrue(peer.tui_active)
         stored_peer = await remote_db.get_peer(local_identity.peer_id)
         self.assertEqual(stored_peer["display_name"], "Updated Name")
+        self.assertEqual(stored_peer["tui_active"], 1)
 
     async def test_lan_peer_is_not_connected_before_challenge_confirmation(self):
         reader, writer = await asyncio.open_connection("127.0.0.1", 34992)

@@ -8,8 +8,8 @@
     "build": "bun build src/index.tsx --target=bun --compile --outfile dist/meshtalk-tui"
   },
   "dependencies": {
-    "@opentui/core": "^0.1.0",
-    "@opentui/react": "^0.1.0",
+    "@opentui/core": "^0.5.3",
+    "@opentui/react": "^0.5.3",
     "react": "^19.0.0"
   },
   "devDependencies": {

@@ -32,10 +32,13 @@ class IPCServer:
     def __init__(
         self,
         handlers: dict[str, Callable[[dict], Awaitable[dict]]],
+        on_tui_disconnect: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.handlers = handlers
+        self.on_tui_disconnect = on_tui_disconnect
         self._server: asyncio.Server | None = None
         self._clients: list[asyncio.StreamWriter] = []
+        self._tui_client_ids: dict[asyncio.StreamWriter, str] = {}
         self._use_tcp = False
 
     async def start(self) -> None:
@@ -99,6 +102,11 @@ class IPCServer:
                 request = {}
                 try:
                     request = json.loads(line.decode())
+                    if request.get("action") == "tui_presence" and isinstance(request.get("client_id"), str):
+                        if request.get("active") is True:
+                            self._tui_client_ids[writer] = request["client_id"]
+                        else:
+                            self._tui_client_ids.pop(writer, None)
                     response = await self._dispatch(request)
                 except Exception as e:
                     response = {"error": str(e)}
@@ -113,6 +121,9 @@ class IPCServer:
         finally:
             if writer in self._clients:
                 self._clients.remove(writer)
+            client_id = self._tui_client_ids.pop(writer, None)
+            if client_id and self.on_tui_disconnect:
+                await self.on_tui_disconnect(client_id)
             writer.close()
             logger.info("IPC client disconnected")
 

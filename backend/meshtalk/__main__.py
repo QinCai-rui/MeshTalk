@@ -43,6 +43,7 @@ async def main(debug: bool = False) -> None:
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
     router = MessageRouter(identity, peer_manager, db)
+    tui_clients: set[str] = set()
 
     peer_manager.on_packet = router.handle_packet
 
@@ -71,7 +72,8 @@ async def main(debug: bool = False) -> None:
                 "peer_id": peer["peer_id"],
                 "display_name": peer["display_name"],
                 "last_seen": peer["last_seen"],
-                "is_online": int(peer_manager.get_connected_peer(peer["peer_id"]) is not None),
+                "is_online": int((connection := peer_manager.get_connected_peer(peer["peer_id"])) is not None),
+                "presence": "active" if connection and connection.tui_active else "away" if connection else "offline",
                 "unread_count": unread_counts.get(peer["peer_id"], 0),
                 **peer_manager.get_network_info(peer["peer_id"]),
             }
@@ -86,6 +88,28 @@ async def main(debug: bool = False) -> None:
             return {"error": "Cannot remove a connected peer"}
         await db.remove_peer(peer_id)
         return {"peer_id": peer_id}
+
+    async def update_tui_presence(client_id: str, active: bool) -> None:
+        was_active = bool(tui_clients)
+        if active:
+            tui_clients.add(client_id)
+        else:
+            tui_clients.discard(client_id)
+        if was_active != bool(tui_clients):
+            await peer_manager.set_tui_active(bool(tui_clients))
+
+    async def handle_tui_presence(req: dict) -> dict:
+        client_id = req.get("client_id")
+        active = req.get("active")
+        if not isinstance(client_id, str) or not client_id or len(client_id) > 128:
+            return {"error": "valid client_id required"}
+        if not isinstance(active, bool):
+            return {"error": "active must be boolean"}
+        await update_tui_presence(client_id, active)
+        return {"active": bool(tui_clients)}
+
+    async def handle_tui_disconnect(client_id: str) -> None:
+        await update_tui_presence(client_id, False)
 
     async def handle_identity(req: dict) -> dict:
         return {
@@ -178,6 +202,7 @@ async def main(debug: bool = False) -> None:
         "send": handle_send,
         "peers": handle_peers,
         "remove_peer": handle_remove_peer,
+        "tui_presence": handle_tui_presence,
         "identity": handle_identity,
         "status": handle_status,
         "messages": handle_messages,
@@ -189,7 +214,7 @@ async def main(debug: bool = False) -> None:
         "rooms": handle_rooms,
         "shutdown": handle_shutdown,
     }
-    ipc = IPCServer(ipc_handlers)
+    ipc = IPCServer(ipc_handlers, on_tui_disconnect=handle_tui_disconnect)
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
 

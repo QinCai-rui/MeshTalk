@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS peers (
     public_key BLOB,
     signing_public_key BLOB,
     last_seen REAL,
-    is_online INTEGER NOT NULL DEFAULT 0
+    is_online INTEGER NOT NULL DEFAULT 0,
+    tui_active INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -69,6 +70,8 @@ class Database:
         columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(peers)")}
         if "signing_public_key" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN signing_public_key BLOB")
+        if "tui_active" not in columns:
+            await self._db.execute("ALTER TABLE peers ADD COLUMN tui_active INTEGER NOT NULL DEFAULT 0")
         message_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(messages)")}
         if "read_at" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN read_at REAL")
@@ -86,18 +89,19 @@ class Database:
             return dict(row) if row else None
 
     async def upsert_peer(
-        self, peer_id: str, display_name: str, public_key: bytes, signing_public_key: bytes
+        self, peer_id: str, display_name: str, public_key: bytes, signing_public_key: bytes, tui_active: bool = False
     ) -> None:
         await self._db.execute(
-            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online)
-               VALUES (?, ?, ?, ?, ?, 1)
+            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active)
+               VALUES (?, ?, ?, ?, ?, 1, ?)
                ON CONFLICT(peer_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  public_key = excluded.public_key,
                  signing_public_key = excluded.signing_public_key,
                  last_seen = excluded.last_seen,
-                 is_online = 1""",
-            (peer_id, display_name, public_key, signing_public_key, time.time()),
+                  is_online = 1,
+                  tui_active = excluded.tui_active""",
+            (peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active)),
         )
         await self._db.commit()
 

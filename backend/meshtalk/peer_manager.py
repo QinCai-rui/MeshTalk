@@ -78,6 +78,7 @@ class PeerManager:
         self._connecting: set[str] = set()
         self._server: asyncio.Server | None = None
         self._running = False
+        self.tui_active = False
         self._receive_tasks: set[asyncio.Task] = set()
         self.udp = UdpTransport(
             identity, self._on_udp_connected, self._on_udp_packet, self._on_udp_disconnected
@@ -134,6 +135,7 @@ class PeerManager:
             self.peers[peer_id] = peer
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
             self._start_receive_loop(peer)
+            await self._send_profile_update(peer)
             logger.info("Authenticated LAN connection to %s at %s", peer.peer_id, _format_endpoint(peer.endpoint))
         except Exception as exc:
             peer.state = PeerState.DISCONNECTED
@@ -157,6 +159,7 @@ class PeerManager:
             self.peers[peer.peer_id] = peer
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
             self._start_receive_loop(peer)
+            await self._send_profile_update(peer)
             logger.info("Authenticated incoming LAN connection from %s", peer.peer_id)
         except Exception as exc:
             logger.warning("Rejected incoming LAN connection from %s: %s", address, exc)
@@ -181,6 +184,7 @@ class PeerManager:
         if not active or active.state != PeerState.CONNECTED or active.transport != "lan_tcp":
             self.peers[peer_id] = peer
         await self.db.upsert_peer(peer_id, display_name, encryption_public_key, signing_public_key)
+        await self._send_profile_update(peer)
         logger.info("Authenticated remote UDP connection to %s at %s", peer_id, _format_endpoint(peer.endpoint))
 
     async def _on_udp_packet(self, peer_id: str, packet: Packet) -> None:
@@ -219,9 +223,18 @@ class PeerManager:
         return payload
 
     def _profile_payload(self) -> ProfilePayload:
-        payload = ProfilePayload(self.identity.peer_id, self.identity.display_name, b"")
+        payload = ProfilePayload(self.identity.peer_id, self.identity.display_name, self.tui_active, b"")
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
         return payload
+
+    async def set_tui_active(self, active: bool) -> None:
+        if self.tui_active == active:
+            return
+        self.tui_active = active
+        await self.broadcast_profile_update()
+
+    async def _send_profile_update(self, peer: PeerConnection) -> None:
+        await self._send_packet(peer, Packet(PacketType.PROFILE, self._profile_payload().encode()))
 
     async def broadcast_profile_update(self) -> None:
         """Share a signed name change through every active peer path."""
@@ -339,11 +352,13 @@ class PeerManager:
         except InvalidSignature as exc:
             raise ValueError("Invalid profile signature") from exc
         peer.display_name = Identity.normalize_display_name(payload.display_name)
+        peer.tui_active = payload.tui_active
         active = self.peers.get(peer.peer_id)
         if active:
             active.display_name = peer.display_name
+            active.tui_active = peer.tui_active
         await self.db.upsert_peer(
-            peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key
+            peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, peer.tui_active
         )
 
     async def send_packet(self, peer: PeerConnection, packet: Packet) -> None:

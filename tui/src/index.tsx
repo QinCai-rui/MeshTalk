@@ -1,11 +1,12 @@
-import { createCliRenderer, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
-import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
+import { createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
+import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/react"
 import { useEffect, useRef, useState } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 
 const MIN_COMPOSER_HEIGHT = 3
 const MAX_COMPOSER_HEIGHT = 8
 const MAX_MESSAGE_BYTES = 30 * 1024
+const DEFAULT_STATUS = "Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+N: rename  Ctrl+C: quit"
 
 function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
@@ -18,6 +19,7 @@ type Peer = {
   is_online: number
   last_seen: number
   unread_count: number
+  presence?: "active" | "away" | "offline"
   active_transport?: "lan_tcp" | "remote_udp"
   active_endpoint?: string
   endpoints: { transport: "lan_tcp" | "remote_udp"; endpoint: string; active: boolean }[]
@@ -39,10 +41,15 @@ function transportName(transport?: Peer["active_transport"]): string {
   return transport === "lan_tcp" ? "LAN TCP" : transport === "remote_udp" ? "Remote UDP" : "No endpoint"
 }
 
+function peerPresence(peer: Peer): "active" | "away" | "offline" {
+  return peer.presence ?? (peer.is_online ? "away" : "offline")
+}
+
 function ChatApp() {
   const renderer = useRenderer()
   const { width } = useTerminalDimensions()
   const [ipc] = useState(() => new IPCClient())
+  const [tuiClientId] = useState(() => crypto.randomUUID())
   const [peers, setPeers] = useState<Peer[]>([])
   const [identity, setIdentity] = useState<{ peer_id: string; display_name: string }>()
   const [selectedPeerId, setSelectedPeerId] = useState<string>()
@@ -59,6 +66,14 @@ function ChatApp() {
   const scrollboxRef = useRef<ScrollBoxRenderable>(null)
   const composerRef = useRef<TextareaRenderable>(null)
   const backendDisconnected = useRef(false)
+  const statusReset = useRef<ReturnType<typeof setTimeout>>()
+  const clipboard = useRef<ReturnType<typeof createClipboard> | null>(null)
+
+  function showStatus(message: string) {
+    if (statusReset.current) clearTimeout(statusReset.current)
+    setStatus(message)
+    statusReset.current = setTimeout(() => setStatus(DEFAULT_STATUS), 5_000)
+  }
 
   async function refreshPeers() {
     const response = await ipc.send("peers")
@@ -77,15 +92,41 @@ function ChatApp() {
       const nextIdentity = { peer_id: response.peer_id as string, display_name: response.display_name as string }
       setIdentity(nextIdentity)
       setNameDraft(nextIdentity.display_name)
+      const presence = await ipc.send("tui_presence", { client_id: tuiClientId, active: true })
+      if (presence.error) throw new Error(presence.error)
       await refreshPeers()
-      setStatus("Connected. Ctrl+Up/Down: select  Ctrl+Delete: remove offline  Ctrl+N: rename  Ctrl+C: quit")
+      setStatus(DEFAULT_STATUS)
     }).catch((error) => {
       if (!backendDisconnected.current) {
         setStatus(`Backend error: ${error instanceof Error ? error.message : String(error)}`)
       }
     })
-    return () => ipc.close()
+    return () => {
+      void ipc.send("tui_presence", { client_id: tuiClientId, active: false })
+      ipc.close()
+    }
+  }, [tuiClientId])
+
+  useEffect(() => () => {
+    if (statusReset.current) clearTimeout(statusReset.current)
   }, [])
+
+  useEffect(() => {
+    const service = createClipboard({
+      host: createHostClipboard(),
+      terminal: createRendererClipboardAdapter(renderer),
+    })
+    clipboard.current = service
+    return () => {
+      clipboard.current = null
+      void service.dispose()
+    }
+  }, [renderer])
+
+  useSelectionHandler((selection) => {
+    const text = selection.getSelectedText()
+    if (text) void clipboard.current?.writeText(text, { destination: "best-available" })
+  })
 
   useEffect(() => {
     let exitTimer: ReturnType<typeof setTimeout> | undefined
@@ -116,7 +157,7 @@ function ChatApp() {
       setMessages((current) => current.map((message) =>
         message.message_id === messageId ? { ...message, delivered: 1 } : message
       ))
-      setStatus("Message delivered.")
+      showStatus("Message delivered.")
       return
     }
     if (event.event !== "message") return
@@ -173,7 +214,7 @@ function ChatApp() {
     const peer = peers.find((item) => item.peer_id === selectedPeerId)
     if (!peer) return
     if (peer.is_online) {
-      setStatus("Disconnect from this peer before removing it.")
+      showStatus("Disconnect from this peer before removing it.")
       return
     }
     try {
@@ -182,7 +223,7 @@ function ChatApp() {
       const remaining = peers.filter((item) => item.peer_id !== peer.peer_id)
       setPeers(remaining)
       setSelectedPeerId(remaining[0]?.peer_id)
-      setStatus(`Removed ${peer.display_name} from the peer list.`)
+      showStatus(`Removed ${peer.display_name} from the peer list.`)
     } catch (error) {
       if (!backendDisconnected.current) {
         setStatus(`Remove error: ${error instanceof Error ? error.message : String(error)}`)
@@ -194,7 +235,7 @@ function ChatApp() {
     if (key.name === "escape" && editingName) {
       setEditingName(false)
       setNameDraft(identity?.display_name ?? "")
-      setStatus("Name edit cancelled.")
+      showStatus("Name edit cancelled.")
       return
     }
     if (key.ctrl && key.name === "n") {
@@ -202,7 +243,7 @@ function ChatApp() {
       setEditingName(true)
       return
     }
-    if (key.ctrl && key.name === "delete") {
+    if (key.ctrl && key.name === "d") {
       void removeSelectedPeer()
       return
     }
@@ -232,15 +273,15 @@ function ChatApp() {
     const recipientId = selectedPeerId
     const content = composer?.plainText.trim() ?? ""
     if (!content) {
-      setStatus("Message is empty.")
+      showStatus("Message is empty.")
       return
     }
     if (!recipientId || !identity || !selected?.is_online) {
-      setStatus("Select an online peer before sending.")
+      showStatus("Select an active or away peer before sending.")
       return
     }
     if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) {
-      setStatus("Message exceeds the 30 KiB limit.")
+      showStatus("Message exceeds the 30 KiB limit.")
       return
     }
     setIsSending(true)
@@ -262,7 +303,7 @@ function ChatApp() {
       setDrafts((current) => ({ ...current, [recipientId]: "" }))
       setDraftLength(0)
       setComposerHeight(MIN_COMPOSER_HEIGHT)
-      setStatus("Message sent. Waiting for delivery confirmation.")
+      showStatus("Message sent. Waiting for delivery confirmation.")
     } catch (error) {
       if (!backendDisconnected.current) {
         setStatus(`Send error: ${error instanceof Error ? error.message : String(error)}`)
@@ -280,7 +321,7 @@ function ChatApp() {
       setIdentity((current) => current ? { ...current, display_name: displayName } : current)
       setNameDraft(displayName)
       setEditingName(false)
-      setStatus("Display name updated and shared with connected peers.")
+      showStatus("Display name updated and shared with connected peers.")
     } catch (error) {
       if (!backendDisconnected.current) {
         setStatus(`Name error: ${error instanceof Error ? error.message : String(error)}`)
@@ -289,7 +330,7 @@ function ChatApp() {
   }
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId)
-  const onlineCount = peers.filter((peer) => peer.is_online).length
+  const activeCount = peers.filter((peer) => peerPresence(peer) === "active").length
   const sidebarWidth = width < 72 ? 22 : 32
   const compact = width < 72
   return (
@@ -312,15 +353,16 @@ function ChatApp() {
             </>
           )}
         </box>
-        <box title={`Peers: ${onlineCount} online`} bottomTitle="Ctrl+Delete removes offline" style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", padding: 1 }}>
+        <box title={`Peers: ${activeCount} active`} bottomTitle="Ctrl+D removes offline" style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", padding: 1 }}>
           {!peers.length && <text fg="#888888">No peers discovered</text>}
           <scrollbox
             style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
             contentOptions={{ flexDirection: "column" }}
             verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}
           >
-            {peers.map((peer) => (
-              <box
+            {peers.map((peer) => {
+              const presence = peerPresence(peer)
+              return <box
                 key={peer.peer_id}
                 onMouseDown={() => {
                   setSelectedPeerId(peer.peer_id)
@@ -328,8 +370,8 @@ function ChatApp() {
                 }}
                 style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
               >
-                <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>
-                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.is_online ? "online" : "offline"}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}
+                <text truncate fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>
+                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}
                 </text>
                 {peer.endpoints.length ? peer.endpoints.map((endpoint) => (
                   <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>
@@ -337,14 +379,14 @@ function ChatApp() {
                   </text>
                 )) : <text fg="#718096">No known endpoint</text>}
               </box>
-            ))}
+            })}
           </scrollbox>
         </box>
       </box>
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
         <box
-          title={selected ? `Chat: ${selected.display_name} (${selected.is_online ? `${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}` : "offline"})` : "Chat"}
+          title={selected ? `Chat: ${selected.display_name} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
