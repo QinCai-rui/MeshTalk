@@ -19,6 +19,7 @@ from __future__ import annotations
 import enum
 import hashlib
 import json
+import re
 import struct
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,6 +28,7 @@ PROTOCOL_VERSION = 1
 UDP_PORT = 24890
 TCP_PORT = 24891
 MAX_PACKET_SIZE = 64 * 1024  # 64 KB
+DISCOVERY_ID = re.compile(r"[a-f0-9]{32}")
 HEADER_FORMAT = "!IB"  # 4-byte big-endian length + 1-byte type
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
@@ -75,14 +77,14 @@ class Packet:
 @dataclass
 class DiscoveryPacket:
     protocol: int
-    peer_id: str
+    discovery_id: str
     tcp_port: int
 
     def encode(self) -> bytes:
         import json
         return json.dumps({
             "protocol": self.protocol,
-            "peer_id": self.peer_id,
+            "discovery_id": self.discovery_id,
             "tcp_port": self.tcp_port,
         }).encode()
 
@@ -90,11 +92,22 @@ class DiscoveryPacket:
     def decode(cls, data: bytes) -> DiscoveryPacket:
         import json
         obj = json.loads(data)
-        return cls(
-            protocol=obj["protocol"],
-            peer_id=obj["peer_id"],
-            tcp_port=obj["tcp_port"],
-        )
+        if not isinstance(obj, dict):
+            raise ValueError("Discovery packet must be an object")
+        protocol = obj.get("protocol")
+        discovery_id = obj.get("discovery_id")
+        tcp_port = obj.get("tcp_port")
+        if (
+            not isinstance(protocol, int)
+            or isinstance(protocol, bool)
+            or not isinstance(discovery_id, str)
+            or not DISCOVERY_ID.fullmatch(discovery_id)
+            or not isinstance(tcp_port, int)
+            or isinstance(tcp_port, bool)
+            or not 1 <= tcp_port <= 65535
+        ):
+            raise ValueError("Invalid discovery packet")
+        return cls(protocol=protocol, discovery_id=discovery_id, tcp_port=tcp_port)
 
 
 @dataclass

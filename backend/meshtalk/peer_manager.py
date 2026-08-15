@@ -20,6 +20,8 @@ from .udp_transport import Endpoint, UdpTransport
 logger = logging.getLogger(__name__)
 HANDSHAKE_TIMEOUT = 10
 MAX_KNOWN_PEERS = 512
+MAX_CONNECTED_PEERS = 256
+MAX_PENDING_HANDSHAKES = 64
 
 
 def _key_fingerprint(key: bytes) -> str:
@@ -81,6 +83,7 @@ class PeerManager:
         self._running = False
         self.tui_active = False
         self._receive_tasks: set[asyncio.Task] = set()
+        self._incoming_handshakes = 0
         self.udp = UdpTransport(
             identity, self._on_udp_connected, self._on_udp_packet, self._on_udp_disconnected
         )
@@ -120,20 +123,37 @@ class PeerManager:
             raise ValueError("Too many known peers")
         self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = endpoint
 
-    async def connect_to_peer(self, peer_id: str, address: str, tcp_port: int) -> None:
-        self.record_lan_candidate(peer_id, address, tcp_port)
-        existing = self.peers.get(peer_id)
-        if peer_id in self._connecting or existing and existing.state == PeerState.CONNECTED and existing.transport == "lan_tcp":
+    async def connect_to_peer(self, peer_id: str | None, address: str, tcp_port: int) -> None:
+        if peer_id:
+            self.record_lan_candidate(peer_id, address, tcp_port)
+        connection_key = peer_id or f"{address}:{tcp_port}"
+        existing = self.peers.get(peer_id) if peer_id else None
+        if connection_key in self._connecting or existing and existing.state == PeerState.CONNECTED and existing.transport == "lan_tcp":
             return
-        if not self._should_initiate(peer_id):
+        if peer_id and not self._should_initiate(peer_id):
             return
-        self._connecting.add(peer_id)
-        peer = PeerConnection(peer_id, address, tcp_port, PeerState.CONNECTING)
+        if peer_id and peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
+            logger.warning("Rejecting LAN connection to %s: peer limit reached", peer_id)
+            return
+        self._connecting.add(connection_key)
+        peer = PeerConnection(peer_id or "", address, tcp_port, PeerState.CONNECTING)
         try:
             peer.reader, peer.writer = await asyncio.open_connection(address, tcp_port)
             await asyncio.wait_for(self._outbound_handshake(peer), HANDSHAKE_TIMEOUT)
+            if not self._should_initiate(peer.peer_id):
+                # Discovery identifiers are anonymous, so both peers may dial.
+                # Once authenticated, retain the deterministic lower-ID direction.
+                peer.writer.close()
+                return
+            old = self.peers.get(peer.peer_id)
+            if old and old.state == PeerState.CONNECTED and old.transport == "lan_tcp":
+                peer.writer.close()
+                return
+            if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
+                raise ValueError("Connected peer limit reached")
             peer.state = PeerState.CONNECTED
-            self.peers[peer_id] = peer
+            self.peers[peer.peer_id] = peer
+            self.record_lan_candidate(peer.peer_id, address, tcp_port)
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
             self._start_receive_loop(peer)
             await self._send_profile_update(peer)
@@ -142,11 +162,15 @@ class PeerManager:
             peer.state = PeerState.DISCONNECTED
             if peer.writer:
                 peer.writer.close()
-            logger.warning("LAN connection to %s failed: %s", peer_id, exc)
+            logger.warning("LAN connection to %s failed: %s", peer_id or address, exc)
         finally:
-            self._connecting.discard(peer_id)
+            self._connecting.discard(connection_key)
 
     async def _handle_incoming(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if self._incoming_handshakes >= MAX_PENDING_HANDSHAKES:
+            writer.close()
+            return
+        self._incoming_handshakes += 1
         address, port = writer.get_extra_info("peername")[:2]
         peer = PeerConnection("", str(address), int(port), PeerState.CONNECTING)
         peer.reader, peer.writer = reader, writer
@@ -157,6 +181,8 @@ class PeerManager:
             if old and old.state == PeerState.CONNECTED and old.transport == "lan_tcp":
                 writer.close()
                 return
+            if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
+                raise ValueError("Connected peer limit reached")
             self.peers[peer.peer_id] = peer
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
             self._start_receive_loop(peer)
@@ -165,6 +191,8 @@ class PeerManager:
         except Exception as exc:
             logger.warning("Rejected incoming LAN connection from %s: %s", address, exc)
             writer.close()
+        finally:
+            self._incoming_handshakes -= 1
 
     async def _on_udp_connected(
         self,
@@ -175,6 +203,9 @@ class PeerManager:
         encryption_public_key: bytes,
         signing_public_key: bytes,
     ) -> None:
+        if peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
+            logger.warning("Rejecting remote UDP peer %s: peer limit reached", peer_id)
+            return
         peer = PeerConnection(peer_id, address, port, PeerState.CONNECTED, "remote_udp")
         peer.display_name = display_name
         peer.encryption_public_key = encryption_public_key
@@ -209,6 +240,7 @@ class PeerManager:
         active = self.peers.get(peer_id)
         if active is peer:
             await self.db.set_peer_online(peer_id, False)
+            self.peers.pop(peer_id, None)
 
     def _handshake_payload(self, challenge: bytes = b"") -> HandshakePayload:
         payload = HandshakePayload(
@@ -260,7 +292,7 @@ class PeerManager:
             raise ValueError("Expected handshake acknowledgement")
         acknowledgement = HandshakePayload.decode(packet.payload)
         self._apply_handshake(
-            peer, acknowledgement, expected_peer_id=peer.peer_id, expected_challenge=initial.nonce
+            peer, acknowledgement, expected_peer_id=peer.peer_id or None, expected_challenge=initial.nonce
         )
         confirmation = self._handshake_payload(acknowledgement.nonce)
         await self._send_packet(peer, Packet(PacketType.HANDSHAKE_CONFIRM, confirmation.encode()))
@@ -339,6 +371,9 @@ class PeerManager:
                     self.peers[peer.peer_id] = remote
                 else:
                     await self.db.set_peer_online(peer.peer_id, False)
+                    self.peers.pop(peer.peer_id, None)
+            if peer.writer:
+                peer.writer.close()
 
     async def _apply_profile_update(self, peer: PeerConnection, packet: Packet) -> None:
         if peer.signing_public_key is None or peer.encryption_public_key is None:

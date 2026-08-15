@@ -11,6 +11,7 @@ const HOME = process.env.HOME || process.env.USERPROFILE || "";
 const DATA_DIR = `${HOME}/.meshtalk`;
 const SOCKET_PATH = `${DATA_DIR}/meshtalk.sock`;
 const PORT_PATH = `${DATA_DIR}/meshtalk.port`;
+const TOKEN_PATH = `${DATA_DIR}/meshtalk.token`;
 
 export interface IPCResponse {
   error?: string;
@@ -28,17 +29,30 @@ export class IPCClient {
   private disconnectHandlers = new Set<() => void>();
   private intentionallyClosed = false;
   private closed = false;
+  private connectResolve: (() => void) | null = null;
+  private connectReject: ((error: Error) => void) | null = null;
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.intentionallyClosed = false;
       this.closed = false;
+      this.connectResolve = resolve;
+      this.connectReject = reject;
+
+      const authenticate = () => {
+        try {
+          const token = readFileSync(TOKEN_PATH, "utf-8").trim();
+          this.socket?.write(JSON.stringify({ action: "authenticate", token }) + "\n");
+        } catch {
+          reject(new Error("Cannot authenticate with MeshTalk backend"));
+        }
+      };
 
       const connectTcp = () => {
         try {
           const port = Number(readFileSync(PORT_PATH, "utf-8").trim());
           this.socket = createConnection(port, "127.0.0.1");
-          this.socket.on("connect", () => resolve());
+          this.socket.on("connect", authenticate);
           this.socket.on("error", (err) => reject(err));
           this.socket.on("data", (data: string | Buffer) => this.onData(data.toString()));
           this.socket.on("close", () => this.onClose());
@@ -49,7 +63,7 @@ export class IPCClient {
 
       const connectUnix = () => {
         this.socket = createConnection(SOCKET_PATH);
-        this.socket.on("connect", () => resolve());
+        this.socket.on("connect", authenticate);
         this.socket.on("error", () => { try { this.socket?.destroy(); } catch {} connectTcp(); });
         this.socket.on("data", (data: string | Buffer) => this.onData(data.toString()));
         this.socket.on("close", () => this.onClose());
@@ -98,6 +112,12 @@ export class IPCClient {
       if (!line.trim()) continue;
       try {
         const response: IPCResponse = JSON.parse(line);
+        if (response.authenticated === true && this.connectResolve) {
+          this.connectResolve();
+          this.connectResolve = null;
+          this.connectReject = null;
+          continue;
+        }
         if (typeof response.event === "string") {
           for (const handler of this.eventHandlers) handler(response as IPCEvent);
           continue;
@@ -117,6 +137,11 @@ export class IPCClient {
   private onClose(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.connectReject) {
+      this.connectReject(new Error("Connection closed during authentication"));
+      this.connectResolve = null;
+      this.connectReject = null;
+    }
     for (const entry of this.pending.values()) {
       entry.reject(new Error("Connection closed"));
     }

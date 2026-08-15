@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import socket
 from typing import Callable, Awaitable
 
@@ -17,22 +18,30 @@ logger = logging.getLogger(__name__)
 
 BROADCAST_INTERVAL = 3.0
 BROADCAST_ADDR = "255.255.255.255"
+MAX_PENDING_DISCOVERY_PACKETS = 128
+DISCOVERY_WORKERS = 4
+MAX_KNOWN_ADDRESSES = 512
 
 
 class DiscoveryService:
     def __init__(
         self,
-        peer_id: str,
         tcp_port: int,
-        on_peer_found: Callable[[str, str, int], Awaitable[None]],
+        on_peer_found: Callable[[str, int], Awaitable[None]],
     ) -> None:
-        self.peer_id = peer_id
+        # This identifier is intentionally short-lived and never derived from
+        # the signing key, so LAN broadcasts cannot track a peer across runs.
+        self.discovery_id = secrets.token_hex(16)
         self.tcp_port = tcp_port
         self.on_peer_found = on_peer_found
         self._transport: asyncio.DatagramTransport | None = None
         self._protocol: DiscoveryProtocol | None = None
         self._running = False
         self._known_addresses: dict[str, tuple[str, int]] = {}
+        self._pending: asyncio.Queue[tuple[bytes, tuple[str, int]]] = asyncio.Queue(
+            maxsize=MAX_PENDING_DISCOVERY_PACKETS
+        )
+        self._workers: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
         self._running = True
@@ -46,16 +55,22 @@ class DiscoveryService:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         logger.info("Discovery started on UDP port %d", UDP_PORT)
         asyncio.create_task(self._broadcast_loop())
+        self._workers = [asyncio.create_task(self._discovery_worker()) for _ in range(DISCOVERY_WORKERS)]
 
     async def stop(self) -> None:
         self._running = False
+        for worker in self._workers:
+            worker.cancel()
+        if self._workers:
+            await asyncio.gather(*self._workers, return_exceptions=True)
+        self._workers.clear()
         if self._transport:
             self._transport.close()
 
     async def _broadcast_loop(self) -> None:
         packet = DiscoveryPacket(
             protocol=PROTOCOL_VERSION,
-            peer_id=self.peer_id,
+            discovery_id=self.discovery_id,
             tcp_port=self.tcp_port,
         )
         data = packet.encode()
@@ -76,18 +91,35 @@ class DiscoveryService:
             logger.debug("Invalid discovery packet from %s: %s", addr, e)
             return
 
-        if packet.peer_id == self.peer_id:
+        if packet.discovery_id == self.discovery_id:
             return
 
         if packet.protocol != PROTOCOL_VERSION:
-            logger.debug("Unknown protocol version from %s", packet.peer_id)
+            logger.debug("Unknown protocol version from %s", packet.discovery_id)
             return
 
         address = (addr[0], packet.tcp_port)
-        if self._known_addresses.get(packet.peer_id) != address:
-            self._known_addresses[packet.peer_id] = address
-            logger.info("Discovered peer %s at %s:%d", packet.peer_id, *address)
-        await self.on_peer_found(packet.peer_id, addr[0], packet.tcp_port)
+        if self._known_addresses.get(packet.discovery_id) == address:
+            return
+        if packet.discovery_id not in self._known_addresses and len(self._known_addresses) >= MAX_KNOWN_ADDRESSES:
+            self._known_addresses.pop(next(iter(self._known_addresses)))
+        self._known_addresses[packet.discovery_id] = address
+        logger.info("Discovered LAN peer at %s:%d", *address)
+        await self.on_peer_found(addr[0], packet.tcp_port)
+
+    async def _discovery_worker(self) -> None:
+        while self._running:
+            data, addr = await self._pending.get()
+            try:
+                await self.handle_discovery(data, addr)
+            finally:
+                self._pending.task_done()
+
+    def enqueue_discovery(self, data: bytes, addr: tuple[str, int]) -> None:
+        try:
+            self._pending.put_nowait((data, addr))
+        except asyncio.QueueFull:
+            logger.warning("Dropping discovery packet because the processing queue is full")
 
 
 class DiscoveryProtocol(asyncio.DatagramProtocol):
@@ -98,7 +130,7 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         pass
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-        asyncio.create_task(self.service.handle_discovery(data, addr))
+        self.service.enqueue_discovery(data, addr)
 
     def error_received(self, exc: Exception) -> None:
         logger.error("Discovery error: %s", exc)

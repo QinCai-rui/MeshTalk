@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
@@ -15,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
     X25519PublicKey,
 )
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 
 
@@ -54,6 +56,15 @@ class Identity:
 
     def public_key_bytes(self) -> bytes:
         return self.encryption_public_key_bytes()
+
+    def storage_key(self) -> bytes:
+        """Derive a local database key without persisting message plaintext."""
+        return HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=self.peer_id.encode(),
+            info=b"meshtalk-local-storage-v1",
+        ).derive(_raw_private(self.encryption_private_key))
 
     @staticmethod
     def normalize_display_name(display_name: str) -> str:

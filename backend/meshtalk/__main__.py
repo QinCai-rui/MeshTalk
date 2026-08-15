@@ -37,7 +37,7 @@ async def main(debug: bool = False) -> None:
     logger.info("Peer ID: %s (%s)", identity.peer_id, identity.display_name)
     stop_event = asyncio.Event()
 
-    db = Database(DATA_DIR / "meshtalk.db")
+    db = Database(DATA_DIR / "meshtalk.db", identity.storage_key())
     await db.connect()
     settings = Settings(DATA_DIR / "settings.json")
 
@@ -47,11 +47,10 @@ async def main(debug: bool = False) -> None:
 
     peer_manager.on_packet = router.handle_packet
 
-    async def on_peer_found(peer_id: str, address: str, tcp_port: int) -> None:
-        peer_manager.record_lan_candidate(peer_id, address, tcp_port)
-        await peer_manager.connect_to_peer(peer_id, address, tcp_port)
+    async def on_peer_found(address: str, tcp_port: int) -> None:
+        await peer_manager.connect_to_peer(None, address, tcp_port)
 
-    discovery = DiscoveryService(identity.peer_id, 24891, on_peer_found)
+    discovery = DiscoveryService(24891, on_peer_found)
     rendezvous = RendezvousService(
         identity, settings, peer_manager.udp, peer_manager.record_remote_candidate
     )

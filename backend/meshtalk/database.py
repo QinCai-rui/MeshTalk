@@ -6,9 +6,11 @@ Stores: identity, peers, messages, outgoing queue, seen message IDs.
 from __future__ import annotations
 
 import time
+import os
 from pathlib import Path
 
 import aiosqlite
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS peers (
@@ -59,9 +61,10 @@ CREATE TABLE IF NOT EXISTS config (
 
 
 class Database:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, storage_key: bytes | None = None) -> None:
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
+        self._cipher = AESGCM(storage_key or os.urandom(32))
 
     async def connect(self) -> None:
         self._db = await aiosqlite.connect(str(self.db_path))
@@ -75,7 +78,30 @@ class Database:
         message_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(messages)")}
         if "read_at" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN read_at REAL")
+        await self._encrypt_existing_message_content()
         await self._db.commit()
+
+    def _encrypt_content(self, content: str) -> bytes:
+        nonce = os.urandom(12)
+        return nonce + self._cipher.encrypt(nonce, content.encode(), None)
+
+    def _decrypt_content(self, content: bytes | str | None) -> str | None:
+        if content is None:
+            return None
+        if isinstance(content, str):
+            # Existing plaintext rows are migrated during connect().
+            return content
+        return self._cipher.decrypt(content[:12], content[12:], None).decode()
+
+    async def _encrypt_existing_message_content(self) -> None:
+        async with self._db.execute("SELECT message_id, content FROM messages WHERE content IS NOT NULL") as cursor:
+            rows = [row async for row in cursor]
+        for row in rows:
+            if isinstance(row["content"], str):
+                await self._db.execute(
+                    "UPDATE messages SET content = ? WHERE message_id = ?",
+                    (self._encrypt_content(row["content"]), row["message_id"]),
+                )
 
     async def close(self) -> None:
         if self._db:
@@ -153,7 +179,10 @@ class Database:
                ORDER BY created_at ASC""",
             (local_peer_id, remote_peer_id, remote_peer_id, local_peer_id, limit),
         ) as cursor:
-            return [dict(row) async for row in cursor]
+            messages = [dict(row) async for row in cursor]
+        for message in messages:
+            message["content"] = self._decrypt_content(message["content"])
+        return messages
 
     async def save_message(self, msg: dict) -> None:
         await self._db.execute(
@@ -165,7 +194,7 @@ class Database:
                 msg["message_id"],
                 msg["sender_id"],
                 msg["recipient_id"],
-                msg.get("content"),
+                self._encrypt_content(msg["content"]) if msg.get("content") is not None else None,
                 msg["encrypted_content"],
                 msg["created_at"],
                 msg["expires_at"],

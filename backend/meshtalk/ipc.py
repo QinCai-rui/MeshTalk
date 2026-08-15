@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import sys
 from pathlib import Path
 from typing import Any, Callable, Awaitable
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 DATA_DIR = Path.home() / ".meshtalk"
 IPC_SOCKET_PATH = DATA_DIR / "meshtalk.sock"
 IPC_PORT_PATH = DATA_DIR / "meshtalk.port"
+IPC_TOKEN_PATH = DATA_DIR / "meshtalk.token"
 MAX_IPC_LINE_SIZE = 256 * 1024
 
 
@@ -40,9 +42,14 @@ class IPCServer:
         self._clients: list[asyncio.StreamWriter] = []
         self._tui_client_ids: dict[asyncio.StreamWriter, str] = {}
         self._use_tcp = False
+        self._auth_token = ""
 
     async def start(self) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self._auth_token = secrets.token_urlsafe(32)
+        fd = os.open(IPC_TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as token_file:
+            token_file.write(self._auth_token)
 
         if _unix_sockets_supported():
             if IPC_SOCKET_PATH.exists():
@@ -75,6 +82,8 @@ class IPCServer:
             IPC_SOCKET_PATH.unlink()
         if IPC_PORT_PATH.exists():
             IPC_PORT_PATH.unlink()
+        if IPC_TOKEN_PATH.exists():
+            IPC_TOKEN_PATH.unlink()
 
     async def broadcast_event(self, event: dict) -> None:
         """Send an event to all connected clients."""
@@ -92,8 +101,7 @@ class IPCServer:
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        self._clients.append(writer)
-        logger.info("IPC client connected")
+        authenticated = False
         try:
             while True:
                 line = await reader.readline()
@@ -102,6 +110,19 @@ class IPCServer:
                 request = {}
                 try:
                     request = json.loads(line.decode())
+                    if not authenticated:
+                        if request.get("action") != "authenticate" or not secrets.compare_digest(
+                            request.get("token", "") if isinstance(request.get("token"), str) else "", self._auth_token
+                        ):
+                            writer.write(b'{"error":"Authentication failed"}\n')
+                            await writer.drain()
+                            return
+                        authenticated = True
+                        self._clients.append(writer)
+                        logger.info("Authenticated IPC client connected")
+                        writer.write(b'{"authenticated":true}\n')
+                        await writer.drain()
+                        continue
                     if request.get("action") == "tui_presence" and isinstance(request.get("client_id"), str):
                         if request.get("active") is True:
                             self._tui_client_ids[writer] = request["client_id"]

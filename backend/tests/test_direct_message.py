@@ -55,10 +55,14 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(received["content"], "secret hello")
         await asyncio.sleep(0.05)
         async with sender_router.db._db.execute(
-            "SELECT delivered FROM messages WHERE message_id = ?", (message_id,)
+            "SELECT delivered, content FROM messages WHERE message_id = ?", (message_id,)
         ) as cursor:
             row = await cursor.fetchone()
         self.assertEqual(row[0], 1)
+        self.assertIsInstance(row[1], bytes)
+        self.assertNotIn(b"secret hello", row[1])
+        conversation = await sender_router.db.get_conversation(sender_identity.peer_id, recipient.peer_id)
+        self.assertEqual(conversation[0]["content"], "secret hello")
 
     async def test_remove_peer_deletes_saved_peer(self):
         await self.db_a.upsert_peer(

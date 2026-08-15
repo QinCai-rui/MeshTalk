@@ -1,6 +1,7 @@
 import type { ServerWebSocket } from "bun"
 
 type ClientData = {
+  ip: string
   rooms: Set<string>
   signals: Map<string, string>
   windowStartedAt: number
@@ -14,6 +15,12 @@ type ControlMessage = {
   payload?: unknown
 }
 
+type RateLimit = {
+  windowStartedAt: number
+  controlMessagesInWindow: number
+  signalsInWindow: number
+}
+
 const PORT = Number(process.env.PORT ?? 8787)
 const MAX_ROOM_MEMBERS = 64
 const MAX_ROOMS_PER_CLIENT = 32
@@ -21,6 +28,7 @@ const MAX_SIGNAL_LENGTH = 8 * 1024
 const MAX_CONTROL_MESSAGES_PER_MINUTE = 96
 const MAX_SIGNALS_PER_MINUTE = 64
 const MAX_CONNECTIONS = 10_000
+const MAX_CONNECTIONS_PER_IP = 32
 const MAX_ROOMS = 10_000
 const MAX_RETAINED_BYTES = 64 * 1024 * 1024
 const ROOM_ID = /^[a-f0-9]{32}$/
@@ -28,6 +36,8 @@ const ROOM_ID = /^[a-f0-9]{32}$/
 const rooms = new Map<string, Set<ServerWebSocket<ClientData>>>()
 let connections = 0
 let retainedBytes = 0
+const connectionsByIp = new Map<string, number>()
+const rateLimitsByIp = new Map<string, RateLimit>()
 
 function send(socket: ServerWebSocket<ClientData>, value: object): void {
   socket.send(JSON.stringify(value))
@@ -107,6 +117,19 @@ function checkRateLimit(socket: ServerWebSocket<ClientData>, messageType: unknow
   ) {
     throw new Error("Message rate limit exceeded")
   }
+  let ipLimit = rateLimitsByIp.get(socket.data.ip)
+  if (!ipLimit || now - ipLimit.windowStartedAt >= 60_000) {
+    ipLimit = { windowStartedAt: now, controlMessagesInWindow: 0, signalsInWindow: 0 }
+    rateLimitsByIp.set(socket.data.ip, ipLimit)
+  }
+  if (messageType === "signal") ipLimit.signalsInWindow += 1
+  else ipLimit.controlMessagesInWindow += 1
+  if (
+    ipLimit.signalsInWindow > MAX_SIGNALS_PER_MINUTE
+    || ipLimit.controlMessagesInWindow > MAX_CONTROL_MESSAGES_PER_MINUTE
+  ) {
+    throw new Error("IP message rate limit exceeded")
+  }
 }
 
 export function startControlServer(port = PORT) {
@@ -119,8 +142,13 @@ export function startControlServer(port = PORT) {
       }
       if (url.pathname !== "/v1/rendezvous") return new Response("Not found", { status: 404 })
       if (connections >= MAX_CONNECTIONS) return new Response("Control service is full", { status: 503 })
+      const ip = server.requestIP(request)?.address ?? "unknown"
+      if ((connectionsByIp.get(ip) ?? 0) >= MAX_CONNECTIONS_PER_IP) {
+        return new Response("Too many connections from this IP", { status: 429 })
+      }
       const upgraded = server.upgrade(request, {
         data: {
+          ip,
           rooms: new Set(),
           signals: new Map(),
           windowStartedAt: Date.now(),
@@ -133,8 +161,9 @@ export function startControlServer(port = PORT) {
     websocket: {
       maxPayloadLength: 256 * 1024,
       idleTimeout: 60,
-      open() {
+      open(socket) {
         connections += 1
+        connectionsByIp.set(socket.data.ip, (connectionsByIp.get(socket.data.ip) ?? 0) + 1)
       },
       message(socket, raw) {
         try {
@@ -159,6 +188,9 @@ export function startControlServer(port = PORT) {
       close(socket) {
         for (const roomId of [...socket.data.rooms]) leaveRoom(socket, roomId)
         connections = Math.max(0, connections - 1)
+        const count = (connectionsByIp.get(socket.data.ip) ?? 1) - 1
+        if (count > 0) connectionsByIp.set(socket.data.ip, count)
+        else connectionsByIp.delete(socket.data.ip)
       },
     },
   })
