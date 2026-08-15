@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 CandidateCallback = Callable[[str, Endpoint], Awaitable[None]]
 CARD_MAX_AGE = 180
 REFRESH_INTERVAL = 30
+CONTROL_PING_INTERVAL = 5
+CONTROL_PING_TIMEOUT = 5
+CONTROL_CONNECT_TIMEOUT = 10
+CONTROL_RECONNECT_MAX_DELAY = 30
 MAX_CANDIDATE_CHANGES_PER_MINUTE = 12
 MAX_TRACKED_CANDIDATES = 512
 CANDIDATE_TRACKING_AGE = 600
@@ -157,7 +161,13 @@ class RendezvousService:
                     pass
                 continue
             try:
-                async with connect(url, max_size=256 * 1024, ping_interval=20, ping_timeout=20) as websocket:
+                async with connect(
+                    url,
+                    max_size=256 * 1024,
+                    open_timeout=CONTROL_CONNECT_TIMEOUT,
+                    ping_interval=CONTROL_PING_INTERVAL,
+                    ping_timeout=CONTROL_PING_TIMEOUT,
+                ) as websocket:
                     self.connected = True
                     backoff = 1.0
                     for room in self.settings.rooms.values():
@@ -184,11 +194,12 @@ class RendezvousService:
                 self.connected = False
                 self.member_counts.clear()
             if self._running:
+                logger.info("Control disconnected; reconnecting in %.0fs", backoff)
                 try:
                     await asyncio.wait_for(self._reconnect.wait(), backoff)
                 except TimeoutError:
                     pass
-                backoff = min(backoff * 2, 30)
+                backoff = min(backoff * 2, CONTROL_RECONNECT_MAX_DELAY)
 
     async def _receive_loop(self, websocket) -> None:
         async for raw in websocket:
