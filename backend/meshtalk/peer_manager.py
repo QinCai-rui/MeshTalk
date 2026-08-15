@@ -1,4 +1,4 @@
-"""Authenticated TCP peer connections for direct messaging."""
+"""Authenticated LAN TCP and NAT-traversed UDP peer connections."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from .database import Database
 from .identity import Identity
 from .protocol import HEADER_SIZE, HandshakePayload, Packet, PacketType, ProfilePayload, TCP_PORT
+from .udp_transport import Endpoint, UdpTransport
 
 logger = logging.getLogger(__name__)
 HANDSHAKE_TIMEOUT = 10
@@ -22,6 +23,11 @@ HANDSHAKE_TIMEOUT = 10
 
 def _key_fingerprint(key: bytes) -> str:
     return hashlib.sha256(key).hexdigest()[:16]
+
+
+def _format_endpoint(endpoint: Endpoint) -> str:
+    host, port = endpoint
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 
 class PeerState(enum.Enum):
@@ -33,8 +39,17 @@ class PeerState(enum.Enum):
 
 
 class PeerConnection:
-    def __init__(self, peer_id: str, address: str, tcp_port: int, state: PeerState = PeerState.DISCOVERED) -> None:
-        self.peer_id, self.address, self.tcp_port, self.state = peer_id, address, tcp_port, state
+    def __init__(
+        self,
+        peer_id: str,
+        address: str,
+        port: int,
+        state: PeerState = PeerState.DISCOVERED,
+        transport: str = "lan_tcp",
+    ) -> None:
+        self.peer_id, self.address, self.port, self.state = peer_id, address, port, state
+        self.transport = transport
+        self.tcp_port = port
         self.reader: asyncio.StreamReader | None = None
         self.writer: asyncio.StreamWriter | None = None
         self.display_name = "Anonymous"
@@ -42,26 +57,47 @@ class PeerConnection:
         self.encryption_public_key: bytes | None = None
         self.last_seen = time.time()
 
+    @property
+    def endpoint(self) -> Endpoint:
+        return self.address, self.port
+
 
 class PeerManager:
-    def __init__(self, identity: Identity, db: Database, on_packet: Callable[[PeerConnection, Packet], Awaitable[None]], tcp_port: int = TCP_PORT) -> None:
+    def __init__(
+        self,
+        identity: Identity,
+        db: Database,
+        on_packet: Callable[[PeerConnection, Packet], Awaitable[None]],
+        tcp_port: int = TCP_PORT,
+    ) -> None:
         self.identity, self.db, self.on_packet, self.tcp_port = identity, db, on_packet, tcp_port
         self.peers: dict[str, PeerConnection] = {}
+        self._udp_peers: dict[str, PeerConnection] = {}
+        self._known_endpoints: dict[str, dict[str, Endpoint]] = {}
+        self._connecting: set[str] = set()
         self._server: asyncio.Server | None = None
         self._running = False
         self._receive_tasks: set[asyncio.Task] = set()
+        self.udp = UdpTransport(
+            identity, self._on_udp_connected, self._on_udp_packet, self._on_udp_disconnected
+        )
 
     async def start(self) -> None:
         self._running = True
         self._server = await asyncio.start_server(self._handle_incoming, "0.0.0.0", self.tcp_port)
-        logger.info("TCP server listening on port %d", self.tcp_port)
+        await self.udp.start()
+        logger.info("LAN TCP server listening on port %d", self.tcp_port)
 
     async def stop(self) -> None:
         self._running = False
-        for peer in list(self.peers.values()):
-            if peer.writer:
-                peer.writer.close()
-                await peer.writer.wait_closed()
+        await self.udp.stop()
+        writers = {
+            peer.writer for peer in [*self.peers.values(), *self._udp_peers.values()] if peer.writer
+        }
+        for writer in writers:
+            writer.close()
+        if writers:
+            await asyncio.gather(*(writer.wait_closed() for writer in writers), return_exceptions=True)
         if self._receive_tasks:
             await asyncio.gather(*self._receive_tasks, return_exceptions=True)
         if self._server:
@@ -71,45 +107,99 @@ class PeerManager:
     def _should_initiate(self, remote_peer_id: str) -> bool:
         return self.identity.peer_id < remote_peer_id
 
+    def record_lan_candidate(self, peer_id: str, address: str, tcp_port: int) -> None:
+        self._known_endpoints.setdefault(peer_id, {})["lan_tcp"] = (address, tcp_port)
+
+    async def record_remote_candidate(self, peer_id: str, endpoint: Endpoint) -> None:
+        self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = endpoint
+
     async def connect_to_peer(self, peer_id: str, address: str, tcp_port: int) -> None:
+        self.record_lan_candidate(peer_id, address, tcp_port)
         existing = self.peers.get(peer_id)
-        if existing and existing.state in (PeerState.CONNECTING, PeerState.CONNECTED):
+        if peer_id in self._connecting or existing and existing.state == PeerState.CONNECTED and existing.transport == "lan_tcp":
             return
         if not self._should_initiate(peer_id):
             return
+        self._connecting.add(peer_id)
         peer = PeerConnection(peer_id, address, tcp_port, PeerState.CONNECTING)
-        self.peers[peer_id] = peer
         try:
             peer.reader, peer.writer = await asyncio.open_connection(address, tcp_port)
             await asyncio.wait_for(self._outbound_handshake(peer), HANDSHAKE_TIMEOUT)
             peer.state = PeerState.CONNECTED
+            self.peers[peer_id] = peer
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
             self._start_receive_loop(peer)
-            logger.info("Authenticated connection to %s", peer.peer_id)
+            logger.info("Authenticated LAN connection to %s at %s", peer.peer_id, _format_endpoint(peer.endpoint))
         except Exception as exc:
             peer.state = PeerState.DISCONNECTED
             if peer.writer:
                 peer.writer.close()
-            logger.warning("Connection to %s failed: %s", peer_id, exc)
+            logger.warning("LAN connection to %s failed: %s", peer_id, exc)
+        finally:
+            self._connecting.discard(peer_id)
 
     async def _handle_incoming(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         address, port = writer.get_extra_info("peername")[:2]
-        peer = PeerConnection("", address, port, PeerState.CONNECTING)
+        peer = PeerConnection("", str(address), int(port), PeerState.CONNECTING)
         peer.reader, peer.writer = reader, writer
         try:
             await asyncio.wait_for(self._inbound_handshake(peer), HANDSHAKE_TIMEOUT)
             peer.state = PeerState.CONNECTED
             old = self.peers.get(peer.peer_id)
-            if old and old.state == PeerState.CONNECTED:
+            if old and old.state == PeerState.CONNECTED and old.transport == "lan_tcp":
                 writer.close()
                 return
             self.peers[peer.peer_id] = peer
+            self._known_endpoints.setdefault(peer.peer_id, {})["lan_tcp"] = peer.endpoint
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
             self._start_receive_loop(peer)
-            logger.info("Authenticated incoming connection from %s", peer.peer_id)
+            logger.info("Authenticated incoming LAN connection from %s", peer.peer_id)
         except Exception as exc:
-            logger.warning("Rejected incoming connection from %s: %s", address, exc)
+            logger.warning("Rejected incoming LAN connection from %s: %s", address, exc)
             writer.close()
+
+    async def _on_udp_connected(
+        self,
+        peer_id: str,
+        address: str,
+        port: int,
+        display_name: str,
+        encryption_public_key: bytes,
+        signing_public_key: bytes,
+    ) -> None:
+        peer = PeerConnection(peer_id, address, port, PeerState.CONNECTED, "remote_udp")
+        peer.display_name = display_name
+        peer.encryption_public_key = encryption_public_key
+        peer.signing_public_key = signing_public_key
+        self._udp_peers[peer_id] = peer
+        self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = peer.endpoint
+        active = self.peers.get(peer_id)
+        if not active or active.state != PeerState.CONNECTED or active.transport != "lan_tcp":
+            self.peers[peer_id] = peer
+        await self.db.upsert_peer(peer_id, display_name, encryption_public_key, signing_public_key)
+        logger.info("Authenticated remote UDP connection to %s at %s", peer_id, _format_endpoint(peer.endpoint))
+
+    async def _on_udp_packet(self, peer_id: str, packet: Packet) -> None:
+        peer = self._udp_peers.get(peer_id)
+        if not peer or peer.state != PeerState.CONNECTED:
+            return
+        peer.last_seen = time.time()
+        if packet.type == PacketType.PING:
+            await self._send_packet(peer, Packet(PacketType.PONG))
+        elif packet.type == PacketType.GOODBYE:
+            await self._on_udp_disconnected(peer_id)
+        elif packet.type == PacketType.PROFILE:
+            await self._apply_profile_update(peer, packet)
+        else:
+            await self.on_packet(peer, packet)
+
+    async def _on_udp_disconnected(self, peer_id: str) -> None:
+        peer = self._udp_peers.pop(peer_id, None)
+        if peer:
+            peer.state = PeerState.DISCONNECTED
+        active = self.peers.get(peer_id)
+        if active is peer:
+            await self.db.set_peer_online(peer_id, False)
 
     def _handshake_payload(self) -> HandshakePayload:
         payload = HandshakePayload(
@@ -129,16 +219,21 @@ class PeerManager:
         return payload
 
     async def broadcast_profile_update(self) -> None:
-        """Share a signed name change with peers already connected to this backend."""
+        """Share a signed name change through every active peer path."""
         packet = Packet(PacketType.PROFILE, self._profile_payload().encode())
-        for peer in self.get_connected_peers():
+        sent: set[tuple[str, str]] = set()
+        for peer in [*self.get_connected_peers(), *self._udp_peers.values()]:
+            key = peer.peer_id, peer.transport
+            if key in sent or peer.state != PeerState.CONNECTED:
+                continue
+            sent.add(key)
             try:
                 await self._send_packet(peer, packet)
             except ConnectionError:
                 logger.warning("Could not send profile update to %s", peer.peer_id)
 
     async def _outbound_handshake(self, peer: PeerConnection) -> None:
-        logger.debug("Starting authenticated key exchange with %s at %s:%d", peer.peer_id, peer.address, peer.tcp_port)
+        logger.debug("Starting authenticated LAN key exchange with %s at %s:%d", peer.peer_id, peer.address, peer.port)
         await self._send_packet(peer, Packet(PacketType.HANDSHAKE, self._handshake_payload().encode()))
         packet = await self._recv_packet(peer)
         if packet is None or packet.type != PacketType.HANDSHAKE_ACK:
@@ -146,7 +241,7 @@ class PeerManager:
         self._apply_handshake(peer, HandshakePayload.decode(packet.payload), expected_peer_id=peer.peer_id)
 
     async def _inbound_handshake(self, peer: PeerConnection) -> None:
-        logger.debug("Waiting for authenticated key exchange from %s:%d", peer.address, peer.tcp_port)
+        logger.debug("Waiting for authenticated LAN key exchange from %s:%d", peer.address, peer.port)
         packet = await self._recv_packet(peer)
         if packet is None or packet.type != PacketType.HANDSHAKE:
             raise ValueError("Expected handshake")
@@ -155,7 +250,7 @@ class PeerManager:
 
     def _apply_handshake(self, peer: PeerConnection, payload: HandshakePayload, expected_peer_id: str | None = None) -> None:
         peer_id = hashlib.sha256(payload.signing_public_key).hexdigest()
-        if payload.peer_id != peer_id or (expected_peer_id and peer_id != expected_peer_id):
+        if payload.peer_id != peer_id or expected_peer_id and peer_id != expected_peer_id:
             raise ValueError("Handshake peer ID does not match signing key")
         try:
             Ed25519PublicKey.from_public_bytes(payload.signing_public_key).verify(payload.signature, payload.signed_bytes())
@@ -194,8 +289,12 @@ class PeerManager:
                     await self.on_packet(peer, packet)
         finally:
             peer.state = PeerState.DISCONNECTED
-            if peer.peer_id:
-                await self.db.set_peer_online(peer.peer_id, False)
+            if peer.peer_id and self.peers.get(peer.peer_id) is peer:
+                remote = self._udp_peers.get(peer.peer_id)
+                if remote and remote.state == PeerState.CONNECTED:
+                    self.peers[peer.peer_id] = remote
+                else:
+                    await self.db.set_peer_online(peer.peer_id, False)
 
     async def _apply_profile_update(self, peer: PeerConnection, packet: Packet) -> None:
         if peer.signing_public_key is None or peer.encryption_public_key is None:
@@ -210,6 +309,9 @@ class PeerManager:
         except InvalidSignature as exc:
             raise ValueError("Invalid profile signature") from exc
         peer.display_name = Identity.normalize_display_name(payload.display_name)
+        active = self.peers.get(peer.peer_id)
+        if active:
+            active.display_name = peer.display_name
         await self.db.upsert_peer(
             peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key
         )
@@ -218,6 +320,9 @@ class PeerManager:
         await self._send_packet(peer, packet)
 
     async def _send_packet(self, peer: PeerConnection, packet: Packet) -> None:
+        if peer.transport == "remote_udp":
+            await self.udp.send_packet(peer.peer_id, packet)
+            return
         if peer.writer is None:
             raise ConnectionError("Peer is not connected")
         peer.writer.write(packet.encode())
@@ -239,3 +344,22 @@ class PeerManager:
 
     def get_connected_peers(self) -> list[PeerConnection]:
         return [peer for peer in self.peers.values() if peer.state == PeerState.CONNECTED]
+
+    def get_network_info(self, peer_id: str) -> dict:
+        active = self.get_connected_peer(peer_id)
+        known = dict(self._known_endpoints.get(peer_id, {}))
+        if active:
+            known[active.transport] = active.endpoint
+        endpoints = [
+            {
+                "transport": transport,
+                "endpoint": _format_endpoint(endpoint),
+                "active": bool(active and active.transport == transport and active.endpoint == endpoint),
+            }
+            for transport, endpoint in sorted(known.items())
+        ]
+        return {
+            "active_transport": active.transport if active else None,
+            "active_endpoint": _format_endpoint(active.endpoint) if active else None,
+            "endpoints": endpoints,
+        }

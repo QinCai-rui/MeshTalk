@@ -1,4 +1,4 @@
-"""UDP peer discovery service.
+"""LAN UDP peer discovery service.
 
 Broadcasts presence every 3 seconds on UDP port 24890.
 Listens for other peers' announcements.

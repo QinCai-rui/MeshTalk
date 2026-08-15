@@ -1,6 +1,6 @@
-"""LanChat backend entry point.
+"""MeshTalk backend entry point.
 
-Starts all services: identity, database, discovery, TCP server, IPC.
+Starts LAN discovery, direct peer transports, private rendezvous, storage, and IPC.
 """
 
 from __future__ import annotations
@@ -17,11 +17,12 @@ from .discovery import DiscoveryService
 from .peer_manager import PeerManager, PeerConnection
 from .message_router import MessageRouter
 from .ipc import IPCServer
-from .protocol import Packet, PacketType
+from .rendezvous import RendezvousService
+from .settings import Settings
 
-logger = logging.getLogger("lanchat")
+logger = logging.getLogger("meshtalk")
 
-DATA_DIR = Path.home() / ".lanchat"
+DATA_DIR = Path.home() / ".meshtalk"
 
 
 async def main(debug: bool = False) -> None:
@@ -35,8 +36,9 @@ async def main(debug: bool = False) -> None:
     identity = Identity.load_or_generate(DATA_DIR)
     logger.info("Peer ID: %s (%s)", identity.peer_id, identity.display_name)
 
-    db = Database(DATA_DIR / "lanchat.db")
+    db = Database(DATA_DIR / "meshtalk.db")
     await db.connect()
+    settings = Settings(DATA_DIR / "settings.json")
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
     router = MessageRouter(identity, peer_manager, db)
@@ -44,9 +46,13 @@ async def main(debug: bool = False) -> None:
     peer_manager.on_packet = router.handle_packet
 
     async def on_peer_found(peer_id: str, address: str, tcp_port: int) -> None:
+        peer_manager.record_lan_candidate(peer_id, address, tcp_port)
         await peer_manager.connect_to_peer(peer_id, address, tcp_port)
 
     discovery = DiscoveryService(identity.peer_id, 24891, on_peer_found)
+    rendezvous = RendezvousService(
+        identity, settings, peer_manager.udp, peer_manager.record_remote_candidate
+    )
 
     async def handle_send(req: dict) -> dict:
         recipient = req.get("recipient_id")
@@ -64,8 +70,9 @@ async def main(debug: bool = False) -> None:
                 "peer_id": peer["peer_id"],
                 "display_name": peer["display_name"],
                 "last_seen": peer["last_seen"],
-                "is_online": peer["is_online"],
+                "is_online": int(peer_manager.get_connected_peer(peer["peer_id"]) is not None),
                 "unread_count": unread_counts.get(peer["peer_id"], 0),
+                **peer_manager.get_network_info(peer["peer_id"]),
             }
             for peer in peers
         ]}
@@ -81,7 +88,21 @@ async def main(debug: bool = False) -> None:
         return {
             "peer_id": identity.peer_id,
             "connected_peers": len(connected),
-            "peers": [{"peer_id": p.peer_id, "display_name": p.display_name} for p in connected],
+            "peers": [
+                {
+                    "peer_id": peer.peer_id,
+                    "display_name": peer.display_name,
+                    **peer_manager.get_network_info(peer.peer_id),
+                }
+                for peer in connected
+            ],
+            "control_url": settings.control_url or None,
+            "control_connected": rendezvous.connected,
+            "public_endpoint": (
+                f"{rendezvous.public_endpoint[0]}:{rendezvous.public_endpoint[1]}"
+                if rendezvous.public_endpoint else None
+            ),
+            "rooms": rendezvous.room_status(),
         }
 
     async def handle_messages(req: dict) -> dict:
@@ -99,6 +120,45 @@ async def main(debug: bool = False) -> None:
         await peer_manager.broadcast_profile_update()
         return {"display_name": display_name}
 
+    async def handle_control(req: dict) -> dict:
+        url = req.get("url")
+        if url is not None:
+            if not isinstance(url, str):
+                return {"error": "url must be a string"}
+            settings.set_control_url(url)
+            rendezvous.configuration_changed()
+        stun_host, stun_port = settings.stun_server
+        return {
+            "url": settings.control_url or None,
+            "connected": rendezvous.connected,
+            "stun_server": f"{stun_host}:{stun_port}",
+            "public_endpoint": rendezvous.public_endpoint,
+        }
+
+    async def handle_room_create(req: dict) -> dict:
+        room = settings.create_room()
+        rendezvous.configuration_changed()
+        return {"room_id": room.id, "invite": room.invite}
+
+    async def handle_room_join(req: dict) -> dict:
+        invite = req.get("invite")
+        if not isinstance(invite, str):
+            return {"error": "invite required"}
+        room = settings.join_room(invite)
+        rendezvous.configuration_changed()
+        return {"room_id": room.id}
+
+    async def handle_room_leave(req: dict) -> dict:
+        room_id = req.get("room_id")
+        if not isinstance(room_id, str):
+            return {"error": "room_id required"}
+        settings.leave_room(room_id)
+        rendezvous.configuration_changed()
+        return {"room_id": room_id}
+
+    async def handle_rooms(req: dict) -> dict:
+        return {"rooms": rendezvous.room_status()}
+
     ipc_handlers = {
         "send": handle_send,
         "peers": handle_peers,
@@ -106,16 +166,22 @@ async def main(debug: bool = False) -> None:
         "status": handle_status,
         "messages": handle_messages,
         "set_display_name": handle_set_display_name,
+        "control": handle_control,
+        "room_create": handle_room_create,
+        "room_join": handle_room_join,
+        "room_leave": handle_room_leave,
+        "rooms": handle_rooms,
     }
     ipc = IPCServer(ipc_handlers)
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
 
-    await discovery.start()
     await peer_manager.start()
+    await discovery.start()
+    await rendezvous.start()
     await ipc.start()
 
-    logger.info("LanChat backend running")
+    logger.info("MeshTalk backend running")
 
     stop_event = asyncio.Event()
 
@@ -136,10 +202,11 @@ async def main(debug: bool = False) -> None:
     await stop_event.wait()
 
     await ipc.stop()
+    await rendezvous.stop()
     await peer_manager.stop()
     await discovery.stop()
     await db.close()
-    logger.info("LanChat backend stopped")
+    logger.info("MeshTalk backend stopped")
 
 
 def run() -> None:

@@ -1,4 +1,4 @@
-"""Persistent signing and encryption identity for a LanChat peer."""
+"""Persistent signing and encryption identity for a MeshTalk peer."""
 
 from __future__ import annotations
 

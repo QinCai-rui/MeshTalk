@@ -1,11 +1,11 @@
 {
-  "name": "lanchat-tui",
+  "name": "meshtalk-tui",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.tsx",
-    "build": "bun build src/index.tsx --target=bun --compile --outfile dist/lanchat-tui"
+    "build": "bun build src/index.tsx --target=bun --compile --outfile dist/meshtalk-tui"
   },
   "dependencies": {
     "@opentui/core": "^0.1.0",

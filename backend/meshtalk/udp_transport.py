@@ -1,0 +1,455 @@
+"""Authenticated reliable UDP transport used for NAT-traversed peer links."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import ipaddress
+import json
+import logging
+import os
+import secrets
+import socket
+import struct
+import time
+from dataclasses import dataclass, field
+from typing import Awaitable, Callable
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+from .identity import Identity
+from .protocol import HEADER_SIZE, MAX_PACKET_SIZE, Packet
+
+logger = logging.getLogger(__name__)
+
+MAGIC = b"MTU1"
+HELLO = 1
+DATA = 2
+ACK = 3
+PING = 4
+PONG = 5
+STUN_COOKIE = 0x2112A442
+FRAGMENT_SIZE = 950
+MAX_FRAGMENTS = (MAX_PACKET_SIZE + HEADER_SIZE + FRAGMENT_SIZE - 1) // FRAGMENT_SIZE
+MAX_DATAGRAM_SIZE = 1200
+DATA_HEADER = struct.Struct("!4sB8sQHH12s")
+AUTH_HEADER = struct.Struct("!4sB8sQ")
+RETRY_INTERVAL = 0.45
+MAX_RETRIES = 10
+SESSION_TIMEOUT = 90.0
+
+Endpoint = tuple[str, int]
+ConnectedCallback = Callable[[str, str, int, str, bytes, bytes], Awaitable[None]]
+PacketCallback = Callable[[str, Packet], Awaitable[None]]
+DisconnectedCallback = Callable[[str], Awaitable[None]]
+
+
+def _canonical(value: dict) -> bytes:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+
+
+def _raw_public(key: X25519PrivateKey) -> bytes:
+    return key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+
+def parse_stun_response(data: bytes, transaction_id: bytes) -> Endpoint:
+    """Parse and validate an RFC 5389 binding success response."""
+    if len(transaction_id) != 12 or len(data) < 20:
+        raise ValueError("Truncated STUN response")
+    message_type, length, cookie = struct.unpack("!HHI", data[:8])
+    if message_type != 0x0101 or cookie != STUN_COOKIE or data[8:20] != transaction_id:
+        raise ValueError("Invalid STUN binding response")
+    if length > len(data) - 20 or length % 4:
+        raise ValueError("Invalid STUN response length")
+    offset = 20
+    end = 20 + length
+    mapped: Endpoint | None = None
+    while offset + 4 <= end:
+        attribute_type, attribute_length = struct.unpack("!HH", data[offset:offset + 4])
+        value = data[offset + 4:offset + 4 + attribute_length]
+        if len(value) != attribute_length:
+            raise ValueError("Truncated STUN attribute")
+        if attribute_type in (0x0020, 0x0001) and attribute_length in (8, 20):
+            family = value[1]
+            port = struct.unpack("!H", value[2:4])[0]
+            address = value[4:]
+            if attribute_type == 0x0020:
+                port ^= STUN_COOKIE >> 16
+                mask = struct.pack("!I", STUN_COOKIE) + transaction_id
+                address = bytes(byte ^ mask[index] for index, byte in enumerate(address))
+            if family == 0x01 and len(address) == 4:
+                mapped = str(ipaddress.IPv4Address(address)), port
+            elif family == 0x02 and len(address) == 16:
+                mapped = str(ipaddress.IPv6Address(address)), port
+            if mapped:
+                return mapped
+        offset += 4 + ((attribute_length + 3) & ~3)
+    raise ValueError("STUN response has no mapped address")
+
+
+@dataclass
+class Attempt:
+    peer_id: str
+    endpoint: Endpoint
+    private_key: X25519PrivateKey = field(default_factory=X25519PrivateKey.generate)
+    nonce: bytes = field(default_factory=lambda: os.urandom(32))
+    hello: bytes = b""
+    task: asyncio.Task | None = None
+
+
+@dataclass
+class Reassembly:
+    count: int
+    created_at: float = field(default_factory=time.monotonic)
+    fragments: dict[int, bytes] = field(default_factory=dict)
+
+
+@dataclass
+class Session:
+    peer_id: str
+    endpoint: Endpoint
+    session_id: bytes
+    encryption_key: bytes
+    authentication_key: bytes
+    display_name: str
+    encryption_public_key: bytes
+    signing_public_key: bytes
+    last_seen: float = field(default_factory=time.monotonic)
+    reassemblies: dict[int, Reassembly] = field(default_factory=dict)
+    seen: dict[int, float] = field(default_factory=dict)
+
+
+class UdpTransport:
+    def __init__(
+        self,
+        identity: Identity,
+        on_connected: ConnectedCallback,
+        on_packet: PacketCallback,
+        on_disconnected: DisconnectedCallback,
+    ) -> None:
+        self.identity = identity
+        self.on_connected = on_connected
+        self.on_packet = on_packet
+        self.on_disconnected = on_disconnected
+        self._transport: asyncio.DatagramTransport | None = None
+        self._attempts: dict[str, Attempt] = {}
+        self._sessions: dict[str, Session] = {}
+        self._sessions_by_id: dict[bytes, Session] = {}
+        self._stun_waiters: dict[bytes, asyncio.Future[bytes]] = {}
+        self._pending: dict[tuple[bytes, int], asyncio.Event] = {}
+        self._tasks: set[asyncio.Task] = set()
+        self._maintenance_task: asyncio.Task | None = None
+
+    async def start(self, port: int = 0) -> None:
+        loop = asyncio.get_running_loop()
+        self._transport, _ = await loop.create_datagram_endpoint(
+            lambda: _UdpProtocol(self), local_addr=("0.0.0.0", port)
+        )
+        self._maintenance_task = asyncio.create_task(self._maintenance_loop())
+        logger.info("Remote UDP transport listening on port %d", self.local_endpoint[1])
+
+    async def stop(self) -> None:
+        if self._maintenance_task:
+            self._maintenance_task.cancel()
+        for attempt in self._attempts.values():
+            if attempt.task:
+                attempt.task.cancel()
+        for task in list(self._tasks):
+            task.cancel()
+        if self._transport:
+            self._transport.close()
+        await asyncio.gather(
+            *(task for task in [self._maintenance_task, *self._tasks] if task),
+            return_exceptions=True,
+        )
+
+    @property
+    def local_endpoint(self) -> Endpoint:
+        if not self._transport:
+            raise RuntimeError("UDP transport is not started")
+        host, port = self._transport.get_extra_info("sockname")[:2]
+        return str(host), int(port)
+
+    def endpoint_for(self, peer_id: str) -> Endpoint | None:
+        session = self._sessions.get(peer_id)
+        return session.endpoint if session else None
+
+    def expect_peer(self, peer_id: str, endpoint: Endpoint) -> None:
+        if peer_id == self.identity.peer_id:
+            return
+        host, port = endpoint
+        ipaddress.ip_address(host)
+        if not 1 <= port <= 65535:
+            raise ValueError("Invalid peer UDP port")
+        session = self._sessions.get(peer_id)
+        if session and session.endpoint == endpoint:
+            return
+        existing = self._attempts.get(peer_id)
+        if existing and existing.endpoint == endpoint and existing.task and not existing.task.done():
+            return
+        if existing and existing.task:
+            existing.task.cancel()
+        attempt = Attempt(peer_id, endpoint)
+        attempt.hello = self._make_hello(attempt)
+        self._attempts[peer_id] = attempt
+        attempt.task = self._spawn(self._punch_loop(attempt))
+
+    async def discover_public_endpoint(self, host: str, port: int, timeout: float = 5.0) -> Endpoint:
+        if not self._transport:
+            raise RuntimeError("UDP transport is not started")
+        loop = asyncio.get_running_loop()
+        addresses = await loop.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_DGRAM)
+        if not addresses:
+            raise OSError("STUN server did not resolve to IPv4")
+        transaction_id = os.urandom(12)
+        request = struct.pack("!HHI12s", 0x0001, 0, STUN_COOKIE, transaction_id)
+        future: asyncio.Future[bytes] = loop.create_future()
+        self._stun_waiters[transaction_id] = future
+        try:
+            self._transport.sendto(request, addresses[0][4])
+            response = await asyncio.wait_for(future, timeout)
+            return parse_stun_response(response, transaction_id)
+        finally:
+            self._stun_waiters.pop(transaction_id, None)
+
+    async def send_packet(self, peer_id: str, packet: Packet) -> None:
+        session = self._sessions.get(peer_id)
+        if not session:
+            raise ConnectionError("Remote UDP peer is not connected")
+        frame = packet.encode()
+        fragments = [frame[offset:offset + FRAGMENT_SIZE] for offset in range(0, len(frame), FRAGMENT_SIZE)]
+        if not fragments or len(fragments) > MAX_FRAGMENTS:
+            raise ValueError("Packet cannot be represented by UDP transport")
+        message_id = secrets.randbits(64)
+        datagrams = [
+            self._encrypt_fragment(session, message_id, index, len(fragments), fragment)
+            for index, fragment in enumerate(fragments)
+        ]
+        acknowledged = asyncio.Event()
+        pending_key = (session.session_id, message_id)
+        if len(self._pending) >= 64:
+            raise ConnectionError("Too many pending UDP packets")
+        self._pending[pending_key] = acknowledged
+        try:
+            for _ in range(MAX_RETRIES):
+                for datagram in datagrams:
+                    self._sendto(datagram, session.endpoint)
+                try:
+                    await asyncio.wait_for(acknowledged.wait(), RETRY_INTERVAL)
+                    return
+                except TimeoutError:
+                    continue
+            raise ConnectionError("Remote UDP packet was not acknowledged")
+        finally:
+            self._pending.pop(pending_key, None)
+
+    def datagram_received(self, data: bytes, addr: Endpoint) -> None:
+        if len(data) >= 20 and data[4:8] == struct.pack("!I", STUN_COOKIE):
+            waiter = self._stun_waiters.get(data[8:20])
+            if waiter and not waiter.done():
+                waiter.set_result(data)
+            return
+        if len(data) > MAX_DATAGRAM_SIZE or not data.startswith(MAGIC) or len(data) < 5:
+            return
+        try:
+            message_type = data[4]
+            if message_type == HELLO:
+                self._handle_hello(data[5:], addr)
+            elif message_type == DATA:
+                self._handle_data(data, addr)
+            elif message_type == ACK:
+                self._handle_ack(data, addr)
+            elif message_type in (PING, PONG):
+                self._handle_keepalive(data, addr)
+        except Exception as exc:
+            logger.debug("Rejected UDP datagram from %s:%d: %s", *addr, exc)
+
+    def _make_hello(self, attempt: Attempt) -> bytes:
+        value = {
+            "version": 1,
+            "peer_id": self.identity.peer_id,
+            "display_name": self.identity.display_name,
+            "signing_public_key": self.identity.signing_public_key_bytes().hex(),
+            "encryption_public_key": self.identity.encryption_public_key_bytes().hex(),
+            "session_public_key": _raw_public(attempt.private_key).hex(),
+            "nonce": attempt.nonce.hex(),
+        }
+        value["signature"] = self.identity.signing_private_key.sign(_canonical(value)).hex()
+        return MAGIC + bytes([HELLO]) + json.dumps(value, separators=(",", ":")).encode()
+
+    async def _punch_loop(self, attempt: Attempt) -> None:
+        for _ in range(20):
+            current = self._attempts.get(attempt.peer_id)
+            if current is not attempt or self._sessions.get(attempt.peer_id, None) and self._sessions[attempt.peer_id].endpoint == attempt.endpoint:
+                return
+            self._sendto(attempt.hello, attempt.endpoint)
+            await asyncio.sleep(0.4)
+
+    def _handle_hello(self, payload: bytes, addr: Endpoint) -> None:
+        if len(payload) > 1000:
+            raise ValueError("Oversized UDP handshake")
+        value = json.loads(payload)
+        signature = bytes.fromhex(value.pop("signature"))
+        signing_key = bytes.fromhex(value["signing_public_key"])
+        encryption_key = bytes.fromhex(value["encryption_public_key"])
+        session_key = bytes.fromhex(value["session_public_key"])
+        nonce = bytes.fromhex(value["nonce"])
+        peer_id = hashlib.sha256(signing_key).hexdigest()
+        if value.get("version") != 1 or value.get("peer_id") != peer_id:
+            raise ValueError("UDP handshake identity mismatch")
+        if any(len(item) != 32 for item in (signing_key, encryption_key, session_key, nonce)) or len(signature) != 64:
+            raise ValueError("Invalid UDP handshake key length")
+        attempt = self._attempts.get(peer_id)
+        if not attempt or attempt.endpoint != addr:
+            raise ValueError("UDP handshake was not requested")
+        try:
+            Ed25519PublicKey.from_public_bytes(signing_key).verify(signature, _canonical(value))
+        except InvalidSignature as exc:
+            raise ValueError("Invalid UDP handshake signature") from exc
+        self._sendto(attempt.hello, addr)
+        shared = attempt.private_key.exchange(X25519PublicKey.from_public_bytes(session_key))
+        local_first = self.identity.peer_id < peer_id
+        salt = attempt.nonce + nonce if local_first else nonce + attempt.nonce
+        material = HKDF(
+            algorithm=SHA256(), length=64, salt=salt, info=b"meshtalk-udp-session-v1"
+        ).derive(shared)
+        session_id = hashlib.sha256(material + b"session-id").digest()[:8]
+        current = self._sessions.get(peer_id)
+        if current and current.session_id == session_id and current.endpoint == addr:
+            current.last_seen = time.monotonic()
+            return
+        if current:
+            self._sessions_by_id.pop(current.session_id, None)
+        session = Session(
+            peer_id, addr, session_id, material[:32], material[32:],
+            Identity.normalize_display_name(value["display_name"]), encryption_key, signing_key,
+        )
+        self._sessions[peer_id] = session
+        self._sessions_by_id[session_id] = session
+        self._spawn(self.on_connected(peer_id, addr[0], addr[1], session.display_name, encryption_key, signing_key))
+
+    def _encrypt_fragment(
+        self, session: Session, message_id: int, index: int, count: int, fragment: bytes
+    ) -> bytes:
+        nonce = os.urandom(12)
+        header = DATA_HEADER.pack(MAGIC, DATA, session.session_id, message_id, index, count, nonce)
+        return header + AESGCM(session.encryption_key).encrypt(nonce, fragment, header)
+
+    def _handle_data(self, data: bytes, addr: Endpoint) -> None:
+        if len(data) < DATA_HEADER.size + 16:
+            raise ValueError("Truncated UDP data")
+        _, _, session_id, message_id, index, count, nonce = DATA_HEADER.unpack(data[:DATA_HEADER.size])
+        session = self._session_for(session_id, addr)
+        if not 1 <= count <= MAX_FRAGMENTS or index >= count:
+            raise ValueError("Invalid UDP fragment index")
+        fragment = AESGCM(session.encryption_key).decrypt(
+            nonce, data[DATA_HEADER.size:], data[:DATA_HEADER.size]
+        )
+        session.last_seen = time.monotonic()
+        if message_id in session.seen:
+            self._send_ack(session, message_id)
+            return
+        if len(session.reassemblies) >= 32 and message_id not in session.reassemblies:
+            raise ValueError("Too many UDP reassemblies")
+        reassembly = session.reassemblies.setdefault(message_id, Reassembly(count))
+        if reassembly.count != count:
+            raise ValueError("UDP fragment count changed")
+        reassembly.fragments[index] = fragment
+        if len(reassembly.fragments) != count:
+            return
+        frame = b"".join(reassembly.fragments[index] for index in range(count))
+        del session.reassemblies[message_id]
+        if len(frame) < HEADER_SIZE or len(frame) > MAX_PACKET_SIZE + HEADER_SIZE:
+            raise ValueError("Invalid reassembled packet size")
+        packet = Packet.decode(frame[:HEADER_SIZE], frame[HEADER_SIZE:])
+        session.seen[message_id] = time.monotonic()
+        self._send_ack(session, message_id)
+        self._spawn(self.on_packet(session.peer_id, packet))
+
+    def _send_ack(self, session: Session, message_id: int) -> None:
+        header = AUTH_HEADER.pack(MAGIC, ACK, session.session_id, message_id)
+        self._sendto(header + hmac.digest(session.authentication_key, header, "sha256")[:16], session.endpoint)
+
+    def _handle_ack(self, data: bytes, addr: Endpoint) -> None:
+        if len(data) != AUTH_HEADER.size + 16:
+            raise ValueError("Invalid UDP acknowledgement")
+        _, _, session_id, message_id = AUTH_HEADER.unpack(data[:AUTH_HEADER.size])
+        session = self._session_for(session_id, addr)
+        expected = hmac.digest(session.authentication_key, data[:AUTH_HEADER.size], "sha256")[:16]
+        if not hmac.compare_digest(data[AUTH_HEADER.size:], expected):
+            raise ValueError("Invalid UDP acknowledgement authentication")
+        session.last_seen = time.monotonic()
+        event = self._pending.get((session_id, message_id))
+        if event:
+            event.set()
+
+    def _handle_keepalive(self, data: bytes, addr: Endpoint) -> None:
+        if len(data) != AUTH_HEADER.size + 16:
+            raise ValueError("Invalid UDP keepalive")
+        _, message_type, session_id, token = AUTH_HEADER.unpack(data[:AUTH_HEADER.size])
+        session = self._session_for(session_id, addr)
+        expected = hmac.digest(session.authentication_key, data[:AUTH_HEADER.size], "sha256")[:16]
+        if not hmac.compare_digest(data[AUTH_HEADER.size:], expected):
+            raise ValueError("Invalid UDP keepalive authentication")
+        session.last_seen = time.monotonic()
+        if message_type == PING:
+            self._send_authenticated(session, PONG, token)
+
+    def _send_authenticated(self, session: Session, message_type: int, token: int) -> None:
+        header = AUTH_HEADER.pack(MAGIC, message_type, session.session_id, token)
+        self._sendto(header + hmac.digest(session.authentication_key, header, "sha256")[:16], session.endpoint)
+
+    def _session_for(self, session_id: bytes, addr: Endpoint) -> Session:
+        session = self._sessions_by_id.get(session_id)
+        if not session or session.endpoint != addr:
+            raise ValueError("Unknown UDP session")
+        return session
+
+    async def _maintenance_loop(self) -> None:
+        while True:
+            await asyncio.sleep(15)
+            now = time.monotonic()
+            for session in list(self._sessions.values()):
+                if now - session.last_seen > SESSION_TIMEOUT:
+                    self._sessions.pop(session.peer_id, None)
+                    self._sessions_by_id.pop(session.session_id, None)
+                    await self.on_disconnected(session.peer_id)
+                    continue
+                self._send_authenticated(session, PING, secrets.randbits(64))
+                session.seen = {
+                    message_id: seen_at for message_id, seen_at in session.seen.items()
+                    if now - seen_at < SESSION_TIMEOUT
+                }
+                session.reassemblies = {
+                    message_id: value for message_id, value in session.reassemblies.items()
+                    if now - value.created_at < 10
+                }
+
+    def _sendto(self, data: bytes, endpoint: Endpoint) -> None:
+        if not self._transport:
+            raise RuntimeError("UDP transport is not started")
+        self._transport.sendto(data, endpoint)
+
+    def _spawn(self, awaitable: Awaitable[None]) -> asyncio.Task:
+        task = asyncio.create_task(awaitable)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+
+class _UdpProtocol(asyncio.DatagramProtocol):
+    def __init__(self, service: UdpTransport) -> None:
+        self.service = service
+
+    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
+        self.service.datagram_received(data, (addr[0], addr[1]))
+
+    def error_received(self, exc: Exception) -> None:
+        logger.debug("UDP transport error: %s", exc)

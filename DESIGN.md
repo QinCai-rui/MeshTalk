@@ -1,413 +1,139 @@
-# LanChat — Design Document
+# MeshTalk Design
 
-## 1. Overview
+## Goals
 
-LanChat is a peer-to-peer messaging application that operates entirely on a local network.
+MeshTalk provides direct encrypted messaging in two environments:
 
-There is no central server, cloud service, account system, or internet requirement. Every instance is both a **client and server**, and any peer can relay messages for other peers.
+1. LAN peers work without internet access or central infrastructure.
+2. Remote peers use an opaque control service and STUN only to establish direct
+   UDP connectivity.
 
-The application has two interfaces:
+The OpenTUI and CLI are local clients of one Python backend. The backend owns
+identity, networking, encryption, persistence, and transport selection.
 
-* **OpenTUI** — interactive terminal chat interface
-* **CLI** — also used for chat, but just cli
+## Connectivity
 
-The networking backend will initially be written in **Python**, using `asyncio`.
+### LAN path
 
----
+Every backend broadcasts its peer ID and TCP listener port on UDP port 24890.
+The lower peer ID deterministically opens an authenticated TCP connection to
+port 24891. This path remains available when the control service or internet is
+unavailable.
 
-## 2. Architecture
+### Remote path
 
-```text
-┌──────────────────────────────────────┐
-│             User Interfaces          │
-│                                      │
-│   OpenTUI              CLI           │
-└──────────────┬───────────────────────┘
-               │ IPC
-               ▼
-┌──────────────────────────────────────┐
-│          Python Backend              │
-│                                      │
-│  Peer Manager     Message Manager    │
-│  Routing          Encryption         │
-│  Storage          Protocol           │
-└──────────────┬───────────────────────┘
-               │
-       ┌───────┴────────┐
-       ▼                ▼
-   UDP Discovery     TCP Peers
-```
+The backend opens one UDP socket and sends an RFC 5389 binding request to the
+configured public STUN server. Using the same socket for STUN, punching, and
+peer traffic ensures that the advertised mapping belongs to the actual peer
+transport.
 
-The backend owns all networking, encryption, routing, and persistent state. The TUI and CLI communicate with it locally rather than implementing their own networking.
+Peers remain connected to the control service while they participate in rooms.
+They periodically publish encrypted endpoint cards. A changed card causes both
+peers to send signed UDP handshakes to the new endpoint, opening compatible NAT
+mappings in both directions.
 
----
+The control service never carries chat messages. It stores one opaque encrypted
+card per WebSocket connection and room so a newly joined member can discover
+members already online.
 
-## 3. Peer Discovery
+### Path selection
 
-Every instance broadcasts its presence over **UDP port 24890 every 3 seconds**.
+When both paths are authenticated, LAN TCP is active and remote UDP remains a
+fallback. The backend reports all known endpoints and marks the active endpoint
+through IPC.
 
-A discovery packet contains only the information needed to establish a connection:
+## Private Rooms
 
-```json
-{
-  "protocol": 1,
-  "peer_id": "...",
-  "tcp_port": 24891
-}
-```
-
-When another instance is discovered, the peer:
-
-1. Validates the discovery packet.
-2. Checks whether it is already connected.
-3. Determines which peer should initiate the connection.
-4. Establishes a TCP connection.
-5. Performs the protocol and cryptographic handshake.
-
-UDP is used only for discovery. Messages are never sent over UDP.
-
----
-
-## 4. TCP Connections
-
-Peers communicate directly using persistent TCP connections.
+An invite is:
 
 ```text
-Peer A ═════════ TCP ═════════ Peer B
+meshtalk:<128-bit opaque room ID>.<256-bit room secret>
 ```
 
-To prevent both peers from opening connections simultaneously, connection initiation is deterministic:
+Only the room ID is sent to the control service. The room secret derives an
+AES-256-GCM key with HKDF-SHA256. Endpoint cards contain:
 
 ```text
-if local_peer_id < remote_peer_id:
-    initiate
-else:
-    wait
+protocol version
+peer ID
+Ed25519 public key
+public UDP address and port
+creation time
+random replay nonce
+Ed25519 signature
 ```
 
-TCP messages use application-level framing:
+The complete signed card is encrypted locally before transmission. Recipients
+decrypt it, bind the peer ID to the signing public key, verify the signature,
+enforce a short age limit, reject replayed nonces, and only then begin punching.
 
-```text
-[length][type][payload]
-```
+The control service knows opaque room membership and connection metadata, but
+not room secrets, peer identities, endpoint-card contents, or messages.
 
-Possible packet types include:
+## Remote UDP Session
 
-```text
-HANDSHAKE
-HANDSHAKE_ACK
-MESSAGE
-MESSAGE_ACK
-PING
-PONG
-GOODBYE
-```
+An endpoint card authorizes an expected peer ID and network endpoint. UDP
+handshakes from any other identity or endpoint are discarded.
 
----
+Each peer creates an ephemeral X25519 key and random nonce. Its Ed25519 identity
+signs the handshake, which includes the ephemeral key and persistent message
+encryption key. Both sides derive independent transport encryption and
+authentication keys using HKDF-SHA256.
 
-## 5. Identity
+Application packets are split into datagrams small enough to avoid IP
+fragmentation. Every fragment is encrypted with AES-256-GCM and authenticates
+its session ID, packet ID, fragment index, and fragment count. Complete packets
+receive authenticated acknowledgements. Missing acknowledgements trigger
+bounded retransmission; duplicate packet IDs are acknowledged but not delivered
+again. Authenticated keepalives preserve mappings and expire dead sessions.
 
-Each installation generates a persistent cryptographic identity.
+The existing packet protocol and end-to-end message envelope run above both TCP
+and reliable UDP transports.
 
-```text
-Peer
-├── peer_id
-├── public_key
-└── private_key
-```
+## Identity And Messages
 
-The peer ID is derived from the public key:
+Each installation has a persistent Ed25519 signing identity and a separate
+X25519 message-encryption key. The peer ID is SHA-256 of the Ed25519 public key.
 
-```text
-peer_id = SHA-256(public_key)
-```
+Messages use a one-time ephemeral X25519 key and AES-256-GCM. Immutable routing
+metadata is authenticated by both the encrypted envelope and the sender's
+Ed25519 signature. The direct transport supplies an additional independent
+authenticated encryption layer.
 
-The private key never leaves the device.
+## Control Service
 
-A display name is separate from the cryptographic identity and can be changed without changing the peer's identity.
+The Bun control service supports only these operations:
 
----
+- Join an opaque room ID.
+- Leave an opaque room ID.
+- Broadcast and retain an opaque encrypted blob for that connection and room.
 
-## 6. Encryption
+It validates sizes, limits room membership, limits rooms per connection, and
+rate-limits messages. It does not parse encrypted payloads. Production
+deployments use `wss://`; localhost development may use `ws://`.
 
-Messages use **end-to-end encryption**.
+A malicious control service can observe source IPs, correlate timing and room
+membership, omit cards, replay encrypted cards, or deny service. Age checks,
+nonce replay checks, signatures, and endpoint-bound UDP handshakes prevent it
+from decrypting cards or impersonating peers.
 
-If Alice sends a message to Charlie through Bob:
+## Limitations
 
-```text
-Alice ── encrypted ──> Bob ── encrypted ──> Charlie
-```
+- Direct connections may fail with symmetric NAT, blocked UDP, or restrictive
+  firewalls.
+- There is intentionally no TURN relay, because routing through one would expose
+  additional traffic metadata and make remote delivery infrastructure-dependent.
+- Anyone holding a room invite can decrypt that room's endpoint cards and attempt
+  to connect. Invite distribution and rotation are user responsibilities.
+- Direct peers and STUN providers necessarily observe public network endpoints.
 
-Bob can forward the message but cannot decrypt it.
+## Persistence
 
-Transport/session encryption may additionally protect each TCP connection:
+Fresh MeshTalk state is stored in `~/.meshtalk`:
 
-```text
-Alice ═════ encrypted TCP ═════ Bob
-```
+- `identity.json`: private identity and message-encryption keys, mode 0600
+- `settings.json`: control URL and room secrets, mode 0600
+- `meshtalk.db`: peer and conversation state
+- `meshtalk.sock`: owner-only local IPC socket while the backend runs
 
-This provides two separate security layers:
-
-* **Transport encryption:** protects individual peer connections.
-* **E2EE:** protects the message from the sender to the final recipient.
-
-Established cryptographic libraries and protocols must be used rather than implementing cryptography from scratch. The design should provide authenticated encryption, key exchange, forward secrecy, and replay protection.
-
----
-
-## 7. Messaging
-
-A message contains routing metadata and an encrypted payload:
-
-```text
-Message
-├── message_id
-├── sender_id
-├── recipient_id
-├── created_at
-├── expires_at
-├── hop_count
-├── max_hops
-└── encrypted_payload
-```
-
-Each peer maintains a cache of recently seen message IDs.
-
-```text
-if message_id already seen:
-    discard
-```
-
-This prevents duplicate delivery when a message reaches a peer through multiple routes.
-
----
-
-## 8. Multi-Hop Routing
-
-Peers can relay messages for devices they cannot directly reach.
-
-```text
-Alice ── Bob ── Charlie
-```
-
-Alice encrypts the message for Charlie. Bob simply forwards the encrypted packet.
-
-Messages have a maximum hop count:
-
-```text
-max_hops = 10
-```
-
-and an expiration time, such as 24 hours.
-
-The initial routing algorithm can use controlled forwarding:
-
-1. Deliver directly if the recipient is connected.
-2. Otherwise forward to eligible peers.
-3. Do not forward to the peer the message came from.
-4. Do not forward messages already seen.
-5. Stop when the hop limit or expiration is reached.
-
----
-
-## 9. Store-and-Forward
-
-Peers may temporarily store encrypted messages for offline devices.
-
-```text
-Alice ──> Bob
-
-Charlie offline
-```
-
-Bob stores the encrypted message.
-
-When Charlie returns:
-
-```text
-Alice ──> Bob ──> Charlie
-```
-
-Bob forwards it without ever decrypting it.
-
-Storage is limited to prevent abuse, for example:
-
-```text
-Maximum message size:       64 KB
-Maximum stored messages:    500
-Maximum message age:        24 hours
-Maximum hops:               10
-```
-
----
-
-## 10. Persistence
-
-The backend uses a local database such as SQLite.
-
-It stores:
-
-```text
-identity
-peers
-conversations
-messages
-outgoing queue
-seen message IDs
-encryption sessions
-```
-
-Messages and peer identities persist across application restarts.
-
-Private keys should use the operating system's secure storage facilities where available.
-
----
-
-## 11. Peer States
-
-Peers can transition through:
-
-```text
-UNKNOWN
-   ↓
-DISCOVERED
-   ↓
-CONNECTING
-   ↓
-CONNECTED
-   ↓
-DISCONNECTED
-```
-
-The application periodically broadcasts discovery packets and automatically reconnects to previously known peers.
-
-TCP connections use `PING`/`PONG` keepalives to detect dead connections.
-
----
-
-## 12. Security Model
-
-Every peer should be treated as potentially malicious.
-
-A relay may:
-
-* Observe that communication is occurring
-* Forward messages
-* Drop messages
-* Delay messages
-* Observe some routing metadata
-
-A relay should not be able to:
-
-* Read E2EE message contents
-* Modify messages without detection
-* Forge authenticated messages
-
-All network input must be treated as untrusted and validated before processing.
-
-The application should enforce connection, packet, message, storage, and forwarding rate limits.
-
----
-
-## 13. Local Network Scope
-
-UDP broadcast provides automatic discovery within the same local broadcast domain.
-
-```text
-┌────────────── Local Network ──────────────┐
-│                                           │
-│  Alice ── Bob ── Charlie ── Dave          │
-│                                           │
-└───────────────────────────────────────────┘
-```
-
-The system does not require internet connectivity.
-
-Devices separated by routers or VLANs will not automatically discover one another through UDP broadcast. Additional discovery mechanisms can be added later if required.
-
----
-
-## 14. Technology
-
-### Backend
-
-**Python**
-
-* `asyncio` for networking and concurrency
-* SQLite for persistence
-* Established cryptographic libraries for E2EE
-* Designed as a long-running local daemon/core
-
-### Interactive UI
-
-**TypeScript + OpenTUI**
-
-Used for the main terminal chat experience.
-
-### CLI
-
-**TypeScript**
-
-Used for scripting, automation, diagnostics, and headless operation.
-
-### Communication
-
-The UI processes communicate with the backend through a local IPC mechanism such as a Unix domain socket.
-
----
-
-## 15. License
-
-The project will use the **MIT License**.
-
-This permits:
-
-* Personal use
-* Commercial use
-* Modification
-* Redistribution
-* Forks
-* Integration into other projects
-
-while keeping the project simple and permissive.
-
----
-
-## 16. MVP
-
-The first release should implement:
-
-* UDP peer discovery on port 24890
-* TCP peer connections
-* Peer identity
-* Cryptographic handshake
-* 1-to-1 E2EE messaging
-* SQLite persistence
-* OpenTUI chat interface
-* CLI
-* Message acknowledgements
-* Duplicate detection
-* Multi-hop forwarding
-* Store-and-forward
-* Message expiration
-* Connection recovery
-
-The system should first be tested with direct peer-to-peer messaging before enabling multi-hop routing.
-
----
-
-## 17. Core Principle
-
-```text
-Every instance is:
-
-    Client
-      +
-    Server
-      +
-    Peer
-      +
-    Optional Relay
-```
-
-There is no central infrastructure. The participating devices themselves form the network, while end-to-end encryption ensures that intermediate peers do not need to be trusted with message contents.
+Old `~/.lanchat` state is left untouched and is not migrated automatically.

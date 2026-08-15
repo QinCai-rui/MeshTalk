@@ -1,13 +1,13 @@
 {
-  "name": "meshtalk-cli",
+  "name": "meshtalk-control",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build": "bun build src/index.ts --target=bun --compile --outfile dist/meshtalk-cli"
+    "build": "bun build src/index.ts --target=bun --outfile dist/meshtalk-control",
+    "test": "bun test"
   },
-  "dependencies": {},
   "devDependencies": {
     "bun-types": "latest",
     "typescript": "^5.7.0"

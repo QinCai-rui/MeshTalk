@@ -17,6 +17,9 @@ type Peer = {
   is_online: number
   last_seen: number
   unread_count: number
+  active_transport?: "lan_tcp" | "remote_udp"
+  active_endpoint?: string
+  endpoints: { transport: "lan_tcp" | "remote_udp"; endpoint: string; active: boolean }[]
 }
 type Message = {
   message_id: string
@@ -29,6 +32,10 @@ type Message = {
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+}
+
+function transportName(transport?: Peer["active_transport"]): string {
+  return transport === "lan_tcp" ? "LAN TCP" : transport === "remote_udp" ? "Remote UDP" : "No endpoint"
 }
 
 function ChatApp() {
@@ -83,7 +90,7 @@ function ChatApp() {
     let exitTimer: ReturnType<typeof setTimeout> | undefined
     const unsubscribe = ipc.onDisconnect(() => {
       backendDisconnected.current = true
-      setStatus("Backend connection lost. Closing LanChat...")
+      setStatus("Backend connection lost. Closing MeshTalk...")
       exitTimer = setTimeout(() => renderer.destroy(), 1500)
     })
     return () => {
@@ -293,10 +300,13 @@ function ChatApp() {
                   setSelectedPeerId(peer.peer_id)
                   setScrollFocused(false)
                 }}
-                style={{ width: "100%", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
+                style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
               >
                 <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>
                   {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.is_online ? "online" : "offline"}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}
+                </text>
+                <text truncate fg="#718096">
+                  {peer.active_endpoint ? `${transportName(peer.active_transport)} ${peer.active_endpoint}` : "No active endpoint"}
                 </text>
               </box>
             ))}
@@ -306,7 +316,7 @@ function ChatApp() {
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
         <box
-          title={selected ? `Chat: ${selected.display_name} (${selected.is_online ? "online" : "offline"})` : "Chat"}
+          title={selected ? `Chat: ${selected.display_name} (${selected.is_online ? `${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}` : "offline"})` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >

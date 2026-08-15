@@ -1,4 +1,4 @@
-# LanChat Implementation Checklist
+# MeshTalk Implementation Checklist
 
 Status reflects verified implementation, not planned code.
 
@@ -44,6 +44,22 @@ Status reflects verified implementation, not planned code.
 - [ ] Per-source discovery rate limiting
 - [ ] Configurable network interface and broadcast address support
 - [ ] Discovery tests across multiple local instances
+
+## Remote Connectivity
+
+- [x] Configurable opaque WebSocket control service
+- [x] Private multi-peer room invites with 256-bit secrets
+- [x] End-to-end encrypted and signed endpoint cards
+- [x] Public endpoint discovery through configurable STUN
+- [x] Signed ephemeral X25519 UDP session handshake
+- [x] Reliable encrypted UDP fragmentation and acknowledgement
+- [x] UDP duplicate suppression, retransmission, and keepalives
+- [x] NAT endpoint refresh while connected to the control service
+- [x] LAN-first transport selection with remote UDP fallback
+- [x] CLI room and control-service commands
+- [x] LAN and remote endpoint visibility in CLI and OpenTUI
+- [ ] TURN fallback for symmetric NATs (intentionally not routed through control)
+- [ ] Large-scale room churn and hostile-control integration tests
 
 ## Peer Connections
 

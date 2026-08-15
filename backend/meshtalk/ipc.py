@@ -14,7 +14,7 @@ from typing import Any, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
 
-IPC_SOCKET_PATH = Path.home() / ".lanchat" / "lanchat.sock"
+IPC_SOCKET_PATH = Path.home() / ".meshtalk" / "meshtalk.sock"
 MAX_IPC_LINE_SIZE = 256 * 1024
 
 

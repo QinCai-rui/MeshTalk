@@ -1,11 +1,11 @@
 /**
- * IPC client for communicating with the LanChat backend.
- * Connects via Unix domain socket at ~/.lanchat/lanchat.sock
+ * IPC client for communicating with the MeshTalk backend.
+ * Connects via Unix domain socket at ~/.meshtalk/meshtalk.sock
  */
 
 import { createConnection, type Socket } from "net";
 
-const SOCKET_PATH = `${process.env.HOME}/.lanchat/lanchat.sock`;
+const SOCKET_PATH = `${process.env.HOME}/.meshtalk/meshtalk.sock`;
 
 export interface IPCResponse {
   error?: string;

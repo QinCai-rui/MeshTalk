@@ -4,14 +4,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lanchat import ipc
+from meshtalk import ipc
 
 
 class IPCServerTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.original_socket_path = ipc.IPC_SOCKET_PATH
-        ipc.IPC_SOCKET_PATH = Path(self.tempdir.name) / "lanchat.sock"
+        ipc.IPC_SOCKET_PATH = Path(self.tempdir.name) / "meshtalk.sock"
 
         async def send_handler(request: dict) -> dict:
             return {"content_length": len(request["content"])}

@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lanchat.database import Database
-from lanchat.identity import Identity
-from lanchat.message_router import MessageRouter
-from lanchat.peer_manager import PeerManager
+from meshtalk.database import Database
+from meshtalk.identity import Identity
+from meshtalk.message_router import MessageRouter
+from meshtalk.peer_manager import PeerManager
 
 
 class DirectMessageTest(unittest.IsolatedAsyncioTestCase):

@@ -1,14 +1,19 @@
 import { IPCClient, type IPCResponse } from "../../common/ipc-client";
 
-const USAGE = `Usage: lanchat-cli <command> [args]
+const USAGE = `Usage: meshtalk-cli <command> [args]
 
 Commands:
   identity [display-name]     Show or change this peer's display name
-  status                      Show connected peers
-  peers                       List discovered peers
+  status                      Show control and peer connection status
+  peers                       List peers, transports, and endpoints
   messages <peer-id>          Show conversation history
   send <peer-id> <message>    Send an encrypted direct message
   watch                       Print incoming messages until interrupted
+  control [set-url <url>]      Show or configure the control service
+  room create                 Create a private multi-peer room
+  room join <invite>          Join a private room
+  room leave <room-id>        Leave a room
+  rooms                       List joined rooms
 `;
 
 function hasError(response: IPCResponse): boolean {
@@ -24,6 +29,20 @@ function asRecords(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value as Record<string, unknown>[] : [];
 }
 
+function transportName(value: unknown): string {
+  if (value === "lan_tcp") return "LAN TCP";
+  if (value === "remote_udp") return "Remote UDP";
+  return "not connected";
+}
+
+function printPeer(peer: Record<string, unknown>): void {
+  const endpoint = peer.active_endpoint ? ` via ${transportName(peer.active_transport)} ${peer.active_endpoint}` : "";
+  console.log(`${peer.display_name} (${String(peer.peer_id).slice(0, 12)}) ${peer.is_online ? "online" : "offline"}${endpoint}`);
+  for (const item of asRecords(peer.endpoints)) {
+    if (!item.active) console.log(`  ${transportName(item.transport)} ${item.endpoint}`);
+  }
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (!command || command === "help") {
@@ -35,7 +54,7 @@ async function main(): Promise<void> {
   try {
     await ipc.connect();
   } catch (error) {
-    console.error(`Error: Cannot connect to LanChat backend. ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`Error: Cannot connect to MeshTalk backend. ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
     return;
   }
@@ -60,8 +79,10 @@ async function main(): Promise<void> {
       if (hasError(response)) return;
       console.log(`Peer ID: ${response.peer_id}`);
       console.log(`Connected peers: ${response.connected_peers}`);
+      console.log(`Control: ${response.control_connected ? "connected" : "disconnected"}${response.control_url ? ` (${response.control_url})` : " (not configured)"}`);
+      if (response.public_endpoint) console.log(`Public UDP endpoint: ${response.public_endpoint}`);
       for (const peer of asRecords(response.peers)) {
-        console.log(`  ${peer.display_name} (${String(peer.peer_id).slice(0, 12)})`);
+        printPeer(peer);
       }
       return;
     }
@@ -71,14 +92,12 @@ async function main(): Promise<void> {
       if (hasError(response)) return;
       const peers = asRecords(response.peers);
       if (!peers.length) console.log("No peers discovered.");
-      for (const peer of peers) {
-        console.log(`${peer.display_name} (${String(peer.peer_id).slice(0, 12)}) ${peer.is_online ? "online" : "offline"}`);
-      }
+      for (const peer of peers) printPeer(peer);
       return;
     }
 
     if (command === "messages") {
-      if (!args[0]) throw new Error("Usage: lanchat-cli messages <peer-id>");
+      if (!args[0]) throw new Error("Usage: meshtalk-cli messages <peer-id>");
       const response = await ipc.send("messages", { peer_id: args[0] });
       if (hasError(response)) return;
       for (const message of asRecords(response.messages)) {
@@ -91,7 +110,7 @@ async function main(): Promise<void> {
     if (command === "send") {
       const [peerId, ...words] = args;
       const content = words.join(" ");
-      if (!peerId || !content) throw new Error("Usage: lanchat-cli send <peer-id> <message>");
+      if (!peerId || !content) throw new Error("Usage: meshtalk-cli send <peer-id> <message>");
       const response = await ipc.send("send", { recipient_id: peerId, content });
       if (hasError(response)) return;
       console.log(`Sent ${response.message_id}`);
@@ -106,6 +125,54 @@ async function main(): Promise<void> {
         }
       });
       await new Promise<void>((resolve) => process.once("SIGINT", resolve));
+      return;
+    }
+
+    if (command === "control") {
+      let response: IPCResponse;
+      if (!args.length) {
+        response = await ipc.send("control");
+      } else if (args[0] === "set-url" && args[1] && args.length === 2) {
+        response = await ipc.send("control", { url: args[1] });
+      } else {
+        throw new Error("Usage: meshtalk-cli control [set-url <url>]");
+      }
+      if (hasError(response)) return;
+      console.log(`Control URL: ${response.url ?? "not configured"}`);
+      console.log(`Connection: ${response.connected ? "connected" : "disconnected"}`);
+      console.log(`STUN server: ${response.stun_server}`);
+      if (response.public_endpoint) console.log(`Public UDP endpoint: ${(response.public_endpoint as unknown[]).join(":")}`);
+      return;
+    }
+
+    if (command === "room") {
+      let response: IPCResponse;
+      if (args[0] === "create" && args.length === 1) {
+        response = await ipc.send("room_create");
+        if (hasError(response)) return;
+        console.log(`Room ID: ${response.room_id}`);
+        console.log(`Invite: ${response.invite}`);
+        console.log("Treat this invite as a secret. Anyone holding it can join the room.");
+        return;
+      }
+      if (args[0] === "join" && args[1] && args.length === 2) {
+        response = await ipc.send("room_join", { invite: args[1] });
+      } else if (args[0] === "leave" && args[1] && args.length === 2) {
+        response = await ipc.send("room_leave", { room_id: args[1] });
+      } else {
+        throw new Error("Usage: meshtalk-cli room <create|join|leave> [value]");
+      }
+      if (hasError(response)) return;
+      console.log(`${args[0] === "join" ? "Joined" : "Left"} room ${response.room_id}`);
+      return;
+    }
+
+    if (command === "rooms") {
+      const response = await ipc.send("rooms");
+      if (hasError(response)) return;
+      const rooms = asRecords(response.rooms);
+      if (!rooms.length) console.log("No joined rooms.");
+      for (const room of rooms) console.log(`${room.room_id} (${room.members} control connections)`);
       return;
     }
 

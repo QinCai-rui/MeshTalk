@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 
 def derive_shared_key(private_key: X25519PrivateKey, public_key: X25519PublicKey) -> bytes:
-    return HKDF(algorithm=SHA256(), length=32, salt=None, info=b"lanchat-e2ee-v1").derive(
+    return HKDF(algorithm=SHA256(), length=32, salt=None, info=b"meshtalk-e2ee-v1").derive(
         private_key.exchange(public_key)
     )
 
