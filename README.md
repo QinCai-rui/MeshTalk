@@ -1,5 +1,12 @@
 # MeshTalk
 
+> **WARNING: MeshTalk does not use post-quantum key exchange.**
+> All key agreement uses X25519 (Curve25519), which is vulnerable to quantum
+> attacks via Shor's algorithm. Captured traffic may be decryptable by a
+> sufficiently large quantum computer ("store now, decrypt later").
+> Do not use MeshTalk for messages that must remain confidential against
+> nation-state adversaries with long-term storage capabilities.
+
 Peer-to-peer encrypted messaging over a LAN or direct NAT-traversed UDP links.
 
 MeshTalk keeps the original offline LAN path: UDP broadcast discovers peers and
@@ -132,6 +139,13 @@ MESHTALK_STUN_SERVER=stun.example.com:3478 meshtalk
 The control URL can similarly be supplied as `MESHTALK_CONTROL_URL`.
 
 ## Security
+
+**Post-quantum limitation:** MeshTalk uses X25519 for all key exchange (E2EE
+envelopes, UDP transport sessions). X25519 is not resistant to quantum
+computers. An adversary who records encrypted traffic today and later obtains a
+private key — or builds a fault-tolerant quantum computer — can decrypt past
+sessions. This is a "store now, decrypt later" risk. MeshTalk does not currently
+support hybrid or post-quantum key encapsulation (e.g., ML-KEM / Kyber).
 
 - Room invites contain a random 128-bit routing ID and independent 256-bit
   room secret. Treat the complete invite as a password.
