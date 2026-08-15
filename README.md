@@ -27,6 +27,9 @@ Download the archive for your platform from the [latest release](../../releases/
 extract it, and run the launcher. The archive contains the backend, CLI, TUI, and
 their runtimes, so it does not require Python, uv, Bun, or another package manager.
 
+Release binaries are provided for macOS (Intel and Apple Silicon), Linux (x64
+and ARM64), and Windows (x64).
+
 ```bash
 ./meshtalk         # macOS or Linux: launches backend + TUI
 ```
