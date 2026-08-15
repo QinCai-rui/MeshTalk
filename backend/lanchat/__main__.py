@@ -121,5 +121,9 @@ async def main() -> None:
     logger.info("LanChat backend stopped")
 
 
-if __name__ == "__main__":
+def run() -> None:
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    run()

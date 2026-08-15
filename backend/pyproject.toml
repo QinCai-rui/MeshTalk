@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-lanchat = "lanchat.__main__:main"
+lanchat = "lanchat.__main__:run"
 
 [build-system]
 requires = ["hatchling"]
