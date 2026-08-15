@@ -1,6 +1,7 @@
-"""IPC server over Unix domain socket.
+"""IPC server over Unix domain socket or TCP.
 
 Provides a JSON-based protocol for TUI/CLI to communicate with the backend.
+Uses Unix domain sockets on Linux/macOS and TCP on Windows.
 """
 
 from __future__ import annotations
@@ -9,13 +10,22 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
 
-IPC_SOCKET_PATH = Path.home() / ".meshtalk" / "meshtalk.sock"
+DATA_DIR = Path.home() / ".meshtalk"
+IPC_SOCKET_PATH = DATA_DIR / "meshtalk.sock"
+IPC_PORT_PATH = DATA_DIR / "meshtalk.port"
 MAX_IPC_LINE_SIZE = 256 * 1024
+
+
+def _unix_sockets_supported() -> bool:
+    if sys.platform == "win32":
+        return hasattr(asyncio, "start_unix_server")
+    return True
 
 
 class IPCServer:
@@ -26,17 +36,33 @@ class IPCServer:
         self.handlers = handlers
         self._server: asyncio.Server | None = None
         self._clients: list[asyncio.StreamWriter] = []
+        self._use_tcp = False
 
     async def start(self) -> None:
-        IPC_SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if IPC_SOCKET_PATH.exists():
-            IPC_SOCKET_PATH.unlink()
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-        self._server = await asyncio.start_unix_server(
-            self._handle_client, str(IPC_SOCKET_PATH), limit=MAX_IPC_LINE_SIZE
+        if _unix_sockets_supported():
+            if IPC_SOCKET_PATH.exists():
+                IPC_SOCKET_PATH.unlink()
+            try:
+                loop = asyncio.get_running_loop()
+                self._server = await loop.create_unix_server(
+                    self._handle_client, str(IPC_SOCKET_PATH), limit=MAX_IPC_LINE_SIZE
+                )
+                os.chmod(str(IPC_SOCKET_PATH), 0o600)
+                logger.info("IPC server listening on %s", IPC_SOCKET_PATH)
+                return
+            except (NotImplementedError, OSError) as exc:
+                logger.warning("Unix socket unavailable (%s), falling back to TCP", exc)
+
+        self._use_tcp = True
+        self._server = await asyncio.start_server(
+            self._handle_client, "127.0.0.1", 0, limit=MAX_IPC_LINE_SIZE
         )
-        os.chmod(str(IPC_SOCKET_PATH), 0o600)
-        logger.info("IPC server listening on %s", IPC_SOCKET_PATH)
+        port = self._server.sockets[0].getsockname()[1]
+        IPC_PORT_PATH.write_text(str(port))
+        os.chmod(str(IPC_PORT_PATH), 0o600)
+        logger.info("IPC server listening on TCP 127.0.0.1:%d", port)
 
     async def stop(self) -> None:
         for writer in self._clients:
@@ -45,6 +71,8 @@ class IPCServer:
             self._server.close()
         if IPC_SOCKET_PATH.exists():
             IPC_SOCKET_PATH.unlink()
+        if IPC_PORT_PATH.exists():
+            IPC_PORT_PATH.unlink()
 
     async def broadcast_event(self, event: dict) -> None:
         """Send an event to all connected clients."""

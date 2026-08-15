@@ -1,8 +1,13 @@
 {
   "name": "meshtalk",
+  "version": "0.1.0",
   "private": true,
   "workspaces": ["tui", "cli", "control"],
+  "bin": {
+    "meshtalk": "bin/meshtalk.ts"
+  },
   "scripts": {
+    "meshtalk": "bun run ./meshtalk.ts",
     "dev:tui": "bun run --filter meshtalk-tui dev",
     "dev:cli": "bun run --filter meshtalk-cli dev",
     "dev:control": "bun run --filter meshtalk-control dev",

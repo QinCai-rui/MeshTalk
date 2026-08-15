@@ -1,11 +1,16 @@
 /**
  * IPC client for communicating with the MeshTalk backend.
- * Connects via Unix domain socket at ~/.meshtalk/meshtalk.sock
+ * Connects via Unix domain socket (Linux/macOS) or TCP (Windows).
  */
 
 import { createConnection, type Socket } from "net";
+import { readFileSync } from "fs";
+import { join } from "path";
 
-const SOCKET_PATH = `${process.env.HOME}/.meshtalk/meshtalk.sock`;
+const HOME = process.env.HOME || process.env.USERPROFILE || "";
+const DATA_DIR = `${HOME}/.meshtalk`;
+const SOCKET_PATH = `${DATA_DIR}/meshtalk.sock`;
+const PORT_PATH = `${DATA_DIR}/meshtalk.port`;
 
 export interface IPCResponse {
   error?: string;
@@ -28,11 +33,33 @@ export class IPCClient {
     return new Promise((resolve, reject) => {
       this.intentionallyClosed = false;
       this.closed = false;
-      this.socket = createConnection(SOCKET_PATH);
-      this.socket.on("connect", () => resolve());
-      this.socket.on("error", (err) => reject(err));
-      this.socket.on("data", (data: string | Buffer) => this.onData(data.toString()));
-      this.socket.on("close", () => this.onClose());
+
+      const connectTcp = () => {
+        try {
+          const port = Number(readFileSync(PORT_PATH, "utf-8").trim());
+          this.socket = createConnection(port, "127.0.0.1");
+          this.socket.on("connect", () => resolve());
+          this.socket.on("error", (err) => reject(err));
+          this.socket.on("data", (data: string | Buffer) => this.onData(data.toString()));
+          this.socket.on("close", () => this.onClose());
+        } catch {
+          reject(new Error("Cannot connect to MeshTalk backend"));
+        }
+      };
+
+      const connectUnix = () => {
+        this.socket = createConnection(SOCKET_PATH);
+        this.socket.on("connect", () => resolve());
+        this.socket.on("error", () => { try { this.socket?.destroy(); } catch {} connectTcp(); });
+        this.socket.on("data", (data: string | Buffer) => this.onData(data.toString()));
+        this.socket.on("close", () => this.onClose());
+      };
+
+      if (process.platform === "win32") {
+        connectTcp();
+      } else {
+        connectUnix();
+      }
     });
   }
 

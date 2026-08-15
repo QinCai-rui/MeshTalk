@@ -188,9 +188,13 @@ async def main(debug: bool = False) -> None:
     def _signal_handler() -> None:
         stop_event.set()
 
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _signal_handler)
+    if sys.platform != "win32":
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler)
+    else:
+        signal.signal(signal.SIGINT, lambda *_: _signal_handler())
+        signal.signal(signal.SIGTERM, lambda *_: _signal_handler())
 
     async def periodic_cleanup() -> None:
         while True:

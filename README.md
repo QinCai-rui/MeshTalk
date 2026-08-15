@@ -23,50 +23,40 @@ Python backend ---- LAN broadcast + TCP ---- LAN peers
 
 ## Quick Start
 
-### Backend
+Install [bun](https://bun.sh) and [uv](https://docs.astral.sh/uv/), then:
 
 ```bash
-cd backend
-uv sync
-uv run meshtalk
+git clone <repo-url> && cd meshtalk
+npm install
+npm link
+meshtalk          # launches backend + TUI
+```
+
+Or without installing globally:
+
+```bash
+bun install
+bun run meshtalk              # launches backend + TUI
+bun run meshtalk -- status    # CLI commands
+```
+
+CLI commands:
+
+```bash
+meshtalk status
+meshtalk peers
+meshtalk identity "Alice"
+meshtalk messages <peer-id>
+meshtalk send <peer-id> "hello"
+meshtalk watch
 ```
 
 MeshTalk creates fresh state in `~/.meshtalk`. It does not read or modify old
 `~/.lanchat` state.
 
-For safe key-exchange diagnostics, run `uv run meshtalk --debug`. It logs
+For safe key-exchange diagnostics, run `meshtalk -- --debug`. It logs
 connection direction, endpoints, and public-key fingerprints, but never private
 keys, room secrets, or message content.
-
-### TUI
-
-```bash
-cd tui
-bun install
-bun run dev
-```
-
-The peer menu shows each active transport and endpoint as `LAN TCP` or
-`Remote UDP`. Use `Ctrl+Up` and `Ctrl+Down` to select a peer, `Page Up` and
-`Page Down` to scroll, and `Ctrl+N` to change your display name.
-
-### CLI
-
-```bash
-cd cli
-bun install
-bun run dev -- status
-```
-
-Useful commands:
-
-```bash
-bun run dev -- peers
-bun run dev -- identity "Alice"
-bun run dev -- messages <peer-id>
-bun run dev -- send <peer-id> "hello"
-bun run dev -- watch
-```
 
 ## Remote Rooms
 
@@ -79,24 +69,24 @@ bun run dev:control
 Configure a running backend and create a room:
 
 ```bash
-bun run dev:cli -- control set-url ws://127.0.0.1:8787/v1/rendezvous
-bun run dev:cli -- room create
+meshtalk control set-url ws://127.0.0.1:8787/v1/rendezvous
+meshtalk room create
 ```
 
 Share the printed `meshtalk:` invite through a trusted channel. On another
 MeshTalk installation:
 
 ```bash
-bun run dev:cli -- control set-url wss://control.example/v1/rendezvous
-bun run dev:cli -- room join 'meshtalk:...'
+meshtalk control set-url wss://control.example/v1/rendezvous
+meshtalk room join 'meshtalk:...'
 ```
 
 Other room commands:
 
 ```bash
-bun run dev:cli -- rooms
-bun run dev:cli -- room leave <room-id>
-bun run dev:cli -- control
+meshtalk rooms
+meshtalk room leave <room-id>
+meshtalk control
 ```
 
 Production control services must be exposed through TLS as `wss://`. Plain
@@ -107,7 +97,7 @@ The backend uses `stun.l.google.com:19302` by default. Override it without
 changing persisted settings:
 
 ```bash
-MESHTALK_STUN_SERVER=stun.example.com:3478 uv run meshtalk
+MESHTALK_STUN_SERVER=stun.example.com:3478 meshtalk
 ```
 
 The control URL can similarly be supplied as `MESHTALK_CONTROL_URL`.
