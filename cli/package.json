@@ -1,0 +1,15 @@
+{
+  "name": "lanchat-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build": "bun build src/index.ts --target=bun --compile --outfile dist/lanchat-cli"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "bun-types": "latest",
+    "typescript": "^5.7.0"
+  }
+}

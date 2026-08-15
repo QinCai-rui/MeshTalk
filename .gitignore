@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+bun.lock
+
+# Build output
+dist/
+*.pyc
+__pycache__/
+*.egg-info/
+
+# Data
+.lanchat/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

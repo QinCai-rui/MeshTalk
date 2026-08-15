@@ -1,0 +1,10 @@
+{
+  "name": "lanchat",
+  "private": true,
+  "workspaces": ["tui", "cli"],
+  "scripts": {
+    "dev:tui": "bun run --filter tui dev",
+    "dev:cli": "bun run --filter cli dev",
+    "build": "bun run --filter '*' build"
+  }
+}

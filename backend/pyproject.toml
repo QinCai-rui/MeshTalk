@@ -1,0 +1,20 @@
+[project]
+name = "lanchat-backend"
+version = "0.1.0"
+description = "LanChat peer-to-peer messaging backend"
+requires-python = ">=3.12"
+license = "GPL-3.0-only"
+dependencies = [
+    "cryptography>=43.0.0",
+    "aiosqlite>=0.20.0",
+]
+
+[project.scripts]
+lanchat = "lanchat.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["lanchat"]
