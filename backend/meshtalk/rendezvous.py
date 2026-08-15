@@ -9,9 +9,11 @@ import ipaddress
 import json
 import logging
 import os
+import ssl
 import time
 from collections.abc import Awaitable, Callable
 
+import certifi
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -35,6 +37,7 @@ CONTROL_RECONNECT_MAX_DELAY = 30
 MAX_CANDIDATE_CHANGES_PER_MINUTE = 12
 MAX_TRACKED_CANDIDATES = 512
 CANDIDATE_TRACKING_AGE = 600
+CONTROL_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 def _canonical(value: dict) -> bytes:
@@ -163,6 +166,7 @@ class RendezvousService:
             try:
                 async with connect(
                     url,
+                    ssl=CONTROL_SSL_CONTEXT if url.startswith("wss://") else None,
                     max_size=256 * 1024,
                     open_timeout=CONTROL_CONNECT_TIMEOUT,
                     ping_interval=CONTROL_PING_INTERVAL,
