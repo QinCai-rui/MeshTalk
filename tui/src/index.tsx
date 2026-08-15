@@ -378,11 +378,9 @@ function ChatApp() {
     try {
       const response = await ipc.send("control", { url })
       if (response.error) throw new Error(response.error)
-      const rooms = await ipc.send("rooms")
-      if (rooms.error) throw new Error(rooms.error)
       if (dialogAction.current !== action) return
       showStatus(`Control server set to ${response.url}.`)
-      setDialog({ kind: "rooms", rooms: rooms.rooms as RoomStatus[] })
+      setDialog({ kind: "control-status", control: response as ControlStatus })
     } catch (error) {
       failDialogAction(action, error)
       return
