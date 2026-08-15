@@ -45,9 +45,8 @@ class IPCServer:
             if IPC_SOCKET_PATH.exists():
                 IPC_SOCKET_PATH.unlink()
             try:
-                loop = asyncio.get_running_loop()
-                self._server = await loop.create_unix_server(
-                    self._handle_client, str(IPC_SOCKET_PATH), limit=MAX_IPC_LINE_SIZE
+                self._server = await asyncio.start_unix_server(
+                    self._handle_client, path=str(IPC_SOCKET_PATH), limit=MAX_IPC_LINE_SIZE
                 )
                 os.chmod(str(IPC_SOCKET_PATH), 0o600)
                 logger.info("IPC server listening on %s", IPC_SOCKET_PATH)

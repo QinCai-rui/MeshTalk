@@ -27,9 +27,17 @@ Install [bun](https://bun.sh) and [uv](https://docs.astral.sh/uv/), then:
 
 ```bash
 git clone <repo-url> && cd meshtalk
-npm install
-npm link
+bun install
+bun add --global "file:$PWD"
 meshtalk          # launches backend + TUI
+```
+
+`bun link` only registers the package for linking into another project; it does
+not install a global shell command. Ensure Bun's global bin directory is on your
+`PATH` if `meshtalk` is not found:
+
+```bash
+export PATH="$(bun pm bin -g):$PATH"
 ```
 
 Or without installing globally:
@@ -49,7 +57,12 @@ meshtalk identity "Alice"
 meshtalk messages <peer-id>
 meshtalk send <peer-id> "hello"
 meshtalk watch
+meshtalk backend status
+meshtalk backend stop
 ```
+
+The launcher starts the backend as a detached daemon and writes its output to
+`~/.meshtalk/backend.log`. Later TUI and CLI invocations reuse that daemon.
 
 MeshTalk creates fresh state in `~/.meshtalk`. It does not read or modify old
 `~/.lanchat` state.

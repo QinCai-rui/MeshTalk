@@ -7,7 +7,7 @@
     "meshtalk": "bin/meshtalk.ts"
   },
   "scripts": {
-    "meshtalk": "bun run ./meshtalk.ts",
+    "meshtalk": "bun run ./bin/meshtalk.ts",
     "dev:tui": "bun run --filter meshtalk-tui dev",
     "dev:cli": "bun run --filter meshtalk-cli dev",
     "dev:control": "bun run --filter meshtalk-control dev",

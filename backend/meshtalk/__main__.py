@@ -35,6 +35,7 @@ async def main(debug: bool = False) -> None:
 
     identity = Identity.load_or_generate(DATA_DIR)
     logger.info("Peer ID: %s (%s)", identity.peer_id, identity.display_name)
+    stop_event = asyncio.Event()
 
     db = Database(DATA_DIR / "meshtalk.db")
     await db.connect()
@@ -159,6 +160,10 @@ async def main(debug: bool = False) -> None:
     async def handle_rooms(req: dict) -> dict:
         return {"rooms": rendezvous.room_status()}
 
+    async def handle_shutdown(req: dict) -> dict:
+        stop_event.set()
+        return {"stopping": True}
+
     ipc_handlers = {
         "send": handle_send,
         "peers": handle_peers,
@@ -171,6 +176,7 @@ async def main(debug: bool = False) -> None:
         "room_join": handle_room_join,
         "room_leave": handle_room_leave,
         "rooms": handle_rooms,
+        "shutdown": handle_shutdown,
     }
     ipc = IPCServer(ipc_handlers)
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
@@ -182,8 +188,6 @@ async def main(debug: bool = False) -> None:
     await ipc.start()
 
     logger.info("MeshTalk backend running")
-
-    stop_event = asyncio.Event()
 
     def _signal_handler() -> None:
         stop_event.set()
