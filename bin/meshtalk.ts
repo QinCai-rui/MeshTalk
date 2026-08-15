@@ -237,6 +237,17 @@ async function main() {
   const repoRoot = resolveRoot();
   const args = process.argv.slice(2);
 
+  if (args.length === 1 && ["help", "--help", "-h"].includes(args[0])) {
+    const bun = await ensureBun();
+    const cli = spawn([bun, "run", "src/index.ts", "help"], {
+      cwd: join(repoRoot, "cli"),
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    process.exit(await cli.exited.then((result) => result.code ?? 0));
+  }
+
   const uv = await ensureUv();
   const bun = await ensureBun();
 
