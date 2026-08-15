@@ -1,6 +1,6 @@
-import { createCliRenderer } from "@opentui/core"
+import { createCliRenderer, type ScrollBoxRenderable } from "@opentui/core"
 import { createRoot, useKeyboard } from "@opentui/react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 
 type Peer = {
@@ -32,8 +32,10 @@ function ChatApp() {
   const [draft, setDraft] = useState("")
   const [nameDraft, setNameDraft] = useState("")
   const [editingName, setEditingName] = useState(false)
+  const [scrollFocused, setScrollFocused] = useState(false)
   const [deliveredMessageIds, setDeliveredMessageIds] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState("Connecting to backend...")
+  const scrollboxRef = useRef<ScrollBoxRenderable>(null)
 
   async function refreshPeers() {
     const response = await ipc.send("peers")
@@ -53,7 +55,7 @@ function ChatApp() {
       setIdentity(nextIdentity)
       setNameDraft(nextIdentity.display_name)
       await refreshPeers()
-      setStatus("Connected. Ctrl+Up/Down: select  Ctrl+N: rename  Ctrl+C: quit")
+      setStatus("Connected. Ctrl+Up/Down: select  PgUp/PgDn: scroll  Ctrl+N: rename  Ctrl+C: quit")
     }).catch((error) => setStatus(`Backend error: ${error instanceof Error ? error.message : String(error)}`))
     return () => ipc.close()
   }, [])
@@ -99,6 +101,7 @@ function ChatApp() {
       setMessages([])
       return
     }
+    setScrollFocused(false)
     setPeers((current) => current.map((peer) =>
       peer.peer_id === selectedPeerId ? { ...peer, unread_count: 0 } : peer
     ))
@@ -118,6 +121,22 @@ function ChatApp() {
       const index = peers.findIndex((peer) => peer.peer_id === selectedPeerId)
       const direction = key.name === "up" ? -1 : 1
       setSelectedPeerId(peers[(index + direction + peers.length) % peers.length].peer_id)
+    }
+    if (key.name === "pageup") {
+      setScrollFocused(true)
+      scrollboxRef.current?.scrollBy(-1, "viewport")
+    }
+    if (key.name === "pagedown") {
+      setScrollFocused(true)
+      scrollboxRef.current?.scrollBy(1, "viewport")
+    }
+    if (key.name === "home") {
+      setScrollFocused(true)
+      scrollboxRef.current?.scrollTo(0)
+    }
+    if (key.name === "end") {
+      setScrollFocused(true)
+      scrollboxRef.current?.scrollTo(scrollboxRef.current.scrollHeight)
     }
   })
 
@@ -194,11 +213,25 @@ function ChatApp() {
         </box>
       </box>
 
-      <box style={{ flexGrow: 1, flexDirection: "column", gap: 1 }}>
-        <box title={selected ? `Chat: ${selected.display_name} (${selected.is_online ? "online" : "offline"})` : "Chat"} style={{ border: true, flexGrow: 1, flexDirection: "column" }}>
+      <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
+        <box title={selected ? `Chat: ${selected.display_name} (${selected.is_online ? "online" : "offline"})` : "Chat"} style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
           {!selected && <text fg="#888888">Waiting for a connected peer.</text>}
           {selected && !messages.length && <text fg="#888888">No messages yet. Say hello.</text>}
-          <scrollbox style={{ flexGrow: 1, padding: 1, flexDirection: "column" }} stickyScroll stickyStart="bottom" viewportCulling={false}>
+          <scrollbox
+            ref={scrollboxRef}
+            focused={scrollFocused}
+            onMouseDown={() => setScrollFocused(true)}
+            style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, padding: 1 }}
+            contentOptions={{ flexDirection: "column" }}
+            stickyScroll
+            stickyStart="bottom"
+            viewportCulling={false}
+            verticalScrollbarOptions={{
+              showArrows: true,
+              trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" },
+              arrowOptions: { foregroundColor: "#6ea8fe" },
+            }}
+          >
             {messages.map((message) => {
               const isLocal = message.sender_id === identity?.peer_id
               const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
@@ -220,7 +253,8 @@ function ChatApp() {
           <input
             value={draft}
             placeholder={selected?.is_online ? "Type a message and press Enter" : "Select an online peer"}
-            focused={Boolean(selected?.is_online) && !editingName}
+            focused={Boolean(selected?.is_online) && !editingName && !scrollFocused}
+            onMouseDown={() => setScrollFocused(false)}
             onInput={setDraft}
             onSubmit={() => void send()}
             maxLength={65536}
