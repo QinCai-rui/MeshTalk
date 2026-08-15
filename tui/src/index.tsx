@@ -6,6 +6,11 @@ import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 const MIN_COMPOSER_HEIGHT = 3
 const MAX_COMPOSER_HEIGHT = 8
 
+function getComposerHeight(composer: TextareaRenderable | null): number {
+  const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
+  return Math.min(MAX_COMPOSER_HEIGHT, Math.max(MIN_COMPOSER_HEIGHT, lines))
+}
+
 type Peer = {
   peer_id: string
   display_name: string
@@ -152,7 +157,7 @@ function ChatApp() {
   useEffect(() => {
     const composer = composerRef.current
     if (composer) {
-      setComposerHeight(Math.min(MAX_COMPOSER_HEIGHT, Math.max(MIN_COMPOSER_HEIGHT, composer.virtualLineCount)))
+      setComposerHeight(getComposerHeight(composer))
     }
   }, [selectedPeerId, width])
 
@@ -352,7 +357,7 @@ function ChatApp() {
               const composer = composerRef.current
               const content = composer?.plainText ?? ""
               setDraftLength(content.length)
-              setComposerHeight(Math.min(MAX_COMPOSER_HEIGHT, Math.max(MIN_COMPOSER_HEIGHT, composer?.virtualLineCount ?? 0)))
+              setComposerHeight(getComposerHeight(composer))
               if (selectedPeerId) setDrafts((current) => ({ ...current, [selectedPeerId]: content }))
             }}
             onSubmit={() => void send()}
