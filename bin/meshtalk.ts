@@ -187,6 +187,18 @@ async function waitForBackend(): Promise<boolean> {
   return false;
 }
 
+async function stopBackend(): Promise<void> {
+  if (!await backendRunning()) return;
+  await backendRequest("shutdown");
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline && await backendRunning()) {
+    await Bun.sleep(POLL_INTERVAL_MS);
+  }
+  if (await backendRunning()) {
+    log("Backend did not stop after the TUI closed; use `meshtalk backend stop`.");
+  }
+}
+
 async function ensureBackendDeps(uv: string, backendDir: string) {
   const lockfile = join(backendDir, "uv.lock");
   const venv = join(backendDir, ".venv");
@@ -269,6 +281,13 @@ async function main() {
 
   let code = 0;
   if (args.length === 0) {
+    let cleanupPromise: Promise<void> | undefined;
+    const cleanup = () => cleanupPromise ??= stopBackend();
+    const handleSignal = () => {
+      void cleanup().finally(() => process.exit(130));
+    };
+    process.once("SIGINT", handleSignal);
+    process.once("SIGTERM", handleSignal);
     const tui = spawn([bun, "run", "src/index.tsx"], {
       cwd: join(repoRoot, "tui"),
       stdin: "inherit",
@@ -277,6 +296,9 @@ async function main() {
     });
     const tuiExit = await tui.exited;
     code = tuiExit.code ?? 0;
+    process.removeListener("SIGINT", handleSignal);
+    process.removeListener("SIGTERM", handleSignal);
+    await cleanup();
   } else {
     const cli = spawn([bun, "run", "src/index.ts", ...args], {
       cwd: join(repoRoot, "cli"),
