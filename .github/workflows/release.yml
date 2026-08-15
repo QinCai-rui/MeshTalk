@@ -25,6 +25,8 @@ jobs:
             artifact: meshtalk-macos-arm64
           - os: windows-latest
             artifact: meshtalk-windows-x64.exe
+          - os: windows-11-arm
+            artifact: meshtalk-windows-arm64.exe
 
     runs-on: ${{ matrix.os }}
 
