@@ -45,6 +45,14 @@ function peerPresence(peer: Peer): "active" | "away" | "offline" {
   return peer.presence ?? (peer.is_online ? "away" : "offline")
 }
 
+function composerLimitColor(length: number): string | undefined {
+  const usage = length / MAX_MESSAGE_BYTES
+  if (usage >= 1) return "#ff7777"
+  if (usage >= 0.9) return "#ff9f43"
+  if (usage >= 0.75) return "#e0a34a"
+  return undefined
+}
+
 function ChatApp() {
   const renderer = useRenderer()
   const { width } = useTerminalDimensions()
@@ -349,6 +357,7 @@ function ChatApp() {
   const activeCount = peers.filter((peer) => peerPresence(peer) === "active").length
   const sidebarWidth = width < 72 ? 22 : 32
   const compact = width < 72
+  const limitColor = composerLimitColor(draftLength)
   return (
     <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
       <box title={`You: ${identity?.display_name ?? "..."}`} style={{ border: true, width: sidebarWidth, flexShrink: 0, flexDirection: "column", padding: 1, gap: 1 }}>
@@ -444,7 +453,8 @@ function ChatApp() {
         <box
           title={selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: peer offline"}
           bottomTitle={isSending ? "Sending..." : `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`}
-          style={{ border: true, borderColor: draftLength > MAX_MESSAGE_BYTES ? "#ff7777" : !scrollFocused && !editingName && selected?.is_online ? "#6ea8fe" : undefined, flexShrink: 0, flexDirection: "column", overflow: "hidden", padding: 1 }}
+          titleColor={limitColor ?? "#888888"}
+          style={{ border: true, borderColor: limitColor ?? (!scrollFocused && !editingName && selected?.is_online ? "#6ea8fe" : undefined), flexShrink: 0, overflow: "hidden", padding: 1 }}
         >
           <textarea
             key={selectedPeerId ?? "no-peer"}
