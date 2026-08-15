@@ -63,16 +63,24 @@ function ChatApp() {
   const [scrollFocused, setScrollFocused] = useState(false)
   const [deliveredMessageIds, setDeliveredMessageIds] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState("Connecting to backend...")
+  const [copyToast, setCopyToast] = useState(false)
   const scrollboxRef = useRef<ScrollBoxRenderable>(null)
   const composerRef = useRef<TextareaRenderable>(null)
   const backendDisconnected = useRef(false)
   const statusReset = useRef<ReturnType<typeof setTimeout>>()
+  const copyToastReset = useRef<ReturnType<typeof setTimeout>>()
   const clipboard = useRef<ReturnType<typeof createClipboard> | null>(null)
 
   function showStatus(message: string) {
     if (statusReset.current) clearTimeout(statusReset.current)
     setStatus(message)
     statusReset.current = setTimeout(() => setStatus(DEFAULT_STATUS), 5_000)
+  }
+
+  function showCopyToast() {
+    if (copyToastReset.current) clearTimeout(copyToastReset.current)
+    setCopyToast(true)
+    copyToastReset.current = setTimeout(() => setCopyToast(false), 2_000)
   }
 
   async function refreshPeers() {
@@ -109,6 +117,7 @@ function ChatApp() {
 
   useEffect(() => () => {
     if (statusReset.current) clearTimeout(statusReset.current)
+    if (copyToastReset.current) clearTimeout(copyToastReset.current)
   }, [])
 
   useEffect(() => {
@@ -129,7 +138,10 @@ function ChatApp() {
     void clipboard.current?.writeText(text, {
       destination: "all-available",
       allowRemoteHost: true,
-    }).then(() => showStatus("Copied selection."))
+    }).then(() => {
+      renderer.clearSelection()
+      showCopyToast()
+    })
   })
 
   useEffect(() => {
@@ -459,6 +471,11 @@ function ChatApp() {
         </box>
         <text fg={status.includes("error") || status.includes("lost") || status.includes("exceeds") ? "#ff7777" : "#888888"}>{status}</text>
       </box>
+      {copyToast && (
+        <box style={{ position: "absolute", right: 2, top: 1, border: true, borderColor: "#66dd88", backgroundColor: "#18251d", paddingLeft: 1, paddingRight: 1 }}>
+          <text fg="#66dd88">Copied to clipboard</text>
+        </box>
+      )}
     </box>
   )
 }
