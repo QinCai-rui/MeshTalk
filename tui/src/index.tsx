@@ -346,7 +346,6 @@ function ChatApp() {
             ]}
             height={3}
             wrapMode="word"
-            focusedBackgroundColor="#182437"
             selectionBg="#365b85"
           />
           <text fg={draftLength > 64 * 1024 ? "#ff7777" : "#888888"}>
