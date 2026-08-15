@@ -20,9 +20,14 @@ export class IPCClient {
   private pending: Map<number, { resolve: (v: IPCResponse) => void; reject: (e: Error) => void }> = new Map();
   private id = 0;
   private eventHandlers = new Set<(event: IPCEvent) => void>();
+  private disconnectHandlers = new Set<() => void>();
+  private intentionallyClosed = false;
+  private closed = false;
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
+      this.intentionallyClosed = false;
+      this.closed = false;
       this.socket = createConnection(SOCKET_PATH);
       this.socket.on("connect", () => resolve());
       this.socket.on("error", (err) => reject(err));
@@ -32,12 +37,18 @@ export class IPCClient {
   }
 
   close(): void {
+    this.intentionallyClosed = true;
     this.socket?.destroy();
   }
 
   onEvent(handler: (event: IPCEvent) => void): () => void {
     this.eventHandlers.add(handler);
     return () => this.eventHandlers.delete(handler);
+  }
+
+  onDisconnect(handler: () => void): () => void {
+    this.disconnectHandlers.add(handler);
+    return () => this.disconnectHandlers.delete(handler);
   }
 
   async send(action: string, params: Record<string, unknown> = {}): Promise<IPCResponse> {
@@ -77,9 +88,14 @@ export class IPCClient {
   }
 
   private onClose(): void {
+    if (this.closed) return;
+    this.closed = true;
     for (const entry of this.pending.values()) {
       entry.reject(new Error("Connection closed"));
     }
     this.pending.clear();
+    if (!this.intentionallyClosed) {
+      for (const handler of this.disconnectHandlers) handler();
+    }
   }
 }

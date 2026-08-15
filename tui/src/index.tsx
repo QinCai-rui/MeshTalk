@@ -1,5 +1,5 @@
-import { createCliRenderer, type ScrollBoxRenderable } from "@opentui/core"
-import { createRoot, useKeyboard } from "@opentui/react"
+import { createCliRenderer, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
+import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
 import { useEffect, useRef, useState } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 
@@ -24,18 +24,24 @@ function formatTime(timestamp: number): string {
 }
 
 function ChatApp() {
+  const renderer = useRenderer()
+  const { width } = useTerminalDimensions()
   const [ipc] = useState(() => new IPCClient())
   const [peers, setPeers] = useState<Peer[]>([])
   const [identity, setIdentity] = useState<{ peer_id: string; display_name: string }>()
   const [selectedPeerId, setSelectedPeerId] = useState<string>()
   const [messages, setMessages] = useState<Message[]>([])
-  const [draft, setDraft] = useState("")
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [draftLength, setDraftLength] = useState(0)
+  const [isSending, setIsSending] = useState(false)
   const [nameDraft, setNameDraft] = useState("")
   const [editingName, setEditingName] = useState(false)
   const [scrollFocused, setScrollFocused] = useState(false)
   const [deliveredMessageIds, setDeliveredMessageIds] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState("Connecting to backend...")
   const scrollboxRef = useRef<ScrollBoxRenderable>(null)
+  const composerRef = useRef<TextareaRenderable>(null)
+  const backendDisconnected = useRef(false)
 
   async function refreshPeers() {
     const response = await ipc.send("peers")
@@ -56,13 +62,32 @@ function ChatApp() {
       setNameDraft(nextIdentity.display_name)
       await refreshPeers()
       setStatus("Connected. Ctrl+Up/Down: select  PgUp/PgDn: scroll  Ctrl+N: rename  Ctrl+C: quit")
-    }).catch((error) => setStatus(`Backend error: ${error instanceof Error ? error.message : String(error)}`))
+    }).catch((error) => {
+      if (!backendDisconnected.current) {
+        setStatus(`Backend error: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })
     return () => ipc.close()
   }, [])
 
   useEffect(() => {
+    let exitTimer: ReturnType<typeof setTimeout> | undefined
+    const unsubscribe = ipc.onDisconnect(() => {
+      backendDisconnected.current = true
+      setStatus("Backend connection lost. Closing LanChat...")
+      exitTimer = setTimeout(() => renderer.destroy(), 1500)
+    })
+    return () => {
+      unsubscribe()
+      if (exitTimer) clearTimeout(exitTimer)
+    }
+  }, [ipc, renderer])
+
+  useEffect(() => {
     const interval = setInterval(() => {
-      void refreshPeers().catch((error) => setStatus(`Peer refresh error: ${String(error)}`))
+      void refreshPeers().catch((error) => {
+        if (!backendDisconnected.current) setStatus(`Peer refresh error: ${String(error)}`)
+      })
     }, 3000)
     return () => clearInterval(interval)
   }, [ipc])
@@ -74,6 +99,7 @@ function ChatApp() {
       setMessages((current) => current.map((message) =>
         message.message_id === messageId ? { ...message, delivered: 1 } : message
       ))
+      setStatus("Message delivered.")
       return
     }
     if (event.event !== "message") return
@@ -99,19 +125,31 @@ function ChatApp() {
   useEffect(() => {
     if (!selectedPeerId) {
       setMessages([])
+      setDraftLength(0)
       return
     }
     setScrollFocused(false)
+    setDraftLength((drafts[selectedPeerId] ?? "").length)
     setPeers((current) => current.map((peer) =>
       peer.peer_id === selectedPeerId ? { ...peer, unread_count: 0 } : peer
     ))
     ipc.send("messages", { peer_id: selectedPeerId }).then((response) => {
       if (response.error) throw new Error(response.error)
       setMessages(response.messages as Message[])
-    }).catch((error) => setStatus(`History error: ${error instanceof Error ? error.message : String(error)}`))
+    }).catch((error) => {
+      if (!backendDisconnected.current) {
+        setStatus(`History error: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })
   }, [selectedPeerId])
 
   useKeyboard((key) => {
+    if (key.name === "escape" && editingName) {
+      setEditingName(false)
+      setNameDraft(identity?.display_name ?? "")
+      setStatus("Name edit cancelled.")
+      return
+    }
     if (key.ctrl && key.name === "n") {
       setNameDraft(identity?.display_name ?? "")
       setEditingName(true)
@@ -130,34 +168,55 @@ function ChatApp() {
       setScrollFocused(true)
       scrollboxRef.current?.scrollBy(1, "viewport")
     }
-    if (key.name === "home") {
-      setScrollFocused(true)
+    if (scrollFocused && key.name === "home") {
       scrollboxRef.current?.scrollTo(0)
     }
-    if (key.name === "end") {
-      setScrollFocused(true)
+    if (scrollFocused && key.name === "end") {
       scrollboxRef.current?.scrollTo(scrollboxRef.current.scrollHeight)
     }
   })
 
   async function send() {
-    const content = draft.trim()
-    if (!content || !selectedPeerId || !identity) return
+    const composer = composerRef.current
+    const recipientId = selectedPeerId
+    const content = composer?.plainText.trim() ?? ""
+    if (!content) {
+      setStatus("Message is empty.")
+      return
+    }
+    if (!recipientId || !identity || !selected?.is_online) {
+      setStatus("Select an online peer before sending.")
+      return
+    }
+    if (new TextEncoder().encode(content).length > 64 * 1024) {
+      setStatus("Message exceeds the 64 KiB limit.")
+      return
+    }
+    setIsSending(true)
     try {
-      const response = await ipc.send("send", { recipient_id: selectedPeerId, content })
+      const response = await ipc.send("send", { recipient_id: recipientId, content })
       if (response.error) throw new Error(response.error)
       setMessages((current) => [...current, {
         message_id: response.message_id as string,
         sender_id: identity.peer_id,
-        recipient_id: selectedPeerId,
+        recipient_id: recipientId,
         content,
         created_at: Date.now() / 1000,
         delivered: 0,
       }])
-      setDraft("")
+      if (composer && composer === composerRef.current) {
+        composer.selectAll()
+        composer.deleteSelection()
+      }
+      setDrafts((current) => ({ ...current, [recipientId]: "" }))
+      setDraftLength(0)
       setStatus("Message sent. Waiting for delivery confirmation.")
     } catch (error) {
-      setStatus(`Send error: ${error instanceof Error ? error.message : String(error)}`)
+      if (!backendDisconnected.current) {
+        setStatus(`Send error: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    } finally {
+      setIsSending(false)
     }
   }
 
@@ -171,15 +230,19 @@ function ChatApp() {
       setEditingName(false)
       setStatus("Display name updated and shared with connected peers.")
     } catch (error) {
-      setStatus(`Name error: ${error instanceof Error ? error.message : String(error)}`)
+      if (!backendDisconnected.current) {
+        setStatus(`Name error: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
   }
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId)
   const onlineCount = peers.filter((peer) => peer.is_online).length
+  const sidebarWidth = width < 72 ? 22 : 32
+  const compact = width < 72
   return (
-    <box style={{ flexDirection: "row", width: "100%", height: "100%", padding: 1, gap: 1 }}>
-      <box title={`You: ${identity?.display_name ?? "..."}`} style={{ border: true, width: 32, flexDirection: "column", padding: 1, gap: 1 }}>
+    <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
+      <box title={`You: ${identity?.display_name ?? "..."}`} style={{ border: true, width: sidebarWidth, flexShrink: 0, flexDirection: "column", padding: 1, gap: 1 }}>
         <box onMouseDown={() => setEditingName(true)}>
           {editingName ? (
             <input
@@ -197,26 +260,40 @@ function ChatApp() {
             </>
           )}
         </box>
-        <box title={`Peers: ${onlineCount} online`} style={{ border: true, flexGrow: 1, flexDirection: "column", padding: 1 }}>
-        {!peers.length && <text fg="#888888">No peers discovered</text>}
-        {peers.map((peer) => (
-          <box
-            key={peer.peer_id}
-            onMouseDown={() => setSelectedPeerId(peer.peer_id)}
-            style={{ width: "100%", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
+        <box title={`Peers: ${onlineCount} online`} style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", padding: 1 }}>
+          {!peers.length && <text fg="#888888">No peers discovered</text>}
+          <scrollbox
+            style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+            contentOptions={{ flexDirection: "column" }}
+            verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}
           >
-            <text fg={peer.is_online ? "#66dd88" : "#888888"}>
-              {peer.peer_id === selectedPeerId ? "> " : "  "}{peer.display_name} {peer.is_online ? "online" : "offline"}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}
-            </text>
-          </box>
-        ))}
+            {peers.map((peer) => (
+              <box
+                key={peer.peer_id}
+                onMouseDown={() => {
+                  setSelectedPeerId(peer.peer_id)
+                  setScrollFocused(false)
+                }}
+                style={{ width: "100%", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
+              >
+                <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>
+                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.is_online ? "online" : "offline"}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}
+                </text>
+              </box>
+            ))}
+          </scrollbox>
         </box>
       </box>
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
-        <box title={selected ? `Chat: ${selected.display_name} (${selected.is_online ? "online" : "offline"})` : "Chat"} style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
+        <box
+          title={selected ? `Chat: ${selected.display_name} (${selected.is_online ? "online" : "offline"})` : "Chat"}
+          bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
+          style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
+        >
           {!selected && <text fg="#888888">Waiting for a connected peer.</text>}
           {selected && !messages.length && <text fg="#888888">No messages yet. Say hello.</text>}
+          {selected && !selected.is_online && <text fg="#e0a34a">This peer is offline. Messages cannot be sent until it reconnects.</text>}
           <scrollbox
             ref={scrollboxRef}
             focused={scrollFocused}
@@ -242,25 +319,41 @@ function ChatApp() {
                     <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selected?.display_name}</span>
                     {isLocal && <span fg="#888888"> {delivered ? "delivered" : "sent"}</span>}
                   </text>
-                  <text>{message.content}</text>
+                  <text wrapMode="word">{message.content}</text>
                 </box>
               )
             })}
           </scrollbox>
         </box>
 
-        <box title={selected?.is_online ? "Message" : "Message: peer offline"} style={{ border: true, padding: 1 }}>
-          <input
-            value={draft}
-            placeholder={selected?.is_online ? "Type a message and press Enter" : "Select an online peer"}
-            focused={Boolean(selected?.is_online) && !editingName && !scrollFocused}
+        <box title={selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: peer offline"} style={{ border: true, borderColor: !scrollFocused && !editingName && selected?.is_online ? "#6ea8fe" : undefined, padding: 1 }}>
+          <textarea
+            key={selectedPeerId ?? "no-peer"}
+            ref={composerRef}
+            initialValue={selectedPeerId ? drafts[selectedPeerId] ?? "" : ""}
+            placeholder={selected?.is_online ? "Write a message" : "Select an online peer"}
+            focused={Boolean(selected?.is_online) && !editingName && !scrollFocused && !isSending}
             onMouseDown={() => setScrollFocused(false)}
-            onInput={setDraft}
+            onContentChange={() => {
+              const content = composerRef.current?.plainText ?? ""
+              setDraftLength(content.length)
+              if (selectedPeerId) setDrafts((current) => ({ ...current, [selectedPeerId]: content }))
+            }}
             onSubmit={() => void send()}
-            maxLength={65536}
+            keyBindings={[
+              { name: "return", action: "submit" },
+              { name: "return", meta: true, action: "newline" },
+            ]}
+            height={3}
+            wrapMode="word"
+            focusedBackgroundColor="#182437"
+            selectionBg="#365b85"
           />
+          <text fg={draftLength > 64 * 1024 ? "#ff7777" : "#888888"}>
+            {isSending ? "Sending..." : `${draftLength.toLocaleString()} / 65,536 bytes`}
+          </text>
         </box>
-        <text fg="#888888">{status}</text>
+        <text fg={status.includes("error") || status.includes("lost") || status.includes("exceeds") ? "#ff7777" : "#888888"}>{status}</text>
       </box>
     </box>
   )

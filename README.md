@@ -34,7 +34,10 @@ bun run dev
 Peers refresh automatically. Use `Ctrl+Up` and `Ctrl+Down` to select a peer,
 or click a peer with the mouse. The conversation supports mouse scrolling,
 timestamps, delivery state, and unread counts. Type a message and press `Enter`
-to send. Use `Ctrl+N` to change your display name. Press `Ctrl+C` to quit.
+to send, or use `Alt+Enter` to add a line. Use `Page Up`/`Page Down` to scroll
+history, `End` to jump to the latest message, and `Ctrl+N` to change your display
+name. If the backend disconnects, the TUI displays a warning and closes. Press
+`Ctrl+C` to quit.
 
 ### CLI
 
