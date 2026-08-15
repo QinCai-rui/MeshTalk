@@ -20,6 +20,7 @@ class SettingsControlSetupTest(unittest.TestCase):
 
         self.assertEqual(settings.control_url, "")
         self.assertFalse(settings.control_setup_dismissed)
+        self.assertFalse(settings.identity_setup_dismissed)
 
     def test_dismissed_setup_persists_without_a_control_url(self):
         settings = Settings(self.path)
@@ -38,6 +39,15 @@ class SettingsControlSetupTest(unittest.TestCase):
 
         self.assertEqual(loaded.control_url, "wss://control.example/v1/rendezvous")
         self.assertTrue(loaded.control_setup_dismissed)
+
+    def test_identity_setup_dismissal_persists_independently(self):
+        settings = Settings(self.path)
+        settings.dismiss_identity_setup()
+
+        loaded = Settings(self.path)
+
+        self.assertTrue(loaded.identity_setup_dismissed)
+        self.assertFalse(loaded.control_setup_dismissed)
 
     def test_environment_control_url_does_not_mutate_persisted_settings(self):
         settings = Settings(self.path)

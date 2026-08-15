@@ -53,7 +53,7 @@ type Dialog =
   | { kind: "room-join" }
   | { kind: "room-created"; roomId: string; invite: string; copied: boolean; created?: boolean }
   | { kind: "room-detail"; room: RoomStatus }
-  | { kind: "rename" }
+  | { kind: "rename"; firstRun?: boolean }
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -141,7 +141,11 @@ function ChatApp() {
       await refreshPeers()
       const control = await ipc.send("control")
       if (control.error) throw new Error(control.error)
-      if (!control.url && !control.setup_dismissed) setDialog({ kind: "control", firstRun: true })
+      if (!(response.setup_dismissed as boolean)) {
+        setDialog({ kind: "rename", firstRun: true })
+      } else if (!control.url && !control.setup_dismissed) {
+        setDialog({ kind: "control", firstRun: true })
+      }
       setStatus(DEFAULT_STATUS)
     }).catch((error) => {
       if (!backendDisconnected.current) {
@@ -326,7 +330,7 @@ function ChatApp() {
   }
 
   function goBack() {
-    if (!dialog || dialog.kind === "commands" || (dialog.kind === "control" && dialog.firstRun)) {
+    if (!dialog || dialog.kind === "commands" || (dialog.kind === "control" && dialog.firstRun) || (dialog.kind === "rename" && dialog.firstRun)) {
       closeDialog()
     } else if (dialog.kind === "control-custom") {
       showDialog({ kind: "control", firstRun: dialog.firstRun })
@@ -623,7 +627,20 @@ function ChatApp() {
       setIdentity((current) => current ? { ...current, display_name: displayName } : current)
       setNameDraft(displayName)
       setEditingName(false)
-      if (action !== undefined) closeDialog()
+      if (action !== undefined && dialog?.kind === "rename" && dialog.firstRun) {
+        const control = await ipc.send("control")
+        if (control.error) throw new Error(control.error)
+        if (dialogAction.current !== action) return
+        if (control.url) {
+          setDialog({ kind: "control-status", control: control as ControlStatus })
+        } else if (!control.setup_dismissed) {
+          setDialog({ kind: "control", firstRun: true })
+        } else {
+          closeDialog()
+        }
+      } else if (action !== undefined) {
+        closeDialog()
+      }
       showStatus("Display name updated and shared with connected peers.")
     } catch (error) {
       if (!backendDisconnected.current) {

@@ -59,6 +59,7 @@ class Settings:
         self.path = path
         self._control_url = ""
         self._control_setup_dismissed = False
+        self._identity_setup_dismissed = False
         self._stun_host = DEFAULT_STUN_HOST
         self._stun_port = DEFAULT_STUN_PORT
         self.rooms: dict[str, Room] = {}
@@ -90,6 +91,14 @@ class Settings:
 
     def dismiss_control_setup(self) -> None:
         self._control_setup_dismissed = True
+        self.save()
+
+    @property
+    def identity_setup_dismissed(self) -> bool:
+        return self._identity_setup_dismissed
+
+    def dismiss_identity_setup(self) -> None:
+        self._identity_setup_dismissed = True
         self.save()
 
     @staticmethod
@@ -126,6 +135,7 @@ class Settings:
             "version": 1,
             "control_url": self._control_url,
             "control_setup_dismissed": self._control_setup_dismissed,
+            "identity_setup_dismissed": self._identity_setup_dismissed,
             "stun_server": {"host": self._stun_host, "port": self._stun_port},
             "rooms": [
                 {"room_id": _encode(room.room_id), "secret": _encode(room.secret)}
@@ -146,6 +156,7 @@ class Settings:
             raise ValueError("Unsupported settings version")
         self._control_url = data.get("control_url", "")
         self._control_setup_dismissed = bool(data.get("control_setup_dismissed", False))
+        self._identity_setup_dismissed = bool(data.get("identity_setup_dismissed", False))
         if self._control_url:
             self._control_url = self._validate_control_url(self._control_url)
         stun = data.get("stun_server", {})

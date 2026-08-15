@@ -114,6 +114,7 @@ async def main(debug: bool = False) -> None:
         return {
             "peer_id": identity.peer_id,
             "display_name": identity.display_name,
+            "setup_dismissed": settings.identity_setup_dismissed or identity.display_name != "Anonymous",
         }
 
     async def handle_status(req: dict) -> dict:
@@ -151,6 +152,7 @@ async def main(debug: bool = False) -> None:
         display_name = Identity.normalize_display_name(req.get("display_name"))
         identity.display_name = display_name
         identity.save(DATA_DIR)
+        settings.dismiss_identity_setup()
         await peer_manager.broadcast_profile_update()
         return {"display_name": display_name}
 
