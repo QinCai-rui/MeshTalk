@@ -3,6 +3,9 @@ import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@op
 import { useEffect, useRef, useState } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 
+const MIN_COMPOSER_HEIGHT = 3
+const MAX_COMPOSER_HEIGHT = 8
+
 type Peer = {
   peer_id: string
   display_name: string
@@ -33,6 +36,7 @@ function ChatApp() {
   const [messages, setMessages] = useState<Message[]>([])
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [draftLength, setDraftLength] = useState(0)
+  const [composerHeight, setComposerHeight] = useState(MIN_COMPOSER_HEIGHT)
   const [isSending, setIsSending] = useState(false)
   const [nameDraft, setNameDraft] = useState("")
   const [editingName, setEditingName] = useState(false)
@@ -126,10 +130,12 @@ function ChatApp() {
     if (!selectedPeerId) {
       setMessages([])
       setDraftLength(0)
+      setComposerHeight(MIN_COMPOSER_HEIGHT)
       return
     }
     setScrollFocused(false)
     setDraftLength((drafts[selectedPeerId] ?? "").length)
+    setComposerHeight(MIN_COMPOSER_HEIGHT)
     setPeers((current) => current.map((peer) =>
       peer.peer_id === selectedPeerId ? { ...peer, unread_count: 0 } : peer
     ))
@@ -142,6 +148,13 @@ function ChatApp() {
       }
     })
   }, [selectedPeerId])
+
+  useEffect(() => {
+    const composer = composerRef.current
+    if (composer) {
+      setComposerHeight(Math.min(MAX_COMPOSER_HEIGHT, Math.max(MIN_COMPOSER_HEIGHT, composer.virtualLineCount)))
+    }
+  }, [selectedPeerId, width])
 
   useKeyboard((key) => {
     if (key.name === "escape" && editingName) {
@@ -210,6 +223,7 @@ function ChatApp() {
       }
       setDrafts((current) => ({ ...current, [recipientId]: "" }))
       setDraftLength(0)
+      setComposerHeight(MIN_COMPOSER_HEIGHT)
       setStatus("Message sent. Waiting for delivery confirmation.")
     } catch (error) {
       if (!backendDisconnected.current) {
@@ -335,8 +349,10 @@ function ChatApp() {
             focused={Boolean(selected?.is_online) && !editingName && !scrollFocused && !isSending}
             onMouseDown={() => setScrollFocused(false)}
             onContentChange={() => {
-              const content = composerRef.current?.plainText ?? ""
+              const composer = composerRef.current
+              const content = composer?.plainText ?? ""
               setDraftLength(content.length)
+              setComposerHeight(Math.min(MAX_COMPOSER_HEIGHT, Math.max(MIN_COMPOSER_HEIGHT, composer?.virtualLineCount ?? 0)))
               if (selectedPeerId) setDrafts((current) => ({ ...current, [selectedPeerId]: content }))
             }}
             onSubmit={() => void send()}
@@ -344,7 +360,7 @@ function ChatApp() {
               { name: "return", action: "submit" },
               { name: "return", meta: true, action: "newline" },
             ]}
-            height={3}
+            height={composerHeight}
             wrapMode="word"
             selectionBg="#365b85"
           />
