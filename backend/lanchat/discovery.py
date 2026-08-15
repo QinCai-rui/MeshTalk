@@ -32,6 +32,7 @@ class DiscoveryService:
         self._transport: asyncio.DatagramTransport | None = None
         self._protocol: DiscoveryProtocol | None = None
         self._running = False
+        self._known_addresses: dict[str, tuple[str, int]] = {}
 
     async def start(self) -> None:
         self._running = True
@@ -82,7 +83,10 @@ class DiscoveryService:
             logger.debug("Unknown protocol version from %s", packet.peer_id)
             return
 
-        logger.info("Discovered peer %s at %s:%d", packet.peer_id, addr[0], packet.tcp_port)
+        address = (addr[0], packet.tcp_port)
+        if self._known_addresses.get(packet.peer_id) != address:
+            self._known_addresses[packet.peer_id] = address
+            logger.info("Discovered peer %s at %s:%d", packet.peer_id, *address)
         await self.on_peer_found(packet.peer_id, addr[0], packet.tcp_port)
 
 

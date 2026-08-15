@@ -104,9 +104,11 @@ function ChatApp() {
       <box title="Peers" style={{ border: true, width: 30, flexDirection: "column", padding: 1 }}>
         {!peers.length && <text fg="#888888">No peers discovered</text>}
         {peers.map((peer) => (
-          <text key={peer.peer_id} fg={peer.is_online ? "#66dd88" : "#888888"}>
-            {peer.peer_id === selectedPeerId ? "> " : "  "}{peer.display_name} {peer.is_online ? "*" : "-"}
-          </text>
+          <box key={peer.peer_id} onMouseDown={() => setSelectedPeerId(peer.peer_id)}>
+            <text fg={peer.is_online ? "#66dd88" : "#888888"}>
+              {peer.peer_id === selectedPeerId ? "> " : "  "}{peer.display_name} {peer.is_online ? "*" : "-"}
+            </text>
+          </box>
         ))}
       </box>
 
@@ -138,5 +140,5 @@ function ChatApp() {
   )
 }
 
-const renderer = await createCliRenderer({ exitOnCtrlC: true })
+const renderer = await createCliRenderer({ exitOnCtrlC: true, useMouse: true })
 createRoot(renderer).render(<ChatApp />)

@@ -29,7 +29,8 @@ bun run dev
 ```
 
 Peers refresh automatically. Use `Ctrl+Up` and `Ctrl+Down` to select a peer,
-type a message, and press `Enter` to send. Press `Ctrl+C` to quit.
+or click a peer with the mouse. Type a message and press `Enter` to send.
+Press `Ctrl+C` to quit.
 
 ### CLI
 
