@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 
 const MIN_COMPOSER_HEIGHT = 3
-const MAX_COMPOSER_HEIGHT = 8
+const MAX_COMPOSER_HEIGHT = 5
 const MAX_MESSAGE_BYTES = 30 * 1024
 const DEFAULT_STATUS = "Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+N: rename  Ctrl+C: quit"
 
@@ -441,7 +441,11 @@ function ChatApp() {
           </scrollbox>
         </box>
 
-        <box title={selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: peer offline"} style={{ border: true, borderColor: !scrollFocused && !editingName && selected?.is_online ? "#6ea8fe" : undefined, padding: 1 }}>
+        <box
+          title={selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: peer offline"}
+          bottomTitle={isSending ? "Sending..." : `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`}
+          style={{ border: true, borderColor: draftLength > MAX_MESSAGE_BYTES ? "#ff7777" : !scrollFocused && !editingName && selected?.is_online ? "#6ea8fe" : undefined, flexShrink: 0, flexDirection: "column", overflow: "hidden", padding: 1 }}
+        >
           <textarea
             key={selectedPeerId ?? "no-peer"}
             ref={composerRef}
@@ -463,11 +467,10 @@ function ChatApp() {
             ]}
             height={composerHeight}
             wrapMode="word"
+            overflow="hidden"
+            scrollMargin={1}
             selectionBg="#365b85"
           />
-          <text fg={draftLength > MAX_MESSAGE_BYTES ? "#ff7777" : "#888888"}>
-            {isSending ? "Sending..." : `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`}
-          </text>
         </box>
         <text fg={status.includes("error") || status.includes("lost") || status.includes("exceeds") ? "#ff7777" : "#888888"}>{status}</text>
       </box>
