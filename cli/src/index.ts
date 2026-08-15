@@ -3,7 +3,7 @@ import { IPCClient, type IPCResponse } from "../../common/ipc-client";
 const USAGE = `Usage: lanchat-cli <command> [args]
 
 Commands:
-  identity                    Show this peer's identity
+  identity [display-name]     Show or change this peer's display name
   status                      Show connected peers
   peers                       List discovered peers
   messages <peer-id>          Show conversation history
@@ -42,6 +42,12 @@ async function main(): Promise<void> {
 
   try {
     if (command === "identity") {
+      if (args.length) {
+        const response = await ipc.send("set_display_name", { display_name: args.join(" ") });
+        if (hasError(response)) return;
+        console.log(`Display name updated: ${response.display_name}`);
+        return;
+      }
       const response = await ipc.send("identity");
       if (hasError(response)) return;
       console.log(`Peer ID: ${response.peer_id}`);

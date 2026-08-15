@@ -58,3 +58,25 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         ) as cursor:
             row = await cursor.fetchone()
         self.assertEqual(row[0], 1)
+
+    async def test_authenticated_profile_update_is_persisted(self):
+        initiator, recipient, port = (
+            (self.manager_a, self.identity_b, 34992)
+            if self.identity_a.peer_id < self.identity_b.peer_id
+            else (self.manager_b, self.identity_a, 34991)
+        )
+        await initiator.connect_to_peer(recipient.peer_id, "127.0.0.1", port)
+        await asyncio.sleep(0.05)
+
+        local_identity = self.identity_a if initiator is self.manager_a else self.identity_b
+        remote_manager = self.manager_b if initiator is self.manager_a else self.manager_a
+        remote_db = self.db_b if initiator is self.manager_a else self.db_a
+        local_identity.display_name = "Updated Name"
+        await initiator.broadcast_profile_update()
+        await asyncio.sleep(0.05)
+
+        peer = remote_manager.get_connected_peer(local_identity.peer_id)
+        self.assertIsNotNone(peer)
+        self.assertEqual(peer.display_name, "Updated Name")
+        stored_peer = await remote_db.get_peer(local_identity.peer_id)
+        self.assertEqual(stored_peer["display_name"], "Updated Name")

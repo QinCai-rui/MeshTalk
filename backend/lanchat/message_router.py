@@ -21,9 +21,10 @@ MESSAGE_EXPIRY = 86400
 
 
 class MessageRouter:
-    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None) -> None:
+    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None) -> None:
         self.identity, self.peer_manager, self.db = identity, peer_manager, db
         self.on_received = on_received
+        self.on_delivered = on_delivered
 
     async def send_message(self, recipient_id: str, plaintext: bytes) -> str:
         if len(plaintext) > 64 * 1024:
@@ -39,6 +40,7 @@ class MessageRouter:
             "message_id": message.message_id, "sender_id": message.sender_id, "recipient_id": message.recipient_id,
             "content": plaintext.decode("utf-8"), "encrypted_content": message.encrypted_content,
             "created_at": message.created_at, "expires_at": message.expires_at, "hop_count": 0, "max_hops": 0,
+            "read_at": now,
         })
         await self.db.mark_message_seen(message.message_id)
         await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE, message.encode()))
@@ -48,7 +50,10 @@ class MessageRouter:
         if packet.type == PacketType.MESSAGE:
             await self._handle_message(peer, packet)
         elif packet.type == PacketType.MESSAGE_ACK:
-            await self.db.mark_message_delivered(packet.payload.decode("ascii"))
+            message_id = packet.payload.decode("ascii")
+            await self.db.mark_message_delivered(message_id)
+            if self.on_delivered:
+                await self.on_delivered(message_id)
 
     async def _handle_message(self, peer: PeerConnection, packet: Packet) -> None:
         message = MessagePayload.decode(packet.payload)
@@ -74,7 +79,7 @@ class MessageRouter:
             "message_id": message.message_id, "sender_id": message.sender_id, "recipient_id": message.recipient_id,
             "content": content, "encrypted_content": message.encrypted_content,
             "created_at": message.created_at, "expires_at": message.expires_at,
-            "hop_count": 0, "max_hops": 0,
+            "hop_count": 0, "max_hops": 0, "read_at": None,
         })
         await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE_ACK, message.message_id.encode("ascii")))
         logger.info("Received encrypted message %s from %s", message.message_id, peer.peer_id)

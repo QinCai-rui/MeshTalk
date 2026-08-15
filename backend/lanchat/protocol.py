@@ -7,9 +7,10 @@ Packet types:
   HANDSHAKE_ACK  0x02
   MESSAGE        0x03
   MESSAGE_ACK    0x04
-  PING           0x05
-  PONG           0x06
-  GOODBYE        0x07
+    PING           0x05
+    PONG           0x06
+    GOODBYE        0x07
+    PROFILE        0x08
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ class PacketType(enum.IntEnum):
     PING = 0x05
     PONG = 0x06
     GOODBYE = 0x07
+    PROFILE = 0x08
 
 
 @dataclass
@@ -136,6 +138,40 @@ class HandshakePayload:
             raise ValueError("Invalid handshake public key length")
         if len(payload.nonce) != 32 or len(payload.signature) != 64:
             raise ValueError("Invalid handshake nonce or signature")
+        return payload
+
+
+@dataclass
+class ProfilePayload:
+    """An authenticated display-name update for an established peer connection."""
+
+    peer_id: str
+    display_name: str
+    signature: bytes
+
+    def signed_bytes(self) -> bytes:
+        return json.dumps({
+            "peer_id": self.peer_id,
+            "display_name": self.display_name,
+        }, separators=(",", ":"), sort_keys=True).encode()
+
+    def encode(self) -> bytes:
+        return json.dumps({
+            "peer_id": self.peer_id,
+            "display_name": self.display_name,
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> ProfilePayload:
+        obj = json.loads(data)
+        payload = cls(
+            peer_id=obj["peer_id"],
+            display_name=obj["display_name"],
+            signature=bytes.fromhex(obj["signature"]),
+        )
+        if len(payload.signature) != 64:
+            raise ValueError("Invalid profile signature")
         return payload
 
 

@@ -14,10 +14,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .database import Database
 from .identity import Identity
-from .protocol import HEADER_SIZE, HandshakePayload, Packet, PacketType, TCP_PORT
+from .protocol import HEADER_SIZE, HandshakePayload, Packet, PacketType, ProfilePayload, TCP_PORT
 
 logger = logging.getLogger(__name__)
 HANDSHAKE_TIMEOUT = 10
+
+
+def _key_fingerprint(key: bytes) -> str:
+    return hashlib.sha256(key).hexdigest()[:16]
 
 
 class PeerState(enum.Enum):
@@ -119,7 +123,22 @@ class PeerManager:
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
         return payload
 
+    def _profile_payload(self) -> ProfilePayload:
+        payload = ProfilePayload(self.identity.peer_id, self.identity.display_name, b"")
+        payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+        return payload
+
+    async def broadcast_profile_update(self) -> None:
+        """Share a signed name change with peers already connected to this backend."""
+        packet = Packet(PacketType.PROFILE, self._profile_payload().encode())
+        for peer in self.get_connected_peers():
+            try:
+                await self._send_packet(peer, packet)
+            except ConnectionError:
+                logger.warning("Could not send profile update to %s", peer.peer_id)
+
     async def _outbound_handshake(self, peer: PeerConnection) -> None:
+        logger.debug("Starting authenticated key exchange with %s at %s:%d", peer.peer_id, peer.address, peer.tcp_port)
         await self._send_packet(peer, Packet(PacketType.HANDSHAKE, self._handshake_payload().encode()))
         packet = await self._recv_packet(peer)
         if packet is None or packet.type != PacketType.HANDSHAKE_ACK:
@@ -127,6 +146,7 @@ class PeerManager:
         self._apply_handshake(peer, HandshakePayload.decode(packet.payload), expected_peer_id=peer.peer_id)
 
     async def _inbound_handshake(self, peer: PeerConnection) -> None:
+        logger.debug("Waiting for authenticated key exchange from %s:%d", peer.address, peer.tcp_port)
         packet = await self._recv_packet(peer)
         if packet is None or packet.type != PacketType.HANDSHAKE:
             raise ValueError("Expected handshake")
@@ -142,9 +162,15 @@ class PeerManager:
         except InvalidSignature as exc:
             raise ValueError("Invalid handshake signature") from exc
         peer.peer_id = peer_id
-        peer.display_name = payload.display_name
+        peer.display_name = Identity.normalize_display_name(payload.display_name)
         peer.signing_public_key = payload.signing_public_key
         peer.encryption_public_key = payload.encryption_public_key
+        logger.debug(
+            "Authenticated key exchange with %s: signing=%s encryption=%s",
+            peer.peer_id,
+            _key_fingerprint(peer.signing_public_key),
+            _key_fingerprint(peer.encryption_public_key),
+        )
 
     def _start_receive_loop(self, peer: PeerConnection) -> None:
         task = asyncio.create_task(self._receive_loop(peer))
@@ -162,12 +188,31 @@ class PeerManager:
                     await self._send_packet(peer, Packet(PacketType.PONG))
                 elif packet.type == PacketType.GOODBYE:
                     break
+                elif packet.type == PacketType.PROFILE:
+                    await self._apply_profile_update(peer, packet)
                 else:
                     await self.on_packet(peer, packet)
         finally:
             peer.state = PeerState.DISCONNECTED
             if peer.peer_id:
                 await self.db.set_peer_online(peer.peer_id, False)
+
+    async def _apply_profile_update(self, peer: PeerConnection, packet: Packet) -> None:
+        if peer.signing_public_key is None or peer.encryption_public_key is None:
+            raise ValueError("Profile update received before authentication")
+        payload = ProfilePayload.decode(packet.payload)
+        if payload.peer_id != peer.peer_id:
+            raise ValueError("Profile update peer ID does not match connection")
+        try:
+            Ed25519PublicKey.from_public_bytes(peer.signing_public_key).verify(
+                payload.signature, payload.signed_bytes()
+            )
+        except InvalidSignature as exc:
+            raise ValueError("Invalid profile signature") from exc
+        peer.display_name = Identity.normalize_display_name(payload.display_name)
+        await self.db.upsert_peer(
+            peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key
+        )
 
     async def send_packet(self, peer: PeerConnection, packet: Packet) -> None:
         await self._send_packet(peer, packet)

@@ -55,6 +55,20 @@ class Identity:
     def public_key_bytes(self) -> bytes:
         return self.encryption_public_key_bytes()
 
+    @staticmethod
+    def normalize_display_name(display_name: str) -> str:
+        """Validate a name before it is persisted or shared with peers."""
+        if not isinstance(display_name, str):
+            raise ValueError("display_name must be a string")
+        display_name = display_name.strip()
+        if not display_name:
+            raise ValueError("display_name cannot be empty")
+        if len(display_name) > 48:
+            raise ValueError("display_name must be 48 characters or fewer")
+        if any(ord(char) < 32 or ord(char) == 127 for char in display_name):
+            raise ValueError("display_name cannot contain control characters")
+        return display_name
+
     def save(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
         key_path = path / "identity.json"

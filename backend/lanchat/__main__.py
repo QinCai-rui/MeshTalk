@@ -24,9 +24,9 @@ logger = logging.getLogger("lanchat")
 DATA_DIR = Path.home() / ".lanchat"
 
 
-async def main() -> None:
+async def main(debug: bool = False) -> None:
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if debug else logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
@@ -58,12 +58,14 @@ async def main() -> None:
 
     async def handle_peers(req: dict) -> dict:
         peers = await db.get_all_peers()
+        unread_counts = await db.get_unread_counts(identity.peer_id)
         return {"peers": [
             {
                 "peer_id": peer["peer_id"],
                 "display_name": peer["display_name"],
                 "last_seen": peer["last_seen"],
                 "is_online": peer["is_online"],
+                "unread_count": unread_counts.get(peer["peer_id"], 0),
             }
             for peer in peers
         ]}
@@ -86,7 +88,16 @@ async def main() -> None:
         peer_id = req.get("peer_id")
         if not isinstance(peer_id, str) or not peer_id:
             return {"error": "peer_id required"}
-        return {"messages": await db.get_conversation(identity.peer_id, peer_id)}
+        messages = await db.get_conversation(identity.peer_id, peer_id)
+        await db.mark_conversation_read(identity.peer_id, peer_id)
+        return {"messages": messages}
+
+    async def handle_set_display_name(req: dict) -> dict:
+        display_name = Identity.normalize_display_name(req.get("display_name"))
+        identity.display_name = display_name
+        identity.save(DATA_DIR)
+        await peer_manager.broadcast_profile_update()
+        return {"display_name": display_name}
 
     ipc_handlers = {
         "send": handle_send,
@@ -94,9 +105,11 @@ async def main() -> None:
         "identity": handle_identity,
         "status": handle_status,
         "messages": handle_messages,
+        "set_display_name": handle_set_display_name,
     }
     ipc = IPCServer(ipc_handlers)
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
+    router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
 
     await discovery.start()
     await peer_manager.start()
@@ -130,7 +143,8 @@ async def main() -> None:
 
 
 def run() -> None:
-    asyncio.run(main())
+    debug = "--debug" in sys.argv[1:]
+    asyncio.run(main(debug))
 
 
 if __name__ == "__main__":

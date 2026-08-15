@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS messages (
     hop_count INTEGER NOT NULL DEFAULT 0,
     max_hops INTEGER NOT NULL DEFAULT 10,
     delivered INTEGER NOT NULL DEFAULT 0,
-    stored INTEGER NOT NULL DEFAULT 0
+    stored INTEGER NOT NULL DEFAULT 0,
+    read_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS outgoing_queue (
@@ -68,6 +69,9 @@ class Database:
         columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(peers)")}
         if "signing_public_key" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN signing_public_key BLOB")
+        message_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(messages)")}
+        if "read_at" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN read_at REAL")
         await self._db.commit()
 
     async def close(self) -> None:
@@ -114,6 +118,16 @@ class Database:
         async with self._db.execute("SELECT * FROM peers") as cursor:
             return [dict(row) async for row in cursor]
 
+    async def get_unread_counts(self, local_peer_id: str) -> dict[str, int]:
+        async with self._db.execute(
+            """SELECT sender_id, COUNT(*) AS unread_count
+               FROM messages
+               WHERE recipient_id = ? AND read_at IS NULL
+               GROUP BY sender_id""",
+            (local_peer_id,),
+        ) as cursor:
+            return {row["sender_id"]: row["unread_count"] async for row in cursor}
+
     async def get_conversation(
         self, local_peer_id: str, remote_peer_id: str, limit: int = 200
     ) -> list[dict]:
@@ -136,9 +150,9 @@ class Database:
     async def save_message(self, msg: dict) -> None:
         await self._db.execute(
             """INSERT OR IGNORE INTO messages
-               (message_id, sender_id, recipient_id, content, encrypted_content,
-                created_at, expires_at, hop_count, max_hops)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (message_id, sender_id, recipient_id, content, encrypted_content,
+                 created_at, expires_at, hop_count, max_hops, read_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 msg["message_id"],
                 msg["sender_id"],
@@ -149,7 +163,16 @@ class Database:
                 msg["expires_at"],
                 msg["hop_count"],
                 msg["max_hops"],
+                msg.get("read_at"),
             ),
+        )
+        await self._db.commit()
+
+    async def mark_conversation_read(self, local_peer_id: str, remote_peer_id: str) -> None:
+        await self._db.execute(
+            """UPDATE messages SET read_at = ?
+               WHERE sender_id = ? AND recipient_id = ? AND read_at IS NULL""",
+            (time.time(), remote_peer_id, local_peer_id),
         )
         await self._db.commit()
 
