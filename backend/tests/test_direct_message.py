@@ -60,6 +60,17 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
             row = await cursor.fetchone()
         self.assertEqual(row[0], 1)
 
+    async def test_remove_peer_deletes_saved_peer(self):
+        await self.db_a.upsert_peer(
+            self.identity_b.peer_id,
+            self.identity_b.display_name,
+            self.identity_b.encryption_public_key_bytes(),
+            self.identity_b.signing_public_key_bytes(),
+        )
+        await self.db_a.remove_peer(self.identity_b.peer_id)
+
+        self.assertIsNone(await self.db_a.get_peer(self.identity_b.peer_id))
+
     async def test_authenticated_profile_update_is_persisted(self):
         initiator, recipient, port = (
             (self.manager_a, self.identity_b, 34992)

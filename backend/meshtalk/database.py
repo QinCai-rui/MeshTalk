@@ -118,6 +118,10 @@ class Database:
         async with self._db.execute("SELECT * FROM peers") as cursor:
             return [dict(row) async for row in cursor]
 
+    async def remove_peer(self, peer_id: str) -> None:
+        await self._db.execute("DELETE FROM peers WHERE peer_id = ?", (peer_id,))
+        await self._db.commit()
+
     async def get_unread_counts(self, local_peer_id: str) -> dict[str, int]:
         async with self._db.execute(
             """SELECT sender_id, COUNT(*) AS unread_count

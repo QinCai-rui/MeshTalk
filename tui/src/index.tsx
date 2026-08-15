@@ -78,7 +78,7 @@ function ChatApp() {
       setIdentity(nextIdentity)
       setNameDraft(nextIdentity.display_name)
       await refreshPeers()
-      setStatus("Connected. Ctrl+Up/Down: select  PgUp/PgDn: scroll  Ctrl+N: rename  Ctrl+C: quit")
+      setStatus("Connected. Ctrl+Up/Down: select  Ctrl+Delete: remove offline  Ctrl+N: rename  Ctrl+C: quit")
     }).catch((error) => {
       if (!backendDisconnected.current) {
         setStatus(`Backend error: ${error instanceof Error ? error.message : String(error)}`)
@@ -169,6 +169,27 @@ function ChatApp() {
     }
   }, [selectedPeerId, width])
 
+  async function removeSelectedPeer() {
+    const peer = peers.find((item) => item.peer_id === selectedPeerId)
+    if (!peer) return
+    if (peer.is_online) {
+      setStatus("Disconnect from this peer before removing it.")
+      return
+    }
+    try {
+      const response = await ipc.send("remove_peer", { peer_id: peer.peer_id })
+      if (response.error) throw new Error(response.error)
+      const remaining = peers.filter((item) => item.peer_id !== peer.peer_id)
+      setPeers(remaining)
+      setSelectedPeerId(remaining[0]?.peer_id)
+      setStatus(`Removed ${peer.display_name} from the peer list.`)
+    } catch (error) {
+      if (!backendDisconnected.current) {
+        setStatus(`Remove error: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
+
   useKeyboard((key) => {
     if (key.name === "escape" && editingName) {
       setEditingName(false)
@@ -179,6 +200,10 @@ function ChatApp() {
     if (key.ctrl && key.name === "n") {
       setNameDraft(identity?.display_name ?? "")
       setEditingName(true)
+      return
+    }
+    if (key.ctrl && key.name === "delete") {
+      void removeSelectedPeer()
       return
     }
     if ((key.name === "up" || key.name === "down") && key.ctrl && peers.length) {
@@ -287,7 +312,7 @@ function ChatApp() {
             </>
           )}
         </box>
-        <box title={`Peers: ${onlineCount} online`} style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", padding: 1 }}>
+        <box title={`Peers: ${onlineCount} online`} bottomTitle="Ctrl+Delete removes offline" style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", padding: 1 }}>
           {!peers.length && <text fg="#888888">No peers discovered</text>}
           <scrollbox
             style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}

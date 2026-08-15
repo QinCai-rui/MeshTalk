@@ -78,6 +78,15 @@ async def main(debug: bool = False) -> None:
             for peer in peers
         ]}
 
+    async def handle_remove_peer(req: dict) -> dict:
+        peer_id = req.get("peer_id")
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
+        if peer_manager.get_connected_peer(peer_id):
+            return {"error": "Cannot remove a connected peer"}
+        await db.remove_peer(peer_id)
+        return {"peer_id": peer_id}
+
     async def handle_identity(req: dict) -> dict:
         return {
             "peer_id": identity.peer_id,
@@ -168,6 +177,7 @@ async def main(debug: bool = False) -> None:
     ipc_handlers = {
         "send": handle_send,
         "peers": handle_peers,
+        "remove_peer": handle_remove_peer,
         "identity": handle_identity,
         "status": handle_status,
         "messages": handle_messages,
