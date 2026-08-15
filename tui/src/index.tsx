@@ -110,7 +110,7 @@ function ChatApp() {
   function showStatus(message: string) {
     if (statusReset.current) clearTimeout(statusReset.current)
     setStatus(message)
-    statusReset.current = setTimeout(() => setStatus(DEFAULT_STATUS), 5_000)
+    statusReset.current = setTimeout(() => setStatus(DEFAULT_STATUS), 2_000)
   }
 
   function showCopyToast() {
