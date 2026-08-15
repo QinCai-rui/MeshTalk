@@ -39,6 +39,11 @@ together in the extracted directory: `meshtalk`, `meshtalk-backend`,
 `meshtalk-cli`, and `meshtalk-tui` (all end in `.exe` on Windows). Only the
 `meshtalk` launcher is invoked directly.
 
+The first launch offers guided remote-discovery setup. Press `Ctrl+P` at any
+time to open commands for control-server status and setup, private-room
+management, and changing your display name. Room invites can be pasted when
+joining and are copied to the clipboard when creating a room.
+
 ## Build From Source
 
 Source development requires [Bun](https://bun.sh) and
@@ -51,7 +56,7 @@ bun run meshtalk              # launches backend + TUI
 bun run meshtalk -- status    # CLI commands
 ```
 
-CLI commands:
+The CLI is optional. Equivalent commands are available for scripting:
 
 ```bash
 meshtalk status
@@ -82,15 +87,23 @@ Run the control service locally for development:
 bun run dev:control
 ```
 
-Configure a running backend and create a room:
+In the TUI, press `Ctrl+P`, select **Control server**, and choose the public
+server or enter a custom URL. Then select **Private rooms** to create a room or
+paste an invite. Created invites are copied to the clipboard automatically.
+
+For local control-service development, select **Use a custom server** and enter
+`ws://127.0.0.1:8787/v1/rendezvous`.
+
+The equivalent CLI flow is:
 
 ```bash
 meshtalk control set-url ws://127.0.0.1:8787/v1/rendezvous
 meshtalk room create
 ```
 
-Share the printed `meshtalk:` invite through a trusted channel. On another
-MeshTalk installation:
+Share the `meshtalk:` invite through a trusted channel. On another MeshTalk
+installation, paste it through **Ctrl+P > Private rooms > Join with an invite**,
+or use the CLI:
 
 ```bash
 meshtalk control set-url wss://control.example/v1/rendezvous

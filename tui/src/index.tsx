@@ -6,7 +6,8 @@ import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 const MIN_COMPOSER_HEIGHT = 3
 const MAX_COMPOSER_HEIGHT = 5
 const MAX_MESSAGE_BYTES = 30 * 1024
-const DEFAULT_STATUS = "Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+N: rename  Ctrl+C: quit"
+const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
+const DEFAULT_STATUS = "Ctrl+P: commands  Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+C: quit"
 
 function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
@@ -32,6 +33,27 @@ type Message = {
   created_at: number
   delivered?: number
 }
+type RoomStatus = {
+  room_id: string
+  members: number
+}
+type ControlStatus = {
+  url?: string
+  connected: boolean
+  setup_dismissed: boolean
+  stun_server: string
+  public_endpoint?: unknown[]
+}
+type Dialog =
+  | { kind: "commands" }
+  | { kind: "control"; firstRun?: boolean }
+  | { kind: "control-custom"; firstRun?: boolean }
+  | { kind: "control-status"; control: ControlStatus }
+  | { kind: "rooms"; rooms: RoomStatus[] }
+  | { kind: "room-join" }
+  | { kind: "room-created"; roomId: string; invite: string; copied: boolean; created?: boolean }
+  | { kind: "room-detail"; room: RoomStatus }
+  | { kind: "rename" }
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -55,7 +77,7 @@ function composerLimitColor(length: number): string | undefined {
 
 function ChatApp() {
   const renderer = useRenderer()
-  const { width } = useTerminalDimensions()
+  const { width, height } = useTerminalDimensions()
   const [ipc] = useState(() => new IPCClient())
   const [tuiClientId] = useState(() => crypto.randomUUID())
   const [peers, setPeers] = useState<Peer[]>([])
@@ -72,12 +94,18 @@ function ChatApp() {
   const [deliveredMessageIds, setDeliveredMessageIds] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState("Connecting to backend...")
   const [copyToast, setCopyToast] = useState(false)
+  const [dialog, setDialog] = useState<Dialog | null>(null)
+  const [dialogDraft, setDialogDraft] = useState("")
+  const [dialogError, setDialogError] = useState("")
+  const [dialogBusy, setDialogBusy] = useState(false)
   const scrollboxRef = useRef<ScrollBoxRenderable>(null)
   const composerRef = useRef<TextareaRenderable>(null)
   const backendDisconnected = useRef(false)
-  const statusReset = useRef<ReturnType<typeof setTimeout>>()
-  const copyToastReset = useRef<ReturnType<typeof setTimeout>>()
+  const statusReset = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const copyToastReset = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const clipboard = useRef<ReturnType<typeof createClipboard> | null>(null)
+  const dialogAction = useRef(0)
+  const dialogBusyRef = useRef(false)
 
   function showStatus(message: string) {
     if (statusReset.current) clearTimeout(statusReset.current)
@@ -111,6 +139,9 @@ function ChatApp() {
       const presence = await ipc.send("tui_presence", { client_id: tuiClientId, active: true })
       if (presence.error) throw new Error(presence.error)
       await refreshPeers()
+      const control = await ipc.send("control")
+      if (control.error) throw new Error(control.error)
+      if (!control.url && !control.setup_dismissed) setDialog({ kind: "control", firstRun: true })
       setStatus(DEFAULT_STATUS)
     }).catch((error) => {
       if (!backendDisconnected.current) {
@@ -255,7 +286,253 @@ function ChatApp() {
     }
   }
 
+  function closeDialog() {
+    dialogAction.current++
+    dialogBusyRef.current = false
+    setDialog(null)
+    setDialogDraft("")
+    setDialogError("")
+    setDialogBusy(false)
+  }
+
+  function showDialog(next: Dialog) {
+    dialogAction.current++
+    dialogBusyRef.current = false
+    setDialog(next)
+    setDialogDraft("")
+    setDialogError("")
+    setDialogBusy(false)
+  }
+
+  function beginDialogAction(): number | null {
+    if (dialogBusyRef.current) return null
+    dialogBusyRef.current = true
+    const action = ++dialogAction.current
+    setDialogBusy(true)
+    setDialogError("")
+    return action
+  }
+
+  function finishDialogAction(action: number) {
+    if (dialogAction.current !== action) return
+    dialogBusyRef.current = false
+    setDialogBusy(false)
+  }
+
+  function failDialogAction(action: number, error: unknown) {
+    if (dialogAction.current !== action) return
+    setDialogError(error instanceof Error ? error.message : String(error))
+    finishDialogAction(action)
+  }
+
+  function goBack() {
+    if (!dialog || dialog.kind === "commands" || (dialog.kind === "control" && dialog.firstRun)) {
+      closeDialog()
+    } else if (dialog.kind === "control-custom") {
+      showDialog({ kind: "control", firstRun: dialog.firstRun })
+    } else if (dialog.kind === "control-status") {
+      showDialog({ kind: "control" })
+    } else if (["room-join", "room-created", "room-detail"].includes(dialog.kind)) {
+      showDialog({ kind: "rooms", rooms: [] })
+      void loadRooms()
+    } else {
+      showDialog({ kind: "commands" })
+    }
+  }
+
+  async function loadControlStatus() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("control")
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setDialog({ kind: "control-status", control: response as ControlStatus })
+    } catch (error) {
+      failDialogAction(action, error)
+      return
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function loadRooms() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("rooms")
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setDialog({ kind: "rooms", rooms: response.rooms as RoomStatus[] })
+    } catch (error) {
+      failDialogAction(action, error)
+      return
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function configureControl(url: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("control", { url })
+      if (response.error) throw new Error(response.error)
+      const rooms = await ipc.send("rooms")
+      if (rooms.error) throw new Error(rooms.error)
+      if (dialogAction.current !== action) return
+      showStatus(`Control server set to ${response.url}.`)
+      setDialog({ kind: "rooms", rooms: rooms.rooms as RoomStatus[] })
+    } catch (error) {
+      failDialogAction(action, error)
+      return
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function dismissControlSetup() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("control", { dismiss_setup: true })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current === action) closeDialog()
+    } catch (error) {
+      failDialogAction(action, error)
+    }
+  }
+
+  async function createRoom() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("room_create")
+      if (response.error) throw new Error(response.error)
+      const invite = response.invite as string
+      let copied = false
+      try {
+        const result = await clipboard.current?.writeText(invite, {
+          destination: "best-available",
+        })
+        copied = result?.host.status === "written" || result?.terminal.status === "attempted"
+      } catch {}
+      if (dialogAction.current !== action) return
+      setDialog({ kind: "room-created", roomId: response.room_id as string, invite, copied, created: true })
+      showStatus("Private room created.")
+    } catch (error) {
+      failDialogAction(action, error)
+      return
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function joinRoom(invite: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("room_join", { invite: invite.trim() })
+      if (response.error) throw new Error(response.error)
+      const rooms = await ipc.send("rooms")
+      if (rooms.error) throw new Error(rooms.error)
+      if (dialogAction.current !== action) return
+      showStatus(`Joined room ${(response.room_id as string).slice(0, 12)}.`)
+      setDialog({ kind: "rooms", rooms: rooms.rooms as RoomStatus[] })
+    } catch (error) {
+      failDialogAction(action, error)
+      return
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function leaveRoom(roomId: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("room_leave", { room_id: roomId })
+      if (response.error) throw new Error(response.error)
+      const rooms = await ipc.send("rooms")
+      if (rooms.error) throw new Error(rooms.error)
+      if (dialogAction.current !== action) return
+      showStatus(`Left room ${roomId.slice(0, 12)}.`)
+      setDialog({ kind: "rooms", rooms: rooms.rooms as RoomStatus[] })
+    } catch (error) {
+      failDialogAction(action, error)
+      return
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function loadRoomInvite(roomId: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("room_invite", { room_id: roomId })
+      if (response.error) throw new Error(response.error)
+      const invite = response.invite as string
+      let copied = false
+      try {
+        const result = await clipboard.current?.writeText(invite, {
+          destination: "best-available",
+        })
+        copied = result?.host.status === "written" || result?.terminal.status === "attempted"
+      } catch {}
+      if (dialogAction.current !== action) return
+      setDialog({ kind: "room-created", roomId, invite, copied })
+    } catch (error) {
+      failDialogAction(action, error)
+      return
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function copyInvite(invite: string) {
+    try {
+      const result = await clipboard.current?.writeText(invite, {
+        destination: "best-available",
+      })
+      if (result?.host.status !== "written" && result?.terminal.status !== "attempted") {
+        throw new Error("No clipboard is available. Select and copy the invite text manually.")
+      }
+      setDialog((current) => current?.kind === "room-created" ? { ...current, copied: true } : current)
+      showCopyToast()
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  function runCommand(command: string) {
+    if (command === "control") {
+      showDialog({ kind: "control" })
+    } else if (command === "rooms") {
+      showDialog({ kind: "rooms", rooms: [] })
+      void loadRooms()
+    } else if (command === "rename") {
+      const displayName = identity?.display_name ?? ""
+      setNameDraft(displayName)
+      setDialogDraft(displayName)
+      setDialogError("")
+      setDialog({ kind: "rename" })
+    }
+  }
+
   useKeyboard((key) => {
+    if (dialog && dialogBusyRef.current) return
+    if (key.ctrl && key.name === "p") {
+      if (dialog?.kind === "commands") closeDialog()
+      else showDialog({ kind: "commands" })
+      return
+    }
+    if (dialog) {
+      if (key.name === "escape") {
+        goBack()
+      }
+      return
+    }
     if (key.name === "escape" && editingName) {
       setEditingName(false)
       setNameDraft(identity?.display_name ?? "")
@@ -337,19 +614,27 @@ function ChatApp() {
     }
   }
 
-  async function saveDisplayName() {
+  async function saveDisplayName(value = nameDraft) {
+    const action = dialog?.kind === "rename" ? beginDialogAction() : undefined
+    if (action === null) return
     try {
-      const response = await ipc.send("set_display_name", { display_name: nameDraft })
+      const response = await ipc.send("set_display_name", { display_name: value })
       if (response.error) throw new Error(response.error)
+      if (action !== undefined && dialogAction.current !== action) return
       const displayName = response.display_name as string
       setIdentity((current) => current ? { ...current, display_name: displayName } : current)
       setNameDraft(displayName)
       setEditingName(false)
+      if (action !== undefined) closeDialog()
       showStatus("Display name updated and shared with connected peers.")
     } catch (error) {
       if (!backendDisconnected.current) {
-        setStatus(`Name error: ${error instanceof Error ? error.message : String(error)}`)
+        const message = error instanceof Error ? error.message : String(error)
+        setStatus(`Name error: ${message}`)
+        if (action !== undefined) failDialogAction(action, error)
       }
+    } finally {
+      if (action !== undefined) finishDialogAction(action)
     }
   }
 
@@ -358,6 +643,8 @@ function ChatApp() {
   const sidebarWidth = width < 72 ? 22 : 32
   const compact = width < 72
   const limitColor = composerLimitColor(draftLength)
+  const dialogWidth = Math.min(68, Math.max(1, width - 4))
+  const dialogHeight = Math.min(20, Math.max(1, height - 4))
   return (
     <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
       <box title={`You: ${identity?.display_name ?? "..."}`} style={{ border: true, width: sidebarWidth, flexShrink: 0, flexDirection: "column", padding: 1, gap: 1 }}>
@@ -365,7 +652,7 @@ function ChatApp() {
           {editingName ? (
             <input
               value={nameDraft}
-              focused
+              focused={!dialog}
               placeholder="Display name"
               onInput={setNameDraft}
               onSubmit={() => void saveDisplayName()}
@@ -373,7 +660,7 @@ function ChatApp() {
             />
           ) : (
             <>
-              <text fg="#888888">Ctrl+N or click here to rename</text>
+              <text fg="#888888">Ctrl+P commands or click to rename</text>
               <text fg="#888888">{identity?.peer_id.slice(0, 12)}</text>
             </>
           )}
@@ -420,7 +707,7 @@ function ChatApp() {
           {selected && !selected.is_online && <text fg="#e0a34a">This peer is offline. Messages cannot be sent until it reconnects.</text>}
           <scrollbox
             ref={scrollboxRef}
-            focused={scrollFocused}
+            focused={scrollFocused && !dialog}
             onMouseDown={() => setScrollFocused(true)}
             style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, padding: 1 }}
             contentOptions={{ flexDirection: "column" }}
@@ -461,7 +748,7 @@ function ChatApp() {
             ref={composerRef}
             initialValue={selectedPeerId ? drafts[selectedPeerId] ?? "" : ""}
             placeholder={selected?.is_online ? "Write a message" : "Select an online peer"}
-            focused={Boolean(selected?.is_online) && !editingName && !scrollFocused && !isSending}
+            focused={Boolean(selected?.is_online) && !editingName && !scrollFocused && !isSending && !dialog}
             onMouseDown={() => setScrollFocused(false)}
             onContentChange={() => {
               const composer = composerRef.current
@@ -487,6 +774,182 @@ function ChatApp() {
       {copyToast && (
         <box style={{ position: "absolute", right: 2, top: 1, border: true, borderColor: "#66dd88", backgroundColor: "#18251d", paddingLeft: 1, paddingRight: 1 }}>
           <text fg="#66dd88">Copied to clipboard</text>
+        </box>
+      )}
+      {dialog && (
+        <box style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", backgroundColor: "#080b10", alignItems: "center", justifyContent: "center" }}>
+          <box
+            title={dialog.kind === "commands" ? "Commands" : dialog.kind.startsWith("control") ? "Control server" : dialog.kind === "rename" ? "Display name" : "Private rooms"}
+            bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
+            style={{ width: dialogWidth, height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
+          >
+            {dialog.kind === "commands" && (
+              <select
+                focused
+                height={Math.max(5, dialogHeight - 3)}
+                options={[
+                  { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
+                  { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
+                  { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
+                ]}
+                onSelect={(_, option) => option && runCommand(option.value as string)}
+                wrapSelection
+                showDescription
+              />
+            )}
+            {dialog.kind === "control" && (
+              <>
+                {dialog.firstRun && <text fg="#e0a34a">Set up remote discovery to connect outside your LAN. You can skip this for LAN-only chat.</text>}
+                <select
+                  focused
+                  height={Math.max(6, dialogHeight - 4)}
+                  options={[
+                    { name: "Use MeshTalk public server", description: PUBLIC_CONTROL_URL, value: "public" },
+                    { name: "Use a custom server", description: "Enter another secure WebSocket URL", value: "custom" },
+                    { name: "View connection status", description: "See the current URL, connection, STUN, and endpoint", value: "status" },
+                    ...(dialog.firstRun ? [{ name: "Continue with LAN only", description: "You can configure this later with Ctrl+P", value: "skip" }] : []),
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "public") void configureControl(PUBLIC_CONTROL_URL)
+                    else if (option?.value === "custom") showDialog({ kind: "control-custom", firstRun: dialog.firstRun })
+                    else if (option?.value === "status") void loadControlStatus()
+                    else if (option?.value === "skip") void dismissControlSetup()
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "control-custom" && (
+              <>
+                <text>Enter a `wss://` URL. Plain `ws://` is accepted only for localhost.</text>
+                <input
+                  focused
+                  value={dialogDraft}
+                  placeholder="wss://control.example/v1/rendezvous"
+                  onInput={setDialogDraft}
+                  onSubmit={(value) => void configureControl(typeof value === "string" ? value : dialogDraft)}
+                  maxLength={2048}
+                />
+                <text fg="#888888">Enter saves the server.</text>
+              </>
+            )}
+            {dialog.kind === "control-status" && (
+              <>
+                <text><span fg="#888888">Server: </span>{dialog.control.url ?? "Not configured"}</text>
+                <text><span fg="#888888">Connection: </span><span fg={dialog.control.connected ? "#66dd88" : "#e0a34a"}>{dialog.control.connected ? "Connected" : "Disconnected"}</span></text>
+                <text><span fg="#888888">STUN: </span>{dialog.control.stun_server}</text>
+                <text><span fg="#888888">Public endpoint: </span>{dialog.control.public_endpoint?.join(":") ?? "Not discovered"}</text>
+                <select
+                  focused
+                  height={5}
+                  options={[
+                    { name: "Change server", description: "Choose the public server or enter a custom URL", value: "change" },
+                    { name: "Back to commands", description: "Return to the command palette", value: "back" },
+                  ]}
+                  onSelect={(_, option) => option?.value === "change" ? showDialog({ kind: "control" }) : showDialog({ kind: "commands" })}
+                />
+              </>
+            )}
+            {dialog.kind === "rooms" && (
+              <>
+                <select
+                  focused
+                  height={Math.max(7, dialogHeight - 4)}
+                  options={[
+                    { name: "Create a private room", description: "Generate a secret invite and copy it", value: "create" },
+                    { name: "Join with an invite", description: "Paste a meshtalk: invite", value: "join" },
+                    ...dialog.rooms.map((room) => ({
+                      name: `Room ${room.room_id.slice(0, 12)}`,
+                      description: `${room.members} control connection${room.members === 1 ? "" : "s"} - view or leave`,
+                      value: room.room_id,
+                    })),
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "create") void createRoom()
+                    else if (option?.value === "join") showDialog({ kind: "room-join" })
+                    else {
+                      const room = dialog.rooms.find((item) => item.room_id === option?.value)
+                      if (room) showDialog({ kind: "room-detail", room })
+                    }
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+                {!dialog.rooms.length && <text fg="#888888">No joined rooms yet.</text>}
+              </>
+            )}
+            {dialog.kind === "room-join" && (
+              <>
+                <text>Paste the secret invite you received from another room member.</text>
+                <input
+                  focused
+                  value={dialogDraft}
+                  placeholder="meshtalk:..."
+                  onInput={setDialogDraft}
+                  onSubmit={(value) => void joinRoom(typeof value === "string" ? value : dialogDraft)}
+                  maxLength={4096}
+                />
+                <text fg="#888888">Enter joins the room. Invites are secrets.</text>
+              </>
+            )}
+            {dialog.kind === "room-created" && (
+              <>
+                <text fg="#66dd88">{dialog.created ? "Room created" : "Room invite"}</text>
+                <text><span fg="#888888">ID: </span>{dialog.roomId}</text>
+                <text wrapMode="word"><span fg="#888888">Invite: </span>{dialog.invite}</text>
+                <text fg={dialog.copied ? "#66dd88" : "#e0a34a"}>{dialog.copied ? "Copy requested. Paste once to confirm your terminal accepted it." : "Copy the invite before sharing it."}</text>
+                <select
+                  focused
+                  height={5}
+                  options={[
+                    { name: "Copy invite", description: "Copy the secret invite to the clipboard", value: "copy" },
+                    { name: "Back to rooms", description: "Manage your private rooms", value: "back" },
+                  ]}
+                  onSelect={(_, option) => option?.value === "copy" ? void copyInvite(dialog.invite) : void loadRooms()}
+                />
+              </>
+            )}
+            {dialog.kind === "room-detail" && (
+              <>
+                <text><span fg="#888888">Room ID: </span>{dialog.room.room_id}</text>
+                <text><span fg="#888888">Control connections: </span>{dialog.room.members}</text>
+                <text fg="#e0a34a">Leaving removes this room and its secret from this device.</text>
+                <select
+                  focused
+                  height={5}
+                  options={[
+                    { name: "Keep room", description: "Return without making changes", value: "keep" },
+                    { name: "Copy invite", description: "Reveal and copy this room's secret invite", value: "copy" },
+                    { name: "Leave room", description: "Permanently remove this room from this device", value: "leave" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "leave") void leaveRoom(dialog.room.room_id)
+                    else if (option?.value === "copy") void loadRoomInvite(dialog.room.room_id)
+                    else void loadRooms()
+                  }}
+                />
+              </>
+            )}
+            {dialog.kind === "rename" && (
+              <>
+                <text>Choose the name other peers will see.</text>
+                <input
+                  focused
+                  value={dialogDraft}
+                  placeholder="Display name"
+                  onInput={(value) => {
+                    setDialogDraft(value)
+                    setNameDraft(value)
+                  }}
+                  onSubmit={(value) => void saveDisplayName(typeof value === "string" ? value : dialogDraft)}
+                  maxLength={48}
+                />
+                <text fg="#888888">Enter saves and shares the name with connected peers.</text>
+              </>
+            )}
+            {dialogError && <text fg="#ff7777">{dialogError}</text>}
+          </box>
         </box>
       )}
     </box>

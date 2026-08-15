@@ -98,8 +98,10 @@ class PrivateRoomTest(unittest.TestCase):
             path = Path(temporary) / "settings.json"
             settings = Settings(path)
             room = settings.create_room()
+            settings.dismiss_control_setup()
             loaded = Settings(path)
             self.assertEqual(loaded.rooms[room.id], room)
+            self.assertTrue(loaded.control_setup_dismissed)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
 

@@ -162,10 +162,13 @@ async def main(debug: bool = False) -> None:
                 return {"error": "url must be a string"}
             settings.set_control_url(url)
             rendezvous.configuration_changed()
+        if req.get("dismiss_setup") is True:
+            settings.dismiss_control_setup()
         stun_host, stun_port = settings.stun_server
         return {
             "url": settings.control_url or None,
             "connected": rendezvous.connected,
+            "setup_dismissed": settings.control_setup_dismissed,
             "stun_server": f"{stun_host}:{stun_port}",
             "public_endpoint": rendezvous.public_endpoint,
         }
@@ -191,6 +194,13 @@ async def main(debug: bool = False) -> None:
         rendezvous.configuration_changed()
         return {"room_id": room_id}
 
+    async def handle_room_invite(req: dict) -> dict:
+        room_id = req.get("room_id")
+        room = settings.rooms.get(room_id) if isinstance(room_id, str) else None
+        if not room:
+            return {"error": "Unknown room ID"}
+        return {"room_id": room.id, "invite": room.invite}
+
     async def handle_rooms(req: dict) -> dict:
         return {"rooms": rendezvous.room_status()}
 
@@ -211,6 +221,7 @@ async def main(debug: bool = False) -> None:
         "room_create": handle_room_create,
         "room_join": handle_room_join,
         "room_leave": handle_room_leave,
+        "room_invite": handle_room_invite,
         "rooms": handle_rooms,
         "shutdown": handle_shutdown,
     }
