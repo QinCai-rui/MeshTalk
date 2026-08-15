@@ -54,6 +54,7 @@ class PeerConnection:
         self.reader: asyncio.StreamReader | None = None
         self.writer: asyncio.StreamWriter | None = None
         self.display_name = "Anonymous"
+        self.tui_active = False
         self.signing_public_key: bytes | None = None
         self.encryption_public_key: bytes | None = None
         self.last_seen = time.time()

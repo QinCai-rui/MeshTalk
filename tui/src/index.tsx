@@ -125,7 +125,11 @@ function ChatApp() {
 
   useSelectionHandler((selection) => {
     const text = selection.getSelectedText()
-    if (text) void clipboard.current?.writeText(text, { destination: "best-available" })
+    if (!text) return
+    void clipboard.current?.writeText(text, {
+      destination: "all-available",
+      allowRemoteHost: true,
+    }).then(() => showStatus("Copied selection."))
   })
 
   useEffect(() => {
