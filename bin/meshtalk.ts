@@ -4,21 +4,32 @@
 import { spawn } from "bun";
 import { spawn as spawnProcess, type ChildProcess } from "node:child_process";
 import { createConnection, type Socket } from "net";
-import { join } from "path";
-import { closeSync, existsSync, openSync, readFileSync, statSync, mkdirSync } from "fs";
+import { basename, dirname, join } from "path";
+import { chmodSync, closeSync, existsSync, openSync, readFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
 
 const HOME = homedir();
 const DATA_DIR = `${HOME}/.meshtalk`;
 const SOCKET_PATH = `${DATA_DIR}/meshtalk.sock`;
 const PORT_PATH = `${DATA_DIR}/meshtalk.port`;
-const TOOLS_DIR = `${DATA_DIR}/tools`;
 const BACKEND_LOG_PATH = `${DATA_DIR}/backend.log`;
 const BACKEND_START_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 300;
 
 const isWindows = process.platform === "win32";
-const isMac = process.platform === "darwin";
+const EXECUTABLE_SUFFIX = isWindows ? ".exe" : "";
+const PROGRAM = basename(process.argv[1] ?? process.argv[0]);
+
+type Component = {
+  command: string[];
+  cwd?: string;
+};
+
+type Components = {
+  backend: Component;
+  cli: Component;
+  tui: Component;
+};
 
 function log(msg: string) {
   console.error(`[meshtalk] ${msg}`);
@@ -30,7 +41,6 @@ function findExecutable(name: string): string | null {
   const dirs = envPath.split(isWindows ? ";" : ":").filter(Boolean);
   const candidates = [
     ...dirs.map((d) => join(d, exe)),
-    join(TOOLS_DIR, exe),
     join(HOME, ".local", "bin", exe),
     join(HOME, ".bun", "bin", exe),
     join(HOME, ".cargo", "bin", exe),
@@ -43,60 +53,6 @@ function findExecutable(name: string): string | null {
     } catch {}
   }
   return null;
-}
-
-async function installTool(name: string, installCmd: string[], env?: Record<string, string>): Promise<string> {
-  mkdirSync(TOOLS_DIR, { recursive: true });
-  log(`Installing ${name}...`);
-  const proc = spawn(installCmd, {
-    stdout: "inherit",
-    stderr: "inherit",
-    env: { ...process.env, ...env },
-  });
-  const exit = await proc.exited;
-  if (exit.code !== 0) {
-    log(`Failed to install ${name}. Please install it manually.`);
-    process.exit(1);
-  }
-  const found = findExecutable(name);
-  if (!found) {
-    log(`${name} installed but not found in PATH. Please add ${TOOLS_DIR} to your PATH.`);
-    process.exit(1);
-  }
-  log(`${name} installed to ${found}`);
-  return found;
-}
-
-async function ensureUv(): Promise<string> {
-  const existing = findExecutable("uv");
-  if (existing) return existing;
-
-  if (isWindows) {
-    return installTool("uv", [
-      "powershell", "-ExecutionPolicy", "ByPass", "-c",
-      "irm https://astral.sh/uv/install.ps1 | iex",
-    ], { UV_INSTALL_DIR: TOOLS_DIR });
-  }
-
-  return installTool("uv", [
-    "sh", "-c", `curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="${TOOLS_DIR}" sh`,
-  ]);
-}
-
-async function ensureBun(): Promise<string> {
-  const existing = findExecutable("bun");
-  if (existing) return existing;
-
-  if (isWindows) {
-    return installTool("bun", [
-      "powershell", "-ExecutionPolicy", "ByPass", "-c",
-      "irm bun.sh/install.ps1 | iex",
-    ]);
-  }
-
-  return installTool("bun", [
-    "sh", "-c", `curl -fsSL https://bun.sh/install | BUN_INSTALL="${join(HOME, ".bun")}" bash`,
-  ]);
 }
 
 function resolveRoot(): string {
@@ -113,6 +69,32 @@ function resolveRoot(): string {
   }
 
   return candidates[0];
+}
+
+function bundledComponent(name: string): Component | null {
+  const path = join(dirname(process.execPath), `${name}${EXECUTABLE_SUFFIX}`);
+  if (!existsSync(path)) return null;
+  if (!isWindows) chmodSync(path, 0o755);
+  return { command: [path] };
+}
+
+function resolveComponents(): Components {
+  const backend = bundledComponent("meshtalk-backend");
+  const cli = bundledComponent("meshtalk-cli");
+  const tui = bundledComponent("meshtalk-tui");
+  if (backend && cli && tui) return { backend, cli, tui };
+
+  const uv = findExecutable("uv");
+  if (!uv) {
+    throw new Error("Release components are missing. Source development requires uv in PATH.");
+  }
+
+  const repoRoot = resolveRoot();
+  return {
+    backend: { command: [uv, "run", "meshtalk"], cwd: join(repoRoot, "backend") },
+    cli: { command: [process.execPath, "run", "src/index.ts"], cwd: join(repoRoot, "cli") },
+    tui: { command: [process.execPath, "run", "src/index.tsx"], cwd: join(repoRoot, "tui") },
+  };
 }
 
 function backendRequest(action: string): Promise<Record<string, unknown> | null> {
@@ -196,30 +178,15 @@ async function stopBackend(): Promise<void> {
     await Bun.sleep(POLL_INTERVAL_MS);
   }
   if (await backendRunning()) {
-    log("Backend did not stop after the TUI closed; use `meshtalk backend stop`.");
+    log(`Backend did not stop after the TUI closed; use \`${PROGRAM} backend stop\`.`);
   }
 }
 
-async function ensureBackendDeps(uv: string, backendDir: string) {
-  const lockfile = join(backendDir, "uv.lock");
-  const venv = join(backendDir, ".venv");
-  if (!existsSync(venv)) {
-    log("Setting up Python virtual environment...");
-    const proc = spawn([uv, "sync"], {
-      cwd: backendDir,
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    await proc.exited;
-  }
-}
-
-function startBackend(repoRoot: string, uv: string): ChildProcess {
-  const backendDir = join(repoRoot, "backend");
+function startBackend(backend: Component): ChildProcess {
   const logFile = openSync(BACKEND_LOG_PATH, "a");
   try {
-    const proc = spawnProcess(uv, ["run", "meshtalk"], {
-      cwd: backendDir,
+    const proc = spawnProcess(backend.command[0], backend.command.slice(1), {
+      cwd: backend.cwd,
       detached: true,
       stdio: ["ignore", logFile, logFile],
       windowsHide: true,
@@ -235,24 +202,19 @@ function startBackend(repoRoot: string, uv: string): ChildProcess {
 async function main() {
   mkdirSync(DATA_DIR, { recursive: true });
 
-  const repoRoot = resolveRoot();
   const args = process.argv.slice(2);
 
   if (args.length === 1 && ["help", "--help", "-h"].includes(args[0])) {
-    const bun = await ensureBun();
-    const cli = spawn([bun, "run", "src/index.ts", "help"], {
-      cwd: join(repoRoot, "cli"),
+    const cliComponent = resolveComponents().cli;
+    const cli = spawn([...cliComponent.command, "help"], {
+      cwd: cliComponent.cwd,
+      env: { ...process.env, MESHTALK_PROGRAM: PROGRAM },
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
     });
     process.exit(await cli.exited.then((result) => result.code ?? 0));
   }
-
-  const uv = await ensureUv();
-  const bun = await ensureBun();
-
-  await ensureBackendDeps(uv, join(repoRoot, "backend"));
 
   if (args[0] === "backend") {
     const command = args[1] || "status";
@@ -275,13 +237,15 @@ async function main() {
       console.log("Backend stopped.");
       return;
     }
-    throw new Error("Usage: meshtalk backend [status|stop]");
+    throw new Error(`Usage: ${PROGRAM} backend [status|stop]`);
   }
+
+  const components = resolveComponents();
 
   const alreadyRunning = await backendRunning();
 
   if (!alreadyRunning) {
-    const backendProcess = startBackend(repoRoot, uv);
+    const backendProcess = startBackend(components.backend);
     const ready = await waitForBackend(backendProcess);
     if (!ready) {
       log("Backend did not start within timeout.");
@@ -300,8 +264,8 @@ async function main() {
     };
     process.once("SIGINT", handleSignal);
     process.once("SIGTERM", handleSignal);
-    const tui = spawn([bun, "run", "src/index.tsx"], {
-      cwd: join(repoRoot, "tui"),
+    const tui = spawn(components.tui.command, {
+      cwd: components.tui.cwd,
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
@@ -312,8 +276,9 @@ async function main() {
     process.removeListener("SIGTERM", handleSignal);
     await cleanup();
   } else {
-    const cli = spawn([bun, "run", "src/index.ts", ...args], {
-      cwd: join(repoRoot, "cli"),
+    const cli = spawn([...components.cli.command, ...args], {
+      cwd: components.cli.cwd,
+      env: { ...process.env, MESHTALK_PROGRAM: PROGRAM },
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",

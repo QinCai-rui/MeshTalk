@@ -1,6 +1,8 @@
 import { IPCClient, type IPCResponse } from "../../common/ipc-client";
+import { basename } from "path";
 
-const USAGE = `Usage: meshtalk-cli <command> [args]
+const PROGRAM = basename(process.env.MESHTALK_PROGRAM ?? process.argv[1] ?? process.argv[0]);
+const USAGE = `Usage: ${PROGRAM} <command> [args]
 
 Commands:
   identity [display-name]     Show or change this peer's display name
@@ -97,7 +99,7 @@ async function main(): Promise<void> {
     }
 
     if (command === "messages") {
-      if (!args[0]) throw new Error("Usage: meshtalk-cli messages <peer-id>");
+      if (!args[0]) throw new Error(`Usage: ${PROGRAM} messages <peer-id>`);
       const response = await ipc.send("messages", { peer_id: args[0] });
       if (hasError(response)) return;
       for (const message of asRecords(response.messages)) {
@@ -110,7 +112,7 @@ async function main(): Promise<void> {
     if (command === "send") {
       const [peerId, ...words] = args;
       const content = words.join(" ");
-      if (!peerId || !content) throw new Error("Usage: meshtalk-cli send <peer-id> <message>");
+      if (!peerId || !content) throw new Error(`Usage: ${PROGRAM} send <peer-id> <message>`);
       const response = await ipc.send("send", { recipient_id: peerId, content });
       if (hasError(response)) return;
       console.log(`Sent ${response.message_id}`);
@@ -135,7 +137,7 @@ async function main(): Promise<void> {
       } else if (args[0] === "set-url" && args[1] && args.length === 2) {
         response = await ipc.send("control", { url: args[1] });
       } else {
-        throw new Error("Usage: meshtalk-cli control [set-url <url>]");
+        throw new Error(`Usage: ${PROGRAM} control [set-url <url>]`);
       }
       if (hasError(response)) return;
       console.log(`Control URL: ${response.url ?? "not configured"}`);
@@ -160,7 +162,7 @@ async function main(): Promise<void> {
       } else if (args[0] === "leave" && args[1] && args.length === 2) {
         response = await ipc.send("room_leave", { room_id: args[1] });
       } else {
-        throw new Error("Usage: meshtalk-cli room <create|join|leave> [value]");
+        throw new Error(`Usage: ${PROGRAM} room <create|join|leave> [value]`);
       }
       if (hasError(response)) return;
       console.log(`${args[0] === "join" ? "Joined" : "Left"} room ${response.room_id}`);

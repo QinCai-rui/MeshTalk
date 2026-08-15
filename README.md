@@ -23,26 +23,26 @@ Python backend ---- LAN broadcast + TCP ---- LAN peers
 
 ## Quick Start
 
-Install [bun](https://bun.sh) and [uv](https://docs.astral.sh/uv/), then:
+Download the archive for your platform from the [latest release](../../releases/latest),
+extract it, and run the launcher. The archive contains the backend, CLI, TUI, and
+their runtimes, so it does not require Python, uv, Bun, or another package manager.
+
+```bash
+./meshtalk         # macOS or Linux: launches backend + TUI
+```
+
+On Windows, run `meshtalk.exe` from the extracted archive. Keep these files
+together in the extracted directory: `meshtalk`, `meshtalk-backend`,
+`meshtalk-cli`, and `meshtalk-tui` (all end in `.exe` on Windows). Only the
+`meshtalk` launcher is invoked directly.
+
+## Build From Source
+
+Source development requires [Bun](https://bun.sh) and
+[uv](https://docs.astral.sh/uv/):
 
 ```bash
 git clone <repo-url> && cd meshtalk
-bun install
-bun add --global "file:$PWD"
-meshtalk          # launches backend + TUI
-```
-
-`bun link` only registers the package for linking into another project; it does
-not install a global shell command. Ensure Bun's global bin directory is on your
-`PATH` if `meshtalk` is not found:
-
-```bash
-export PATH="$(bun pm bin -g):$PATH"
-```
-
-Or without installing globally:
-
-```bash
 bun install
 bun run meshtalk              # launches backend + TUI
 bun run meshtalk -- status    # CLI commands

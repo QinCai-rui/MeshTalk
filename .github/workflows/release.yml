@@ -25,19 +25,29 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            target: bun-linux-x64
             artifact: meshtalk-linux-x64
+            suffix: ""
           - os: ubuntu-24.04-arm
+            target: bun-linux-arm64
             artifact: meshtalk-linux-arm64
+            suffix: ""
           - os: macos-26-intel
             target: bun-darwin-x64
             artifact: meshtalk-macos-x64
+            suffix: ""
           - os: macos-latest
             target: bun-darwin-arm64
             artifact: meshtalk-macos-arm64
+            suffix: ""
           - os: windows-latest
+            target: bun-windows-x64
             artifact: meshtalk-windows-x64.exe
+            suffix: ".exe"
           - os: windows-11-arm
+            target: bun-windows-arm64
             artifact: meshtalk-windows-arm64.exe
+            suffix: ".exe"
 
     runs-on: ${{ matrix.os }}
 
@@ -52,16 +62,28 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --os="*" --cpu="*"
+
+      - name: Build backend binary
+        run: uv run --project backend --with pyinstaller pyinstaller --noconfirm --onefile --name meshtalk-backend --distpath dist/release --workpath build/pyinstaller --specpath build/pyinstaller backend/meshtalk_launcher.py
+
+      - name: Build CLI binary
+        run: bun build ./cli/src/index.ts --compile --target=${{ matrix.target }} --outfile dist/release/meshtalk-cli${{ matrix.suffix }}
+
+      - name: Build TUI binary
+        run: bun build ./tui/src/index.tsx --compile --target=${{ matrix.target }} --define 'process.env.OPENTUI_LIBC="glibc"' --outfile dist/release/meshtalk-tui${{ matrix.suffix }}
 
       - name: Build launcher binary
-        run: bun build ./bin/meshtalk.ts --compile --target=bun --outfile dist/${{ matrix.artifact }}
+        run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --outfile dist/release/meshtalk${{ matrix.suffix }}
+
+      - name: Package standalone release
+        run: uv run --no-project python -c "from pathlib import Path; from zipfile import ZIP_DEFLATED, ZipFile; release = Path('dist/release'); archive = ZipFile(Path('dist/${{ matrix.artifact }}.zip'), 'w', ZIP_DEFLATED); [archive.write(path, path.name) for path in release.iterdir()]; archive.close()"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.zip
 
   release:
     needs: build

@@ -8,6 +8,7 @@ backend/.uv/
 bun.lock
 
 # Build output
+build/
 dist/
 **/dist/
 cli/dist/
