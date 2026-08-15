@@ -177,11 +177,12 @@ async function backendRunning(): Promise<boolean> {
   return Boolean(await backendRequest("identity"));
 }
 
-async function waitForBackend(): Promise<boolean> {
+async function waitForBackend(backendProcess?: ChildProcess): Promise<boolean> {
   if (await backendRunning()) return true;
   const deadline = Date.now() + BACKEND_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await Bun.sleep(POLL_INTERVAL_MS);
+    if (backendProcess?.exitCode !== null && backendProcess?.exitCode !== undefined) return false;
     if (await backendRunning()) return true;
   }
   return false;
@@ -281,7 +282,7 @@ async function main() {
 
   if (!alreadyRunning) {
     const backendProcess = startBackend(repoRoot, uv);
-    const ready = await waitForBackend();
+    const ready = await waitForBackend(backendProcess);
     if (!ready) {
       log("Backend did not start within timeout.");
       backendProcess.kill();
