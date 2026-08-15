@@ -15,6 +15,7 @@ from typing import Any, Callable, Awaitable
 logger = logging.getLogger(__name__)
 
 IPC_SOCKET_PATH = Path.home() / ".lanchat" / "lanchat.sock"
+MAX_IPC_LINE_SIZE = 256 * 1024
 
 
 class IPCServer:
@@ -32,7 +33,7 @@ class IPCServer:
             IPC_SOCKET_PATH.unlink()
 
         self._server = await asyncio.start_unix_server(
-            self._handle_client, str(IPC_SOCKET_PATH)
+            self._handle_client, str(IPC_SOCKET_PATH), limit=MAX_IPC_LINE_SIZE
         )
         os.chmod(str(IPC_SOCKET_PATH), 0o600)
         logger.info("IPC server listening on %s", IPC_SOCKET_PATH)
@@ -80,8 +81,11 @@ class IPCServer:
                 await writer.drain()
         except (ConnectionError, asyncio.IncompleteReadError):
             pass
+        except ValueError as exc:
+            logger.warning("IPC client sent an oversized request: %s", exc)
         finally:
-            self._clients.remove(writer)
+            if writer in self._clients:
+                self._clients.remove(writer)
             writer.close()
             logger.info("IPC client disconnected")
 
