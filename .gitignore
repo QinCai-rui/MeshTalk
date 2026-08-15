@@ -1,9 +1,19 @@
 # Dependencies
 node_modules/
+**/node_modules/
+backend/.venv/
+backend/.uv/
+
+# Package-manager state
 bun.lock
 
 # Build output
 dist/
+**/dist/
+cli/dist/
+tui/dist/
+*.bin
+*.bun-build
 *.pyc
 __pycache__/
 *.egg-info/
