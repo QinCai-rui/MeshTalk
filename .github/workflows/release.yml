@@ -44,7 +44,8 @@ jobs:
             target: bun-windows-x64
             artifact: meshtalk-windows-x64.exe
             suffix: ".exe"
-          - os: windows-11-arm
+          # Windows ARM runs the frozen x64 backend through its x64 compatibility layer.
+          - os: windows-latest
             target: bun-windows-arm64
             artifact: meshtalk-windows-arm64.exe
             suffix: ".exe"
