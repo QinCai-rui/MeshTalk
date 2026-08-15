@@ -8,7 +8,7 @@ from cryptography.exceptions import InvalidTag
 from meshtalk.database import Database
 from meshtalk.identity import Identity
 from meshtalk.message_router import MessageRouter
-from meshtalk.peer_manager import PeerManager
+from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
 from meshtalk.rendezvous import RendezvousService, decrypt_endpoint_card, encrypt_endpoint_card
 from meshtalk.settings import Room, Settings
 from meshtalk.udp_transport import Attempt, READY, UdpTransport
@@ -59,6 +59,22 @@ class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
         network = self.manager_a.get_network_info(self.identity_b.peer_id)
         self.assertEqual(network["active_transport"], "remote_udp")
         self.assertEqual(network["active_endpoint"], f"127.0.0.1:{endpoint_b[1]}")
+
+    async def test_lan_network_info_uses_advertised_port_not_inbound_source_port(self):
+        peer = PeerConnection(
+            self.identity_b.peer_id, "192.168.1.20", 45982, PeerState.CONNECTED
+        )
+        self.manager_a.peers[peer.peer_id] = peer
+        self.manager_a.record_lan_candidate(peer.peer_id, "192.168.1.20", 24891)
+
+        network = self.manager_a.get_network_info(peer.peer_id)
+
+        self.assertEqual(network["active_endpoint"], "192.168.1.20:24891")
+        self.assertEqual(network["endpoints"], [{
+            "transport": "lan_tcp",
+            "endpoint": "192.168.1.20:24891",
+            "active": True,
+        }])
 
 
 class PrivateRoomTest(unittest.TestCase):

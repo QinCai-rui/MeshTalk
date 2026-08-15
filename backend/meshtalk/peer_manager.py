@@ -155,7 +155,6 @@ class PeerManager:
                 writer.close()
                 return
             self.peers[peer.peer_id] = peer
-            self._known_endpoints.setdefault(peer.peer_id, {}).setdefault("lan_tcp", peer.endpoint)
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
             self._start_receive_loop(peer)
             logger.info("Authenticated incoming LAN connection from %s", peer.peer_id)
@@ -387,18 +386,24 @@ class PeerManager:
     def get_network_info(self, peer_id: str) -> dict:
         active = self.get_connected_peer(peer_id)
         known = list(self._known_endpoints.get(peer_id, {}).items())
-        if active and (active.transport, active.endpoint) not in known:
-            known.append((active.transport, active.endpoint))
+        active_endpoint = active.endpoint if active else None
+        if active and active.transport == "lan_tcp":
+            advertised = self._known_endpoints.get(peer_id, {}).get("lan_tcp")
+            # Accepted TCP connections report the caller's ephemeral source port.
+            # Only LAN discovery provides a peer's stable listening endpoint.
+            active_endpoint = advertised if advertised and advertised[0] == active.address else None
+        if active and active_endpoint and (active.transport, active_endpoint) not in known:
+            known.append((active.transport, active_endpoint))
         endpoints = [
             {
                 "transport": transport,
                 "endpoint": _format_endpoint(endpoint),
-                "active": bool(active and active.transport == transport and active.endpoint == endpoint),
+                "active": bool(active and active.transport == transport and active_endpoint == endpoint),
             }
             for transport, endpoint in sorted(known)
         ]
         return {
             "active_transport": active.transport if active else None,
-            "active_endpoint": _format_endpoint(active.endpoint) if active else None,
+            "active_endpoint": _format_endpoint(active_endpoint) if active_endpoint else None,
             "endpoints": endpoints,
         }
