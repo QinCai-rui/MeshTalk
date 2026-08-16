@@ -1,0 +1,30 @@
+FROM oven/bun:alpine AS build
+
+WORKDIR /app
+
+COPY package.json bun.lock* ./
+COPY control/package.json control/
+RUN bun install --frozen-lockfile 2>/dev/null || bun install
+
+COPY control/ control/
+
+RUN bun build control/src/index.ts \
+    --target=bun \
+    --outfile /app/meshtalk-control
+
+FROM oven/bun:alpine
+
+RUN addgroup -S meshtalk && adduser -S meshtalk -G meshtalk
+
+COPY --from=build /app/meshtalk-control /usr/local/bin/meshtalk-control
+
+USER meshtalk
+
+ENV PORT=8787
+
+EXPOSE 8787
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget -qO- http://localhost:8787/health || exit 1
+
+CMD ["meshtalk-control"]

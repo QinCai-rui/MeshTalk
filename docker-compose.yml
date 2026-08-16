@@ -1,0 +1,37 @@
+services:
+  control:
+    build:
+      context: .
+      dockerfile: Dockerfile.control
+    ports:
+      - "${CONTROL_PORT:-8787}:8787"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8787/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    depends_on:
+      control:
+        condition: service_healthy
+    environment:
+      - MESHTALK_CONTROL_URL=ws://localhost:8787
+      - MESHTALK_STUN_SERVER=stun.l.google.com:19302
+    volumes:
+      - meshtalk-data:/data/meshtalk
+    stdin_open: true
+    tty: true
+    # Host networking is required for LAN peer discovery (UDP broadcast).
+    # The control server is reachable via localhost:8787 since it is published to the host.
+    # Remove network_mode and set MESHTALK_CONTROL_URL to ws://control:8787 if LAN discovery is not needed.
+    network_mode: host
+    restart: unless-stopped
+
+volumes:
+  meshtalk-data:

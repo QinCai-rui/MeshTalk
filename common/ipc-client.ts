@@ -9,9 +9,18 @@ import { join } from "path";
 
 const HOME = process.env.HOME || process.env.USERPROFILE || "";
 const DATA_DIR = `${HOME}/.meshtalk`;
-const SOCKET_PATH = `${DATA_DIR}/meshtalk.sock`;
+const SOCKET_PATH = process.env.MESHTALK_IPC_SOCKET || `${DATA_DIR}/meshtalk.sock`;
 const PORT_PATH = `${DATA_DIR}/meshtalk.port`;
-const TOKEN_PATH = `${DATA_DIR}/meshtalk.token`;
+const TOKEN_PATH = process.env.MESHTALK_IPC_TOKEN || `${DATA_DIR}/meshtalk.token`;
+
+function getIpcPort(): number | null {
+  const envPort = process.env.MESHTALK_IPC_PORT;
+  if (envPort) {
+    const p = Number(envPort);
+    if (Number.isInteger(p) && p > 0) return p;
+  }
+  return null;
+}
 
 export interface IPCResponse {
   error?: string;
@@ -69,7 +78,14 @@ export class IPCClient {
         this.socket.on("close", () => this.onClose());
       };
 
-      if (process.platform === "win32") {
+      const forcedPort = getIpcPort();
+      if (forcedPort !== null) {
+        this.socket = createConnection(forcedPort, "127.0.0.1");
+        this.socket.on("connect", authenticate);
+        this.socket.on("error", (err) => reject(err));
+        this.socket.on("data", (data: string | Buffer) => this.onData(data.toString()));
+        this.socket.on("close", () => this.onClose());
+      } else if (process.platform === "win32") {
         connectTcp();
       } else {
         connectUnix();

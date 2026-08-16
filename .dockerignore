@@ -1,0 +1,15 @@
+**/node_modules
+**/dist
+**/.git
+**/.github
+**/.agents
+**/build
+**/__pycache__
+**/*.pyc
+**/.venv
+**/uv.lock
+*.md
+LICENSE
+.gitignore
+.vscode
+.idea
