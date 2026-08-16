@@ -1,6 +1,6 @@
 FROM oven/bun:alpine AS build
 
-ARG BUN_TARGET=bun
+ARG TARGETPLATFORM
 WORKDIR /app
 
 COPY package.json bun.lock* ./
@@ -11,10 +11,15 @@ RUN bun install --frozen-lockfile 2>/dev/null || bun install
 
 COPY control/ control/
 
-RUN bun build control/src/index.ts \
-    --target=${BUN_TARGET} \
-    --compile \
-    --outfile /app/meshtalk-control
+RUN BUN_TARGET="bun"; \
+    case "${TARGETPLATFORM}" in \
+      linux/amd64)  BUN_TARGET="bun-linux-x64" ;; \
+      linux/arm64)  BUN_TARGET="bun-linux-arm64" ;; \
+    esac; \
+    bun build control/src/index.ts \
+      --target=${BUN_TARGET} \
+      --compile \
+      --outfile /app/meshtalk-control
 
 FROM oven/bun:alpine
 

@@ -1,6 +1,6 @@
 FROM oven/bun:alpine AS bun-build
 
-ARG BUN_TARGET=bun
+ARG TARGETPLATFORM
 WORKDIR /app
 
 COPY package.json bun.lock* ./
@@ -13,16 +13,20 @@ RUN bun install --frozen-lockfile 2>/dev/null || bun install
 COPY tui/ tui/
 COPY cli/ cli/
 
-RUN bun build tui/src/index.tsx \
-    --target=${BUN_TARGET} \
-    --compile \
-    --define 'process.env.OPENTUI_LIBC="glibc"' \
-    --outfile /app/meshtalk-tui
-
-RUN bun build cli/src/index.ts \
-    --target=${BUN_TARGET} \
-    --compile \
-    --outfile /app/meshtalk-cli
+RUN BUN_TARGET="bun"; \
+    case "${TARGETPLATFORM}" in \
+      linux/amd64)  BUN_TARGET="bun-linux-x64" ;; \
+      linux/arm64)  BUN_TARGET="bun-linux-arm64" ;; \
+    esac; \
+    bun build tui/src/index.tsx \
+      --target=${BUN_TARGET} \
+      --compile \
+      --define 'process.env.OPENTUI_LIBC="glibc"' \
+      --outfile /app/meshtalk-tui && \
+    bun build cli/src/index.ts \
+      --target=${BUN_TARGET} \
+      --compile \
+      --outfile /app/meshtalk-cli
 
 FROM python:3.12-slim AS runtime
 
