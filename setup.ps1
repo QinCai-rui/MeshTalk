@@ -45,6 +45,9 @@ if (-not $bun) {
 }
 Write-Info "bun"
 
+# --- Create bin directory ---
+New-Item -ItemType Directory -Force -Path bin | Out-Null
+
 # --- Install dependencies ---
 
 Write-Info "Installing Python backend dependencies..."
@@ -67,13 +70,45 @@ Push-Location control
 bun install
 Pop-Location
 
+# --- Build binaries ---
+
+Write-Info "Building TUI binary..."
+Push-Location tui
+& bun build src/index.tsx --target=bun --compile --outfile ..\bin\meshtalk-tui.exe
+Pop-Location
+
+Write-Info "Building CLI binary..."
+Push-Location cli
+& bun build src/index.ts --target=bun --compile --outfile ..\bin\meshtalk-cli.exe
+Pop-Location
+
+Write-Info "Building control service binary..."
+Push-Location control
+& bun build src/index.ts --target=bun --compile --outfile ..\bin\meshtalk-control.exe
+Pop-Location
+
+Write-Info "Building Python backend..."
+Push-Location backend
+try {
+    & uv run pyinstaller --onefile --name meshtalk-backend --distpath ..\bin meshtalk\__main__.py 2>$null
+} catch {
+    Write-Warn "PyInstaller failed, creating wrapper script"
+    $wrapper = @"
+@echo off
+cd /d "%~dp0\backend"
+uv run python -m meshtalk %*
+"@
+    Set-Content -Path "..\bin\meshtalk-backend.bat" -Value $wrapper
+}
+Pop-Location
+
 # --- Done ---
 
 Write-Host ""
-Write-Info "Setup complete!"
+Write-Info "Setup complete! Binaries are in bin\"
 Write-Host ""
 Write-Host "  Run the app:"
-Write-Host "    Backend:  cd backend; uv run python -m meshtalk"
-Write-Host "    TUI:      cd tui; bun run dev"
-Write-Host "    CLI:      cd cli; bun run dev"
+Write-Host "    TUI:      bin\meshtalk-tui.exe"
+Write-Host "    CLI:      bin\meshtalk-cli.exe <command>"
+Write-Host "    Backend:  bin\meshtalk-backend.exe"
 Write-Host ""

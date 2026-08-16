@@ -67,13 +67,51 @@ cd control
 bun install
 cd ..
 
+# --- Build binaries ---
+
+info "Building TUI binary..."
+cd tui
+bun build src/index.tsx --target=bun --compile --outfile ../bin/meshtalk-tui
+cd ..
+
+info "Building CLI binary..."
+cd cli
+bun build src/index.ts --target=bun --compile --outfile ../bin/meshtalk-cli
+cd ..
+
+info "Building control service binary..."
+cd control
+bun build src/index.ts --target=bun --compile --outfile ../bin/meshtalk-control
+cd ..
+
+info "Building Python backend..."
+cd backend
+uv run pyinstaller --onefile --name meshtalk-backend --distpath ../bin meshtalk/__main__.py 2>/dev/null || {
+  warn "PyInstaller failed, using uv run as fallback"
+  cd ..
+  mkdir -p bin
+  cat > bin/meshtalk-backend << 'WRAPPER'
+#!/usr/bin/env bash
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$DIR/backend" && uv run python -m meshtalk "$@"
+WRAPPER
+  chmod +x bin/meshtalk-backend
+  cd backend
+}
+cd ..
+
+chmod +x bin/meshtalk-tui bin/meshtalk-cli bin/meshtalk-control bin/meshtalk-backend 2>/dev/null || true
+
 # --- Done ---
 
 echo ""
-info "Setup complete!"
+info "Setup complete! Binaries are in bin/"
 echo ""
 echo "  Run the app:"
-echo "    Backend:  cd backend && uv run python -m meshtalk"
-echo "    TUI:      cd tui && bun run dev"
-echo "    CLI:      cd cli && bun run dev"
+echo "    TUI:      ./bin/meshtalk-tui"
+echo "    CLI:      ./bin/meshtalk-cli <command>"
+echo "    Backend:  ./bin/meshtalk-backend"
+echo ""
+echo "  Or use the unified launcher:"
+echo "    ./bin/meshtalk-tui          (starts backend + TUI)"
 echo ""
