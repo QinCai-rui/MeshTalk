@@ -440,9 +440,12 @@ class PeerManager:
         active_endpoint = active.endpoint if active else None
         if active and active.transport == "lan_tcp":
             advertised = self._known_endpoints.get(peer_id, {}).get("lan_tcp")
-            # Accepted TCP connections report the caller's ephemeral source port.
-            # Only LAN discovery provides a peer's stable listening endpoint.
-            active_endpoint = advertised if advertised and advertised[0] == active.address else None
+            # Prefer the advertised LAN candidate, but fall back to the active
+            # connection address so peers always have a visible endpoint.
+            if advertised and advertised[0] == active.address:
+                active_endpoint = advertised
+            elif active_endpoint is None:
+                active_endpoint = active.endpoint
         if active and active_endpoint and (active.transport, active_endpoint) not in known:
             known.append((active.transport, active_endpoint))
         endpoints = [
