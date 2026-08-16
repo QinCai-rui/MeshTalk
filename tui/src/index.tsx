@@ -1450,7 +1450,7 @@ height={Math.max(5, dialogHeight - 3)}
                 {dialog.request.note ? <text wrapMode="word"><span fg="#888888">Note: </span>{dialog.request.note}</text> : null}
                 <select
                   focused
-                  height={5}
+                  height={7}
                   options={[
                     { name: "Accept", description: "Become friends and allow direct messages", value: "accept" },
                     { name: "Decline", description: "Reject this friend request", value: "decline" },
