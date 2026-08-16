@@ -12,6 +12,7 @@ COPY control/ control/
 
 RUN bun build control/src/index.ts \
     --target=bun \
+    --compile \
     --outfile /app/meshtalk-control
 
 FROM oven/bun:alpine
