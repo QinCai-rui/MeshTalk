@@ -42,6 +42,7 @@ type ControlStatus = {
   connected: boolean
   setup_dismissed: boolean
   stun_server: string
+  reconnect_attempts: number
   public_endpoint?: unknown[]
 }
 type Dialog =
@@ -97,6 +98,7 @@ function ChatApp() {
   const [status, setStatus] = useState("Connecting to backend...")
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
+  const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number }>({ connected: false, reconnect_attempts: 0 })
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [dialogDraft, setDialogDraft] = useState("")
   const [dialogError, setDialogError] = useState("")
@@ -146,6 +148,7 @@ function ChatApp() {
       if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
       const control = await ipc.send("control")
       if (control.error) throw new Error(control.error)
+      setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number })
       if (!(response.setup_dismissed as boolean)) {
         setDialog({ kind: "rename", firstRun: true })
       } else if (!control.url && !control.setup_dismissed) {
@@ -210,6 +213,9 @@ function ChatApp() {
       void refreshPeers().catch((error) => {
         if (!backendDisconnected.current) setStatus(`Peer refresh error: ${String(error)}`)
       })
+      void ipc.send("control").then((control) => {
+        if (!control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number })
+      }).catch(() => {})
     }, 3000)
     return () => clearInterval(interval)
   }, [ipc])
@@ -785,6 +791,9 @@ function ChatApp() {
           {!selected && <text fg="#888888">Waiting for a connected peer.</text>}
           {selected && !messages.length && selected.is_online && <text fg="#888888">No messages yet. Say hello.</text>}
           {selected && !selected.is_online && <text fg="#e0a34a">This peer is offline. Messages cannot be sent until it reconnects.</text>}
+          {selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected && (
+            <text fg="#ff9f43">Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting ({controlStatus.reconnect_attempts}).</text>
+          )}
           <scrollbox
             ref={scrollboxRef}
             focused={scrollFocused && !dialog}

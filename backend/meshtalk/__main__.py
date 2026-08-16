@@ -173,6 +173,7 @@ async def main(debug: bool = False) -> None:
             "setup_dismissed": settings.control_setup_dismissed,
             "stun_server": f"{stun_host}:{stun_port}",
             "public_endpoint": rendezvous.public_endpoint,
+            "reconnect_attempts": rendezvous.reconnect_attempts,
         }
 
     async def handle_room_create(req: dict) -> dict:

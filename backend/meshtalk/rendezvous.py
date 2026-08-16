@@ -123,6 +123,7 @@ class RendezvousService:
         self.connected = False
         self.public_endpoint: Endpoint | None = None
         self.member_counts: dict[str, int] = {}
+        self.reconnect_attempts: int = 0
         self._running = False
         self._task: asyncio.Task | None = None
         self._reconnect = asyncio.Event()
@@ -173,6 +174,7 @@ class RendezvousService:
                     ping_timeout=CONTROL_PING_TIMEOUT,
                 ) as websocket:
                     self.connected = True
+                    self.reconnect_attempts = 0
                     backoff = 1.0
                     for room in self.settings.rooms.values():
                         await websocket.send(json.dumps({"type": "join", "room_id": room.id}))
@@ -198,6 +200,7 @@ class RendezvousService:
                 self.connected = False
                 self.member_counts.clear()
             if self._running:
+                self.reconnect_attempts += 1
                 logger.info("Control disconnected; reconnecting in %.0fs", backoff)
                 try:
                     await asyncio.wait_for(self._reconnect.wait(), backoff)
