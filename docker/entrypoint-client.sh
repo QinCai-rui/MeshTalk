@@ -24,7 +24,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "[entrypoint] Starting MeshTalk backend..."
-meshtalk-backend &
+meshtalk-backend >>"${BACKEND_LOG}" 2>&1 &
 
 BACKEND_PID=$!
 
