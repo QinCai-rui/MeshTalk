@@ -15,6 +15,7 @@ Packet types:
   FRIEND_REQUEST       0x0A
   FRIEND_REQUEST_RESPONSE 0x0B
   MESSAGE_BLOCKED      0x0C
+  FRIEND_REQUEST_CANCELLED 0x0D
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ class PacketType(enum.IntEnum):
     FRIEND_REQUEST = 0x0A
     FRIEND_REQUEST_RESPONSE = 0x0B
     MESSAGE_BLOCKED = 0x0C
+    FRIEND_REQUEST_CANCELLED = 0x0D
 
 
 @dataclass
@@ -399,4 +401,42 @@ class MessageBlockedPayload:
             or len(payload.signature) != 64
         ):
             raise ValueError("Invalid blocked message payload")
+        return payload
+
+
+@dataclass
+class FriendRequestCancelledPayload:
+    """A signed notice telling a peer that a pending friend request was cancelled."""
+
+    request_id: str
+    sender_id: str
+    signature: bytes
+
+    def signed_bytes(self) -> bytes:
+        return json.dumps({
+            "request_id": self.request_id,
+            "sender_id": self.sender_id,
+        }, separators=(",", ":"), sort_keys=True).encode()
+
+    def encode(self) -> bytes:
+        return json.dumps({
+            "request_id": self.request_id,
+            "sender_id": self.sender_id,
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> FriendRequestCancelledPayload:
+        obj = json.loads(data)
+        payload = cls(
+            request_id=obj["request_id"],
+            sender_id=obj["sender_id"],
+            signature=bytes.fromhex(obj["signature"]),
+        )
+        if (
+            not _valid_request_id(payload.request_id)
+            or not _valid_peer_id(payload.sender_id)
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid friend request cancelled payload")
         return payload

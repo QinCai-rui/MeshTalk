@@ -67,6 +67,7 @@ class MessageRouter:
         elif packet.type in (
             PacketType.FRIEND_REQUEST,
             PacketType.FRIEND_REQUEST_RESPONSE,
+            PacketType.FRIEND_REQUEST_CANCELLED,
             PacketType.MESSAGE_BLOCKED,
         ):
             await self.friend_manager.handle_packet(peer, packet)
