@@ -19,11 +19,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.client
-    depends_on:
-      control:
-        condition: service_healthy
     environment:
-      - MESHTALK_CONTROL_URL=ws://localhost:8787
+      - MESHTALK_CONTROL_URL=wss://meshtalk-control.qincai.xyz/v1/rendezvous
       - MESHTALK_STUN_SERVER=stun.l.google.com:19302
     volumes:
       - meshtalk-data:/data/meshtalk
