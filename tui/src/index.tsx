@@ -54,6 +54,8 @@ type Dialog =
   | { kind: "room-created"; roomId: string; invite: string; copied: boolean; created?: boolean }
   | { kind: "room-detail"; room: RoomStatus }
   | { kind: "rename"; firstRun?: boolean }
+  | { kind: "mute-timeout"; peerId: string; displayName: string }
+  | { kind: "unmute-confirm"; peerId: string; displayName: string }
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -94,6 +96,7 @@ function ChatApp() {
   const [deliveredMessageIds, setDeliveredMessageIds] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState("Connecting to backend...")
   const [copyToast, setCopyToast] = useState(false)
+  const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [dialogDraft, setDialogDraft] = useState("")
   const [dialogError, setDialogError] = useState("")
@@ -139,6 +142,8 @@ function ChatApp() {
       const presence = await ipc.send("tui_presence", { client_id: tuiClientId, active: true })
       if (presence.error) throw new Error(presence.error)
       await refreshPeers()
+      const mutedResp = await ipc.send("muted_peers")
+      if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
       const control = await ipc.send("control")
       if (control.error) throw new Error(control.error)
       if (!(response.setup_dismissed as boolean)) {
@@ -221,6 +226,12 @@ function ChatApp() {
     }
     if (event.event !== "message") return
     const senderId = event.sender_id as string
+    const sender = peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "a peer"
+    const mutedUntil = mutedPeers[senderId]
+    const isMuted = mutedUntil === undefined ? false : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil
+    if (renderer.capabilities?.notifications && !isMuted) {
+      renderer.triggerNotification(`New message from ${sender}`, "MeshTalk")
+    }
     if (senderId !== selectedPeerId) {
       setPeers((current) => current.map((peer) =>
         peer.peer_id === senderId ? { ...peer, unread_count: peer.unread_count + 1 } : peer
@@ -237,7 +248,7 @@ function ChatApp() {
     void ipc.send("messages", { peer_id: senderId }).then((response) => {
       if (!response.error) setMessages(response.messages as Message[])
     })
-  }), [ipc, selectedPeerId])
+  }), [ipc, mutedPeers, peers, renderer, selectedPeerId])
 
   useEffect(() => {
     if (!selectedPeerId) {
@@ -339,6 +350,10 @@ function ChatApp() {
     } else if (["room-join", "room-created", "room-detail"].includes(dialog.kind)) {
       showDialog({ kind: "rooms", rooms: [] })
       void loadRooms()
+    } else if (dialog.kind === "mute-timeout") {
+      showDialog({ kind: "commands" })
+    } else if (dialog.kind === "unmute-confirm") {
+      showDialog({ kind: "commands" })
     } else {
       showDialog({ kind: "commands" })
     }
@@ -507,6 +522,46 @@ function ChatApp() {
     }
   }
 
+  async function mutePeer(peerId: string, timeout: number) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("mute", { peer_id: peerId, timeout })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      const mutedResp = await ipc.send("muted_peers")
+      if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
+      const until = response.until as number
+      const label = until <= 0 ? "permanently" : `until ${new Date(until * 1000).toLocaleTimeString()}`
+      const peer = peers.find((p) => p.peer_id === peerId)
+      showStatus(`Muted ${peer?.display_name ?? peerId} ${label}.`)
+      closeDialog()
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function unmutePeer(peerId: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("unmute", { peer_id: peerId })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      const mutedResp = await ipc.send("muted_peers")
+      if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
+      const peer = peers.find((p) => p.peer_id === peerId)
+      showStatus(`Unmuted ${peer?.display_name ?? peerId}.`)
+      closeDialog()
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
   function runCommand(command: string) {
     if (command === "control") {
       showDialog({ kind: "control" })
@@ -519,6 +574,15 @@ function ChatApp() {
       setDialogDraft(displayName)
       setDialogError("")
       setDialog({ kind: "rename" })
+    } else if (command === "mute") {
+      const online = peers.filter((p) => p.is_online && p.peer_id !== identity?.peer_id && !mutedPeers[p.peer_id])
+      if (!online.length) { showStatus("No unmuted online peers to mute."); return }
+      showDialog({ kind: "mute-timeout", peerId: online[0].peer_id, displayName: online[0].display_name })
+    } else if (command === "unmute") {
+      const mutedIds = Object.keys(mutedPeers)
+      const mutedList = peers.filter((p) => mutedIds.includes(p.peer_id))
+      if (!mutedList.length) { showStatus("No muted peers to unmute."); return }
+      showDialog({ kind: "unmute-confirm", peerId: mutedList[0].peer_id, displayName: mutedList[0].display_name })
     }
   }
 
@@ -689,6 +753,7 @@ function ChatApp() {
           >
             {peers.map((peer) => {
               const presence = peerPresence(peer)
+              const muted = peer.peer_id in mutedPeers
               return <box
                 key={peer.peer_id}
                 onMouseDown={() => {
@@ -698,7 +763,7 @@ function ChatApp() {
                 style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
               >
                 <text truncate fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>
-                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}
+                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{muted ? " M" : ""}
                 </text>
                 {peer.endpoints.length ? peer.endpoints.map((endpoint) => (
                   <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>
@@ -713,7 +778,7 @@ function ChatApp() {
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
         <box
-          title={selected ? `Chat: ${selected.display_name} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})` : "Chat"}
+          title={selected ? `Chat: ${selected.display_name}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
@@ -794,7 +859,7 @@ function ChatApp() {
       {dialog && (
         <box style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", backgroundColor: "#080b10", alignItems: "center", justifyContent: "center" }}>
           <box
-            title={dialog.kind === "commands" ? "Commands" : dialog.kind.startsWith("control") ? "Control server" : dialog.kind === "rename" ? "Display name" : "Private rooms"}
+            title={dialog.kind === "commands" ? "Commands" : dialog.kind.startsWith("control") ? "Control server" : dialog.kind === "rename" ? "Display name" : dialog.kind === "mute-timeout" ? "Mute peer" : dialog.kind === "unmute-confirm" ? "Unmute peer" : "Private rooms"}
             bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
             style={{ width: dialogWidth, height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
           >
@@ -805,6 +870,8 @@ function ChatApp() {
                 options={[
                   { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
                   { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
+                  { name: "Mute peer", description: "Mute desktop notifications from an online peer", value: "mute" },
+                  { name: "Unmute peer", description: "Resume desktop notifications for a muted peer", value: "unmute" },
                   { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
                 ]}
                 onSelect={(_, option) => option && runCommand(option.value as string)}
@@ -961,6 +1028,42 @@ function ChatApp() {
                   maxLength={48}
                 />
                 <text fg="#888888">Enter saves and shares the name with connected peers.</text>
+              </>
+            )}
+            {dialog.kind === "mute-timeout" && (
+              <>
+                <text>Mute notifications from <span fg="#66dd88">{dialog.displayName}</span>.</text>
+                <text fg="#888888">Choose how long notifications will stay muted.</text>
+                <select
+                  focused
+                  height={Math.max(7, dialogHeight - 4)}
+                  options={[
+                    { name: "15 minutes", description: "Mute for a short break", value: String(15 * 60) },
+                    { name: "1 hour", description: "Mute for a while", value: String(60 * 60) },
+                    { name: "4 hours", description: "Mute for half a workday", value: String(4 * 60 * 60) },
+                    { name: "8 hours", description: "Mute for a full workday", value: String(8 * 60 * 60) },
+                    { name: "Permanent", description: "Mute until you manually unmute", value: "0" },
+                  ]}
+                  onSelect={(_, option) => option && void mutePeer(dialog.peerId, Number(option.value))}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "unmute-confirm" && (
+              <>
+                <text>Unmute notifications from <span fg="#66dd88">{dialog.displayName}</span>?</text>
+                <select
+                  focused
+                  height={4}
+                  options={[
+                    { name: "Yes, unmute", description: "Resume desktop notifications from this peer", value: "yes" },
+                    { name: "Cancel", description: "Keep muted", value: "no" },
+                  ]}
+                  onSelect={(_, option) => option?.value === "yes" ? void unmutePeer(dialog.peerId) : showDialog({ kind: "commands" })}
+                  wrapSelection
+                  showDescription
+                />
               </>
             )}
             {dialogError && <text fg="#ff7777">{dialogError}</text>}

@@ -52,6 +52,10 @@ time to open commands for control-server status and setup, private-room
 management, and changing your display name. Room invites can be pasted when
 joining and are copied to the clipboard when creating a room.
 
+MeshTalk also sends a desktop notification for each incoming message when the
+terminal supports notification OSC sequences. Notifications show the sender,
+not message content. Set `OPENTUI_NOTIFICATIONS=0` to disable them.
+
 ## Build From Source
 
 Source development requires [Bun](https://bun.sh) and

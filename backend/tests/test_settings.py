@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -86,3 +87,61 @@ class RoomInvitePersistenceTest(unittest.TestCase):
 
             self.assertEqual(loaded.rooms[room.id].invite, invite)
             self.assertEqual(Room.from_invite(invite), loaded.rooms[room.id])
+
+
+class MutePeerPersistenceTest(unittest.TestCase):
+    def test_permanent_mute_survives_reload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.mute_peer("peer1", 0)
+
+            loaded = Settings(path)
+
+            self.assertTrue(loaded.is_peer_muted("peer1"))
+            self.assertEqual(loaded.muted_peers["peer1"], 0)
+
+    def test_timed_mute_survives_while_valid(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.mute_peer("peer2", time.time() + 3600)
+
+            loaded = Settings(path)
+
+            self.assertTrue(loaded.is_peer_muted("peer2"))
+
+    def test_expired_mute_is_cleared_on_load(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.mute_peer("peer3", time.time() - 10)
+
+            loaded = Settings(path)
+
+            self.assertFalse(loaded.is_peer_muted("peer3"))
+            self.assertNotIn("peer3", loaded.muted_peers)
+
+    def test_unmute_removes_peer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.mute_peer("peer4", 0)
+            self.assertTrue(settings.is_peer_muted("peer4"))
+
+            settings.unmute_peer("peer4")
+
+            self.assertFalse(settings.is_peer_muted("peer4"))
+            self.assertNotIn("peer4", settings.muted_peers)
+
+    def test_timed_mute_expires_at_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.mute_peer("peer5", time.time() + 0.1)
+            self.assertTrue(settings.is_peer_muted("peer5"))
+
+            time.sleep(0.2)
+
+            self.assertFalse(settings.is_peer_muted("peer5"))
+            self.assertNotIn("peer5", settings.muted_peers)

@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import secrets
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -63,6 +64,7 @@ class Settings:
         self._stun_host = DEFAULT_STUN_HOST
         self._stun_port = DEFAULT_STUN_PORT
         self.rooms: dict[str, Room] = {}
+        self.muted_peers: dict[str, float] = {}
         self._load()
 
     @property
@@ -129,6 +131,24 @@ class Settings:
         del self.rooms[room_id]
         self.save()
 
+    def mute_peer(self, peer_id: str, until: float = 0) -> None:
+        self.muted_peers[peer_id] = until
+        self.save()
+
+    def unmute_peer(self, peer_id: str) -> None:
+        self.muted_peers.pop(peer_id, None)
+        self.save()
+
+    def is_peer_muted(self, peer_id: str) -> bool:
+        until = self.muted_peers.get(peer_id)
+        if until is None:
+            return False
+        if until > 0 and time.time() >= until:
+            del self.muted_peers[peer_id]
+            self.save()
+            return False
+        return True
+
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
@@ -141,6 +161,7 @@ class Settings:
                 {"room_id": _encode(room.room_id), "secret": _encode(room.secret)}
                 for room in self.rooms.values()
             ],
+            "muted_peers": self.muted_peers,
         }
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, indent=2))
@@ -167,3 +188,10 @@ class Settings:
             if len(room.room_id) != 16 or len(room.secret) != 32:
                 raise ValueError("Invalid room in settings")
             self.rooms[room.id] = room
+        raw_mutes = data.get("muted_peers", {})
+        now = time.time()
+        for peer_id, until in raw_mutes.items():
+            if not isinstance(peer_id, str) or not isinstance(until, (int, float)):
+                continue
+            if until <= 0 or now < until:
+                self.muted_peers[peer_id] = float(until)

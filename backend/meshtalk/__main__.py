@@ -9,6 +9,7 @@ import asyncio
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
 
 from .identity import Identity
@@ -205,6 +206,34 @@ async def main(debug: bool = False) -> None:
     async def handle_rooms(req: dict) -> dict:
         return {"rooms": rendezvous.room_status()}
 
+    async def handle_mute(req: dict) -> dict:
+        peer_id = req.get("peer_id")
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
+        timeout = req.get("timeout")
+        if timeout is not None and not isinstance(timeout, (int, float)):
+            return {"error": "timeout must be a number (seconds) or 0 for permanent"}
+        if timeout is None:
+            timeout = 0
+        until = time.time() + float(timeout) if float(timeout) > 0 else 0
+        settings.mute_peer(peer_id, until)
+        return {"peer_id": peer_id, "until": until}
+
+    async def handle_unmute(req: dict) -> dict:
+        peer_id = req.get("peer_id")
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
+        settings.unmute_peer(peer_id)
+        return {"peer_id": peer_id}
+
+    async def handle_muted_peers(req: dict) -> dict:
+        now = time.time()
+        muted = {}
+        for peer_id, until in settings.muted_peers.items():
+            if until <= 0 or now < until:
+                muted[peer_id] = until
+        return {"muted_peers": muted}
+
     async def handle_shutdown(req: dict) -> dict:
         stop_event.set()
         return {"stopping": True}
@@ -224,6 +253,9 @@ async def main(debug: bool = False) -> None:
         "room_leave": handle_room_leave,
         "room_invite": handle_room_invite,
         "rooms": handle_rooms,
+        "mute": handle_mute,
+        "unmute": handle_unmute,
+        "muted_peers": handle_muted_peers,
         "shutdown": handle_shutdown,
     }
     ipc = IPCServer(ipc_handlers, on_tui_disconnect=handle_tui_disconnect)
