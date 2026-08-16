@@ -81,9 +81,8 @@ type Dialog =
   | { kind: "remove-friend"; peerId: string; displayName: string }
   | { kind: "friend-requests"; requests: FriendRequest[] }
   | { kind: "friend-request-incoming"; request: FriendRequest }
-  | { kind: "settings" }
-  | { kind: "settings-friends" }
-  | { kind: "settings-blocked"; blocked: BlockedPeer[] }
+  | { kind: "friends" }
+  | { kind: "blocked"; blocked: BlockedPeer[] }
   | { kind: "block-peer-pick" }
   | { kind: "block-peer"; peerId: string; displayName: string }
 
@@ -294,7 +293,7 @@ function ChatApp() {
         renderer.triggerNotification(`Friend request from ${request.sender_name}`, "MeshTalk")
       }
       if (!dialog) setDialog({ kind: "friend-request-incoming", request })
-      else showStatus(`Friend request from ${request.sender_name}. Open Settings > Friends to respond.`)
+      else showStatus(`Friend request from ${request.sender_name}. Open Commands > Friends to respond.`)
       void refreshPeers()
       return
     }
@@ -440,18 +439,16 @@ function ChatApp() {
       showDialog({ kind: "friend-requests", requests: [] })
       void loadFriendRequests()
     } else if (dialog.kind === "friend-requests" || dialog.kind === "add-friend" || dialog.kind === "remove-friend") {
-      showDialog({ kind: "settings-friends" })
-    } else if (dialog.kind === "settings") {
+      showDialog({ kind: "friends" })
+    } else if (dialog.kind === "friends") {
       showDialog({ kind: "commands" })
-    } else if (dialog.kind === "settings-friends") {
-      showDialog({ kind: "settings" })
-    } else if (dialog.kind === "settings-blocked") {
-      showDialog({ kind: "settings" })
+    } else if (dialog.kind === "blocked") {
+      showDialog({ kind: "friends" })
     } else if (dialog.kind === "block-peer-pick") {
-      showDialog({ kind: "settings-blocked", blocked: [] })
+      showDialog({ kind: "blocked", blocked: [] })
       void loadBlockedPeers()
     } else if (dialog.kind === "block-peer") {
-      showDialog({ kind: "settings-blocked", blocked: [] })
+      showDialog({ kind: "blocked", blocked: [] })
       void loadBlockedPeers()
     } else {
       showDialog({ kind: "commands" })
@@ -738,7 +735,7 @@ function ChatApp() {
       const response = await ipc.send("blocked_peers")
       if (response.error) throw new Error(response.error)
       if (dialogAction.current !== action) return
-      setDialog({ kind: "settings-blocked", blocked: response.blocked as BlockedPeer[] })
+      setDialog({ kind: "blocked", blocked: response.blocked as BlockedPeer[] })
     } catch (error) {
       failDialogAction(action, error)
       return
@@ -804,8 +801,8 @@ function ChatApp() {
     } else if (command === "rooms") {
       showDialog({ kind: "rooms", rooms: [] })
       void loadRooms()
-    } else if (command === "settings") {
-      showDialog({ kind: "settings" })
+    } else if (command === "friends") {
+      showDialog({ kind: "friends" })
     } else if (command === "rename") {
       const displayName = identity?.display_name ?? ""
       setNameDraft(displayName)
@@ -825,7 +822,7 @@ function ChatApp() {
       const peer = peers.find((p) => p.peer_id === selectedPeerId)
       if (!peer) { showStatus("Select a peer to add as a friend."); return }
       if (peer.is_friend) { showStatus(`${peer.display_name} is already your friend.`); return }
-      if (peer.is_blocked) { showStatus(`${peer.display_name} is blocked. Unblock them in Settings {'>'} Blocked friends.`); return }
+      if (peer.is_blocked) { showStatus(`${peer.display_name} is blocked. Unblock them in Commands {'>'} Friends {'>'} Block.`); return }
       if (peer.friend_request === "outgoing" || peer.friend_request === "both") { showStatus(`Friend request to ${peer.display_name} is already pending.`); return }
       setDialogDraft("")
       showDialog({ kind: "add-friend", peerId: peer.peer_id, displayName: peer.display_name })
@@ -977,6 +974,10 @@ function ChatApp() {
   const limitColor = composerLimitColor(draftLength)
   const dialogWidth = Math.min(68, Math.max(1, width - 4))
   const dialogHeight = Math.min(20, Math.max(1, height - 4))
+  function dialogWidthFor(kind: Dialog["kind"]): number {
+    if (kind === "room-detail") return Math.min(78, Math.max(1, width - 2))
+    return dialogWidth
+  }
   return (
     <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
       <box title={`You: ${identity?.display_name ?? "..."}`} style={{ border: true, width: sidebarWidth, flexShrink: 0, flexDirection: "column", padding: 1, gap: 1 }}>
@@ -1128,14 +1129,13 @@ function ChatApp() {
               : dialog.kind === "remove-friend" ? "Remove friend"
               : dialog.kind === "friend-requests" ? "Friend requests"
               : dialog.kind === "friend-request-incoming" ? "Friend request"
-              : dialog.kind === "settings" ? "Settings"
-              : dialog.kind === "settings-friends" ? "Settings - Friends"
-              : dialog.kind === "settings-blocked" ? "Settings - Blocked friends"
+              : dialog.kind === "friends" ? "Friends"
+              : dialog.kind === "blocked" ? "Blocked friends"
               : dialog.kind === "block-peer-pick" ? "Block a peer"
               : dialog.kind === "block-peer" ? "Block friend requests"
               : "Private rooms"}
             bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
-            style={{ width: dialogWidth, height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
+            style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
           >
             {dialog.kind === "commands" && (
               <select
@@ -1144,7 +1144,7 @@ function ChatApp() {
                 options={[
                   { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
                   { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
-                  { name: "Settings", description: "Friends, blocked friends, and preferences", value: "settings" },
+                  { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
                   { name: "Mute peer", description: "Mute desktop notifications from an online peer", value: "mute" },
                   { name: "Unmute peer", description: "Resume desktop notifications for a muted peer", value: "unmute" },
                   { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
@@ -1212,10 +1212,10 @@ function ChatApp() {
               <>
                 <select
                   focused
-                  height={Math.max(5, dialogHeight - 5)}
-                  options={[
-                    { name: "Create a private room", description: "Generate a secret invite and copy it", value: "create" },
-                    { name: "Join with an invite", description: "Paste a meshtalk: invite", value: "join" },
+height={Math.max(5, dialogHeight - 3)}
+                options={[
+                  { name: "Create a private room", description: "Generate a secret invite and copy it", value: "create" },
+                  { name: "Join with an invite", description: "Paste a meshtalk: invite", value: "join" },
                     ...dialog.rooms.map((room) => ({
                       name: `Room ${room.room_id.slice(0, 12)}`,
                       description: `${room.members} control connection${room.members === 1 ? "" : "s"} - view or leave`,
@@ -1274,7 +1274,7 @@ function ChatApp() {
                 <text fg="#e0a34a">Leaving removes this room and its secret from this device.</text>
                 <select
                   focused
-                  height={4}
+                  height={6}
                   options={[
                     { name: "Keep room", description: "Return without making changes", value: "keep" },
                     { name: "Copy invite", description: "Reveal and copy this room's secret invite", value: "copy" },
@@ -1429,44 +1429,28 @@ function ChatApp() {
                 />
               </>
             )}
-            {dialog.kind === "settings" && (
+            {dialog.kind === "friends" && (
               <select
                 focused
-                height={5}
+                height={Math.max(5, dialogHeight - 3)}
                 options={[
-                  { name: "Friends", description: "Add a friend, respond to requests, or remove a friend", value: "friends" },
-                  { name: "Blocked friends", description: "Manage peers whose friend requests are ignored", value: "blocked" },
-                  { name: "Back to commands", description: "Return to the command palette", value: "back" },
-                ]}
-                onSelect={(_, option) => {
-                  if (option?.value === "friends") showDialog({ kind: "settings-friends" })
-                  else if (option?.value === "blocked") void loadBlockedPeers()
-                  else if (option?.value === "back") showDialog({ kind: "commands" })
-                }}
-                wrapSelection
-                showDescription
-              />
-            )}
-            {dialog.kind === "settings-friends" && (
-              <select
-                focused
-                height={6}
-                options={[
+                  { name: "Block", description: "Ignore friend requests from a specific person", value: "blocked" },
                   { name: "Add friend", description: "Send a friend request to the selected peer", value: "add-friend" },
                   { name: "Friend requests", description: "View and respond to pending requests", value: "friend-requests" },
                   { name: "Remove friend", description: "Stop being friends with the selected peer", value: "remove-friend" },
-                  { name: "Back to settings", description: "Return to Settings", value: "back" },
+                  { name: "Back to commands", description: "Return to the command palette", value: "back" },
                 ]}
                 onSelect={(_, option) => {
                   if (!option) return
-                  if (option.value === "back") showDialog({ kind: "settings" })
+                  if (option.value === "back") showDialog({ kind: "commands" })
+                  else if (option.value === "blocked") void loadBlockedPeers()
                   else runCommand(option.value)
                 }}
                 wrapSelection
                 showDescription
               />
             )}
-            {dialog.kind === "settings-blocked" && (
+            {dialog.kind === "blocked" && (
               <>
                 {!dialog.blocked.length && <text fg="#888888">No blocked peers. Blocked peers cannot send you friend requests.</text>}
                 {dialog.blocked.length > 0 && (
@@ -1480,12 +1464,12 @@ function ChatApp() {
                         value: `unblock:${peer.peer_id}`,
                       })),
                       { name: "Block a peer...", description: "Ignore friend requests from a specific person", value: "block-pick" },
-                      { name: "Back to settings", description: "Return to Settings", value: "back" },
+                      { name: "Back to friends", description: "Return to the Friends menu", value: "back" },
                     ]}
                     onSelect={(_, option) => {
                       if (!option) return
                       if (option.value === "block-pick") showDialog({ kind: "block-peer-pick" })
-                      else if (option.value === "back") showDialog({ kind: "settings" })
+                      else if (option.value === "back") showDialog({ kind: "friends" })
                       else if (option.value.startsWith("unblock:")) {
                         const peer = dialog.blocked.find((item) => `unblock:${item.peer_id}` === option.value)
                         if (peer) void unblockPeer(peer.peer_id, peer.display_name)
@@ -1501,11 +1485,11 @@ function ChatApp() {
                     height={4}
                     options={[
                       { name: "Block a peer...", description: "Ignore friend requests from a specific person", value: "block-pick" },
-                      { name: "Back to settings", description: "Return to Settings", value: "back" },
+                      { name: "Back to friends", description: "Return to the Friends menu", value: "back" },
                     ]}
                     onSelect={(_, option) => {
                       if (option?.value === "block-pick") showDialog({ kind: "block-peer-pick" })
-                      else if (option?.value === "back") showDialog({ kind: "settings" })
+                      else if (option?.value === "back") showDialog({ kind: "friends" })
                     }}
                     wrapSelection
                     showDescription
@@ -1532,7 +1516,7 @@ function ChatApp() {
                   onSelect={(_, option) => {
                     if (!option) return
                     if (option.value === "back") {
-                      showDialog({ kind: "settings-blocked", blocked: [] })
+                      showDialog({ kind: "blocked", blocked: [] })
                       void loadBlockedPeers()
                       return
                     }
@@ -1547,7 +1531,7 @@ function ChatApp() {
             {dialog.kind === "block-peer" && (
               <>
                 <text>Block friend requests from <span fg="#66dd88">{dialog.displayName}</span>?</text>
-                <text fg="#888888">You can unblock later in Settings {'>'} Blocked friends.</text>
+                <text fg="#888888">You can unblock later in Commands {'>'} Friends {'>'} Block.</text>
                 <select
                   focused
                   height={4}
@@ -1559,7 +1543,7 @@ function ChatApp() {
                     if (!option) return
                     if (option.value === "yes") void blockPeer(dialog.peerId, dialog.displayName)
                     else {
-                      showDialog({ kind: "settings-blocked", blocked: [] })
+                      showDialog({ kind: "blocked", blocked: [] })
                       void loadBlockedPeers()
                     }
                   }}
