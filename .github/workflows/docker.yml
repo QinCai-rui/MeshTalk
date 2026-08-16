@@ -99,13 +99,16 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=
 
-      - run: |
+      - env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
           TAGS="${{ steps.meta.outputs.tags }}"
           for TAG in $TAGS; do
             docker buildx imagetools create \
               -t "$TAG" \
-              "ghcr.io/${{ github.repository_owner }}/meshtalk-control:amd64" \
-              "ghcr.io/${{ github.repository_owner }}/meshtalk-control:arm64"
+              "ghcr.io/$OWNER/meshtalk-control:amd64" \
+              "ghcr.io/$OWNER/meshtalk-control:arm64"
           done
 
   client:
@@ -173,11 +176,14 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=
 
-      - run: |
+      - env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
           TAGS="${{ steps.meta.outputs.tags }}"
           for TAG in $TAGS; do
             docker buildx imagetools create \
               -t "$TAG" \
-              "ghcr.io/${{ github.repository_owner }}/meshtalk-client:amd64" \
-              "ghcr.io/${{ github.repository_owner }}/meshtalk-client:arm64"
+              "ghcr.io/$OWNER/meshtalk-client:amd64" \
+              "ghcr.io/$OWNER/meshtalk-client:arm64"
           done
