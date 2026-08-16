@@ -1,4 +1,8 @@
-"""Direct, authenticated end-to-end encrypted message delivery."""
+"""Direct, authenticated end-to-end encrypted message delivery.
+
+Incoming messages are only accepted from friends. Messages from other peers
+are dropped and the sender receives a signed MESSAGE_BLOCKED notice.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +16,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .database import Database
 from .encryption import decrypt_as_recipient, encrypt_for_recipient
+from .friends import FriendManager
 from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
-from .protocol import MAX_PACKET_SIZE, MessagePayload, Packet, PacketType
+from .protocol import MAX_PACKET_SIZE, MessageBlockedPayload, MessagePayload, Packet, PacketType
 
 logger = logging.getLogger(__name__)
 MESSAGE_EXPIRY = 86400
@@ -22,10 +27,11 @@ MAX_MESSAGE_CONTENT_SIZE = 30 * 1024
 
 
 class MessageRouter:
-    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None) -> None:
+    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None, friend_manager: FriendManager | None = None) -> None:
         self.identity, self.peer_manager, self.db = identity, peer_manager, db
         self.on_received = on_received
         self.on_delivered = on_delivered
+        self.friend_manager = friend_manager or FriendManager(identity, peer_manager, db)
 
     async def send_message(self, recipient_id: str, plaintext: bytes) -> str:
         if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:
@@ -58,6 +64,12 @@ class MessageRouter:
             await self.db.mark_message_delivered(message_id)
             if self.on_delivered:
                 await self.on_delivered(message_id)
+        elif packet.type in (
+            PacketType.FRIEND_REQUEST,
+            PacketType.FRIEND_REQUEST_RESPONSE,
+            PacketType.MESSAGE_BLOCKED,
+        ):
+            await self.friend_manager.handle_packet(peer, packet)
 
     async def _handle_message(self, peer: PeerConnection, packet: Packet) -> None:
         message = MessagePayload.decode(packet.payload)
@@ -65,6 +77,9 @@ class MessageRouter:
             return
         if message.sender_id != peer.peer_id or peer.signing_public_key is None:
             raise ValueError("Message sender does not match authenticated peer")
+        if not await self.friend_manager.is_friend(message.sender_id):
+            await self._send_blocked_notice(peer, message)
+            return
         if message.expires_at < time.time() or message.hop_count != 0 or message.max_hops != 0:
             raise ValueError("Invalid direct message metadata")
         if len(message.signature) != 64:
@@ -89,3 +104,9 @@ class MessageRouter:
         logger.info("Received encrypted message %s from %s", message.message_id, peer.peer_id)
         if self.on_received:
             await self.on_received({"message_id": message.message_id, "sender_id": message.sender_id, "content": content, "created_at": message.created_at})
+
+    async def _send_blocked_notice(self, peer: PeerConnection, message: MessagePayload) -> None:
+        payload = MessageBlockedPayload(message.message_id, self.identity.peer_id, b"")
+        payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+        await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE_BLOCKED, payload.encode()))
+        logger.info("Blocked message %s from non-friend %s", message.message_id, peer.peer_id)

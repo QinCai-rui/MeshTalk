@@ -21,6 +21,8 @@ type Peer = {
   last_seen: number
   unread_count: number
   presence?: "active" | "away" | "offline"
+  is_friend?: boolean
+  friend_request?: "incoming" | "outgoing" | "both" | null
   active_transport?: "lan_tcp" | "remote_udp"
   active_endpoint?: string
   endpoints: { transport: "lan_tcp" | "remote_udp"; endpoint: string; active: boolean }[]
@@ -32,6 +34,18 @@ type Message = {
   content: string
   created_at: number
   delivered?: number
+  blocked?: number
+}
+type FriendRequest = {
+  request_id: string
+  sender_id: string
+  sender_name: string
+  recipient_id?: string
+  recipient_name?: string
+  note?: string | null
+  created_at: number
+  direction: "incoming" | "outgoing"
+  status: "pending" | "accepted" | "declined"
 }
 type RoomStatus = {
   room_id: string
@@ -57,6 +71,10 @@ type Dialog =
   | { kind: "rename"; firstRun?: boolean }
   | { kind: "mute-timeout"; peerId: string; displayName: string }
   | { kind: "unmute-confirm"; peerId: string; displayName: string }
+  | { kind: "add-friend"; peerId: string; displayName: string }
+  | { kind: "remove-friend"; peerId: string; displayName: string }
+  | { kind: "friend-requests"; requests: FriendRequest[] }
+  | { kind: "friend-request-incoming"; request: FriendRequest }
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -68,6 +86,14 @@ function transportName(transport?: Peer["active_transport"]): string {
 
 function peerPresence(peer: Peer): "active" | "away" | "offline" {
   return peer.presence ?? (peer.is_online ? "away" : "offline")
+}
+
+function friendMarkers(peer: Peer): string {
+  const markers: string[] = []
+  if (peer.is_friend) markers.push("\u2665")
+  if (peer.friend_request === "incoming" || peer.friend_request === "both") markers.push("\u2199")
+  if (peer.friend_request === "outgoing" || peer.friend_request === "both") markers.push("\u2197")
+  return markers.length ? ` ${markers.join("")}` : ""
 }
 
 function composerLimitColor(length: number): string | undefined {
@@ -95,6 +121,7 @@ function ChatApp() {
   const [editingName, setEditingName] = useState(false)
   const [scrollFocused, setScrollFocused] = useState(false)
   const [deliveredMessageIds, setDeliveredMessageIds] = useState<Set<string>>(() => new Set())
+  const [blockedMessageIds, setBlockedMessageIds] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState("Connecting to backend...")
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
@@ -230,6 +257,40 @@ function ChatApp() {
       showStatus("Message delivered.")
       return
     }
+    if (event.event === "message_blocked") {
+      const messageId = event.message_id as string
+      const name = (event.display_name as string) ?? "a peer"
+      setBlockedMessageIds((current) => new Set(current).add(messageId))
+      setMessages((current) => current.map((message) =>
+        message.message_id === messageId ? { ...message, blocked: 1 } : message
+      ))
+      showStatus(`Message blocked: ${name} hasn't added you as a friend yet.`)
+      void refreshPeers()
+      return
+    }
+    if (event.event === "friend_request") {
+      const request: FriendRequest = {
+        request_id: event.request_id as string,
+        sender_id: event.sender_id as string,
+        sender_name: (event.sender_name as string) ?? "a peer",
+        note: (event.note as string | null | undefined) ?? null,
+        created_at: event.created_at as number,
+        direction: "incoming",
+        status: "pending",
+      }
+      if (!dialog) setDialog({ kind: "friend-request-incoming", request })
+      else showStatus(`Friend request from ${request.sender_name}. Open Ctrl+P > Friend requests to respond.`)
+      void refreshPeers()
+      return
+    }
+    if (event.event === "friend_response") {
+      const name = (event.display_name as string) ?? "a peer"
+      showStatus(event.accepted
+        ? `${name} accepted your friend request. You can now chat.`
+        : `${name} declined your friend request.`)
+      void refreshPeers()
+      return
+    }
     if (event.event !== "message") return
     const senderId = event.sender_id as string
     const sender = peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "a peer"
@@ -254,7 +315,7 @@ function ChatApp() {
     void ipc.send("messages", { peer_id: senderId }).then((response) => {
       if (!response.error) setMessages(response.messages as Message[])
     })
-  }), [ipc, mutedPeers, peers, renderer, selectedPeerId])
+  }), [ipc, mutedPeers, peers, renderer, selectedPeerId, dialog])
 
   useEffect(() => {
     if (!selectedPeerId) {
@@ -359,6 +420,11 @@ function ChatApp() {
     } else if (dialog.kind === "mute-timeout") {
       showDialog({ kind: "commands" })
     } else if (dialog.kind === "unmute-confirm") {
+      showDialog({ kind: "commands" })
+    } else if (dialog.kind === "friend-request-incoming") {
+      showDialog({ kind: "friend-requests", requests: [] })
+      void loadFriendRequests()
+    } else if (dialog.kind === "friend-requests" || dialog.kind === "add-friend" || dialog.kind === "remove-friend") {
       showDialog({ kind: "commands" })
     } else {
       showDialog({ kind: "commands" })
@@ -568,6 +634,76 @@ function ChatApp() {
     }
   }
 
+  async function loadFriendRequests() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("friend_requests")
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setDialog({ kind: "friend-requests", requests: response.requests as FriendRequest[] })
+    } catch (error) {
+      failDialogAction(action, error)
+      return
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function sendFriendRequest(peerId: string, note: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("friend_send", { peer_id: peerId, note })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      showStatus("Friend request sent. You can chat once they accept.")
+      await refreshPeers()
+      closeDialog()
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function respondToFriendRequest(request: FriendRequest, accept: boolean) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("friend_respond", { request_id: request.request_id, accept })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      showStatus(accept
+        ? `You and ${request.sender_name} are now friends.`
+        : `Declined ${request.sender_name}'s friend request.`)
+      await refreshPeers()
+      closeDialog()
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function unfriendPeer(peerId: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("unfriend", { peer_id: peerId })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      const peer = peers.find((p) => p.peer_id === peerId)
+      showStatus(`Removed ${peer?.display_name ?? peerId} as a friend.`)
+      await refreshPeers()
+      closeDialog()
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
   function runCommand(command: string) {
     if (command === "control") {
       showDialog({ kind: "control" })
@@ -589,6 +725,20 @@ function ChatApp() {
       const mutedList = peers.filter((p) => mutedIds.includes(p.peer_id))
       if (!mutedList.length) { showStatus("No muted peers to unmute."); return }
       showDialog({ kind: "unmute-confirm", peerId: mutedList[0].peer_id, displayName: mutedList[0].display_name })
+    } else if (command === "add-friend") {
+      const peer = peers.find((p) => p.peer_id === selectedPeerId)
+      if (!peer) { showStatus("Select a peer to add as a friend."); return }
+      if (peer.is_friend) { showStatus(`${peer.display_name} is already your friend.`); return }
+      if (peer.friend_request === "outgoing" || peer.friend_request === "both") { showStatus(`Friend request to ${peer.display_name} is already pending.`); return }
+      setDialogDraft("")
+      showDialog({ kind: "add-friend", peerId: peer.peer_id, displayName: peer.display_name })
+    } else if (command === "remove-friend") {
+      const peer = peers.find((p) => p.peer_id === selectedPeerId)
+      if (!peer) { showStatus("Select a friend to remove."); return }
+      if (!peer.is_friend) { showStatus(`${peer.display_name} is not your friend.`); return }
+      showDialog({ kind: "remove-friend", peerId: peer.peer_id, displayName: peer.display_name })
+    } else if (command === "friend-requests") {
+      void loadFriendRequests()
     }
   }
 
@@ -769,7 +919,7 @@ function ChatApp() {
                 style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
               >
                 <text truncate fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>
-                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{muted ? " M" : ""}
+                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
                 </text>
                 {peer.endpoints.length ? peer.endpoints.map((endpoint) => (
                   <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>
@@ -784,13 +934,16 @@ function ChatApp() {
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
         <box
-          title={selected ? `Chat: ${selected.display_name}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})` : "Chat"}
+          title={selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
           {!selected && <text fg="#888888">Waiting for a connected peer.</text>}
           {selected && !messages.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
           {selected && !selected.is_online ? <text fg="#e0a34a">This peer is offline. Messages cannot be sent until it reconnects.</text> : null}
+          {selected && selected.is_online && !selected.is_friend ? (
+            <text fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (Ctrl+P {'>'} Add friend).</text>
+          ) : null}
           {selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected ? (
             <text fg="#ff9f43">Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting ({controlStatus.reconnect_attempts}).</text>
           ) : null}
@@ -812,12 +965,13 @@ function ChatApp() {
             {messages.map((message) => {
               const isLocal = message.sender_id === identity?.peer_id
               const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
+              const blocked = Boolean(message.blocked) || blockedMessageIds.has(message.message_id)
               return (
                 <box key={message.message_id} style={{ flexDirection: "column", marginBottom: 1 }}>
                   <text>
                     <span fg="#888888">{formatTime(message.created_at)} </span>
                     <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selected?.display_name}</span>
-                    {isLocal && <span fg="#888888"> {delivered ? "delivered" : "sent"}</span>}
+                    {isLocal && <span fg={blocked ? "#ff7777" : "#888888"}> {blocked ? "blocked" : delivered ? "delivered" : "sent"}</span>}
                   </text>
                   <text wrapMode="word">{message.content}</text>
                 </box>
@@ -868,7 +1022,7 @@ function ChatApp() {
       {dialog && (
         <box style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", backgroundColor: "#080b10", alignItems: "center", justifyContent: "center" }}>
           <box
-            title={dialog.kind === "commands" ? "Commands" : dialog.kind.startsWith("control") ? "Control server" : dialog.kind === "rename" ? "Display name" : dialog.kind === "mute-timeout" ? "Mute peer" : dialog.kind === "unmute-confirm" ? "Unmute peer" : "Private rooms"}
+            title={dialog.kind === "commands" ? "Commands" : dialog.kind.startsWith("control") ? "Control server" : dialog.kind === "rename" ? "Display name" : dialog.kind === "mute-timeout" ? "Mute peer" : dialog.kind === "unmute-confirm" ? "Unmute peer" : dialog.kind === "add-friend" ? "Add friend" : dialog.kind === "remove-friend" ? "Remove friend" : dialog.kind === "friend-requests" ? "Friend requests" : dialog.kind === "friend-request-incoming" ? "Friend request" : "Private rooms"}
             bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
             style={{ width: dialogWidth, height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
           >
@@ -879,6 +1033,9 @@ function ChatApp() {
                 options={[
                   { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
                   { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
+                  { name: "Add friend", description: "Send a friend request to the selected peer", value: "add-friend" },
+                  { name: "Friend requests", description: "View and respond to pending requests", value: "friend-requests" },
+                  { name: "Remove friend", description: "Stop being friends with the selected peer", value: "remove-friend" },
                   { name: "Mute peer", description: "Mute desktop notifications from an online peer", value: "mute" },
                   { name: "Unmute peer", description: "Resume desktop notifications for a muted peer", value: "unmute" },
                   { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
@@ -1070,6 +1227,89 @@ function ChatApp() {
                     { name: "Cancel", description: "Keep muted", value: "no" },
                   ]}
                   onSelect={(_, option) => option?.value === "yes" ? void unmutePeer(dialog.peerId) : showDialog({ kind: "commands" })}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "add-friend" && (
+              <>
+                <text>Send a friend request to <span fg="#66dd88">{dialog.displayName}</span>?</text>
+                <text fg="#888888">They must accept before your messages get through.</text>
+                <input
+                  focused
+                  value={dialogDraft}
+                  placeholder="Optional note"
+                  onInput={setDialogDraft}
+                  onSubmit={(value) => void sendFriendRequest(dialog.peerId, typeof value === "string" ? value : dialogDraft)}
+                  maxLength={1024}
+                />
+                <text fg="#888888">Enter sends the request. Esc backs out.</text>
+              </>
+            )}
+            {dialog.kind === "remove-friend" && (
+              <>
+                <text>Remove <span fg="#66dd88">{dialog.displayName}</span> as a friend?</text>
+                <text fg="#888888">Their future messages will be blocked until you accept a new request.</text>
+                <select
+                  focused
+                  height={4}
+                  options={[
+                    { name: "Remove friend", description: "Stop being friends and block their messages", value: "yes" },
+                    { name: "Cancel", description: "Keep them as a friend", value: "no" },
+                  ]}
+                  onSelect={(_, option) => option?.value === "yes" ? void unfriendPeer(dialog.peerId) : showDialog({ kind: "commands" })}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "friend-requests" && (
+              <>
+                {!dialog.requests.length && <text fg="#888888">No pending friend requests.</text>}
+                {dialog.requests.some((request) => request.direction === "incoming") && (
+                  <select
+                    focused
+                    height={Math.max(5, dialogHeight - 6)}
+                    options={[
+                      ...dialog.requests
+                        .filter((request) => request.direction === "incoming")
+                        .map((request) => ({
+                          name: `Request from ${request.sender_name}`,
+                          description: request.note || "Choose accept or decline",
+                          value: request.request_id,
+                        })),
+                      { name: "Back to commands", description: "Return to the command palette", value: "back" },
+                    ]}
+                    onSelect={(_, option) => {
+                      if (!option) return
+                      if (option.value === "back") showDialog({ kind: "commands" })
+                      else {
+                        const request = dialog.requests.find((item) => item.request_id === option.value)
+                        if (request) showDialog({ kind: "friend-request-incoming", request })
+                      }
+                    }}
+                    wrapSelection
+                    showDescription
+                  />
+                )}
+                {dialog.requests.some((request) => request.direction === "outgoing") && (
+                  <text fg="#888888">Waiting on: {dialog.requests.filter((request) => request.direction === "outgoing").map((request) => request.recipient_name ?? request.sender_name).join(", ")}</text>
+                )}
+              </>
+            )}
+            {dialog.kind === "friend-request-incoming" && (
+              <>
+                <text><span fg="#66dd88">{dialog.request.sender_name}</span> wants to add you as a friend.</text>
+                {dialog.request.note ? <text wrapMode="word"><span fg="#888888">Note: </span>{dialog.request.note}</text> : null}
+                <select
+                  focused
+                  height={4}
+                  options={[
+                    { name: "Accept", description: "Become friends and allow direct messages", value: "accept" },
+                    { name: "Decline", description: "Reject this friend request", value: "decline" },
+                  ]}
+                  onSelect={(_, option) => option && void respondToFriendRequest(dialog.request, option.value === "accept")}
                   wrapSelection
                   showDescription
                 />

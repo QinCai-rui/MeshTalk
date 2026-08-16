@@ -19,6 +19,13 @@ tui/dist/
 __pycache__/
 *.egg-info/
 
+# Local binaries / packages
+/meshtalk
+/meshtalk-backend
+/meshtalk-cli
+/meshtalk-tui
+/meshtalk-*.tar.gz
+
 # Data
 .meshtalk/
 
