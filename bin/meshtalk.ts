@@ -12,6 +12,7 @@ const HOME = homedir();
 const DATA_DIR = `${HOME}/.meshtalk`;
 const SOCKET_PATH = `${DATA_DIR}/meshtalk.sock`;
 const PORT_PATH = `${DATA_DIR}/meshtalk.port`;
+const TOKEN_PATH = `${DATA_DIR}/meshtalk.token`;
 const BACKEND_LOG_PATH = `${DATA_DIR}/backend.log`;
 const BACKEND_START_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 300;
