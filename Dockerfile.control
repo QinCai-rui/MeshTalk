@@ -19,6 +19,7 @@ FROM oven/bun:alpine
 RUN addgroup -S meshtalk && adduser -S meshtalk -G meshtalk
 
 COPY --from=build /app/meshtalk-control /usr/local/bin/meshtalk-control
+RUN chmod +x /usr/local/bin/meshtalk-control
 
 USER meshtalk
 
