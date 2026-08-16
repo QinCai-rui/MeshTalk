@@ -154,12 +154,20 @@ export class IPCClient {
     if (this.closed) return;
     this.closed = true;
     if (this.connectReject) {
-      this.connectReject(new Error("Connection closed during authentication"));
+      if (this.intentionallyClosed) {
+        this.connectResolve?.();
+      } else {
+        this.connectReject(new Error("Connection closed during authentication"));
+      }
       this.connectResolve = null;
       this.connectReject = null;
     }
     for (const entry of this.pending.values()) {
-      entry.reject(new Error("Connection closed"));
+      if (this.intentionallyClosed) {
+        entry.resolve({ error: "Connection closed" });
+      } else {
+        entry.reject(new Error("Connection closed"));
+      }
     }
     this.pending.clear();
     if (!this.intentionallyClosed) {
