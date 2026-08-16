@@ -1,189 +1,158 @@
-name: Docker
+name: Publish Docker image
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - closed
+  workflow_dispatch:
 
-permissions:
-  contents: read
-  packages: write
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
 
 jobs:
-  changes:
+  verify:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
     runs-on: ubuntu-latest
-    outputs:
-      control: ${{ steps.filter.outputs.control }}
-      client: ${{ steps.filter.outputs.client }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            control:
-              - 'Dockerfile.control'
-              - 'control/**'
-              - 'package.json'
-              - 'bun.lock'
-            client:
-              - 'Dockerfile.client'
-              - 'backend/**'
-              - 'tui/**'
-              - 'cli/**'
-              - 'common/**'
-              - 'package.json'
-              - 'bun.lock'
+    permissions:
+      contents: read
 
-  control:
-    needs: changes
-    if: needs.changes.outputs.control == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check
+        run: bun run check
+
+      - name: Build
+        run: bun run build
+
+  build:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged && github.event.pull_request.base.ref == 'main') || github.event_name == 'workflow_dispatch'
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - arch: amd64
+          - component: control
+            dockerfile: Dockerfile.control
+            platform: linux/amd64
             runner: ubuntu-latest
-            bun-target: bun-linux-x64
-          - arch: arm64
+            slug: amd64
+          - component: control
+            dockerfile: Dockerfile.control
+            platform: linux/arm64
             runner: ubuntu-24.04-arm
-            bun-target: bun-linux-arm64
+            slug: arm64
+          - component: client
+            dockerfile: Dockerfile.client
+            platform: linux/amd64
+            runner: ubuntu-latest
+            slug: amd64
+          - component: client
+            dockerfile: Dockerfile.client
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            slug: arm64
+
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: docker/setup-qemu-action@v3
+      - name: Set image name
+        run: |
+          echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}/meshtalk-${{ matrix.component }}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${GITHUB_REF_NAME//\//-}-${GITHUB_SHA}" >> "$GITHUB_ENV"
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/meshtalk-control
-          tags: |
-            type=raw,value=${{ matrix.arch }},enable={{is_default_branch}}
-            type=sha,prefix=,suffix=-${{ matrix.arch }}
-
-      - uses: docker/build-push-action@v6
+      - name: Build and push (platform-specific tag)
+        uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.control
-          build-args: BUN_TARGET=${{ matrix.bun-target }}
-          platforms: linux/${{ matrix.arch }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=control-${{ matrix.arch }}
-          cache-to: type=gha,scope=control-${{ matrix.arch }},mode=max
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}-${{ matrix.slug }}
+          cache-from: type=gha,scope=${{ matrix.component }}-${{ matrix.slug }}
+          cache-to: type=gha,scope=${{ matrix.component }}-${{ matrix.slug }},mode=max
 
-  control-manifest:
-    needs: [changes, control]
-    if: needs.changes.outputs.control == 'true'
+  merge:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged && github.event.pull_request.base.ref == 'main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    steps:
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+    needs: build
+    permissions:
+      contents: read
+      packages: write
 
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/meshtalk-control
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=
-
-      - env:
-          OWNER: ${{ github.repository_owner }}
-        run: |
-          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
-          TAGS="${{ steps.meta.outputs.tags }}"
-          for TAG in $TAGS; do
-            docker buildx imagetools create \
-              -t "$TAG" \
-              "ghcr.io/$OWNER/meshtalk-control:amd64" \
-              "ghcr.io/$OWNER/meshtalk-control:arm64"
-          done
-
-  client:
-    needs: changes
-    if: needs.changes.outputs.client == 'true'
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - arch: amd64
-            runner: ubuntu-latest
-            bun-target: bun-linux-x64
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            bun-target: bun-linux-arm64
-    runs-on: ${{ matrix.runner }}
+          - component: control
+          - component: client
+
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-qemu-action@v3
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/meshtalk-client
-          tags: |
-            type=raw,value=${{ matrix.arch }},enable={{is_default_branch}}
-            type=sha,prefix=,suffix=-${{ matrix.arch }}
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.client
-          build-args: BUN_TARGET=${{ matrix.bun-target }}
-          platforms: linux/${{ matrix.arch }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=client-${{ matrix.arch }}
-          cache-to: type=gha,scope=client-${{ matrix.arch }},mode=max
-
-  client-manifest:
-    needs: [changes, client]
-    if: needs.changes.outputs.client == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/meshtalk-client
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=
-
-      - env:
-          OWNER: ${{ github.repository_owner }}
+      - name: Set image name
         run: |
-          OWNER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
-          TAGS="${{ steps.meta.outputs.tags }}"
-          for TAG in $TAGS; do
+          echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}/meshtalk-${{ matrix.component }}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${GITHUB_REF_NAME//\//-}-${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value={{branch}}-{{sha}}
+            type=raw,value={{branch}},enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Create and push multi-arch manifest
+        run: |
+          src="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          echo "${{ steps.meta.outputs.tags }}" | while read -r tag; do
             docker buildx imagetools create \
-              -t "$TAG" \
-              "ghcr.io/$OWNER/meshtalk-client:amd64" \
-              "ghcr.io/$OWNER/meshtalk-client:arm64"
+              --tag "$tag" \
+              "${src}-amd64" \
+              "${src}-arm64"
           done
