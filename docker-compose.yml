@@ -33,7 +33,7 @@ services:
     # The control server is reachable via localhost:8787 since it is published to the host.
     # Remove network_mode and set MESHTALK_CONTROL_URL to ws://control:8787 if LAN discovery is not needed.
     network_mode: host
-    restart: unless-stopped
+    restart: no
 
 volumes:
   meshtalk-data:
