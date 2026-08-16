@@ -109,6 +109,36 @@ function backendRequest(action: string): Promise<Record<string, unknown> | null>
       resolve(result);
     }
 
+    let token = "";
+    try { token = readFileSync(TOKEN_PATH, "utf-8").trim(); } catch {}
+
+    const onConnect = (socket: Socket) => {
+      socket.write(JSON.stringify({ action: "authenticate", token }) + "\n");
+      let authenticated = false;
+      socket.removeAllListeners("data");
+      socket.on("data", (data) => {
+        const lines = data.toString().split("\n");
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            if (!authenticated) {
+              if (msg.authenticated) {
+                authenticated = true;
+                socket.write(JSON.stringify({ id: 1, action }) + "\n");
+              } else {
+                finish(null);
+              }
+              return;
+            }
+            finish(msg);
+          } catch {
+            finish(null);
+          }
+        }
+      });
+    };
+
     const connectTcp = () => {
       try {
         const port = Number(readFileSync(PORT_PATH, "utf-8").trim());
@@ -116,16 +146,7 @@ function backendRequest(action: string): Promise<Record<string, unknown> | null>
         const socket = createConnection(port, "127.0.0.1");
         activeSocket = socket;
         socket.setTimeout(3_000);
-        socket.on("connect", () => {
-          socket.write(JSON.stringify({ id: 1, action }) + "\n");
-        });
-        socket.on("data", (data) => {
-          try {
-            finish(JSON.parse(data.toString().split("\n", 1)[0]));
-          } catch {
-            finish(null);
-          }
-        });
+        socket.on("connect", () => onConnect(socket));
         socket.on("error", () => finish(null));
         socket.on("timeout", () => finish(null));
       } catch {
@@ -139,16 +160,7 @@ function backendRequest(action: string): Promise<Record<string, unknown> | null>
       const socket = createConnection(SOCKET_PATH);
       activeSocket = socket;
       socket.setTimeout(3_000);
-      socket.on("connect", () => {
-        socket.write(JSON.stringify({ id: 1, action }) + "\n");
-      });
-      socket.on("data", (data) => {
-        try {
-          finish(JSON.parse(data.toString().split("\n", 1)[0]));
-        } catch {
-          finish(null);
-        }
-      });
+      socket.on("connect", () => onConnect(socket));
       socket.on("error", () => { socket.destroy(); connectTcp(); });
       socket.on("timeout", () => finish(null));
     }
@@ -171,25 +183,18 @@ async function waitForBackend(backendProcess?: ChildProcess): Promise<boolean> {
 }
 
 async function stopBackend(pid?: number): Promise<void> {
-  if (!await backendRunning()) return;
-  await backendRequest("shutdown");
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline && await backendRunning()) {
-    await Bun.sleep(POLL_INTERVAL_MS);
+  if (!pid) {
+    try { pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim()); } catch {}
   }
-  if (await backendRunning()) {
-    if (pid) {
-      log("Backend did not stop gracefully; sending SIGKILL.");
-      try { process.kill(pid, "SIGKILL"); } catch {}
-      const killDeadline = Date.now() + 5_000;
-      while (Date.now() < killDeadline && await backendRunning()) {
-        await Bun.sleep(POLL_INTERVAL_MS);
-      }
-    }
-    if (await backendRunning()) {
-      log(`Backend still running; use \`${PROGRAM} backend stop\` manually.`);
-    }
+  if (!pid || !Number.isInteger(pid)) return;
+  try { process.kill(pid, "SIGTERM"); } catch { return; }
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    await Bun.sleep(200);
+    try { process.kill(pid!, 0); } catch { return; }
   }
+  log("Backend did not stop gracefully; sending SIGKILL.");
+  try { process.kill(pid, "SIGKILL"); } catch {}
 }
 
 function startBackend(backend: Component): ChildProcess {
@@ -237,32 +242,22 @@ async function main() {
       return;
     }
     if (command === "stop") {
-      if (!await backendRunning()) {
-        console.log("Backend is not running.");
+      let pid: number | null = null;
+      try { pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim()); } catch {}
+      if (!pid || !Number.isInteger(pid)) {
+        console.log("No backend PID file found.");
         return;
       }
-      await backendRequest("shutdown");
-      const deadline = Date.now() + 10_000;
-      while (Date.now() < deadline && await backendRunning()) {
-        await Bun.sleep(POLL_INTERVAL_MS);
+      try { process.kill(pid, "SIGTERM"); } catch { console.log("Backend is not running."); return; }
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        await Bun.sleep(200);
+        try { process.kill(pid, 0); } catch { console.log("Backend stopped."); return; }
       }
-      if (await backendRunning()) {
-        log("Backend did not stop gracefully; sending SIGKILL.");
-        const identity = await backendRequest("identity") as Record<string, unknown> | null;
-        // If we can't get the PID, try reading from the socket
-        try {
-          const pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim());
-          process.kill(pid, "SIGKILL");
-        } catch {}
-        const killDeadline = Date.now() + 5_000;
-        while (Date.now() < killDeadline && await backendRunning()) {
-          await Bun.sleep(POLL_INTERVAL_MS);
-        }
-      }
-      if (await backendRunning()) {
-        log("Backend did not stop after SIGKILL.");
-      }
-      console.log("Backend stopped.");
+      log("Backend did not stop gracefully; sending SIGKILL.");
+      try { process.kill(pid, "SIGKILL"); } catch {}
+      await Bun.sleep(1_000);
+      try { process.kill(pid, 0); console.log("Backend still running."); } catch { console.log("Backend stopped."); }
       return;
     }
     throw new Error(`Usage: ${PROGRAM} backend [status|stop]`);
