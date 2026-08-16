@@ -4,6 +4,8 @@ WORKDIR /app
 
 COPY package.json bun.lock* ./
 COPY control/package.json control/
+COPY tui/package.json tui/
+COPY cli/package.json cli/
 RUN bun install --frozen-lockfile 2>/dev/null || bun install
 
 COPY control/ control/
