@@ -783,7 +783,7 @@ function ChatApp() {
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
           {!selected && <text fg="#888888">Waiting for a connected peer.</text>}
-          {selected && !messages.length && <text fg="#888888">No messages yet. Say hello.</text>}
+          {selected && !messages.length && selected.is_online && <text fg="#888888">No messages yet. Say hello.</text>}
           {selected && !selected.is_online && <text fg="#e0a34a">This peer is offline. Messages cannot be sent until it reconnects.</text>}
           <scrollbox
             ref={scrollboxRef}
