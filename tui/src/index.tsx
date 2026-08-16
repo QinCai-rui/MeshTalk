@@ -1036,7 +1036,7 @@ function ChatApp() {
                 <text fg="#888888">Choose how long notifications will stay muted.</text>
                 <select
                   focused
-                  height={Math.max(7, dialogHeight - 4)}
+                  height={Math.max(5, dialogHeight - 6)}
                   options={[
                     { name: "15 minutes", description: "Mute for a short break", value: String(15 * 60) },
                     { name: "1 hour", description: "Mute for a while", value: String(60 * 60) },
