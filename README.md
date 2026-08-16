@@ -91,6 +91,36 @@ For safe key-exchange diagnostics, run `meshtalk -- --debug`. It logs
 connection direction, endpoints, and public-key fingerprints, but never private
 keys, room secrets, or message content.
 
+## Docker
+
+Pre-built multi-arch images (amd64 and arm64) are published to GitHub Container
+Registry on every push to `main`.
+
+```bash
+# Pull images
+docker pull ghcr.io/qincai-rui/meshtalk/control:latest
+docker pull ghcr.io/qincai-rui/meshtalk/client:latest
+
+# Run with docker compose
+docker compose up -d
+docker compose run -it client
+```
+
+The `docker-compose.yml` starts the control service and a client with the TUI.
+LAN discovery uses host networking by default. Override environment variables
+with a `.env` file or inline:
+
+```bash
+CONTROL_PORT=8787 docker compose up -d
+```
+
+To build images locally instead of pulling from GHCR:
+
+```bash
+docker compose build
+docker compose run -it client
+```
+
 ## Remote Rooms
 
 Run the control service locally for development:
