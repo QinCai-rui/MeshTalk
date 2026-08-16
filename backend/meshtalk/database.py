@@ -75,6 +75,10 @@ class Database:
             await self._db.execute("ALTER TABLE peers ADD COLUMN signing_public_key BLOB")
         if "tui_active" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN tui_active INTEGER NOT NULL DEFAULT 0")
+        if "lan_endpoint" not in columns:
+            await self._db.execute("ALTER TABLE peers ADD COLUMN lan_endpoint TEXT")
+        if "remote_endpoint" not in columns:
+            await self._db.execute("ALTER TABLE peers ADD COLUMN remote_endpoint TEXT")
         message_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(messages)")}
         if "read_at" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN read_at REAL")
@@ -151,6 +155,34 @@ class Database:
     async def remove_peer(self, peer_id: str) -> None:
         await self._db.execute("DELETE FROM peers WHERE peer_id = ?", (peer_id,))
         await self._db.commit()
+
+    async def save_peer_endpoint(self, peer_id: str, transport: str, endpoint: tuple[str, int] | None) -> None:
+        column = "lan_endpoint" if transport == "lan_tcp" else "remote_endpoint"
+        value = f"{endpoint[0]}:{endpoint[1]}" if endpoint else None
+        await self._db.execute(
+            f"UPDATE peers SET {column} = ? WHERE peer_id = ?", (value, peer_id)
+        )
+        await self._db.commit()
+
+    async def load_peer_endpoints(self) -> dict[str, dict[str, tuple[str, int]]]:
+        result: dict[str, dict[str, tuple[str, int]]] = {}
+        async with self._db.execute(
+            "SELECT peer_id, lan_endpoint, remote_endpoint FROM peers WHERE lan_endpoint IS NOT NULL OR remote_endpoint IS NOT NULL"
+        ) as cursor:
+            async for row in cursor:
+                peer_id = row["peer_id"]
+                endpoints: dict[str, tuple[str, int]] = {}
+                for transport, column in [("lan_tcp", "lan_endpoint"), ("remote_udp", "remote_endpoint")]:
+                    raw = row[column]
+                    if raw and isinstance(raw, str) and ":" in raw:
+                        host, _, port = raw.rpartition(":")
+                        try:
+                            endpoints[transport] = (host, int(port))
+                        except ValueError:
+                            pass
+                if endpoints:
+                    result[peer_id] = endpoints
+        return result
 
     async def get_unread_counts(self, local_peer_id: str) -> dict[str, int]:
         async with self._db.execute(

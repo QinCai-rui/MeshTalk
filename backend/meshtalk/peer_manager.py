@@ -117,11 +117,20 @@ class PeerManager:
         if peer_id not in self._known_endpoints and len(self._known_endpoints) >= MAX_KNOWN_PEERS:
             return
         self._known_endpoints.setdefault(peer_id, {})["lan_tcp"] = (address, tcp_port)
+        asyncio.ensure_future(self.db.save_peer_endpoint(peer_id, "lan_tcp", (address, tcp_port)))
 
     async def record_remote_candidate(self, peer_id: str, endpoint: Endpoint) -> None:
         if peer_id not in self._known_endpoints and len(self._known_endpoints) >= MAX_KNOWN_PEERS:
             raise ValueError("Too many known peers")
         self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = endpoint
+        await self.db.save_peer_endpoint(peer_id, "remote_udp", endpoint)
+
+    async def load_endpoints(self) -> None:
+        saved = await self.db.load_peer_endpoints()
+        for peer_id, endpoints in saved.items():
+            if peer_id not in self._known_endpoints:
+                self._known_endpoints[peer_id] = {}
+            self._known_endpoints[peer_id].update(endpoints)
 
     async def connect_to_peer(self, peer_id: str | None, address: str, tcp_port: int) -> None:
         if peer_id:

@@ -264,6 +264,7 @@ async def main(debug: bool = False) -> None:
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
 
     await peer_manager.start()
+    await peer_manager.load_endpoints()
     await discovery.start()
     await rendezvous.start()
     await ipc.start()
