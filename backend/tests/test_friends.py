@@ -11,6 +11,7 @@ from meshtalk.friends import FriendManager
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerManager
 from meshtalk.protocol import (
+    FriendRequestCancelledPayload,
     FriendRequestPayload,
     FriendRequestResponsePayload,
     MessageBlockedPayload,
@@ -33,6 +34,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         self.received = asyncio.Queue()
         self.friend_request_events = []
         self.friend_response_events = []
+        self.friend_cancelled_events = []
         self.message_blocked_events = []
         self.manager_a = PeerManager(self.identity_a, self.db_a, lambda *_: None, tcp_port=34991)
         self.manager_b = PeerManager(self.identity_b, self.db_b, lambda *_: None, tcp_port=34992)
@@ -45,6 +47,9 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         async def collect_friend_responses(event):
             self.friend_response_events.append(event)
 
+        async def collect_friend_cancelled(event):
+            self.friend_cancelled_events.append(event)
+
         async def collect_message_blocked(event):
             self.message_blocked_events.append(event)
 
@@ -52,6 +57,8 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         self.friend_b.on_friend_request = collect_friend_requests
         self.friend_a.on_friend_response = collect_friend_responses
         self.friend_b.on_friend_response = collect_friend_responses
+        self.friend_a.on_friend_cancelled = collect_friend_cancelled
+        self.friend_b.on_friend_cancelled = collect_friend_cancelled
         self.friend_a.on_message_blocked = collect_message_blocked
         self.friend_b.on_message_blocked = collect_message_blocked
         self.router_a = MessageRouter(self.identity_a, self.manager_a, self.db_a, self.received.put, friend_manager=self.friend_a)
@@ -115,6 +122,11 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
 
     def _signed_blocked(self, message_id, blocked_by, signer):
         payload = MessageBlockedPayload(message_id, blocked_by.peer_id, b"")
+        payload.signature = signer.signing_private_key.sign(payload.signed_bytes())
+        return payload
+
+    def _signed_cancel(self, request_id, sender, signer):
+        payload = FriendRequestCancelledPayload(request_id, sender.peer_id, b"")
         payload.signature = signer.signing_private_key.sign(payload.signed_bytes())
         return payload
 
@@ -196,12 +208,35 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ValueError):
                     MessageBlockedPayload.decode(encode(**bad))
 
+    def test_friend_cancelled_decode_validation(self):
+        def encode(**overrides):
+            data = {
+                "request_id": "req-1",
+                "sender_id": "a" * 32,
+                "signature": "ab" * 64,
+            }
+            data.update(overrides)
+            return json.dumps(data).encode()
+
+        self.assertEqual(FriendRequestCancelledPayload.decode(encode()).request_id, "req-1")
+        for bad in (
+            {"signature": "ab"},
+            {"signature": "zz" * 64},
+            {"request_id": ""},
+            {"sender_id": ""},
+            {"sender_id": 123},
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    FriendRequestCancelledPayload.decode(encode(**bad))
+
     def test_payload_roundtrip(self):
         payloads = (
             FriendRequestPayload("req-1", "a" * 32, "hello", time.time(), b"\x00" * 64),
             FriendRequestResponsePayload("req-1", "b" * 32, True, b"\x00" * 64),
             FriendRequestResponsePayload("req-1", "b" * 32, False, b"\x00" * 64),
             MessageBlockedPayload("msg-1", "b" * 32, b"\x00" * 64),
+            FriendRequestCancelledPayload("req-1", "a" * 32, b"\x00" * 64),
         )
         for payload in payloads:
             with self.subTest(payload=type(payload).__name__):
@@ -492,13 +527,14 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.02)
         request_b = await self.friend_b.send_friend_request(self.identity_a.peer_id)
         await asyncio.sleep(0.05)
-        await self.friend_a.respond_to_friend_request(request_b, accept=True)
+        # B accepts A's request — B auto-cancels its own outgoing (request_b)
+        # and sends the cancel to A. Both become friends.
         await self.friend_b.respond_to_friend_request(request_a, accept=True)
         await asyncio.sleep(0.05)
         self.assertTrue(await self.friend_a.is_friend(self.identity_b.peer_id))
         self.assertTrue(await self.friend_b.is_friend(self.identity_a.peer_id))
         self.assertEqual((await self.friend_a.db.get_friend_request(request_a))["status"], "accepted")
-        self.assertEqual((await self.friend_b.db.get_friend_request(request_b))["status"], "accepted")
+        self.assertEqual((await self.friend_b.db.get_friend_request(request_a))["status"], "accepted")
 
     # ---- persistence -------------------------------------------------------------------
 
@@ -603,3 +639,101 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.friend_a.is_peer_blocked(self.identity_b.peer_id))
         await self.friend_a.unblock_peer(self.identity_b.peer_id)
         self.assertEqual(await self.friend_a.get_blocked_peers(), [])
+
+    # ---- cancel ------------------------------------------------------------------------
+
+    async def test_cancel_outgoing_friend_request(self):
+        await self._connect_peers()
+        request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
+        await asyncio.sleep(0.05)
+        await self.friend_a.cancel_friend_request(request_id)
+        await asyncio.sleep(0.05)
+        self.assertEqual((await self.friend_a.db.get_friend_request(request_id))["status"], "cancelled")
+        self.assertEqual((await self.friend_b.db.get_friend_request(request_id))["status"], "cancelled")
+        self.assertFalse(await self.friend_a.is_friend(self.identity_b.peer_id))
+
+    async def test_cancel_nonexistent_request_raises(self):
+        with self.assertRaises(ValueError):
+            await self.friend_a.cancel_friend_request("no-such-request")
+
+    async def test_cancel_incoming_request_raises(self):
+        await self._connect_peers()
+        request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
+        await asyncio.sleep(0.05)
+        with self.assertRaises(ValueError):
+            await self.friend_b.cancel_friend_request(request_id)
+
+    async def test_cancel_already_answered_request_raises(self):
+        await self._become_friends()
+        request = await self.friend_a.db.get_pending_request_with(self.identity_b.peer_id, "outgoing")
+        if request:
+            with self.assertRaises(ValueError):
+                await self.friend_a.cancel_friend_request(request["request_id"])
+
+    async def test_cancel_event_received_by_remote_peer(self):
+        await self._connect_peers()
+        request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
+        await asyncio.sleep(0.05)
+        await self.friend_a.cancel_friend_request(request_id)
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(self.friend_cancelled_events), 1)
+        event = self.friend_cancelled_events[0]
+        self.assertEqual(event["request_id"], request_id)
+        self.assertEqual(event["peer_id"], self.identity_a.peer_id)
+        self.assertEqual(event["display_name"], "Alice")
+
+    async def test_forged_cancel_notice_is_rejected(self):
+        await self._connect_peers()
+        request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
+        await asyncio.sleep(0.05)
+        payload = self._signed_cancel(request_id, self.identity_a, self.mallory)
+        with self.assertRaises(ValueError):
+            await self.friend_b.handle_packet(
+                self._peer_from(self.manager_b, self.identity_a),
+                Packet(PacketType.FRIEND_REQUEST_CANCELLED, payload.encode()),
+            )
+        self.assertEqual(self.friend_cancelled_events, [])
+        self.assertEqual((await self.friend_b.db.get_friend_request(request_id))["status"], "pending")
+
+    async def test_cancel_notice_sender_must_match_authenticated_peer(self):
+        await self._connect_peers()
+        request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
+        await asyncio.sleep(0.05)
+        payload = self._signed_cancel(request_id, self.mallory, self.identity_a)
+        with self.assertRaises(ValueError):
+            await self.friend_b.handle_packet(
+                self._peer_from(self.manager_b, self.identity_a),
+                Packet(PacketType.FRIEND_REQUEST_CANCELLED, payload.encode()),
+            )
+        self.assertEqual(self.friend_cancelled_events, [])
+
+    async def test_cancel_for_unknown_request_is_harmless(self):
+        await self._connect_peers()
+        payload = self._signed_cancel("unknown-request", self.identity_a, self.identity_a)
+        await self.friend_b.handle_packet(
+            self._peer_from(self.manager_b, self.identity_a),
+            Packet(PacketType.FRIEND_REQUEST_CANCELLED, payload.encode()),
+        )
+        self.assertEqual(self.friend_cancelled_events, [])
+
+    async def test_cancel_when_recipient_offline_raises(self):
+        await self._connect_peers()
+        request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
+        await asyncio.sleep(0.05)
+        self._peer_from(self.manager_a, self.identity_b).writer.close()
+        await asyncio.sleep(0.05)
+        with self.assertRaises(ValueError):
+            await self.friend_a.cancel_friend_request(request_id)
+
+    async def test_mutual_request_auto_cancelled_on_accept(self):
+        await self._connect_peers()
+        request_a = await self.friend_a.send_friend_request(self.identity_b.peer_id)
+        await asyncio.sleep(0.02)
+        request_b = await self.friend_b.send_friend_request(self.identity_a.peer_id)
+        await asyncio.sleep(0.05)
+        await self.friend_a.respond_to_friend_request(request_b, accept=True)
+        await asyncio.sleep(0.05)
+        self.assertTrue(await self.friend_a.is_friend(self.identity_b.peer_id))
+        self.assertEqual((await self.friend_a.db.get_friend_request(request_a))["status"], "cancelled")
+        self.assertEqual((await self.friend_a.db.get_friend_request(request_b))["status"], "accepted")
+        self.assertTrue(await self.friend_b.is_friend(self.identity_a.peer_id))

@@ -20,6 +20,7 @@ from .database import Database
 from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
 from .protocol import (
+    FriendRequestCancelledPayload,
     FriendRequestPayload,
     FriendRequestResponsePayload,
     MessageBlockedPayload,
@@ -39,11 +40,13 @@ class FriendManager:
         db: Database,
         on_friend_request: Callable[[dict], Awaitable[None]] | None = None,
         on_friend_response: Callable[[dict], Awaitable[None]] | None = None,
+        on_friend_cancelled: Callable[[dict], Awaitable[None]] | None = None,
         on_message_blocked: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
         self.identity, self.peer_manager, self.db = identity, peer_manager, db
         self.on_friend_request = on_friend_request
         self.on_friend_response = on_friend_response
+        self.on_friend_cancelled = on_friend_cancelled
         self.on_message_blocked = on_message_blocked
 
     async def is_friend(self, peer_id: str) -> bool:
@@ -95,12 +98,34 @@ class FriendManager:
         await self.db.update_friend_request_status(request_id, "accepted" if accept else "declined")
         if accept:
             await self.db.add_friend(request["sender_id"], request["sender_name"])
+            # If we also sent an outgoing request to this peer, cancel it
+            outgoing = await self.db.get_pending_request_with(request["sender_id"], "outgoing")
+            if outgoing:
+                await self.db.cancel_friend_request(outgoing["request_id"])
+                cancel_payload = FriendRequestCancelledPayload(outgoing["request_id"], self.identity.peer_id, b"")
+                cancel_payload.signature = self.identity.signing_private_key.sign(cancel_payload.signed_bytes())
+                cancel_peer = self.peer_manager.get_connected_peer(request["sender_id"])
+                if cancel_peer:
+                    await self.peer_manager.send_packet(cancel_peer, Packet(PacketType.FRIEND_REQUEST_CANCELLED, cancel_payload.encode()))
         logger.info(
             "Responded to friend request %s from %s: %s",
             request_id,
             request["sender_id"],
             "accepted" if accept else "declined",
         )
+
+    async def cancel_friend_request(self, request_id: str) -> None:
+        request = await self.db.get_friend_request(request_id)
+        if request is None or request["direction"] != "outgoing" or request["status"] != "pending":
+            raise ValueError("Unknown or already answered friend request")
+        peer = self.peer_manager.get_connected_peer(request["recipient_id"])
+        if peer is None:
+            raise ValueError("Recipient is not connected; try again when they are online")
+        payload = FriendRequestCancelledPayload(request_id, self.identity.peer_id, b"")
+        payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+        await self.peer_manager.send_packet(peer, Packet(PacketType.FRIEND_REQUEST_CANCELLED, payload.encode()))
+        await self.db.cancel_friend_request(request_id)
+        logger.info("Cancelled friend request %s to %s", request_id, request["recipient_id"])
 
     async def unfriend(self, peer_id: str) -> None:
         if not await self.is_friend(peer_id):
@@ -143,6 +168,8 @@ class FriendManager:
             await self._handle_friend_request(peer, FriendRequestPayload.decode(packet.payload))
         elif packet.type == PacketType.FRIEND_REQUEST_RESPONSE:
             await self._handle_friend_response(peer, FriendRequestResponsePayload.decode(packet.payload))
+        elif packet.type == PacketType.FRIEND_REQUEST_CANCELLED:
+            await self._handle_friend_cancelled(peer, FriendRequestCancelledPayload.decode(packet.payload))
         elif packet.type == PacketType.MESSAGE_BLOCKED:
             await self._handle_message_blocked(peer, MessageBlockedPayload.decode(packet.payload))
 
@@ -214,6 +241,22 @@ class FriendManager:
                 "peer_id": peer.peer_id,
                 "display_name": peer.display_name,
                 "accepted": payload.accept,
+            })
+
+    async def _handle_friend_cancelled(self, peer: PeerConnection, payload: FriendRequestCancelledPayload) -> None:
+        if payload.sender_id != peer.peer_id:
+            raise ValueError("Friend cancelled peer does not match authenticated peer")
+        self._verify_peer_signature(peer, payload.signed_bytes(), payload.signature)
+        request = await self.db.get_friend_request(payload.request_id)
+        if request is None or request["direction"] != "incoming" or request["status"] != "pending":
+            return
+        await self.db.cancel_friend_request(payload.request_id)
+        logger.info("Friend request %s was cancelled by %s", payload.request_id, peer.peer_id)
+        if self.on_friend_cancelled:
+            await self.on_friend_cancelled({
+                "request_id": payload.request_id,
+                "peer_id": peer.peer_id,
+                "display_name": peer.display_name,
             })
 
     async def _handle_message_blocked(self, peer: PeerConnection, payload: MessageBlockedPayload) -> None:

@@ -427,6 +427,21 @@ class Database:
         )
         await self._db.commit()
 
+    async def cancel_friend_request(self, request_id: str) -> None:
+        await self._db.execute(
+            "UPDATE friend_requests SET status = 'cancelled', responded_at = ? WHERE request_id = ?",
+            (time.time(), request_id),
+        )
+        await self._db.commit()
+
+    async def cancel_incoming_requests_with(self, peer_id: str) -> None:
+        await self._db.execute(
+            """UPDATE friend_requests SET status = 'cancelled', responded_at = ?
+               WHERE status = 'pending' AND direction = 'incoming' AND sender_id = ?""",
+            (time.time(), peer_id),
+        )
+        await self._db.commit()
+
     async def block_peer(self, peer_id: str, display_name: str) -> None:
         await self._db.execute(
             """INSERT INTO blocked_peers (peer_id, display_name, created_at) VALUES (?, ?, ?)

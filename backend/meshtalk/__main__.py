@@ -127,6 +127,13 @@ async def main(debug: bool = False) -> None:
         await friend_manager.respond_to_friend_request(request_id, accept)
         return {"request_id": request_id, "accepted": accept}
 
+    async def handle_friend_cancel(req: dict) -> dict:
+        request_id = req.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return {"error": "request_id required"}
+        await friend_manager.cancel_friend_request(request_id)
+        return {"request_id": request_id}
+
     async def handle_unfriend(req: dict) -> dict:
         peer_id = req.get("peer_id")
         if not isinstance(peer_id, str) or not peer_id:
@@ -313,6 +320,7 @@ async def main(debug: bool = False) -> None:
         "remove_peer": handle_remove_peer,
         "friend_send": handle_friend_send,
         "friend_respond": handle_friend_respond,
+        "friend_cancel": handle_friend_cancel,
         "unfriend": handle_unfriend,
         "friends": handle_friends,
         "friend_requests": handle_friend_requests,
@@ -340,6 +348,7 @@ async def main(debug: bool = False) -> None:
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
     friend_manager.on_friend_request = lambda event: ipc.broadcast_event({"event": "friend_request", **event})
     friend_manager.on_friend_response = lambda event: ipc.broadcast_event({"event": "friend_response", **event})
+    friend_manager.on_friend_cancelled = lambda event: ipc.broadcast_event({"event": "friend_cancelled", **event})
     friend_manager.on_message_blocked = lambda event: ipc.broadcast_event({"event": "message_blocked", **event})
 
     await peer_manager.start()

@@ -85,6 +85,7 @@ type Dialog =
   | { kind: "blocked"; blocked: BlockedPeer[] }
   | { kind: "block-peer-pick" }
   | { kind: "block-peer"; peerId: string; displayName: string }
+  | { kind: "cancel-friend-confirm"; requestId: string; displayName: string }
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -305,6 +306,12 @@ function ChatApp() {
       void refreshPeers()
       return
     }
+    if (event.event === "friend_cancelled") {
+      const name = (event.display_name as string) ?? "a peer"
+      showStatus(`${name} cancelled their friend request.`)
+      void refreshPeers()
+      return
+    }
     if (event.event !== "message") return
     const senderId = event.sender_id as string
     const sender = peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "a peer"
@@ -450,6 +457,9 @@ function ChatApp() {
     } else if (dialog.kind === "block-peer") {
       showDialog({ kind: "blocked", blocked: [] })
       void loadBlockedPeers()
+    } else if (dialog.kind === "cancel-friend-confirm") {
+      showDialog({ kind: "friend-requests", requests: [] })
+      void loadFriendRequests()
     } else {
       showDialog({ kind: "commands" })
     }
@@ -701,6 +711,23 @@ function ChatApp() {
       showStatus(accept
         ? `You and ${request.sender_name} are now friends.`
         : `Declined ${request.sender_name}'s friend request.`)
+      await refreshPeers()
+      closeDialog()
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function cancelFriendRequest(requestId: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("friend_cancel", { request_id: requestId })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      showStatus("Friend request cancelled.")
       await refreshPeers()
       closeDialog()
     } catch (error) {
@@ -1133,6 +1160,7 @@ function ChatApp() {
               : dialog.kind === "blocked" ? "Blocked friends"
               : dialog.kind === "block-peer-pick" ? "Block a peer"
               : dialog.kind === "block-peer" ? "Block friend requests"
+              : dialog.kind === "cancel-friend-confirm" ? "Cancel friend request"
               : "Private rooms"}
             bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
             style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
@@ -1376,34 +1404,43 @@ height={Math.max(5, dialogHeight - 3)}
             {dialog.kind === "friend-requests" && (
               <>
                 {!dialog.requests.length && <text fg="#888888">No pending friend requests.</text>}
-                {dialog.requests.some((request) => request.direction === "incoming") && (
+                {dialog.requests.length > 0 && (
                   <select
                     focused
-                    height={Math.max(5, dialogHeight - 6)}
+                    height={Math.max(5, dialogHeight - 3)}
                     options={[
                       ...dialog.requests
                         .filter((request) => request.direction === "incoming")
                         .map((request) => ({
-                          name: `Request from ${request.sender_name}`,
-                          description: request.note || "Choose accept or decline",
-                          value: request.request_id,
+                          name: `\u2199 Request from ${request.sender_name}`,
+                          description: request.note || "Accept, decline, or block",
+                          value: `incoming:${request.request_id}`,
+                        })),
+                      ...dialog.requests
+                        .filter((request) => request.direction === "outgoing")
+                        .map((request) => ({
+                          name: `\u2197 Request to ${request.recipient_name ?? request.sender_name}`,
+                          description: "Cancel this request",
+                          value: `outgoing:${request.request_id}`,
                         })),
                       { name: "Back to commands", description: "Return to the command palette", value: "back" },
                     ]}
                     onSelect={(_, option) => {
                       if (!option) return
                       if (option.value === "back") showDialog({ kind: "commands" })
-                      else {
-                        const request = dialog.requests.find((item) => item.request_id === option.value)
+                      else if (option.value.startsWith("incoming:")) {
+                        const id = option.value.slice("incoming:".length)
+                        const request = dialog.requests.find((item) => item.request_id === id)
                         if (request) showDialog({ kind: "friend-request-incoming", request })
+                      } else if (option.value.startsWith("outgoing:")) {
+                        const id = option.value.slice("outgoing:".length)
+                        const request = dialog.requests.find((item) => item.request_id === id)
+                        if (request) showDialog({ kind: "cancel-friend-confirm", requestId: request.request_id, displayName: request.recipient_name ?? request.sender_name })
                       }
                     }}
                     wrapSelection
                     showDescription
                   />
-                )}
-                {dialog.requests.some((request) => request.direction === "outgoing") && (
-                  <text fg="#888888">Waiting on: {dialog.requests.filter((request) => request.direction === "outgoing").map((request) => request.recipient_name ?? request.sender_name).join(", ")}</text>
                 )}
               </>
             )}
@@ -1413,7 +1450,7 @@ height={Math.max(5, dialogHeight - 3)}
                 {dialog.request.note ? <text wrapMode="word"><span fg="#888888">Note: </span>{dialog.request.note}</text> : null}
                 <select
                   focused
-                  height={5}
+                  height={7}
                   options={[
                     { name: "Accept", description: "Become friends and allow direct messages", value: "accept" },
                     { name: "Decline", description: "Reject this friend request", value: "decline" },
@@ -1545,6 +1582,30 @@ height={Math.max(5, dialogHeight - 3)}
                     else {
                       showDialog({ kind: "blocked", blocked: [] })
                       void loadBlockedPeers()
+                    }
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "cancel-friend-confirm" && (
+              <>
+                <text>Cancel friend request to <span fg="#66dd88">{dialog.displayName}</span>?</text>
+                <text fg="#888888">They will no longer see your pending request.</text>
+                <select
+                  focused
+                  height={4}
+                  options={[
+                    { name: "Cancel request", description: "Withdraw the pending friend request", value: "yes" },
+                    { name: "Keep request", description: "Leave the request pending", value: "no" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (!option) return
+                    if (option.value === "yes") void cancelFriendRequest(dialog.requestId)
+                    else {
+                      showDialog({ kind: "friend-requests", requests: [] })
+                      void loadFriendRequests()
                     }
                   }}
                   wrapSelection

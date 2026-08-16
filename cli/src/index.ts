@@ -21,6 +21,7 @@ Commands:
   friend send <peer-id> [note]  Send a friend request
   friend accept <request-id>     Accept a friend request
   friend decline <request-id>    Decline a friend request
+  friend cancel <request-id>     Cancel a pending outgoing friend request
   friend remove <peer-id>        Remove a friend
   blocked                     List peers whose friend requests are ignored
   block <peer-id>             Ignore friend requests from a peer
@@ -216,6 +217,7 @@ async function main(): Promise<void> {
           console.log(`  Respond with: friend accept ${request.request_id} | friend decline ${request.request_id}`);
         } else {
           console.log(`Pending to: ${request.recipient_name ?? request.sender_name} (${request.request_id})`);
+          console.log(`  Cancel with: friend cancel ${request.request_id}`);
         }
       }
       return;
@@ -238,12 +240,16 @@ async function main(): Promise<void> {
         response = await ipc.send("friend_respond", { request_id: rest[0], accept: false });
         if (hasError(response)) return;
         console.log(`Friend request ${rest[0]} declined.`);
+      } else if (subcommand === "cancel" && rest[0]) {
+        response = await ipc.send("friend_cancel", { request_id: rest[0] });
+        if (hasError(response)) return;
+        console.log(`Friend request ${rest[0]} cancelled.`);
       } else if (subcommand === "remove" && rest[0]) {
         response = await ipc.send("unfriend", { peer_id: rest[0] });
         if (hasError(response)) return;
         console.log(`Removed ${rest[0]} as a friend.`);
       } else {
-        throw new Error(`Usage: ${PROGRAM} friend <send <peer-id> [note]|accept <request-id>|decline <request-id>|remove <peer-id>>`);
+        throw new Error(`Usage: ${PROGRAM} friend <send <peer-id> [note]|accept <request-id>|decline <request-id>|cancel <request-id>|remove <peer-id>>`);
       }
       return;
     }
