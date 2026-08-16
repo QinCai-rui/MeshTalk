@@ -182,6 +182,8 @@ class Database:
             messages = [dict(row) async for row in cursor]
         for message in messages:
             message["content"] = self._decrypt_content(message["content"])
+            if isinstance(message["content"], bytes):
+                message["content"] = message["content"].decode("utf-8", errors="replace")
         return messages
 
     async def save_message(self, msg: dict) -> None:
