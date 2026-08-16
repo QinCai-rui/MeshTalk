@@ -259,7 +259,9 @@ async function main() {
           await Bun.sleep(POLL_INTERVAL_MS);
         }
       }
-      if (await backendRunning()) throw new Error("Backend did not stop.");
+      if (await backendRunning()) {
+        log("Backend did not stop after SIGKILL.");
+      }
       console.log("Backend stopped.");
       return;
     }
@@ -270,12 +272,14 @@ async function main() {
   let backendPid: number | undefined;
 
   const alreadyRunning = await backendRunning();
+  let iStartedIt = false;
 
   if (alreadyRunning) {
     log("Connecting to existing backend daemon...");
   } else {
     const backendProcess = startBackend(components.backend);
     backendPid = backendProcess.pid ?? undefined;
+    iStartedIt = true;
     log("Waiting for backend to be ready...");
     const ready = await waitForBackend(backendProcess);
     if (!ready) {
@@ -289,7 +293,10 @@ async function main() {
   let code = 0;
   if (args.length === 0) {
     let cleanupPromise: Promise<void> | undefined;
-    const cleanup = () => cleanupPromise ??= stopBackend(backendPid);
+    const cleanup = () => {
+      if (!iStartedIt) return Promise.resolve();
+      return (cleanupPromise ??= stopBackend(backendPid));
+    };
     const handleSignal = () => {
       void cleanup().finally(() => process.exit(130));
     };
