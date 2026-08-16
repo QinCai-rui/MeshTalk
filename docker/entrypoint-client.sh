@@ -3,8 +3,6 @@ set -e
 
 DATA_DIR="/data/meshtalk"
 SOCKET_PATH="${DATA_DIR}/meshtalk.sock"
-PORT_PATH="${DATA_DIR}/meshtalk.port"
-TOKEN_PATH="${DATA_DIR}/meshtalk.token"
 BACKEND_LOG="${DATA_DIR}/backend.log"
 BACKEND_TIMEOUT=60
 
@@ -32,8 +30,8 @@ BACKEND_PID=$!
 
 elapsed=0
 while [ ${elapsed} -lt ${BACKEND_TIMEOUT} ]; do
-  if [ -f "${PORT_PATH}" ]; then
-    echo "[entrypoint] Backend IPC ready on port $(cat "${PORT_PATH}")"
+  if [ -S "${SOCKET_PATH}" ]; then
+    echo "[entrypoint] Backend IPC ready on ${SOCKET_PATH}"
     break
   fi
   if ! kill -0 "${BACKEND_PID}" 2>/dev/null; then
