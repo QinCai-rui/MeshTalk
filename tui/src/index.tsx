@@ -1376,34 +1376,43 @@ height={Math.max(5, dialogHeight - 3)}
             {dialog.kind === "friend-requests" && (
               <>
                 {!dialog.requests.length && <text fg="#888888">No pending friend requests.</text>}
-                {dialog.requests.some((request) => request.direction === "incoming") && (
+                {dialog.requests.length > 0 && (
                   <select
                     focused
-                    height={Math.max(5, dialogHeight - 6)}
+                    height={Math.max(5, dialogHeight - 3)}
                     options={[
                       ...dialog.requests
                         .filter((request) => request.direction === "incoming")
                         .map((request) => ({
-                          name: `Request from ${request.sender_name}`,
-                          description: request.note || "Choose accept or decline",
-                          value: request.request_id,
+                          name: `\u2199 Request from ${request.sender_name}`,
+                          description: request.note || "Accept, decline, or block",
+                          value: `incoming:${request.request_id}`,
+                        })),
+                      ...dialog.requests
+                        .filter((request) => request.direction === "outgoing")
+                        .map((request) => ({
+                          name: `\u2197 Request to ${request.recipient_name ?? request.sender_name}`,
+                          description: "Cancel this request",
+                          value: `outgoing:${request.request_id}`,
                         })),
                       { name: "Back to commands", description: "Return to the command palette", value: "back" },
                     ]}
                     onSelect={(_, option) => {
                       if (!option) return
                       if (option.value === "back") showDialog({ kind: "commands" })
-                      else {
-                        const request = dialog.requests.find((item) => item.request_id === option.value)
+                      else if (option.value.startsWith("incoming:")) {
+                        const id = option.value.slice("incoming:".length)
+                        const request = dialog.requests.find((item) => item.request_id === id)
                         if (request) showDialog({ kind: "friend-request-incoming", request })
+                      } else if (option.value.startsWith("outgoing:")) {
+                        const id = option.value.slice("outgoing:".length)
+                        const request = dialog.requests.find((item) => item.request_id === id)
+                        if (request) showDialog({ kind: "cancel-friend-confirm", requestId: request.request_id, displayName: request.recipient_name ?? request.sender_name })
                       }
                     }}
                     wrapSelection
                     showDescription
                   />
-                )}
-                {dialog.requests.some((request) => request.direction === "outgoing") && (
-                  <text fg="#888888">Waiting on: {dialog.requests.filter((request) => request.direction === "outgoing").map((request) => request.recipient_name ?? request.sender_name).join(", ")}</text>
                 )}
               </>
             )}
