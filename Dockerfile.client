@@ -1,5 +1,6 @@
 FROM oven/bun:alpine AS bun-build
 
+ARG BUN_TARGET=bun
 WORKDIR /app
 
 COPY package.json bun.lock* ./
@@ -13,13 +14,13 @@ COPY tui/ tui/
 COPY cli/ cli/
 
 RUN bun build tui/src/index.tsx \
-    --target=bun \
+    --target=${BUN_TARGET} \
     --compile \
     --define 'process.env.OPENTUI_LIBC="glibc"' \
     --outfile /app/meshtalk-tui
 
 RUN bun build cli/src/index.ts \
-    --target=bun \
+    --target=${BUN_TARGET} \
     --compile \
     --outfile /app/meshtalk-cli
 

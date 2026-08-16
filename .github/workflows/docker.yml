@@ -70,12 +70,54 @@ jobs:
   client:
     needs: changes
     if: needs.changes.outputs.client == 'true'
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            bun-target: bun-linux-x64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            bun-target: bun-linux-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/meshtalk-client
+          tags: |
+            type=raw,value=${{ matrix.arch }},enable={{is_default_branch}}
+            type=sha,prefix=,suffix=-${{ matrix.arch }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.client
+          build-args: BUN_TARGET=${{ matrix.bun-target }}
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=client-${{ matrix.arch }}
+          cache-to: type=gha,scope=client-${{ matrix.arch }},mode=max
+
+  client-manifest:
+    needs: [changes, client]
+    if: needs.changes.outputs.client == 'true'
+    runs-on: ubuntu-latest
+    steps:
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -88,48 +130,13 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/meshtalk-client
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=latest-amd64,enable={{is_default_branch}}
             type=sha,prefix=
 
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.client
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=client-amd64
-          cache-to: type=gha,scope=client-amd64,mode=max
-
-  client-arm64:
-    needs: changes
-    if: needs.changes.outputs.client == 'true'
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/meshtalk-client
-          tags: |
-            type=raw,value=latest-arm64,enable={{is_default_branch}}
-            type=sha,prefix=,suffix=-arm64
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.client
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=client-arm64
-          cache-to: type=gha,scope=client-arm64,mode=max
+      - run: |
+          TAGS="${{ steps.meta.outputs.tags }}"
+          for TAG in $TAGS; do
+            docker buildx imagetools create \
+              -t "$TAG" \
+              "ghcr.io/${{ github.repository_owner }}/meshtalk-client:amd64" \
+              "ghcr.io/${{ github.repository_owner }}/meshtalk-client:arm64"
+          done
