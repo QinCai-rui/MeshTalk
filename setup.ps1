@@ -10,42 +10,34 @@ Write-Host "  MeshTalk Installer"
 Write-Host "  =================="
 Write-Host ""
 
-# --- Check Python ---
-$python = Get-Command python -ErrorAction SilentlyContinue
-if (-not $python) {
-    $python = Get-Command python3 -ErrorAction SilentlyContinue
-}
-if (-not $python) {
-    Write-Error "Python is not installed. Install Python 3.12+ from https://python.org"
+# --- Detect architecture ---
+$arch = $env:PROCESSOR_ARCHITECTURE
+if ($arch -eq "ARM64") {
+    Write-Warn "Windows ARM detected, using x64 build (emulation)"
+    $platform = "windows-x64"
+} elseif ($arch -eq "AMD64") {
+    $platform = "windows-x64"
+} else {
+    Write-Error "Unsupported architecture: $arch"
 }
 
-$pyVersion = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-$pyMajor = [int]($pyVersion.Split('.')[0])
-$pyMinor = [int]($pyVersion.Split('.')[1])
-if ($pyMajor -lt 3 -or ($pyMajor -eq 3 -and $pyMinor -lt 12)) {
-    Write-Error "Python $pyVersion found but 3.12+ is required."
-}
-Write-Info "Python $pyVersion"
+Write-Info "Detected platform: $platform"
 
-# --- Setup ---
+# --- Download and extract ---
 $repo = "QinCai-rui/MeshTalk"
-$releaseUrl = "https://github.com/$repo/releases/latest/download"
+$version = if ($env:MESHTALK_VERSION) { $env:MESHTALK_VERSION } else { "latest" }
+$baseUrl = "https://github.com/$repo/releases/download/$version"
+$targz = "meshtalk-$platform.tar.gz"
 
 New-Item -ItemType Directory -Force -Path bin | Out-Null
 
-# --- Download binaries ---
+Write-Info "Downloading $targz..."
+$downloadPath = Join-Path $env:TEMP $targz
+Invoke-WebRequest -Uri "$baseUrl/$targz" -OutFile $downloadPath -UseBasicParsing
 
-Write-Info "Downloading TUI..."
-Invoke-WebRequest -Uri "$releaseUrl/meshtalk-tui.exe" -OutFile "bin\meshtalk-tui.exe" -UseBasicParsing
-
-Write-Info "Downloading CLI..."
-Invoke-WebRequest -Uri "$releaseUrl/meshtalk-cli.exe" -OutFile "bin\meshtalk-cli.exe" -UseBasicParsing
-
-Write-Info "Downloading control service..."
-Invoke-WebRequest -Uri "$releaseUrl/meshtalk-control.exe" -OutFile "bin\meshtalk-control.exe" -UseBasicParsing
-
-Write-Info "Downloading backend..."
-Invoke-WebRequest -Uri "$releaseUrl/meshtalk-backend.exe" -OutFile "bin\meshtalk-backend.exe" -UseBasicParsing
+Write-Info "Extracting..."
+tar -xzf $downloadPath -C bin
+Remove-Item $downloadPath -ErrorAction SilentlyContinue
 
 # --- Done ---
 

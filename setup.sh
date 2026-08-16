@@ -13,51 +13,48 @@ error() { echo -e "${RED}[-]${NC} $1"; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 REPO="QinCai-rui/MeshTalk"
-RELEASE_URL="https://github.com/$REPO/releases/latest/download"
+VERSION="${MESHTALK_VERSION:-latest}"
+BASE_URL="https://github.com/$REPO/releases/download/$VERSION"
 
 echo ""
 echo "  MeshTalk Installer"
 echo "  =================="
 echo ""
 
-# --- Check Python ---
-if ! command_exists python3; then
-  error "Python 3 is not installed. Install Python 3.12+ from https://python.org"
-fi
+# --- Detect OS and architecture ---
 
-PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
-PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
-if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 12 ]; }; then
-  error "Python $PY_VERSION found but 3.12+ is required."
-fi
-info "Python $PY_VERSION"
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+
+case "$OS" in
+  Linux)  PLATFORM="linux" ;;
+  Darwin) PLATFORM="macos" ;;
+  *)      error "Unsupported OS: $OS" ;;
+esac
+
+case "$ARCH" in
+  x86_64|amd64)  PLATFORM="$PLATFORM-x64" ;;
+  aarch64|arm64) PLATFORM="$PLATFORM-arm64" ;;
+  *)             error "Unsupported architecture: $ARCH" ;;
+esac
+
+TARBALL="meshtalk-${PLATFORM}.tar.gz"
+info "Detected platform: $PLATFORM"
 
 # --- Check curl ---
 if ! command_exists curl; then
   error "curl is not installed."
 fi
 
-# --- Create bin directory ---
+# --- Download and extract ---
+
 mkdir -p bin
-
-# --- Download binaries ---
-
-info "Downloading TUI..."
-curl -fsSL "$RELEASE_URL/meshtalk-tui" -o bin/meshtalk-tui
-chmod +x bin/meshtalk-tui
-
-info "Downloading CLI..."
-curl -fsSL "$RELEASE_URL/meshtalk-cli" -o bin/meshtalk-cli
-chmod +x bin/meshtalk-cli
-
-info "Downloading control service..."
-curl -fsSL "$RELEASE_URL/meshtalk-control" -o bin/meshtalk-control
-chmod +x bin/meshtalk-control
-
-info "Downloading backend..."
-curl -fsSL "$RELEASE_URL/meshtalk-backend" -o bin/meshtalk-backend
-chmod +x bin/meshtalk-backend
+info "Downloading $TARBALL..."
+curl -fsSL "$BASE_URL/$TARBALL" -o "/tmp/$TARBALL"
+info "Extracting..."
+tar -xzf "/tmp/$TARBALL" -C bin/
+rm -f "/tmp/$TARBALL"
+chmod +x bin/*
 
 # --- Done ---
 
