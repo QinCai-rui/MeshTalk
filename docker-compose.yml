@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.control
+    image: ghcr.io/qincai-rui/meshtalk/control:latest
     ports:
       - "${CONTROL_PORT:-8787}:8787"
     restart: unless-stopped
@@ -17,6 +18,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.client
+    image: ghcr.io/qincai-rui/meshtalk/client:latest
     depends_on:
       control:
         condition: service_healthy
