@@ -5,7 +5,7 @@ import { spawn } from "bun";
 import { spawn as spawnProcess, type ChildProcess } from "node:child_process";
 import { createConnection, type Socket } from "net";
 import { basename, dirname, join } from "path";
-import { chmodSync, closeSync, existsSync, openSync, readFileSync, statSync, mkdirSync } from "fs";
+import { chmodSync, closeSync, existsSync, openSync, readFileSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
 
 const HOME = homedir();
@@ -170,7 +170,7 @@ async function waitForBackend(backendProcess?: ChildProcess): Promise<boolean> {
   return false;
 }
 
-async function stopBackend(): Promise<void> {
+async function stopBackend(pid?: number): Promise<void> {
   if (!await backendRunning()) return;
   await backendRequest("shutdown");
   const deadline = Date.now() + 10_000;
@@ -178,7 +178,17 @@ async function stopBackend(): Promise<void> {
     await Bun.sleep(POLL_INTERVAL_MS);
   }
   if (await backendRunning()) {
-    log(`Backend did not stop after the TUI closed; use \`${PROGRAM} backend stop\`.`);
+    if (pid) {
+      log("Backend did not stop gracefully; sending SIGKILL.");
+      try { process.kill(pid, "SIGKILL"); } catch {}
+      const killDeadline = Date.now() + 5_000;
+      while (Date.now() < killDeadline && await backendRunning()) {
+        await Bun.sleep(POLL_INTERVAL_MS);
+      }
+    }
+    if (await backendRunning()) {
+      log(`Backend still running; use \`${PROGRAM} backend stop\` manually.`);
+    }
   }
 }
 
@@ -192,6 +202,9 @@ function startBackend(backend: Component): ChildProcess {
       windowsHide: true,
     });
     proc.unref();
+    if (proc.pid) {
+      writeFileSync(`${DATA_DIR}/meshtalk.pid`, String(proc.pid));
+    }
     log(`Starting backend daemon (pid ${proc.pid}); logs: ${BACKEND_LOG_PATH}`);
     return proc;
   } finally {
@@ -233,6 +246,19 @@ async function main() {
       while (Date.now() < deadline && await backendRunning()) {
         await Bun.sleep(POLL_INTERVAL_MS);
       }
+      if (await backendRunning()) {
+        log("Backend did not stop gracefully; sending SIGKILL.");
+        const identity = await backendRequest("identity") as Record<string, unknown> | null;
+        // If we can't get the PID, try reading from the socket
+        try {
+          const pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim());
+          process.kill(pid, "SIGKILL");
+        } catch {}
+        const killDeadline = Date.now() + 5_000;
+        while (Date.now() < killDeadline && await backendRunning()) {
+          await Bun.sleep(POLL_INTERVAL_MS);
+        }
+      }
       if (await backendRunning()) throw new Error("Backend did not stop.");
       console.log("Backend stopped.");
       return;
@@ -244,8 +270,12 @@ async function main() {
 
   const alreadyRunning = await backendRunning();
 
-  if (!alreadyRunning) {
+  if (alreadyRunning) {
+    log("Connecting to existing backend daemon...");
+  } else {
     const backendProcess = startBackend(components.backend);
+    backendPid = backendProcess.pid ?? undefined;
+    log("Waiting for backend to be ready...");
     const ready = await waitForBackend(backendProcess);
     if (!ready) {
       log("Backend did not start within timeout.");
@@ -256,9 +286,10 @@ async function main() {
   }
 
   let code = 0;
+  let backendPid: number | undefined;
   if (args.length === 0) {
     let cleanupPromise: Promise<void> | undefined;
-    const cleanup = () => cleanupPromise ??= stopBackend();
+    const cleanup = () => cleanupPromise ??= stopBackend(backendPid);
     const handleSignal = () => {
       void cleanup().finally(() => process.exit(130));
     };
