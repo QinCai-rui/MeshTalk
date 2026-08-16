@@ -16,6 +16,15 @@ Commands:
   room join <invite>          Join a private room
   room leave <room-id>        Leave a room
   rooms                       List joined rooms
+  friends                     List your friends
+  friend-requests             List pending friend requests
+  friend send <peer-id> [note]  Send a friend request
+  friend accept <request-id>     Accept a friend request
+  friend decline <request-id>    Decline a friend request
+  friend remove <peer-id>        Remove a friend
+  blocked                     List peers whose friend requests are ignored
+  block <peer-id>             Ignore friend requests from a peer
+  unblock <peer-id>           Allow friend requests from a peer again
 `;
 
 function hasError(response: IPCResponse): boolean {
@@ -37,9 +46,18 @@ function transportName(value: unknown): string {
   return "not connected";
 }
 
+function friendLabel(peer: Record<string, unknown>): string {
+  const status = peer.friend_request;
+  if (peer.is_friend) return " friend";
+  if (status === "incoming") return " request-pending (respond with `friend accept`)";
+  if (status === "outgoing") return " request-sent";
+  if (status === "both") return " request-pending";
+  return "";
+}
+
 function printPeer(peer: Record<string, unknown>): void {
   const endpoint = peer.active_endpoint ? ` via ${transportName(peer.active_transport)} ${peer.active_endpoint}` : "";
-  console.log(`${peer.display_name} (${String(peer.peer_id).slice(0, 12)}) ${peer.is_online ? "online" : "offline"}${endpoint}`);
+  console.log(`${peer.display_name} (${String(peer.peer_id).slice(0, 12)}) ${peer.is_online ? "online" : "offline"}${friendLabel(peer)}${endpoint}`);
   for (const item of asRecords(peer.endpoints)) {
     if (!item.active) console.log(`  ${transportName(item.transport)} ${item.endpoint}`);
   }
@@ -175,6 +193,81 @@ async function main(): Promise<void> {
       const rooms = asRecords(response.rooms);
       if (!rooms.length) console.log("No joined rooms.");
       for (const room of rooms) console.log(`${room.room_id} (${room.members} control connections)`);
+      return;
+    }
+
+    if (command === "friends") {
+      const response = await ipc.send("friends");
+      if (hasError(response)) return;
+      const friends = asRecords(response.friends);
+      if (!friends.length) console.log("No friends yet. Send a friend request to chat.");
+      for (const friend of friends) console.log(`${friend.display_name} (${String(friend.peer_id).slice(0, 12)})`);
+      return;
+    }
+
+    if (command === "friend-requests") {
+      const response = await ipc.send("friend_requests");
+      if (hasError(response)) return;
+      const requests = asRecords(response.requests);
+      if (!requests.length) console.log("No pending friend requests.");
+      for (const request of requests) {
+        if (request.direction === "incoming") {
+          console.log(`Incoming: ${request.sender_name} (${request.request_id})${request.note ? ` - ${request.note}` : ""}`);
+          console.log(`  Respond with: friend accept ${request.request_id} | friend decline ${request.request_id}`);
+        } else {
+          console.log(`Pending to: ${request.recipient_name ?? request.sender_name} (${request.request_id})`);
+        }
+      }
+      return;
+    }
+
+    if (command === "friend") {
+      const [subcommand, ...rest] = args;
+      let response: IPCResponse;
+      if (subcommand === "send" && rest[0]) {
+        const [peerId, ...words] = rest;
+        const note = words.join(" ");
+        response = await ipc.send("friend_send", { peer_id: peerId, note });
+        if (hasError(response)) return;
+        console.log(`Friend request sent to ${peerId}: ${response.request_id}`);
+      } else if (subcommand === "accept" && rest[0]) {
+        response = await ipc.send("friend_respond", { request_id: rest[0], accept: true });
+        if (hasError(response)) return;
+        console.log(`Friend request ${rest[0]} accepted. You can now chat.`);
+      } else if (subcommand === "decline" && rest[0]) {
+        response = await ipc.send("friend_respond", { request_id: rest[0], accept: false });
+        if (hasError(response)) return;
+        console.log(`Friend request ${rest[0]} declined.`);
+      } else if (subcommand === "remove" && rest[0]) {
+        response = await ipc.send("unfriend", { peer_id: rest[0] });
+        if (hasError(response)) return;
+        console.log(`Removed ${rest[0]} as a friend.`);
+      } else {
+        throw new Error(`Usage: ${PROGRAM} friend <send <peer-id> [note]|accept <request-id>|decline <request-id>|remove <peer-id>>`);
+      }
+      return;
+    }
+
+    if (command === "blocked") {
+      const response = await ipc.send("blocked_peers");
+      if (hasError(response)) return;
+      const blocked = asRecords(response.blocked);
+      if (!blocked.length) console.log("No blocked peers. Blocked peers cannot send you friend requests.");
+      for (const peer of blocked) console.log(`${peer.display_name} (${String(peer.peer_id).slice(0, 12)})`);
+      return;
+    }
+
+    if (command === "block" && args[0]) {
+      const response = await ipc.send("block_peer", { peer_id: args[0] });
+      if (hasError(response)) return;
+      console.log(`Blocked ${args[0]}. Their friend requests are now ignored.`);
+      return;
+    }
+
+    if (command === "unblock" && args[0]) {
+      const response = await ipc.send("unblock_peer", { peer_id: args[0] });
+      if (hasError(response)) return;
+      console.log(`Unblocked ${args[0]}. They can send friend requests again.`);
       return;
     }
 

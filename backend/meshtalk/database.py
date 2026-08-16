@@ -57,6 +57,31 @@ CREATE TABLE IF NOT EXISTS config (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS friends (
+    peer_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS friend_requests (
+    request_id TEXT PRIMARY KEY,
+    sender_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    recipient_id TEXT NOT NULL DEFAULT '',
+    recipient_name TEXT NOT NULL DEFAULT '',
+    note TEXT,
+    created_at REAL NOT NULL,
+    direction TEXT NOT NULL,
+    status TEXT NOT NULL,
+    responded_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS blocked_peers (
+    peer_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
 """
 
 
@@ -82,6 +107,13 @@ class Database:
         message_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(messages)")}
         if "read_at" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN read_at REAL")
+        if "blocked" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
+        friend_request_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(friend_requests)")}
+        if "recipient_id" not in friend_request_columns:
+            await self._db.execute("ALTER TABLE friend_requests ADD COLUMN recipient_id TEXT NOT NULL DEFAULT ''")
+        if "recipient_name" not in friend_request_columns:
+            await self._db.execute("ALTER TABLE friend_requests ADD COLUMN recipient_name TEXT NOT NULL DEFAULT ''")
         await self._encrypt_existing_message_content()
         await self._db.commit()
 
@@ -199,9 +231,9 @@ class Database:
     ) -> list[dict]:
         """Return the latest direct messages with one peer in chronological order."""
         async with self._db.execute(
-            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered
+            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked
                FROM (
-                   SELECT message_id, sender_id, recipient_id, content, created_at, delivered
+                   SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked
                    FROM messages
                    WHERE (sender_id = ? AND recipient_id = ?)
                       OR (sender_id = ? AND recipient_id = ?)
@@ -222,8 +254,8 @@ class Database:
         await self._db.execute(
             """INSERT OR IGNORE INTO messages
                 (message_id, sender_id, recipient_id, content, encrypted_content,
-                 created_at, expires_at, hop_count, max_hops, read_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 created_at, expires_at, hop_count, max_hops, read_at, blocked)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 msg["message_id"],
                 msg["sender_id"],
@@ -235,6 +267,7 @@ class Database:
                 msg["hop_count"],
                 msg["max_hops"],
                 msg.get("read_at"),
+                msg.get("blocked", 0),
             ),
         )
         await self._db.commit()
@@ -306,3 +339,114 @@ class Database:
             "UPDATE messages SET delivered = 1 WHERE message_id = ?", (message_id,)
         )
         await self._db.commit()
+
+    async def mark_message_blocked(self, message_id: str) -> None:
+        await self._db.execute(
+            "UPDATE messages SET blocked = 1 WHERE message_id = ?", (message_id,)
+        )
+        await self._db.commit()
+
+    async def add_friend(self, peer_id: str, display_name: str) -> None:
+        await self._db.execute(
+            """INSERT INTO friends (peer_id, display_name, created_at) VALUES (?, ?, ?)
+               ON CONFLICT(peer_id) DO UPDATE SET display_name = excluded.display_name""",
+            (peer_id, display_name, time.time()),
+        )
+        await self._db.commit()
+
+    async def remove_friend(self, peer_id: str) -> None:
+        await self._db.execute("DELETE FROM friends WHERE peer_id = ?", (peer_id,))
+        await self._db.commit()
+
+    async def is_friend(self, peer_id: str) -> bool:
+        async with self._db.execute(
+            "SELECT 1 FROM friends WHERE peer_id = ?", (peer_id,)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def get_friends(self) -> list[dict]:
+        async with self._db.execute(
+            "SELECT peer_id, display_name, created_at FROM friends ORDER BY display_name"
+        ) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def save_friend_request(self, request: dict) -> None:
+        await self._db.execute(
+            """INSERT OR IGNORE INTO friend_requests
+               (request_id, sender_id, sender_name, recipient_id, recipient_name, note, created_at, direction, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                request["request_id"],
+                request["sender_id"],
+                request["sender_name"],
+                request.get("recipient_id", ""),
+                request.get("recipient_name", ""),
+                request.get("note"),
+                request["created_at"],
+                request["direction"],
+                request["status"],
+            ),
+        )
+        await self._db.commit()
+
+    async def get_friend_request(self, request_id: str) -> dict | None:
+        async with self._db.execute(
+            "SELECT * FROM friend_requests WHERE request_id = ?", (request_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_pending_friend_requests(self) -> list[dict]:
+        async with self._db.execute(
+            "SELECT * FROM friend_requests WHERE status = 'pending' ORDER BY created_at DESC"
+        ) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def get_pending_request_with(self, peer_id: str, direction: str) -> dict | None:
+        column = "sender_id" if direction == "incoming" else "recipient_id"
+        async with self._db.execute(
+            f"""SELECT * FROM friend_requests
+                WHERE status = 'pending' AND direction = ? AND {column} = ? LIMIT 1""",
+            (direction, peer_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def update_friend_request_status(self, request_id: str, status: str) -> None:
+        await self._db.execute(
+            "UPDATE friend_requests SET status = ?, responded_at = ? WHERE request_id = ?",
+            (status, time.time(), request_id),
+        )
+        await self._db.commit()
+
+    async def decline_pending_requests_with(self, peer_id: str) -> None:
+        await self._db.execute(
+            """UPDATE friend_requests SET status = 'declined', responded_at = ?
+               WHERE status = 'pending' AND (sender_id = ? OR recipient_id = ?)""",
+            (time.time(), peer_id, peer_id),
+        )
+        await self._db.commit()
+
+    async def block_peer(self, peer_id: str, display_name: str) -> None:
+        await self._db.execute(
+            """INSERT INTO blocked_peers (peer_id, display_name, created_at) VALUES (?, ?, ?)
+               ON CONFLICT(peer_id) DO UPDATE SET display_name = excluded.display_name""",
+            (peer_id, display_name, time.time()),
+        )
+        await self._db.commit()
+
+    async def unblock_peer(self, peer_id: str) -> None:
+        await self._db.execute("DELETE FROM blocked_peers WHERE peer_id = ?", (peer_id,))
+        await self._db.commit()
+
+    async def is_peer_blocked(self, peer_id: str) -> bool:
+        async with self._db.execute(
+            "SELECT 1 FROM blocked_peers WHERE peer_id = ?", (peer_id,)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def get_blocked_peers(self) -> list[dict]:
+        async with self._db.execute(
+            "SELECT peer_id, display_name, created_at FROM blocked_peers ORDER BY display_name"
+        ) as cursor:
+            return [dict(row) async for row in cursor]

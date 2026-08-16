@@ -10,6 +10,7 @@ from websockets.asyncio.server import serve
 
 from meshtalk.database import Database
 from meshtalk.identity import Identity
+from meshtalk.friends import FriendManager
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerManager
 from meshtalk.rendezvous import RendezvousService
@@ -92,8 +93,10 @@ class RendezvousIntegrationTest(unittest.IsolatedAsyncioTestCase):
             manager_a = PeerManager(identity_a, db_a, lambda *_: None, tcp_port=0)
             manager_b = PeerManager(identity_b, db_b, lambda *_: None, tcp_port=0)
             received = asyncio.Queue()
-            router_a = MessageRouter(identity_a, manager_a, db_a, received.put)
-            router_b = MessageRouter(identity_b, manager_b, db_b, received.put)
+            friend_a = FriendManager(identity_a, manager_a, db_a)
+            friend_b = FriendManager(identity_b, manager_b, db_b)
+            router_a = MessageRouter(identity_a, manager_a, db_a, received.put, friend_manager=friend_a)
+            router_b = MessageRouter(identity_b, manager_b, db_b, received.put, friend_manager=friend_b)
             manager_a.on_packet = router_a.handle_packet
             manager_b.on_packet = router_b.handle_packet
             settings_a = Settings(root / "a-settings.json")
@@ -121,6 +124,10 @@ class RendezvousIntegrationTest(unittest.IsolatedAsyncioTestCase):
                         await asyncio.sleep(0.02)
                     while not manager_b.get_connected_peer(identity_a.peer_id):
                         await asyncio.sleep(0.02)
+                request_id = await friend_a.send_friend_request(identity_b.peer_id)
+                await asyncio.sleep(0.05)
+                await friend_b.respond_to_friend_request(request_id, accept=True)
+                await asyncio.sleep(0.05)
                 message_id = await router_a.send_message(identity_b.peer_id, b"rendezvous secret")
                 message = await asyncio.wait_for(received.get(), 2)
                 self.assertEqual(message["message_id"], message_id)

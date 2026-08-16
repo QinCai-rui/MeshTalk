@@ -7,6 +7,7 @@ from cryptography.exceptions import InvalidTag
 
 from meshtalk.database import Database
 from meshtalk.identity import Identity
+from meshtalk.friends import FriendManager
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
 from meshtalk.rendezvous import RendezvousService, decrypt_endpoint_card, encrypt_endpoint_card
@@ -26,8 +27,10 @@ class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
         self.received = asyncio.Queue()
         self.manager_a = PeerManager(self.identity_a, self.db_a, lambda *_: None, tcp_port=0)
         self.manager_b = PeerManager(self.identity_b, self.db_b, lambda *_: None, tcp_port=0)
-        self.router_a = MessageRouter(self.identity_a, self.manager_a, self.db_a, self.received.put)
-        self.router_b = MessageRouter(self.identity_b, self.manager_b, self.db_b, self.received.put)
+        self.friend_a = FriendManager(self.identity_a, self.manager_a, self.db_a)
+        self.friend_b = FriendManager(self.identity_b, self.manager_b, self.db_b)
+        self.router_a = MessageRouter(self.identity_a, self.manager_a, self.db_a, self.received.put, friend_manager=self.friend_a)
+        self.router_b = MessageRouter(self.identity_b, self.manager_b, self.db_b, self.received.put, friend_manager=self.friend_b)
         self.manager_a.on_packet = self.router_a.handle_packet
         self.manager_b.on_packet = self.router_b.handle_packet
         await self.manager_a.start()
@@ -39,6 +42,12 @@ class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
         await self.db_a.close()
         await self.db_b.close()
         self.tempdir.cleanup()
+
+    async def _become_friends(self):
+        request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
+        await asyncio.sleep(0.05)
+        await self.friend_b.respond_to_friend_request(request_id, accept=True)
+        await asyncio.sleep(0.05)
 
     async def test_encrypted_message_over_reliable_udp(self):
         endpoint_a = ("127.0.0.1", self.manager_a.udp.local_endpoint[1])
@@ -52,6 +61,7 @@ class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
             while not self.manager_b.get_connected_peer(self.identity_a.peer_id):
                 await asyncio.sleep(0.02)
 
+        await self._become_friends()
         message_id = await self.router_a.send_message(self.identity_b.peer_id, b"remote secret")
         received = await asyncio.wait_for(self.received.get(), 2)
         self.assertEqual(received["message_id"], message_id)

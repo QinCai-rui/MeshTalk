@@ -16,6 +16,7 @@ from .identity import Identity
 from .database import Database
 from .discovery import DiscoveryService
 from .peer_manager import PeerManager, PeerConnection
+from .friends import FriendManager
 from .message_router import MessageRouter
 from .ipc import IPCServer
 from .rendezvous import RendezvousService
@@ -43,7 +44,8 @@ async def main(debug: bool = False) -> None:
     settings = Settings(DATA_DIR / "settings.json")
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
-    router = MessageRouter(identity, peer_manager, db)
+    friend_manager = FriendManager(identity, peer_manager, db)
+    router = MessageRouter(identity, peer_manager, db, friend_manager=friend_manager)
     tui_clients: set[str] = set()
 
     peer_manager.on_packet = router.handle_packet
@@ -67,6 +69,19 @@ async def main(debug: bool = False) -> None:
     async def handle_peers(req: dict) -> dict:
         peers = await db.get_all_peers()
         unread_counts = await db.get_unread_counts(identity.peer_id)
+        friends = {peer["peer_id"] for peer in await db.get_friends()}
+        blocked = {peer["peer_id"] for peer in await db.get_blocked_peers()}
+        friend_requests: dict[str, str] = {}
+        for request in await db.get_pending_friend_requests():
+            direction = request["direction"]
+            other_party = request["recipient_id"] if direction == "outgoing" else request["sender_id"]
+            if not other_party:
+                continue
+            previous = friend_requests.get(other_party)
+            if previous is None:
+                friend_requests[other_party] = direction
+            elif previous != direction:
+                friend_requests[other_party] = "both"
         return {"peers": [
             {
                 "peer_id": peer["peer_id"],
@@ -75,6 +90,9 @@ async def main(debug: bool = False) -> None:
                 "is_online": int((connection := peer_manager.get_connected_peer(peer["peer_id"])) is not None),
                 "presence": "active" if connection and connection.tui_active else "away" if connection else "offline",
                 "unread_count": unread_counts.get(peer["peer_id"], 0),
+                "is_friend": peer["peer_id"] in friends,
+                "is_blocked": peer["peer_id"] in blocked,
+                "friend_request": friend_requests.get(peer["peer_id"]),
                 **peer_manager.get_network_info(peer["peer_id"]),
             }
             for peer in peers
@@ -88,6 +106,56 @@ async def main(debug: bool = False) -> None:
             return {"error": "Cannot remove a connected peer"}
         await db.remove_peer(peer_id)
         return {"peer_id": peer_id}
+
+    async def handle_friend_send(req: dict) -> dict:
+        peer_id = req.get("peer_id")
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
+        note = req.get("note", "")
+        if note is not None and not isinstance(note, str):
+            return {"error": "note must be a string"}
+        request_id = await friend_manager.send_friend_request(peer_id, note or "")
+        return {"request_id": request_id}
+
+    async def handle_friend_respond(req: dict) -> dict:
+        request_id = req.get("request_id")
+        accept = req.get("accept")
+        if not isinstance(request_id, str) or not request_id:
+            return {"error": "request_id required"}
+        if not isinstance(accept, bool):
+            return {"error": "accept must be boolean"}
+        await friend_manager.respond_to_friend_request(request_id, accept)
+        return {"request_id": request_id, "accepted": accept}
+
+    async def handle_unfriend(req: dict) -> dict:
+        peer_id = req.get("peer_id")
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
+        await friend_manager.unfriend(peer_id)
+        return {"peer_id": peer_id}
+
+    async def handle_friends(req: dict) -> dict:
+        return {"friends": await db.get_friends()}
+
+    async def handle_friend_requests(req: dict) -> dict:
+        return {"requests": await db.get_pending_friend_requests()}
+
+    async def handle_block_peer(req: dict) -> dict:
+        peer_id = req.get("peer_id")
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
+        await friend_manager.block_peer(peer_id)
+        return {"peer_id": peer_id}
+
+    async def handle_unblock_peer(req: dict) -> dict:
+        peer_id = req.get("peer_id")
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
+        await friend_manager.unblock_peer(peer_id)
+        return {"peer_id": peer_id}
+
+    async def handle_blocked_peers(req: dict) -> dict:
+        return {"blocked": await db.get_blocked_peers()}
 
     async def update_tui_presence(client_id: str, active: bool) -> None:
         was_active = bool(tui_clients)
@@ -243,6 +311,14 @@ async def main(debug: bool = False) -> None:
         "send": handle_send,
         "peers": handle_peers,
         "remove_peer": handle_remove_peer,
+        "friend_send": handle_friend_send,
+        "friend_respond": handle_friend_respond,
+        "unfriend": handle_unfriend,
+        "friends": handle_friends,
+        "friend_requests": handle_friend_requests,
+        "block_peer": handle_block_peer,
+        "unblock_peer": handle_unblock_peer,
+        "blocked_peers": handle_blocked_peers,
         "tui_presence": handle_tui_presence,
         "identity": handle_identity,
         "status": handle_status,
@@ -262,6 +338,9 @@ async def main(debug: bool = False) -> None:
     ipc = IPCServer(ipc_handlers, on_tui_disconnect=handle_tui_disconnect)
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
+    friend_manager.on_friend_request = lambda event: ipc.broadcast_event({"event": "friend_request", **event})
+    friend_manager.on_friend_response = lambda event: ipc.broadcast_event({"event": "friend_response", **event})
+    friend_manager.on_message_blocked = lambda event: ipc.broadcast_event({"event": "message_blocked", **event})
 
     await peer_manager.start()
     await peer_manager.load_endpoints()
