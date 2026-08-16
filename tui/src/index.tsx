@@ -937,7 +937,7 @@ function ChatApp() {
               <>
                 <select
                   focused
-                  height={Math.max(7, dialogHeight - 4)}
+                  height={Math.max(5, dialogHeight - 5)}
                   options={[
                     { name: "Create a private room", description: "Generate a secret invite and copy it", value: "create" },
                     { name: "Join with an invite", description: "Paste a meshtalk: invite", value: "join" },
@@ -999,7 +999,7 @@ function ChatApp() {
                 <text fg="#e0a34a">Leaving removes this room and its secret from this device.</text>
                 <select
                   focused
-                  height={5}
+                  height={4}
                   options={[
                     { name: "Keep room", description: "Return without making changes", value: "keep" },
                     { name: "Copy invite", description: "Reveal and copy this room's secret invite", value: "copy" },
