@@ -267,6 +267,7 @@ async function main() {
   }
 
   const components = resolveComponents();
+  let backendPid: number | undefined;
 
   const alreadyRunning = await backendRunning();
 
@@ -286,7 +287,6 @@ async function main() {
   }
 
   let code = 0;
-  let backendPid: number | undefined;
   if (args.length === 0) {
     let cleanupPromise: Promise<void> | undefined;
     const cleanup = () => cleanupPromise ??= stopBackend(backendPid);
