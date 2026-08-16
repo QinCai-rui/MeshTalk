@@ -70,6 +70,7 @@ async def main(debug: bool = False) -> None:
         peers = await db.get_all_peers()
         unread_counts = await db.get_unread_counts(identity.peer_id)
         friends = {peer["peer_id"] for peer in await db.get_friends()}
+        blocked = {peer["peer_id"] for peer in await db.get_blocked_peers()}
         friend_requests: dict[str, str] = {}
         for request in await db.get_pending_friend_requests():
             direction = request["direction"]
@@ -90,6 +91,7 @@ async def main(debug: bool = False) -> None:
                 "presence": "active" if connection and connection.tui_active else "away" if connection else "offline",
                 "unread_count": unread_counts.get(peer["peer_id"], 0),
                 "is_friend": peer["peer_id"] in friends,
+                "is_blocked": peer["peer_id"] in blocked,
                 "friend_request": friend_requests.get(peer["peer_id"]),
                 **peer_manager.get_network_info(peer["peer_id"]),
             }
@@ -137,6 +139,23 @@ async def main(debug: bool = False) -> None:
 
     async def handle_friend_requests(req: dict) -> dict:
         return {"requests": await db.get_pending_friend_requests()}
+
+    async def handle_block_peer(req: dict) -> dict:
+        peer_id = req.get("peer_id")
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
+        await friend_manager.block_peer(peer_id)
+        return {"peer_id": peer_id}
+
+    async def handle_unblock_peer(req: dict) -> dict:
+        peer_id = req.get("peer_id")
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
+        await friend_manager.unblock_peer(peer_id)
+        return {"peer_id": peer_id}
+
+    async def handle_blocked_peers(req: dict) -> dict:
+        return {"blocked": await db.get_blocked_peers()}
 
     async def update_tui_presence(client_id: str, active: bool) -> None:
         was_active = bool(tui_clients)
@@ -297,6 +316,9 @@ async def main(debug: bool = False) -> None:
         "unfriend": handle_unfriend,
         "friends": handle_friends,
         "friend_requests": handle_friend_requests,
+        "block_peer": handle_block_peer,
+        "unblock_peer": handle_unblock_peer,
+        "blocked_peers": handle_blocked_peers,
         "tui_presence": handle_tui_presence,
         "identity": handle_identity,
         "status": handle_status,

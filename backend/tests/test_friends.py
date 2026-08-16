@@ -80,10 +80,25 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def _become_friends(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id, "hi bob")
-        await asyncio.sleep(0.05)
+        await self._wait_for_request(request_id, self.friend_b.db)
         await self.friend_b.respond_to_friend_request(request_id, accept=True)
         await asyncio.sleep(0.05)
         return request_id
+
+    async def _wait_for_request(self, request_id: str, db: Database):
+        for _ in range(100):
+            request = await db.get_friend_request(request_id)
+            if request is not None:
+                return request
+            await asyncio.sleep(0.02)
+        return None
+
+    async def _wait_for_blocked(self):
+        for _ in range(100):
+            if self.message_blocked_events:
+                return self.message_blocked_events[-1]
+            await asyncio.sleep(0.02)
+        return None
 
     def _peer_from(self, manager, identity):
         return manager.get_connected_peer(identity.peer_id)
@@ -439,6 +454,36 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.message_blocked_events[0]["message_id"], "never-existed")
 
+    async def test_blocked_notice_drops_local_friend(self):
+        await self._become_friends()
+        await self.friend_b.unfriend(self.identity_a.peer_id)
+        message_id = await self.router_a.send_message(self.identity_b.peer_id, b"hello again")
+        event = await self._wait_for_blocked()
+        self.assertIsNotNone(event)
+        self.assertEqual(event["message_id"], message_id)
+        self.assertTrue(event["removed_friend"])
+        self.assertFalse(await self.friend_a.is_friend(self.identity_b.peer_id))
+        self.assertEqual(await self.db_a.get_friends(), [])
+        self.assertFalse(await self.friend_b.is_friend(self.identity_a.peer_id))
+
+    async def test_blocked_notice_for_never_friend_does_not_flag_removal(self):
+        await self._connect_peers()
+        message_id = await self.router_a.send_message(self.identity_b.peer_id, b"hello stranger")
+        event = await self._wait_for_blocked()
+        self.assertIsNotNone(event)
+        self.assertEqual(event["message_id"], message_id)
+        self.assertFalse(event["removed_friend"])
+        self.assertFalse(await self.friend_a.is_friend(self.identity_b.peer_id))
+
+    async def test_peer_can_resend_request_after_blocked_notice(self):
+        await self._become_friends()
+        await self.friend_b.unfriend(self.identity_a.peer_id)
+        await self.router_a.send_message(self.identity_b.peer_id, b"hello again")
+        await self._wait_for_blocked()
+        request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id, "can we talk?")
+        request = await self._wait_for_request(request_id, self.friend_b.db)
+        self.assertIsNotNone(request)
+
     # ---- multiple parties --------------------------------------------------------------
 
     async def test_simultaneous_requests_are_both_resolved(self):
@@ -495,3 +540,66 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         friends = await self.db_a.get_friends()
         self.assertEqual([f["peer_id"] for f in friends], [self.identity_b.peer_id])
         self.assertEqual(friends[0]["display_name"], "Bob")
+
+    # ---- blocking ----------------------------------------------------------------------
+
+    async def test_cannot_block_self(self):
+        with self.assertRaises(ValueError):
+            await self.friend_a.block_peer(self.identity_a.peer_id)
+
+    async def test_blocking_peer_ignores_incoming_friend_requests(self):
+        await self._connect_peers()
+        await self.friend_a.block_peer(self.identity_b.peer_id)
+        request_id = await self.friend_b.send_friend_request(self.identity_a.peer_id, "hello?")
+        await asyncio.sleep(0.05)
+        self.assertIsNone(await self.friend_a.db.get_friend_request(request_id))
+        self.assertEqual(self.friend_request_events, [])
+        self.assertFalse(await self.friend_a.is_peer_blocked(self.identity_a.peer_id))
+
+    async def test_cannot_send_friend_request_to_blocked_peer(self):
+        await self._connect_peers()
+        await self.friend_a.block_peer(self.identity_b.peer_id)
+        with self.assertRaises(ValueError):
+            await self.friend_a.send_friend_request(self.identity_b.peer_id)
+
+    async def test_unblocking_allows_requests_again(self):
+        await self._connect_peers()
+        await self.friend_a.block_peer(self.identity_b.peer_id)
+        await self.friend_a.unblock_peer(self.identity_b.peer_id)
+        self.assertFalse(await self.friend_a.is_peer_blocked(self.identity_b.peer_id))
+        request_id = await self.friend_b.send_friend_request(self.identity_a.peer_id)
+        request = await self._wait_for_request(request_id, self.friend_a.db)
+        self.assertIsNotNone(request)
+        self.assertEqual(request["status"], "pending")
+
+    async def test_blocking_peer_unfriends_and_declines_pending_requests(self):
+        await self._connect_peers()
+        request_id = await self.friend_b.send_friend_request(self.identity_a.peer_id)
+        await self._wait_for_request(request_id, self.friend_a.db)
+        await self.friend_a.block_peer(self.identity_b.peer_id)
+        self.assertEqual((await self.friend_a.db.get_friend_request(request_id))["status"], "declined")
+        self.assertTrue(await self.friend_a.is_peer_blocked(self.identity_b.peer_id))
+        self.assertFalse(await self.friend_a.is_friend(self.identity_b.peer_id))
+
+    async def test_blocking_an_existing_friend_removes_friendship(self):
+        await self._become_friends()
+        await self.friend_a.block_peer(self.identity_b.peer_id)
+        self.assertFalse(await self.friend_a.is_friend(self.identity_b.peer_id))
+        self.assertTrue(await self.friend_b.is_friend(self.identity_a.peer_id))
+        self.assertEqual([peer["peer_id"] for peer in await self.friend_a.get_blocked_peers()], [self.identity_b.peer_id])
+
+    async def test_blocking_twice_raises(self):
+        await self.friend_a.block_peer(self.identity_b.peer_id)
+        with self.assertRaises(ValueError):
+            await self.friend_a.block_peer(self.identity_b.peer_id)
+
+    async def test_unblocking_not_blocked_peer_raises(self):
+        with self.assertRaises(ValueError):
+            await self.friend_a.unblock_peer(self.identity_b.peer_id)
+
+    async def test_blocked_peer_remains_blocked_for_friendships(self):
+        await self._connect_peers()
+        await self.friend_a.block_peer(self.identity_b.peer_id)
+        self.assertTrue(await self.friend_a.is_peer_blocked(self.identity_b.peer_id))
+        await self.friend_a.unblock_peer(self.identity_b.peer_id)
+        self.assertEqual(await self.friend_a.get_blocked_peers(), [])

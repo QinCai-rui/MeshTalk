@@ -22,6 +22,9 @@ Commands:
   friend accept <request-id>     Accept a friend request
   friend decline <request-id>    Decline a friend request
   friend remove <peer-id>        Remove a friend
+  blocked                     List peers whose friend requests are ignored
+  block <peer-id>             Ignore friend requests from a peer
+  unblock <peer-id>           Allow friend requests from a peer again
 `;
 
 function hasError(response: IPCResponse): boolean {
@@ -242,6 +245,29 @@ async function main(): Promise<void> {
       } else {
         throw new Error(`Usage: ${PROGRAM} friend <send <peer-id> [note]|accept <request-id>|decline <request-id>|remove <peer-id>>`);
       }
+      return;
+    }
+
+    if (command === "blocked") {
+      const response = await ipc.send("blocked_peers");
+      if (hasError(response)) return;
+      const blocked = asRecords(response.blocked);
+      if (!blocked.length) console.log("No blocked peers. Blocked peers cannot send you friend requests.");
+      for (const peer of blocked) console.log(`${peer.display_name} (${String(peer.peer_id).slice(0, 12)})`);
+      return;
+    }
+
+    if (command === "block" && args[0]) {
+      const response = await ipc.send("block_peer", { peer_id: args[0] });
+      if (hasError(response)) return;
+      console.log(`Blocked ${args[0]}. Their friend requests are now ignored.`);
+      return;
+    }
+
+    if (command === "unblock" && args[0]) {
+      const response = await ipc.send("unblock_peer", { peer_id: args[0] });
+      if (hasError(response)) return;
+      console.log(`Unblocked ${args[0]}. They can send friend requests again.`);
       return;
     }
 

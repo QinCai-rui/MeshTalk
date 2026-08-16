@@ -57,6 +57,8 @@ class FriendManager:
             raise ValueError("Cannot send a friend request to yourself")
         if await self.is_friend(peer_id):
             raise ValueError("This peer is already your friend")
+        if await self.db.is_peer_blocked(peer_id):
+            raise ValueError("This peer is blocked; unblock them to send a friend request")
         if await self.db.get_pending_request_with(peer_id, "outgoing"):
             raise ValueError("A friend request to this peer is already pending")
         peer = self.peer_manager.get_connected_peer(peer_id)
@@ -106,6 +108,36 @@ class FriendManager:
         await self.db.remove_friend(peer_id)
         logger.info("Removed %s as a friend", peer_id)
 
+    async def block_peer(self, peer_id: str) -> None:
+        if peer_id == self.identity.peer_id:
+            raise ValueError("You cannot block yourself")
+        if await self.db.is_peer_blocked(peer_id):
+            raise ValueError("This peer is already blocked")
+        display_name = "Anonymous"
+        stored = await self.db.get_peer(peer_id)
+        if stored is not None:
+            display_name = stored["display_name"]
+        else:
+            peer = self.peer_manager.get_connected_peer(peer_id)
+            if peer is not None:
+                display_name = peer.display_name
+        await self.db.remove_friend(peer_id)
+        await self.db.decline_pending_requests_with(peer_id)
+        await self.db.block_peer(peer_id, display_name)
+        logger.info("Blocked %s", peer_id)
+
+    async def unblock_peer(self, peer_id: str) -> None:
+        if not await self.db.is_peer_blocked(peer_id):
+            raise ValueError("This peer is not blocked")
+        await self.db.unblock_peer(peer_id)
+        logger.info("Unblocked %s", peer_id)
+
+    async def is_peer_blocked(self, peer_id: str) -> bool:
+        return await self.db.is_peer_blocked(peer_id)
+
+    async def get_blocked_peers(self) -> list[dict]:
+        return await self.db.get_blocked_peers()
+
     async def handle_packet(self, peer: PeerConnection, packet: Packet) -> None:
         if packet.type == PacketType.FRIEND_REQUEST:
             await self._handle_friend_request(peer, FriendRequestPayload.decode(packet.payload))
@@ -126,6 +158,9 @@ class FriendManager:
         if payload.sender_id != peer.peer_id:
             raise ValueError("Friend request sender does not match authenticated peer")
         self._verify_peer_signature(peer, payload.signed_bytes(), payload.signature)
+        if await self.db.is_peer_blocked(payload.sender_id):
+            logger.info("Ignored friend request %s from blocked peer %s", payload.request_id, peer.peer_id)
+            return
         if await self.db.get_friend_request(payload.request_id):
             return
         if await self.is_friend(payload.sender_id):
@@ -185,6 +220,12 @@ class FriendManager:
         if payload.blocked_by != peer.peer_id:
             raise ValueError("Blocked notice peer does not match authenticated peer")
         self._verify_peer_signature(peer, payload.signed_bytes(), payload.signature)
+        removed_friend = await self.is_friend(peer.peer_id)
+        if removed_friend:
+            # The peer no longer considers us a friend (they unfriended locally).
+            # Mirror that on our side so both views converge.
+            await self.db.remove_friend(peer.peer_id)
+            logger.info("Removed %s as a friend after blocked message notice", peer.peer_id)
         await self.db.mark_message_blocked(payload.message_id)
         logger.info("Message %s was blocked by %s", payload.message_id, peer.peer_id)
         if self.on_message_blocked:
@@ -192,4 +233,5 @@ class FriendManager:
                 "message_id": payload.message_id,
                 "peer_id": peer.peer_id,
                 "display_name": peer.display_name,
+                "removed_friend": removed_friend,
             })

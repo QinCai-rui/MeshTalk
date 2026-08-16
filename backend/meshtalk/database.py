@@ -76,6 +76,12 @@ CREATE TABLE IF NOT EXISTS friend_requests (
     status TEXT NOT NULL,
     responded_at REAL
 );
+
+CREATE TABLE IF NOT EXISTS blocked_peers (
+    peer_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
 """
 
 
@@ -412,3 +418,35 @@ class Database:
             (status, time.time(), request_id),
         )
         await self._db.commit()
+
+    async def decline_pending_requests_with(self, peer_id: str) -> None:
+        await self._db.execute(
+            """UPDATE friend_requests SET status = 'declined', responded_at = ?
+               WHERE status = 'pending' AND (sender_id = ? OR recipient_id = ?)""",
+            (time.time(), peer_id, peer_id),
+        )
+        await self._db.commit()
+
+    async def block_peer(self, peer_id: str, display_name: str) -> None:
+        await self._db.execute(
+            """INSERT INTO blocked_peers (peer_id, display_name, created_at) VALUES (?, ?, ?)
+               ON CONFLICT(peer_id) DO UPDATE SET display_name = excluded.display_name""",
+            (peer_id, display_name, time.time()),
+        )
+        await self._db.commit()
+
+    async def unblock_peer(self, peer_id: str) -> None:
+        await self._db.execute("DELETE FROM blocked_peers WHERE peer_id = ?", (peer_id,))
+        await self._db.commit()
+
+    async def is_peer_blocked(self, peer_id: str) -> bool:
+        async with self._db.execute(
+            "SELECT 1 FROM blocked_peers WHERE peer_id = ?", (peer_id,)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def get_blocked_peers(self) -> list[dict]:
+        async with self._db.execute(
+            "SELECT peer_id, display_name, created_at FROM blocked_peers ORDER BY display_name"
+        ) as cursor:
+            return [dict(row) async for row in cursor]
