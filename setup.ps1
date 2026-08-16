@@ -27,80 +27,25 @@ if ($pyMajor -lt 3 -or ($pyMajor -eq 3 -and $pyMinor -lt 12)) {
 }
 Write-Info "Python $pyVersion"
 
-# --- Check uv ---
-$uv = Get-Command uv -ErrorAction SilentlyContinue
-if (-not $uv) {
-    Write-Warn "uv is not installed. Installing..."
-    powershell -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"
-    $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
-}
-Write-Info "uv"
+# --- Setup ---
+$repo = "QinCai-rui/MeshTalk"
+$releaseUrl = "https://github.com/$repo/releases/latest/download"
 
-# --- Check Bun ---
-$bun = Get-Command bun -ErrorAction SilentlyContinue
-if (-not $bun) {
-    Write-Warn "Bun is not installed. Installing..."
-    powershell -ExecutionPolicy Bypass -Command "irm bun.sh/install.ps1 | iex"
-    $env:PATH = "$env:USERPROFILE\.bun\bin;$env:PATH"
-}
-Write-Info "bun"
-
-# --- Create bin directory ---
 New-Item -ItemType Directory -Force -Path bin | Out-Null
 
-# --- Install dependencies ---
+# --- Download binaries ---
 
-Write-Info "Installing Python backend dependencies..."
-Push-Location backend
-uv sync
-Pop-Location
+Write-Info "Downloading TUI..."
+Invoke-WebRequest -Uri "$releaseUrl/meshtalk-tui.exe" -OutFile "bin\meshtalk-tui.exe" -UseBasicParsing
 
-Write-Info "Installing TUI dependencies..."
-Push-Location tui
-bun install
-Pop-Location
+Write-Info "Downloading CLI..."
+Invoke-WebRequest -Uri "$releaseUrl/meshtalk-cli.exe" -OutFile "bin\meshtalk-cli.exe" -UseBasicParsing
 
-Write-Info "Installing CLI dependencies..."
-Push-Location cli
-bun install
-Pop-Location
+Write-Info "Downloading control service..."
+Invoke-WebRequest -Uri "$releaseUrl/meshtalk-control.exe" -OutFile "bin\meshtalk-control.exe" -UseBasicParsing
 
-Write-Info "Installing control service dependencies..."
-Push-Location control
-bun install
-Pop-Location
-
-# --- Build binaries ---
-
-Write-Info "Building TUI binary..."
-Push-Location tui
-& bun build src/index.tsx --target=bun --compile --outfile ..\bin\meshtalk-tui.exe
-Pop-Location
-
-Write-Info "Building CLI binary..."
-Push-Location cli
-& bun build src/index.ts --target=bun --compile --outfile ..\bin\meshtalk-cli.exe
-Pop-Location
-
-Write-Info "Building control service binary..."
-Push-Location control
-& bun build src/index.ts --target=bun --compile --outfile ..\bin\meshtalk-control.exe
-Pop-Location
-
-Write-Info "Building Python backend..."
-Push-Location backend
-try {
-    & uv run pyinstaller --onefile --name meshtalk-backend --distpath ..\bin meshtalk\__main__.py 2>$null
-} catch {
-    Write-Warn "PyInstaller failed, creating wrapper script"
-    $wrapper = @"
-@echo off
-cd /d "%~dp0\backend"
-uv run python -m meshtalk %*
-"@
-    Set-Content -Path "..\bin\meshtalk-backend.bat" -Value $wrapper
-}
-Pop-Location
+Write-Info "Downloading backend..."
+Invoke-WebRequest -Uri "$releaseUrl/meshtalk-backend.exe" -OutFile "bin\meshtalk-backend.exe" -UseBasicParsing
 
 # --- Done ---
 

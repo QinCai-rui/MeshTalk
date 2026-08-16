@@ -12,13 +12,15 @@ error() { echo -e "${RED}[-]${NC} $1"; exit 1; }
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
-# --- Check dependencies ---
+REPO="QinCai-rui/MeshTalk"
+RELEASE_URL="https://github.com/$REPO/releases/latest/download"
 
 echo ""
 echo "  MeshTalk Installer"
 echo "  =================="
 echo ""
 
+# --- Check Python ---
 if ! command_exists python3; then
   error "Python 3 is not installed. Install Python 3.12+ from https://python.org"
 fi
@@ -31,76 +33,31 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 12 ]; }
 fi
 info "Python $PY_VERSION"
 
-if ! command_exists uv; then
-  warn "uv is not installed. Installing..."
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.local/bin:$PATH"
+# --- Check curl ---
+if ! command_exists curl; then
+  error "curl is not installed."
 fi
-info "uv $(uv --version 2>/dev/null || echo 'installed')"
 
-if ! command_exists bun; then
-  warn "Bun is not installed. Installing..."
-  curl -fsSL https://bun.sh/install | bash
-  export PATH="$HOME/.bun/bin:$PATH"
-fi
-info "bun $(bun --version 2>/dev/null || echo 'installed')"
+# --- Create bin directory ---
+mkdir -p bin
 
-# --- Install dependencies ---
+# --- Download binaries ---
 
-info "Installing Python backend dependencies..."
-cd backend
-uv sync
-cd ..
+info "Downloading TUI..."
+curl -fsSL "$RELEASE_URL/meshtalk-tui" -o bin/meshtalk-tui
+chmod +x bin/meshtalk-tui
 
-info "Installing TUI dependencies..."
-cd tui
-bun install
-cd ..
+info "Downloading CLI..."
+curl -fsSL "$RELEASE_URL/meshtalk-cli" -o bin/meshtalk-cli
+chmod +x bin/meshtalk-cli
 
-info "Installing CLI dependencies..."
-cd cli
-bun install
-cd ..
+info "Downloading control service..."
+curl -fsSL "$RELEASE_URL/meshtalk-control" -o bin/meshtalk-control
+chmod +x bin/meshtalk-control
 
-info "Installing control service dependencies..."
-cd control
-bun install
-cd ..
-
-# --- Build binaries ---
-
-info "Building TUI binary..."
-cd tui
-bun build src/index.tsx --target=bun --compile --outfile ../bin/meshtalk-tui
-cd ..
-
-info "Building CLI binary..."
-cd cli
-bun build src/index.ts --target=bun --compile --outfile ../bin/meshtalk-cli
-cd ..
-
-info "Building control service binary..."
-cd control
-bun build src/index.ts --target=bun --compile --outfile ../bin/meshtalk-control
-cd ..
-
-info "Building Python backend..."
-cd backend
-uv run pyinstaller --onefile --name meshtalk-backend --distpath ../bin meshtalk/__main__.py 2>/dev/null || {
-  warn "PyInstaller failed, using uv run as fallback"
-  cd ..
-  mkdir -p bin
-  cat > bin/meshtalk-backend << 'WRAPPER'
-#!/usr/bin/env bash
-DIR="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$DIR/backend" && uv run python -m meshtalk "$@"
-WRAPPER
-  chmod +x bin/meshtalk-backend
-  cd backend
-}
-cd ..
-
-chmod +x bin/meshtalk-tui bin/meshtalk-cli bin/meshtalk-control bin/meshtalk-backend 2>/dev/null || true
+info "Downloading backend..."
+curl -fsSL "$RELEASE_URL/meshtalk-backend" -o bin/meshtalk-backend
+chmod +x bin/meshtalk-backend
 
 # --- Done ---
 
@@ -111,7 +68,4 @@ echo "  Run the app:"
 echo "    TUI:      ./bin/meshtalk-tui"
 echo "    CLI:      ./bin/meshtalk-cli <command>"
 echo "    Backend:  ./bin/meshtalk-backend"
-echo ""
-echo "  Or use the unified launcher:"
-echo "    ./bin/meshtalk-tui          (starts backend + TUI)"
 echo ""
