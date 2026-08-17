@@ -270,5 +270,3 @@ Fresh MeshTalk state is stored in `~/.meshtalk`:
 - `settings.json`: control URL and room secrets, mode 0600
 - `meshtalk.db`: peer and conversation state
 - `meshtalk.sock`: owner-only local IPC socket while the backend runs
-
-Old `~/.lanchat` state is left untouched and is not migrated automatically.

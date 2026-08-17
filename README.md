@@ -84,8 +84,7 @@ meshtalk backend stop
 The launcher starts the backend as a detached daemon and writes its output to
 `~/.meshtalk/backend.log`. Later TUI and CLI invocations reuse that daemon.
 
-MeshTalk creates fresh state in `~/.meshtalk`. It does not read or modify old
-`~/.lanchat` state.
+MeshTalk creates fresh state in `~/.meshtalk`.
 
 For safe key-exchange diagnostics, run `meshtalk -- --debug`. It logs
 connection direction, endpoints, and public-key fingerprints, but never private
