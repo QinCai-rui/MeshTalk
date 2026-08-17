@@ -84,6 +84,7 @@ class PeerManager:
         self.tui_active = False
         self._receive_tasks: set[asyncio.Task] = set()
         self._incoming_handshakes = 0
+        self.on_peer_changed: Callable[[str], Awaitable[None]] | None = None
         self.udp = UdpTransport(
             identity, self._on_udp_connected, self._on_udp_packet, self._on_udp_disconnected
         )
@@ -112,6 +113,13 @@ class PeerManager:
 
     def _should_initiate(self, remote_peer_id: str) -> bool:
         return self.identity.peer_id < remote_peer_id
+
+    async def _notify_peer_changed(self, peer_id: str) -> None:
+        if self.on_peer_changed is not None:
+            try:
+                await self.on_peer_changed(peer_id)
+            except Exception:
+                logger.exception("on_peer_changed callback failed")
 
     def record_lan_candidate(self, peer_id: str, address: str, tcp_port: int) -> None:
         if peer_id not in self._known_endpoints and len(self._known_endpoints) >= MAX_KNOWN_PEERS:
@@ -173,6 +181,7 @@ class PeerManager:
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
             self._start_receive_loop(peer)
             await self._send_profile_update(peer)
+            await self._notify_peer_changed(peer.peer_id)
             logger.info("Authenticated LAN connection to %s at %s", peer.peer_id, _format_endpoint(peer.endpoint))
         except Exception as exc:
             peer.state = PeerState.DISCONNECTED
@@ -203,6 +212,7 @@ class PeerManager:
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
             self._start_receive_loop(peer)
             await self._send_profile_update(peer)
+            await self._notify_peer_changed(peer.peer_id)
             logger.info("Authenticated incoming LAN connection from %s", peer.peer_id)
         except Exception as exc:
             logger.warning("Rejected incoming LAN connection from %s: %s", address, exc)
@@ -235,6 +245,7 @@ class PeerManager:
             self.peers[peer_id] = peer
         await self.db.upsert_peer(peer_id, display_name, encryption_public_key, signing_public_key)
         await self._send_profile_update(peer)
+        await self._notify_peer_changed(peer_id)
         if old_endpoint and old_endpoint != peer.endpoint:
             logger.info("Remote UDP endpoint changed for %s: %s -> %s", peer_id, _format_endpoint(old_endpoint), _format_endpoint(peer.endpoint))
         else:
@@ -262,6 +273,7 @@ class PeerManager:
         if active is peer:
             await self.db.set_peer_online(peer_id, False)
             self.peers.pop(peer_id, None)
+        await self._notify_peer_changed(peer_id)
 
     def _handshake_payload(self, challenge: bytes = b"") -> HandshakePayload:
         payload = HandshakePayload(
@@ -393,6 +405,7 @@ class PeerManager:
                 else:
                     await self.db.set_peer_online(peer.peer_id, False)
                     self.peers.pop(peer.peer_id, None)
+                await self._notify_peer_changed(peer.peer_id)
             if peer.writer:
                 peer.writer.close()
 
@@ -417,6 +430,7 @@ class PeerManager:
         await self.db.upsert_peer(
             peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, peer.tui_active
         )
+        await self._notify_peer_changed(peer.peer_id)
 
     async def send_packet(self, peer: PeerConnection, packet: Packet) -> None:
         try:

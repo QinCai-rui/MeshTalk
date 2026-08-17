@@ -323,7 +323,10 @@ function ChatApp() {
       void refreshPeers()
       return
     }
-    if (event.event !== "message") return
+    if (event.event !== "message") {
+      if (event.event === "peer_update") void refreshPeers()
+      return
+    }
     const senderId = event.sender_id as string
     const sender = peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "a peer"
     const mutedUntil = mutedPeers[senderId]

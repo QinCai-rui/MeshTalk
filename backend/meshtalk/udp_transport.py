@@ -45,7 +45,7 @@ DATA_HEADER = struct.Struct("!4sB8sQHH12s")
 AUTH_HEADER = struct.Struct("!4sB8sQ")
 RETRY_INTERVAL = 0.45
 MAX_RETRIES = 10
-SESSION_TIMEOUT = 45.0
+SESSION_TIMEOUT = 12.0
 EXPECTED_PEER_TIMEOUT = 600.0
 MAX_EXPECTED_PEERS = 512
 MAX_ATTEMPTS = 128
@@ -182,7 +182,8 @@ class UdpTransport:
         if self._transport:
             for session in list(self._sessions.values()):
                 try:
-                    self._send_authenticated(session, GOODBYE, 0)
+                    for _ in range(3):
+                        self._send_authenticated(session, GOODBYE, 0)
                 except Exception:
                     pass
             self._transport.close()
@@ -297,7 +298,7 @@ class UdpTransport:
                 self._handle_data(data, addr)
             elif message_type == ACK:
                 self._handle_ack(data, addr)
-            elif message_type in (PING, PONG, READY):
+            elif message_type in (PING, PONG, READY, GOODBYE):
                 self._handle_keepalive(data, addr)
         except Exception as exc:
             logger.debug("Rejected UDP datagram from %s:%d: %s", *addr, exc)
@@ -493,6 +494,10 @@ class UdpTransport:
         session.last_seen = time.monotonic()
         if message_type == PING:
             self._send_authenticated(session, PONG, token)
+        elif message_type == GOODBYE:
+            self._sessions.pop(session.peer_id, None)
+            self._sessions_by_id.pop(session.session_id, None)
+            self._spawn(self.on_disconnected(session.peer_id))
 
     def _send_authenticated(self, session: Session, message_type: int, token: int) -> None:
         header = AUTH_HEADER.pack(MAGIC, message_type, session.session_id, token)

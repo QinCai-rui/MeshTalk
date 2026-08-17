@@ -50,6 +50,11 @@ async def main(debug: bool = False) -> None:
 
     peer_manager.on_packet = router.handle_packet
 
+    async def handle_peer_changed(peer_id: str) -> None:
+        ipc.broadcast_event({"event": "peer_update", "peer_id": peer_id})
+
+    peer_manager.on_peer_changed = handle_peer_changed
+
     async def on_peer_found(address: str, tcp_port: int) -> None:
         await peer_manager.connect_to_peer(None, address, tcp_port)
 
