@@ -206,11 +206,17 @@ class UdpTransport:
         if peer_id not in self._expected_endpoints and len(self._expected_endpoints) >= MAX_EXPECTED_PEERS:
             raise ValueError("Too many expected UDP peers")
         now = time.monotonic()
+        session = self._sessions.get(peer_id)
         verified = self._expected_endpoints.get(peer_id)
-        if verified and now - verified[1] < EXPECTED_PEER_TIMEOUT:
+        if (
+            verified
+            and now - verified[1] < EXPECTED_PEER_TIMEOUT
+            and session is not None
+            and session.confirmed
+            and session.endpoint == verified[0]
+        ):
             endpoint = verified[0]
         self._expected_endpoints[peer_id] = (endpoint, now)
-        session = self._sessions.get(peer_id)
         if session and session.confirmed and session.endpoint == endpoint:
             return
         existing = self._attempts.get(peer_id)
@@ -335,10 +341,13 @@ class UdpTransport:
         if any(len(item) != 32 for item in (signing_key, encryption_key, session_key, nonce)) or len(signature) != 64:
             raise ValueError("Invalid UDP handshake key length")
         expected = self._expected_endpoints.get(peer_id)
-        if not expected:
-            raise ValueError("UDP handshake was not requested")
-        if expected[0][0] != addr[0]:
-            raise ValueError("UDP handshake source host does not match introduced endpoint")
+        if expected:
+            if expected[0][0] != addr[0]:
+                raise ValueError("UDP handshake source host does not match introduced endpoint")
+            if expected[0] != addr:
+                logger.info("UDP endpoint changed for %s: %s -> %s:%d", peer_id, expected[0], *addr)
+        else:
+            logger.debug("Accepting UDP handshake from %s without prior introduction", peer_id)
         self._expected_endpoints[peer_id] = (addr, time.monotonic())
         try:
             Ed25519PublicKey.from_public_bytes(signing_key).verify(signature, _canonical(value))

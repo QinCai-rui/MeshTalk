@@ -116,13 +116,20 @@ class PeerManager:
     def record_lan_candidate(self, peer_id: str, address: str, tcp_port: int) -> None:
         if peer_id not in self._known_endpoints and len(self._known_endpoints) >= MAX_KNOWN_PEERS:
             return
-        self._known_endpoints.setdefault(peer_id, {})["lan_tcp"] = (address, tcp_port)
-        asyncio.ensure_future(self.db.save_peer_endpoint(peer_id, "lan_tcp", (address, tcp_port)))
+        old = self._known_endpoints.get(peer_id, {}).get("lan_tcp")
+        new = (address, tcp_port)
+        self._known_endpoints.setdefault(peer_id, {})["lan_tcp"] = new
+        if old != new:
+            logger.info("LAN endpoint changed for %s: %s -> %s", peer_id, old, new)
+        asyncio.ensure_future(self.db.save_peer_endpoint(peer_id, "lan_tcp", new))
 
     async def record_remote_candidate(self, peer_id: str, endpoint: Endpoint) -> None:
         if peer_id not in self._known_endpoints and len(self._known_endpoints) >= MAX_KNOWN_PEERS:
             raise ValueError("Too many known peers")
+        old = self._known_endpoints.get(peer_id, {}).get("remote_udp")
         self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = endpoint
+        if old != endpoint:
+            logger.info("Remote UDP endpoint changed for %s: %s -> %s", peer_id, old, _format_endpoint(endpoint))
         await self.db.save_peer_endpoint(peer_id, "remote_udp", endpoint)
 
     async def load_endpoints(self) -> None:
@@ -215,6 +222,8 @@ class PeerManager:
         if peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
             logger.warning("Rejecting remote UDP peer %s: peer limit reached", peer_id)
             return
+        old = self._udp_peers.get(peer_id)
+        old_endpoint = old.endpoint if old else None
         peer = PeerConnection(peer_id, address, port, PeerState.CONNECTED, "remote_udp")
         peer.display_name = display_name
         peer.encryption_public_key = encryption_public_key
@@ -226,7 +235,10 @@ class PeerManager:
             self.peers[peer_id] = peer
         await self.db.upsert_peer(peer_id, display_name, encryption_public_key, signing_public_key)
         await self._send_profile_update(peer)
-        logger.info("Authenticated remote UDP connection to %s at %s", peer_id, _format_endpoint(peer.endpoint))
+        if old_endpoint and old_endpoint != peer.endpoint:
+            logger.info("Remote UDP endpoint changed for %s: %s -> %s", peer_id, _format_endpoint(old_endpoint), _format_endpoint(peer.endpoint))
+        else:
+            logger.info("Authenticated remote UDP connection to %s at %s", peer_id, _format_endpoint(peer.endpoint))
 
     async def _on_udp_packet(self, peer_id: str, packet: Packet) -> None:
         peer = self._udp_peers.get(peer_id)
