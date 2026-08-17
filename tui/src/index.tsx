@@ -94,6 +94,8 @@ type Dialog =
   | { kind: "block-peer"; peerId: string; displayName: string }
   | { kind: "cancel-friend-confirm"; requestId: string; displayName: string }
   | { kind: "debug" }
+  | { kind: "debug-endpoints" }
+  | { kind: "debug-peer"; peerId: string; displayName: string }
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -469,6 +471,10 @@ function ChatApp() {
     } else if (dialog.kind === "cancel-friend-confirm") {
       showDialog({ kind: "friend-requests", requests: [] })
       void loadFriendRequests()
+    } else if (dialog.kind === "debug-peer") {
+      showDialog({ kind: "debug-endpoints" })
+    } else if (dialog.kind === "debug-endpoints") {
+      showDialog({ kind: "debug" })
     } else if (dialog.kind === "debug") {
       showDialog({ kind: "commands" })
     } else {
@@ -1206,6 +1212,8 @@ function ChatApp() {
               : dialog.kind === "block-peer-pick" ? "Block a peer"
               : dialog.kind === "block-peer" ? "Block friend requests"
               : dialog.kind === "cancel-friend-confirm" ? "Cancel friend request"
+              : dialog.kind === "debug-peer" ? "Peer details"
+              : dialog.kind === "debug-endpoints" ? "Endpoints"
               : dialog.kind === "debug" ? "Debug"
               : "Private rooms"}
             bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
@@ -1663,41 +1671,20 @@ height={Math.max(5, dialogHeight - 3)}
             {dialog.kind === "debug" && (
               <>
                 <text><span fg="#888888">Control: </span>{controlStatus.connected ? "Connected" : "Disconnected"}{controlStatus.reconnect_attempts ? ` (reconnects: ${controlStatus.reconnect_attempts})` : ""}</text>
-                {debugInfo && (
-                  <>
-                    <text><span fg="#888888">STUN server: </span>{debugInfo.stun_server}</text>
-                    <text><span fg="#888888">My public endpoint: </span>{debugInfo.public_endpoint ? `${debugInfo.public_endpoint[0]}:${debugInfo.public_endpoint[1]}` : "None"}</text>
-                    <text><span fg="#888888">Local TCP port: </span>{debugInfo.local_tcp_port}</text>
-                    <text><span fg="#888888">---</span></text>
-                    <text><span fg="#888888">Local (LAN)</span></text>
-                    {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).length === 0 && <text fg="#888888">  No LAN peers</text>}
-                    {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).map((peer) => (
-                      <text key={`lan-${peer.peer_id}`}>  {peer.display_name} ({peer.peer_id.slice(0, 12)}){peer.endpoints.filter((e) => e.transport === "lan_tcp").map((e) => ` ${e.endpoint}${e.active ? " *" : ""}`).join("")}</text>
-                    ))}
-                    <text><span fg="#888888">---</span></text>
-                    {debugInfo.rooms.map((room) => (
-                      <box key={room.room_id} style={{ flexDirection: "column" }}>
-                        <text><span fg="#888888">Room: </span>{room.room_id.slice(0, 12)}<span fg="#888888"> ({room.members} control connections)</span></text>
-                        {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).length === 0 && <text fg="#888888">  No remote peers</text>}
-                        {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).map((peer) => (
-                          <text key={`udp-${peer.peer_id}`}>  {peer.display_name} ({peer.peer_id.slice(0, 12)}){peer.endpoints.filter((e) => e.transport === "remote_udp").map((e) => ` ${e.endpoint}${e.active ? " *" : ""}`).join("")}</text>
-                        ))}
-                      </box>
-                    ))}
-                  </>
-                )}
-                {!debugInfo && <text fg="#888888">Loading debug info...</text>}
+                <text><span fg="#888888">STUN server: </span>{debugInfo?.stun_server ?? "..."}</text>
                 <select
                   focused
                   height={5}
                   options={[
                     { name: "Re-STUN", description: "Re-query STUN server and republish endpoint cards", value: "re-stun" },
+                    { name: "Endpoints", description: "View your endpoint and connected peers", value: "endpoints" },
                     { name: "Refresh", description: "Reload debug information", value: "refresh" },
                     { name: "Back to commands", description: "Return to the command palette", value: "back" },
                   ]}
                   onSelect={(_, option) => {
                     if (!option) return
                     if (option.value === "re-stun") void reStun()
+                    else if (option.value === "endpoints") { showDialog({ kind: "debug-endpoints" }); void loadDebugInfo() }
                     else if (option.value === "refresh") void loadDebugInfo()
                     else showDialog({ kind: "commands" })
                   }}
@@ -1706,6 +1693,67 @@ height={Math.max(5, dialogHeight - 3)}
                 />
               </>
             )}
+            {dialog.kind === "debug-endpoints" && (
+              <>
+                {!debugInfo && <text fg="#888888">Loading debug info...</text>}
+                {debugInfo && (
+                  <>
+                    <text><span fg="#888888">My public endpoint: </span>{debugInfo.public_endpoint ? `${debugInfo.public_endpoint[0]}:${debugInfo.public_endpoint[1]}` : "None"}</text>
+                    <text><span fg="#888888">Local TCP port: </span>{debugInfo.local_tcp_port}</text>
+                    <text><span fg="#888888">---</span></text>
+                    <text><span fg="#888888">Local</span></text>
+                    {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).length === 0 && <text fg="#888888">  No local peers</text>}
+                    {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).map((peer) => (
+                      <box key={`lp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column" }}>
+                        <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>  {peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
+                      </box>
+                    ))}
+                    <text><span fg="#888888">---</span></text>
+                    <text><span fg="#888888">Remote</span></text>
+                    {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).length === 0 && <text fg="#888888">  No remote peers</text>}
+                    {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).map((peer) => (
+                      <box key={`rp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column" }}>
+                        <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>  {peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
+                      </box>
+                    ))}
+                  </>
+                )}
+                <select
+                  focused
+                  height={3}
+                  options={[{ name: "Back", description: "Return to debug", value: "back" }]}
+                  onSelect={(_, option) => { if (option?.value === "back") showDialog({ kind: "debug" }) }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "debug-peer" && (() => {
+              const d = dialog
+              const peer = debugInfo?.peers.find((p) => p.peer_id === d.peerId)
+              if (!peer) return <text fg="#888888">Peer not found (try Refresh)</text>
+              return (
+                <>
+                  <text><span fg="#888888">Name: </span>{peer.display_name}</text>
+                  <text><span fg="#888888">Peer ID: </span>{peer.peer_id}</text>
+                  <text><span fg="#888888">Online: </span>{peer.is_online ? "Yes" : "No"}</text>
+                  <text><span fg="#888888">Active transport: </span>{peer.active_transport ?? "None"}</text>
+                  <text><span fg="#888888">Active endpoint: </span>{peer.active_endpoint ?? "None"}</text>
+                  <text><span fg="#888888">Endpoints:</span></text>
+                  {peer.endpoints.map((e) => (
+                    <text key={`${e.transport}-${e.endpoint}`}>  {e.transport} {e.endpoint}{e.active ? " *" : ""}</text>
+                  ))}
+                  <select
+                    focused
+                    height={3}
+                    options={[{ name: "Back", description: "Return to endpoints", value: "back" }]}
+                    onSelect={(_, option) => { if (option?.value === "back") showDialog({ kind: "debug-endpoints" }) }}
+                    wrapSelection
+                    showDescription
+                  />
+                </>
+              )
+            })()}
             {dialogError && <text fg="#ff7777">{dialogError}</text>}
           </box>
         </box>

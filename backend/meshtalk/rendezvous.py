@@ -126,6 +126,7 @@ class RendezvousService:
         self.reconnect_attempts: int = 0
         self._running = False
         self._task: asyncio.Task | None = None
+        self._stun_task: asyncio.Task | None = None
         self._reconnect = asyncio.Event()
         self._seen_cards: dict[tuple[str, str, str], float] = {}
         self._last_candidates: dict[str, Endpoint] = {}
@@ -136,13 +137,16 @@ class RendezvousService:
     async def start(self) -> None:
         self._running = True
         self._task = asyncio.create_task(self._connection_loop())
+        self._stun_task = asyncio.create_task(self._stun_loop())
 
     async def stop(self) -> None:
         self._running = False
         self._reconnect.set()
+        if self._stun_task:
+            self._stun_task.cancel()
         if self._task:
             self._task.cancel()
-            await asyncio.gather(self._task, return_exceptions=True)
+            await asyncio.gather(self._task, self._stun_task, return_exceptions=True)
 
     def configuration_changed(self) -> None:
         self._reconnect.set()
@@ -247,13 +251,22 @@ class RendezvousService:
             await asyncio.sleep(REFRESH_INTERVAL)
             await self._announce_all(websocket)
 
-    async def _announce_all(self, websocket) -> None:
+    async def _discover_endpoint(self) -> None:
         host, port = self.settings.stun_server
         try:
             self.public_endpoint = await self.udp.discover_public_endpoint(host, port)
         except Exception as exc:
             self.public_endpoint = None
             logger.warning("Public STUN discovery failed through %s:%d: %s", host, port, exc)
+
+    async def _stun_loop(self) -> None:
+        while self._running:
+            await self._discover_endpoint()
+            await asyncio.sleep(REFRESH_INTERVAL)
+
+    async def _announce_all(self, websocket) -> None:
+        await self._discover_endpoint()
+        if not self.public_endpoint:
             return
         for room in self.settings.rooms.values():
             await self._announce(websocket, room)
