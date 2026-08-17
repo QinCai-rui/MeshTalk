@@ -1,5 +1,5 @@
-import { createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
-import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/react"
+import { createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, type MouseEvent as TuiMouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
+import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions, type SelectProps } from "@opentui/react"
 import { useEffect, useRef, useState } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 
@@ -123,6 +123,60 @@ function composerLimitColor(length: number): string | undefined {
   if (usage >= 0.9) return "#ff9f43"
   if (usage >= 0.75) return "#e0a34a"
   return undefined
+}
+
+function MouseSelect(props: SelectProps) {
+  const computeIndex = (
+    sel: {
+      screenX: number
+      screenY: number
+      width: number
+      linesPerItem: number
+      scrollOffset: number
+      maxVisibleItems: number
+      options: { length: number }
+      getSelectedIndex: () => number
+      setSelectedIndex: (index: number) => void
+      selectCurrent: () => void
+    },
+    event: TuiMouseEvent,
+  ): number => {
+    const row = event.y - sel.screenY
+    if (row < 0 || event.x < sel.screenX || event.x >= sel.screenX + sel.width) return -1
+    const localIndex = Math.floor(row / sel.linesPerItem)
+    const visibleCount = Math.min(sel.options.length - sel.scrollOffset, sel.maxVisibleItems)
+    if (localIndex < 0 || localIndex >= visibleCount) return -1
+    return sel.scrollOffset + localIndex
+  }
+  const handleMouseDown = (event: TuiMouseEvent) => {
+    if (event.button === 0) {
+      const sel = event.target as unknown as Parameters<typeof computeIndex>[0] | null
+      if (sel) {
+        const index = computeIndex(sel, event)
+        if (index >= 0) {
+          sel.setSelectedIndex(index)
+          sel.selectCurrent()
+          event.stopPropagation()
+        }
+      }
+    }
+    const existing = props.onMouseDown as ((event: TuiMouseEvent) => void) | undefined
+    existing?.(event)
+  }
+  const handleMouseMove = (event: TuiMouseEvent) => {
+    if (event.type === "move" && event.button === 0) {
+      const sel = event.target as unknown as Parameters<typeof computeIndex>[0] | null
+      if (sel) {
+        const index = computeIndex(sel, event)
+        if (index >= 0 && index !== sel.getSelectedIndex()) {
+          sel.setSelectedIndex(index)
+        }
+      }
+    }
+    const existing = props.onMouseMove as ((event: TuiMouseEvent) => void) | undefined
+    existing?.(event)
+  }
+  return <select {...props} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} />
 }
 
 function ChatApp() {
@@ -1233,7 +1287,7 @@ function ChatApp() {
             style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
           >
             {dialog.kind === "commands" && (
-              <select
+              <MouseSelect
                 focused
                 height={Math.max(5, dialogHeight - 3)}
                 options={[
@@ -1253,7 +1307,7 @@ function ChatApp() {
             {dialog.kind === "control" && (
               <>
                 {dialog.firstRun && <text fg="#e0a34a">Set up remote discovery to connect outside your LAN. You can skip this for LAN-only chat.</text>}
-                <select
+                <MouseSelect
                   focused
                   height={Math.max(6, dialogHeight - 4)}
                   options={[
@@ -1293,7 +1347,7 @@ function ChatApp() {
                 <text><span fg="#888888">Connection: </span><span fg={dialog.control.connected ? "#66dd88" : "#e0a34a"}>{dialog.control.connected ? "Connected" : "Disconnected"}</span></text>
                 <text><span fg="#888888">STUN: </span>{dialog.control.stun_server}</text>
                 <text><span fg="#888888">Public endpoint: </span>{dialog.control.public_endpoint?.join(":") ?? "Not discovered"}</text>
-                <select
+                <MouseSelect
                   focused
                   height={5}
                   options={[
@@ -1306,7 +1360,7 @@ function ChatApp() {
             )}
             {dialog.kind === "rooms" && (
               <>
-                <select
+                <MouseSelect
                   focused
 height={Math.max(5, dialogHeight - 3)}
                 options={[
@@ -1352,7 +1406,7 @@ height={Math.max(5, dialogHeight - 3)}
                 <text><span fg="#888888">ID: </span>{dialog.roomId}</text>
                 <text wrapMode="word"><span fg="#888888">Invite: </span>{dialog.invite}</text>
                 <text fg={dialog.copied ? "#66dd88" : "#e0a34a"}>{dialog.copied ? "Copy requested. Paste once to confirm your terminal accepted it." : "Copy the invite before sharing it."}</text>
-                <select
+                <MouseSelect
                   focused
                   height={5}
                   options={[
@@ -1368,7 +1422,7 @@ height={Math.max(5, dialogHeight - 3)}
                 <text><span fg="#888888">Room ID: </span>{dialog.room.room_id}</text>
                 <text><span fg="#888888">Control connections: </span>{dialog.room.members}</text>
                 <text fg="#e0a34a">Leaving removes this room and its secret from this device.</text>
-                <select
+                <MouseSelect
                   focused
                   height={6}
                   options={[
@@ -1405,7 +1459,7 @@ height={Math.max(5, dialogHeight - 3)}
               <>
                 <text>Mute notifications from <span fg="#66dd88">{dialog.displayName}</span>.</text>
                 <text fg="#888888">Choose how long notifications will stay muted.</text>
-                <select
+                <MouseSelect
                   focused
                   height={Math.max(5, dialogHeight - 6)}
                   options={[
@@ -1424,7 +1478,7 @@ height={Math.max(5, dialogHeight - 3)}
             {dialog.kind === "unmute-confirm" && (
               <>
                 <text>Unmute notifications from <span fg="#66dd88">{dialog.displayName}</span>?</text>
-                <select
+                <MouseSelect
                   focused
                   height={4}
                   options={[
@@ -1456,7 +1510,7 @@ height={Math.max(5, dialogHeight - 3)}
               <>
                 <text>Remove <span fg="#66dd88">{dialog.displayName}</span> as a friend?</text>
                 <text fg="#888888">Their future messages will be blocked until you accept a new request.</text>
-                <select
+                <MouseSelect
                   focused
                   height={4}
                   options={[
@@ -1473,7 +1527,7 @@ height={Math.max(5, dialogHeight - 3)}
               <>
                 {!dialog.requests.length && <text fg="#888888">No pending friend requests.</text>}
                 {dialog.requests.length > 0 && (
-                  <select
+                  <MouseSelect
                     focused
                     height={Math.max(5, dialogHeight - 3)}
                     options={[
@@ -1516,7 +1570,7 @@ height={Math.max(5, dialogHeight - 3)}
               <>
                 <text><span fg="#66dd88">{dialog.request.sender_name}</span> wants to add you as a friend.</text>
                 {dialog.request.note ? <text wrapMode="word"><span fg="#888888">Note: </span>{dialog.request.note}</text> : null}
-                <select
+                <MouseSelect
                   focused
                   height={7}
                   options={[
@@ -1535,7 +1589,7 @@ height={Math.max(5, dialogHeight - 3)}
               </>
             )}
             {dialog.kind === "friends" && (
-              <select
+              <MouseSelect
                 focused
                 height={Math.max(5, dialogHeight - 3)}
                 options={[
@@ -1559,7 +1613,7 @@ height={Math.max(5, dialogHeight - 3)}
               <>
                 {!dialog.blocked.length && <text fg="#888888">No blocked peers. Blocked peers cannot send you friend requests.</text>}
                 {dialog.blocked.length > 0 && (
-                  <select
+                  <MouseSelect
                     focused
                     height={Math.max(5, dialogHeight - 6)}
                     options={[
@@ -1585,7 +1639,7 @@ height={Math.max(5, dialogHeight - 3)}
                   />
                 )}
                 {dialog.blocked.length === 0 && (
-                  <select
+                  <MouseSelect
                     focused
                     height={4}
                     options={[
@@ -1605,7 +1659,7 @@ height={Math.max(5, dialogHeight - 3)}
             {dialog.kind === "block-peer-pick" && (
               <>
                 <text fg="#888888">Choose someone to block. Blocked peers cannot send you friend requests.</text>
-                <select
+                <MouseSelect
                   focused
                   height={Math.max(5, dialogHeight - 6)}
                   options={[
@@ -1637,7 +1691,7 @@ height={Math.max(5, dialogHeight - 3)}
               <>
                 <text>Block friend requests from <span fg="#66dd88">{dialog.displayName}</span>?</text>
                 <text fg="#888888">You can unblock later in Commands {'>'} Friends {'>'} Block.</text>
-                <select
+                <MouseSelect
                   focused
                   height={4}
                   options={[
@@ -1661,7 +1715,7 @@ height={Math.max(5, dialogHeight - 3)}
               <>
                 <text>Cancel friend request to <span fg="#66dd88">{dialog.displayName}</span>?</text>
                 <text fg="#888888">They will no longer see your pending request.</text>
-                <select
+                <MouseSelect
                   focused
                   height={4}
                   options={[
@@ -1685,7 +1739,7 @@ height={Math.max(5, dialogHeight - 3)}
               <>
                 <text><span fg="#888888">Control: </span>{controlStatus.connected ? "Connected" : "Disconnected"}{controlStatus.reconnect_attempts ? ` (reconnects: ${controlStatus.reconnect_attempts})` : ""}</text>
                 <text><span fg="#888888">STUN server: </span>{debugInfo?.stun_server ?? "..."}</text>
-                <select
+                <MouseSelect
                   focused
                   height={Math.min(8, Math.max(1, dialogHeight - 8))}
                   options={[
@@ -1735,7 +1789,7 @@ height={Math.max(5, dialogHeight - 3)}
                     ))}
                   </scrollbox>
                 )}
-                <select
+                <MouseSelect
                   focused
                   height={3}
                   options={[{ name: "Back", description: "Return to debug", value: "back" }]}
@@ -1760,7 +1814,7 @@ height={Math.max(5, dialogHeight - 3)}
                   {peer.endpoints.map((e) => (
                     <text key={`${e.transport}-${e.endpoint}`}>  {e.transport} {e.endpoint}{e.active ? " *" : ""}</text>
                   ))}
-                  <select
+                  <MouseSelect
                     focused
                     height={3}
                     options={[{ name: "Back", description: "Return to endpoints", value: "back" }]}
