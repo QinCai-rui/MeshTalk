@@ -14,7 +14,21 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .database import Database
 from .identity import Identity
-from .protocol import HEADER_SIZE, HandshakePayload, Packet, PacketType, ProfilePayload, TCP_PORT
+from .protocol import (
+    HEADER_SIZE,
+    CAP_PROFILE_SYNC,
+    HandshakePayload,
+    Packet,
+    PacketType,
+    ProfilePayload,
+    TCP_PORT,
+    PROTOCOL_VERSION,
+    MIN_SUPPORTED_PROTOCOL_VERSION,
+    DEFAULT_CAPABILITIES,
+    IncompatibleProtocolError,
+    intersect_capabilities,
+    negotiate_protocol_version,
+)
 from .udp_transport import Endpoint, UdpTransport
 
 logger = logging.getLogger(__name__)
@@ -59,11 +73,25 @@ class PeerConnection:
         self.tui_active = False
         self.signing_public_key: bytes | None = None
         self.encryption_public_key: bytes | None = None
+        self.protocol_version: int = PROTOCOL_VERSION
+        self.capabilities: list[str] = list(DEFAULT_CAPABILITIES)
         self.last_seen = time.time()
 
     @property
     def endpoint(self) -> Endpoint:
         return self.address, self.port
+
+    def supports(self, capability: str) -> bool:
+        """Whether the negotiated connection with this peer enables ``capability``."""
+        return capability in self.capabilities
+
+    def negotiated(self) -> dict:
+        """Snapshot of the negotiated protocol state for IPC/debug consumers."""
+        return {
+            "protocol_version": self.protocol_version,
+            "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
+            "capabilities": list(self.capabilities),
+        }
 
 
 class PeerManager:
@@ -85,9 +113,19 @@ class PeerManager:
         self._receive_tasks: set[asyncio.Task] = set()
         self._incoming_handshakes = 0
         self.on_peer_changed: Callable[[str], Awaitable[None]] | None = None
+        self.on_version_mismatch: Callable[[str, int, int], Awaitable[None]] | None = None
         self.udp = UdpTransport(
             identity, self._on_udp_connected, self._on_udp_packet, self._on_udp_disconnected
         )
+        self.udp.on_version_mismatch = self._handle_udp_version_mismatch
+
+    def _handle_udp_version_mismatch(self, peer_id: str, remote_version: int, remote_min: int) -> None:
+        if self.on_version_mismatch is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.on_version_mismatch(peer_id, remote_version, remote_min))
+            except RuntimeError:
+                pass
 
     async def start(self) -> None:
         self._running = True
@@ -300,6 +338,9 @@ class PeerManager:
         await self.broadcast_profile_update()
 
     async def _send_profile_update(self, peer: PeerConnection) -> None:
+        # Presence/display-name synchronisation is opt-in per negotiated capabilities.
+        if not peer.supports(CAP_PROFILE_SYNC):
+            return
         await self._send_packet(peer, Packet(PacketType.PROFILE, self._profile_payload().encode()))
 
     async def broadcast_profile_update(self) -> None:
@@ -309,6 +350,8 @@ class PeerManager:
         for peer in [*self.get_connected_peers(), *self._udp_peers.values()]:
             key = peer.peer_id, peer.transport
             if key in sent or peer.state != PeerState.CONNECTED:
+                continue
+            if not peer.supports(CAP_PROFILE_SYNC):
                 continue
             sent.add(key)
             try:
@@ -361,19 +404,45 @@ class PeerManager:
             raise ValueError("Handshake peer ID does not match signing key")
         if expected_challenge is not None and payload.challenge != expected_challenge:
             raise ValueError("Handshake challenge mismatch")
+        agreed_version = negotiate_protocol_version(
+            PROTOCOL_VERSION,
+            MIN_SUPPORTED_PROTOCOL_VERSION,
+            payload.protocol_version,
+            payload.min_protocol_version,
+        )
+        if agreed_version is None:
+            if self.on_version_mismatch is not None:
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self.on_version_mismatch(peer_id, payload.protocol_version, payload.min_protocol_version))
+                except RuntimeError:
+                    pass
+            raise IncompatibleProtocolError(
+                peer_id=peer_id,
+                remote_version=payload.protocol_version,
+                remote_min=payload.min_protocol_version,
+            )
         try:
             Ed25519PublicKey.from_public_bytes(payload.signing_public_key).verify(payload.signature, payload.signed_bytes())
-        except InvalidSignature as exc:
-            raise ValueError("Invalid handshake signature") from exc
+        except InvalidSignature:
+            try:
+                Ed25519PublicKey.from_public_bytes(payload.signing_public_key).verify(payload.signature, payload.signed_bytes(legacy=True))
+            except InvalidSignature as exc:
+                raise ValueError("Invalid handshake signature") from exc
         peer.peer_id = peer_id
         peer.display_name = Identity.normalize_display_name(payload.display_name)
         peer.signing_public_key = payload.signing_public_key
         peer.encryption_public_key = payload.encryption_public_key
+        peer.protocol_version = agreed_version
+        # The connection only enables capabilities advertised by *both* peers.
+        peer.capabilities = intersect_capabilities(DEFAULT_CAPABILITIES, payload.capabilities)
         logger.debug(
-            "Authenticated key exchange with %s: signing=%s encryption=%s",
+            "Authenticated key exchange with %s: signing=%s encryption=%s version=v%d caps=%s",
             peer.peer_id,
             _key_fingerprint(peer.signing_public_key),
             _key_fingerprint(peer.encryption_public_key),
+            peer.protocol_version,
+            ",".join(peer.capabilities),
         )
 
     def _start_receive_loop(self, peer: PeerConnection) -> None:

@@ -19,7 +19,15 @@ from .encryption import decrypt_as_recipient, encrypt_for_recipient
 from .friends import FriendManager
 from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
-from .protocol import MAX_PACKET_SIZE, MessageBlockedPayload, MessagePayload, Packet, PacketType
+from .protocol import (
+    CAP_BLOCK_REPORTS,
+    CAP_DELIVERY_RECEIPTS,
+    MAX_PACKET_SIZE,
+    MessageBlockedPayload,
+    MessagePayload,
+    Packet,
+    PacketType,
+)
 
 logger = logging.getLogger(__name__)
 MESSAGE_EXPIRY = 86400
@@ -86,7 +94,7 @@ class MessageRouter:
         if len(message.signature) != 64:
             raise ValueError("Invalid message signature")
         if await self.db.is_message_seen(message.message_id):
-            await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE_ACK, message.message_id.encode("ascii")))
+            await self._send_delivery_receipt(peer, message.message_id)
             return
         try:
             Ed25519PublicKey.from_public_bytes(peer.signing_public_key).verify(message.signature, message.signed_bytes())
@@ -101,12 +109,21 @@ class MessageRouter:
             "created_at": message.created_at, "expires_at": message.expires_at,
             "hop_count": 0, "max_hops": 0, "read_at": None,
         })
-        await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE_ACK, message.message_id.encode("ascii")))
+        await self._send_delivery_receipt(peer, message.message_id)
         logger.info("Received encrypted message %s from %s", message.message_id, peer.peer_id)
         if self.on_received:
             await self.on_received({"message_id": message.message_id, "sender_id": message.sender_id, "content": content, "created_at": message.created_at})
 
+    async def _send_delivery_receipt(self, peer: PeerConnection, message_id: str) -> None:
+        # Only acknowledge delivery when both peers negotiated the capability.
+        if not peer.supports(CAP_DELIVERY_RECEIPTS):
+            return
+        await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE_ACK, message_id.encode("ascii")))
+
     async def _send_blocked_notice(self, peer: PeerConnection, message: MessagePayload) -> None:
+        # Only report blocking when both peers negotiated the capability.
+        if not peer.supports(CAP_BLOCK_REPORTS):
+            return
         payload = MessageBlockedPayload(message.message_id, self.identity.peer_id, b"")
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
         await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE_BLOCKED, payload.encode()))

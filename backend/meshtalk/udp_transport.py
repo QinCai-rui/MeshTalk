@@ -25,7 +25,15 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from .identity import Identity
-from .protocol import HEADER_SIZE, MAX_PACKET_SIZE, Packet
+from .protocol import (
+    HEADER_SIZE,
+    MAX_PACKET_SIZE,
+    PROTOCOL_VERSION,
+    MIN_SUPPORTED_PROTOCOL_VERSION,
+    DEFAULT_CAPABILITIES,
+    Packet,
+    negotiate_protocol_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +161,7 @@ class UdpTransport:
         self.on_connected = on_connected
         self.on_packet = on_packet
         self.on_disconnected = on_disconnected
+        self.on_version_mismatch: Callable[[str, int, int], None] | None = None
         self._transport: asyncio.DatagramTransport | None = None
         self._attempts: dict[str, Attempt] = {}
         self._expected_endpoints: dict[str, tuple[Endpoint, float]] = {}
@@ -265,10 +274,9 @@ class UdpTransport:
             for index, fragment in enumerate(fragments)
         ]
         acknowledged = asyncio.Event()
-        pending_key = (session.session_id, message_id)
         if len(self._pending) >= 64:
             raise ConnectionError("Too many pending UDP packets")
-        self._pending[pending_key] = acknowledged
+        self._pending[(session.session_id, message_id)] = acknowledged
         try:
             for _ in range(MAX_RETRIES):
                 for datagram in datagrams:
@@ -276,11 +284,11 @@ class UdpTransport:
                 try:
                     await asyncio.wait_for(acknowledged.wait(), RETRY_INTERVAL)
                     return
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     continue
             raise ConnectionError("Remote UDP packet was not acknowledged")
         finally:
-            self._pending.pop(pending_key, None)
+            self._pending.pop((session.session_id, message_id), None)
 
     def datagram_received(self, data: bytes, addr: Endpoint) -> None:
         if len(data) >= 20 and data[4:8] == struct.pack("!I", STUN_COOKIE):
@@ -305,7 +313,9 @@ class UdpTransport:
 
     def _make_hello(self, attempt: Attempt) -> bytes:
         value = {
-            "version": 1,
+            "version": PROTOCOL_VERSION,
+            "min_version": MIN_SUPPORTED_PROTOCOL_VERSION,
+            "capabilities": DEFAULT_CAPABILITIES,
             "peer_id": self.identity.peer_id,
             "display_name": self.identity.display_name,
             "signing_public_key": self.identity.signing_public_key_bytes().hex(),
@@ -343,8 +353,20 @@ class UdpTransport:
         session_key = bytes.fromhex(value["session_public_key"])
         nonce = bytes.fromhex(value["nonce"])
         peer_id = hashlib.sha256(signing_key).hexdigest()
-        if value.get("version") != 1 or value.get("peer_id") != peer_id:
+        if value.get("peer_id") != peer_id:
             raise ValueError("UDP handshake identity mismatch")
+        remote_version = value.get("version", 1)
+        remote_min = value.get("min_version", 1)
+        agreed_version = negotiate_protocol_version(
+            PROTOCOL_VERSION,
+            MIN_SUPPORTED_PROTOCOL_VERSION,
+            remote_version,
+            remote_min,
+        )
+        if agreed_version is None:
+            if self.on_version_mismatch is not None:
+                self.on_version_mismatch(peer_id, remote_version, remote_min)
+            raise ValueError(f"UDP handshake protocol version mismatch: remote (v{remote_version}, min v{remote_min})")
         if any(len(item) != 32 for item in (signing_key, encryption_key, session_key, nonce)) or len(signature) != 64:
             raise ValueError("Invalid UDP handshake key length")
         expected = self._expected_endpoints.get(peer_id)

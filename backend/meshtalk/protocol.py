@@ -29,12 +29,95 @@ from dataclasses import dataclass, field
 from typing import Any
 
 PROTOCOL_VERSION = 1
+MIN_SUPPORTED_PROTOCOL_VERSION = 1
+
+# Feature capability identifiers exchanged during the handshake. A connection
+# only enables a capability when both peers advertise it (see
+# ``intersect_capabilities``). They are informational until higher-level code
+# gates behaviour on them via ``PeerConnection.supports``.
+CAP_TEXT_CHAT = "text_chat"
+CAP_PROFILE_SYNC = "profile_sync"
+CAP_FRIEND_REQUESTS = "friend_requests"
+CAP_DELIVERY_RECEIPTS = "delivery_receipts"
+CAP_BLOCK_REPORTS = "block_reports"
+DEFAULT_CAPABILITIES = [
+    CAP_TEXT_CHAT,
+    CAP_PROFILE_SYNC,
+    CAP_FRIEND_REQUESTS,
+    CAP_DELIVERY_RECEIPTS,
+    CAP_BLOCK_REPORTS,
+]
+# Capabilities that have a direct counterpart in this implementation. Used to
+# validate that a peer only advertises capabilities we recognise.
+KNOWN_CAPABILITIES = frozenset(DEFAULT_CAPABILITIES)
 UDP_PORT = 24890
 TCP_PORT = 24891
 MAX_PACKET_SIZE = 64 * 1024  # 64 KB
 DISCOVERY_ID = re.compile(r"[a-f0-9]{32}")
 HEADER_FORMAT = "!IB"  # 4-byte big-endian length + 1-byte type
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+
+
+def negotiate_protocol_version(
+    local_version: int,
+    local_min: int,
+    remote_version: int,
+    remote_min: int,
+) -> int | None:
+    """Negotiate the highest mutually supported protocol version.
+
+    Returns None if versions are incompatible.
+    """
+    agreed = min(local_version, remote_version)
+    if agreed < max(local_min, remote_min):
+        return None
+    return agreed
+
+
+def intersect_capabilities(local: list[str], remote: list[str]) -> list[str]:
+    """Return the sorted set of capabilities supported by both peers.
+
+    Unknown capabilities advertised by a peer are ignored so that future
+    releases can introduce features without breaking older clients.
+    """
+    return sorted(set(local) & set(remote) & KNOWN_CAPABILITIES)
+
+
+def validate_capabilities(capabilities: list[str]) -> list[str]:
+    """Normalise and filter a capability list received from a remote peer.
+
+    Drop duplicates, non-string entries and any capability we do not recognise.
+    Returns a list safe to store on a :class:`PeerConnection`.
+    """
+    if not isinstance(capabilities, list):
+        return list(DEFAULT_CAPABILITIES)
+    cleaned = []
+    for cap in capabilities:
+        if isinstance(cap, str) and cap in KNOWN_CAPABILITIES and cap not in cleaned:
+            cleaned.append(cap)
+    if not cleaned:
+        return list(DEFAULT_CAPABILITIES)
+    return cleaned
+
+
+class IncompatibleProtocolError(ValueError):
+    def __init__(
+        self,
+        peer_id: str,
+        remote_version: int,
+        remote_min: int,
+        local_version: int = PROTOCOL_VERSION,
+        local_min: int = MIN_SUPPORTED_PROTOCOL_VERSION,
+    ) -> None:
+        self.peer_id = peer_id
+        self.remote_version = remote_version
+        self.remote_min = remote_min
+        self.local_version = local_version
+        self.local_min = local_min
+        super().__init__(
+            f"Incompatible protocol version for peer {peer_id}: "
+            f"remote (v{remote_version}, min v{remote_min}) vs local (v{local_version}, min v{local_min})"
+        )
 
 
 class PacketType(enum.IntEnum):
@@ -87,11 +170,13 @@ class DiscoveryPacket:
     protocol: int
     discovery_id: str
     tcp_port: int
+    min_protocol: int = MIN_SUPPORTED_PROTOCOL_VERSION
 
     def encode(self) -> bytes:
         import json
         return json.dumps({
             "protocol": self.protocol,
+            "min_protocol": self.min_protocol,
             "discovery_id": self.discovery_id,
             "tcp_port": self.tcp_port,
         }).encode()
@@ -103,11 +188,14 @@ class DiscoveryPacket:
         if not isinstance(obj, dict):
             raise ValueError("Discovery packet must be an object")
         protocol = obj.get("protocol")
+        min_protocol = obj.get("min_protocol", protocol if isinstance(protocol, int) else MIN_SUPPORTED_PROTOCOL_VERSION)
         discovery_id = obj.get("discovery_id")
         tcp_port = obj.get("tcp_port")
         if (
             not isinstance(protocol, int)
             or isinstance(protocol, bool)
+            or not isinstance(min_protocol, int)
+            or isinstance(min_protocol, bool)
             or not isinstance(discovery_id, str)
             or not DISCOVERY_ID.fullmatch(discovery_id)
             or not isinstance(tcp_port, int)
@@ -115,7 +203,7 @@ class DiscoveryPacket:
             or not 1 <= tcp_port <= 65535
         ):
             raise ValueError("Invalid discovery packet")
-        return cls(protocol=protocol, discovery_id=discovery_id, tcp_port=tcp_port)
+        return cls(protocol=protocol, discovery_id=discovery_id, tcp_port=tcp_port, min_protocol=min_protocol)
 
 
 @dataclass
@@ -127,16 +215,29 @@ class HandshakePayload:
     nonce: bytes
     challenge: bytes
     signature: bytes
+    protocol_version: int = PROTOCOL_VERSION
+    min_protocol_version: int = MIN_SUPPORTED_PROTOCOL_VERSION
+    capabilities: list[str] = field(default_factory=lambda: list(DEFAULT_CAPABILITIES))
 
-    def signed_bytes(self) -> bytes:
-        return json.dumps({
+    def signed_bytes(self, legacy: bool = False) -> bytes:
+        data = {
             "peer_id": self.peer_id,
             "signing_public_key": self.signing_public_key.hex(),
             "encryption_public_key": self.encryption_public_key.hex(),
             "display_name": self.display_name,
             "nonce": self.nonce.hex(),
             "challenge": self.challenge.hex(),
-        }, separators=(",", ":"), sort_keys=True).encode()
+        }
+        # The version/capability fields are only folded into the authenticated
+        # canonical once we have actually negotiated a protocol version above 1.
+        # This keeps v1 byte-for-byte compatible with prior releases (which
+        # signed exactly these six fields) so mixed-version meshes keep working
+        # during rolling upgrades.
+        if not legacy and self.protocol_version > 1:
+            data["protocol_version"] = self.protocol_version
+            data["min_protocol_version"] = self.min_protocol_version
+            data["capabilities"] = sorted(self.capabilities)
+        return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
         return json.dumps({
@@ -147,11 +248,17 @@ class HandshakePayload:
             "nonce": self.nonce.hex(),
             "challenge": self.challenge.hex(),
             "signature": self.signature.hex(),
+            "protocol_version": self.protocol_version,
+            "min_protocol_version": self.min_protocol_version,
+            "capabilities": self.capabilities,
         }).encode()
 
     @classmethod
     def decode(cls, data: bytes) -> HandshakePayload:
         obj = json.loads(data)
+        protocol_version = obj.get("protocol_version", 1)
+        min_protocol_version = obj.get("min_protocol_version", 1)
+        capabilities = validate_capabilities(obj.get("capabilities", list(DEFAULT_CAPABILITIES)))
         payload = cls(
             peer_id=obj["peer_id"],
             signing_public_key=bytes.fromhex(obj["signing_public_key"]),
@@ -160,6 +267,9 @@ class HandshakePayload:
             nonce=bytes.fromhex(obj["nonce"]),
             challenge=bytes.fromhex(obj["challenge"]),
             signature=bytes.fromhex(obj["signature"]),
+            protocol_version=protocol_version,
+            min_protocol_version=min_protocol_version,
+            capabilities=capabilities,
         )
         if len(payload.signing_public_key) != 32 or len(payload.encryption_public_key) != 32:
             raise ValueError("Invalid handshake public key length")
