@@ -1074,7 +1074,7 @@ function ChatApp() {
             />
           ) : (
             <>
-              <text fg="#888888">Ctrl+P commands or click to rename</text>
+              <text fg="#888888">Click to rename</text>
               <text fg="#888888">{identity?.peer_id.slice(0, 12)}</text>
             </>
           )}
