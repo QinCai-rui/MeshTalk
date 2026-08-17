@@ -7,6 +7,7 @@ type ClientData = {
   windowStartedAt: number
   controlMessagesInWindow: number
   signalsInWindow: number
+  peerFetchesInWindow: number
 }
 
 type ControlMessage = {
@@ -19,6 +20,7 @@ type RateLimit = {
   windowStartedAt: number
   controlMessagesInWindow: number
   signalsInWindow: number
+  peerFetchesInWindow: number
 }
 
 const PORT = Number(process.env.PORT ?? 8787)
@@ -27,6 +29,7 @@ const MAX_ROOMS_PER_CLIENT = 32
 const MAX_SIGNAL_LENGTH = 8 * 1024
 const MAX_CONTROL_MESSAGES_PER_MINUTE = 96
 const MAX_SIGNALS_PER_MINUTE = 64
+const MAX_PEER_FETCHES_PER_MINUTE = 30
 const MAX_CONNECTIONS = 10_000
 const MAX_CONNECTIONS_PER_IP = 32
 const MAX_ROOMS = 10_000
@@ -102,31 +105,48 @@ function signalRoom(socket: ServerWebSocket<ClientData>, roomId: string, payload
   broadcastRoom(roomId, { type: "signal", room_id: roomId, payload }, socket)
 }
 
+function fetchPeers(socket: ServerWebSocket<ClientData>, roomId: string): void {
+  if (!socket.data.rooms.has(roomId)) throw new Error("Join the room before fetching peers")
+  const members = rooms.get(roomId)
+  if (!members) return
+  const payloads: string[] = []
+  for (const member of members) {
+    const payload = member.data.signals.get(roomId)
+    if (payload) payloads.push(payload)
+  }
+  send(socket, { type: "peers", room_id: roomId, payloads })
+}
+
 function checkRateLimit(socket: ServerWebSocket<ClientData>, messageType: unknown): void {
   const now = Date.now()
   if (now - socket.data.windowStartedAt >= 60_000) {
     socket.data.windowStartedAt = now
     socket.data.controlMessagesInWindow = 0
     socket.data.signalsInWindow = 0
+    socket.data.peerFetchesInWindow = 0
   }
   if (messageType === "signal") socket.data.signalsInWindow += 1
+  else if (messageType === "get_peers") socket.data.peerFetchesInWindow += 1
   else socket.data.controlMessagesInWindow += 1
   if (
     socket.data.signalsInWindow > MAX_SIGNALS_PER_MINUTE
     || socket.data.controlMessagesInWindow > MAX_CONTROL_MESSAGES_PER_MINUTE
+    || socket.data.peerFetchesInWindow > MAX_PEER_FETCHES_PER_MINUTE
   ) {
     throw new Error("Message rate limit exceeded")
   }
   let ipLimit = rateLimitsByIp.get(socket.data.ip)
   if (!ipLimit || now - ipLimit.windowStartedAt >= 60_000) {
-    ipLimit = { windowStartedAt: now, controlMessagesInWindow: 0, signalsInWindow: 0 }
+    ipLimit = { windowStartedAt: now, controlMessagesInWindow: 0, signalsInWindow: 0, peerFetchesInWindow: 0 }
     rateLimitsByIp.set(socket.data.ip, ipLimit)
   }
   if (messageType === "signal") ipLimit.signalsInWindow += 1
+  else if (messageType === "get_peers") ipLimit.peerFetchesInWindow += 1
   else ipLimit.controlMessagesInWindow += 1
   if (
     ipLimit.signalsInWindow > MAX_SIGNALS_PER_MINUTE
     || ipLimit.controlMessagesInWindow > MAX_CONTROL_MESSAGES_PER_MINUTE
+    || ipLimit.peerFetchesInWindow > MAX_PEER_FETCHES_PER_MINUTE
   ) {
     throw new Error("IP message rate limit exceeded")
   }
@@ -154,6 +174,7 @@ export function startControlServer(port = PORT) {
           windowStartedAt: Date.now(),
           controlMessagesInWindow: 0,
           signalsInWindow: 0,
+          peerFetchesInWindow: 0,
         },
       })
       return upgraded ? undefined : new Response("WebSocket upgrade required", { status: 426 })
@@ -177,6 +198,8 @@ export function startControlServer(port = PORT) {
             message.type === "signal" && typeof message.room_id === "string" && typeof message.payload === "string"
           ) {
             signalRoom(socket, message.room_id, message.payload)
+          } else if (message.type === "get_peers" && typeof message.room_id === "string") {
+            fetchPeers(socket, message.room_id)
           } else {
             throw new Error("Invalid control message")
           }

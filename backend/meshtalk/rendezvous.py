@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 CandidateCallback = Callable[[str, Endpoint], Awaitable[None]]
 CARD_MAX_AGE = 180
 REFRESH_INTERVAL = 30
+PEER_FETCH_INTERVAL = 120
 CONTROL_PING_INTERVAL = 5
 CONTROL_PING_TIMEOUT = 5
 CONTROL_CONNECT_TIMEOUT = 10
@@ -122,6 +123,7 @@ class RendezvousService:
         self.allow_loopback = allow_loopback
         self.connected = False
         self.public_endpoint: Endpoint | None = None
+        self._last_published_endpoint: Endpoint | None = None
         self.member_counts: dict[str, int] = {}
         self.reconnect_attempts: int = 0
         self._running = False
@@ -161,6 +163,7 @@ class RendezvousService:
         if not self._websocket:
             return {"error": "Not connected to control server"}
         try:
+            await self._discover_endpoint()
             await self._announce_all(self._websocket)
         except Exception as exc:
             return {"error": str(exc)}
@@ -196,12 +199,14 @@ class RendezvousService:
                     backoff = 1.0
                     for room in self.settings.rooms.values():
                         await websocket.send(json.dumps({"type": "join", "room_id": room.id}))
+                    await self._discover_endpoint()
                     await self._announce_all(websocket)
                     receive_task = asyncio.create_task(self._receive_loop(websocket))
                     refresh_task = asyncio.create_task(self._refresh_loop(websocket))
+                    fetch_task = asyncio.create_task(self._fetch_loop(websocket))
                     reconnect_task = asyncio.create_task(self._reconnect.wait())
                     done, pending = await asyncio.wait(
-                        (receive_task, refresh_task, reconnect_task),
+                        (receive_task, refresh_task, fetch_task, reconnect_task),
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     for task in pending:
@@ -243,6 +248,13 @@ class RendezvousService:
                         self.member_counts[room_id] = count
                 elif message.get("type") == "signal" and isinstance(message.get("payload"), str):
                     await self._handle_card(room, message["payload"])
+                elif message.get("type") == "peers" and isinstance(message.get("payloads"), list):
+                    for payload in message["payloads"]:
+                        if isinstance(payload, str):
+                            try:
+                                await self._handle_card(room, payload)
+                            except Exception as exc:
+                                logger.debug("Rejected fetched peer card: %s", exc)
             except Exception as exc:
                 logger.debug("Rejected control message: %s", exc)
 
@@ -250,6 +262,17 @@ class RendezvousService:
         while True:
             await asyncio.sleep(REFRESH_INTERVAL)
             await self._announce_all(websocket)
+
+    async def _fetch_loop(self, websocket) -> None:
+        while True:
+            await asyncio.sleep(PEER_FETCH_INTERVAL)
+            if not self._websocket:
+                continue
+            for room in self.settings.rooms.values():
+                try:
+                    await websocket.send(json.dumps({"type": "get_peers", "room_id": room.id}))
+                except Exception as exc:
+                    logger.debug("Failed to fetch peer roster: %s", exc)
 
     async def _discover_endpoint(self) -> None:
         host, port = self.settings.stun_server
@@ -262,12 +285,18 @@ class RendezvousService:
     async def _stun_loop(self) -> None:
         while self._running:
             await self._discover_endpoint()
+            if self.public_endpoint != self._last_published_endpoint and self._websocket:
+                try:
+                    await self._announce_all(self._websocket)
+                    logger.info("Public endpoint changed to %s; re-announced to rooms", self.public_endpoint)
+                except Exception as exc:
+                    logger.warning("Failed to re-announce endpoint after change: %s", exc)
             await asyncio.sleep(REFRESH_INTERVAL)
 
     async def _announce_all(self, websocket) -> None:
-        await self._discover_endpoint()
         if not self.public_endpoint:
             return
+        self._last_published_endpoint = self.public_endpoint
         for room in self.settings.rooms.values():
             await self._announce(websocket, room)
 

@@ -1674,7 +1674,7 @@ height={Math.max(5, dialogHeight - 3)}
                 <text><span fg="#888888">STUN server: </span>{debugInfo?.stun_server ?? "..."}</text>
                 <select
                   focused
-                  height={5}
+                  height={Math.min(4, Math.max(1, dialogHeight - 8))}
                   options={[
                     { name: "Re-STUN", description: "Re-query STUN server and republish endpoint cards", value: "re-stun" },
                     { name: "Endpoints", description: "View your endpoint and connected peers", value: "endpoints" },

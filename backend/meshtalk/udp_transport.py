@@ -205,7 +205,11 @@ class UdpTransport:
             raise ValueError("Invalid peer UDP port")
         if peer_id not in self._expected_endpoints and len(self._expected_endpoints) >= MAX_EXPECTED_PEERS:
             raise ValueError("Too many expected UDP peers")
-        self._expected_endpoints[peer_id] = (endpoint, time.monotonic())
+        now = time.monotonic()
+        verified = self._expected_endpoints.get(peer_id)
+        if verified and now - verified[1] < EXPECTED_PEER_TIMEOUT:
+            endpoint = verified[0]
+        self._expected_endpoints[peer_id] = (endpoint, now)
         session = self._sessions.get(peer_id)
         if session and session.confirmed and session.endpoint == endpoint:
             return
@@ -331,8 +335,11 @@ class UdpTransport:
         if any(len(item) != 32 for item in (signing_key, encryption_key, session_key, nonce)) or len(signature) != 64:
             raise ValueError("Invalid UDP handshake key length")
         expected = self._expected_endpoints.get(peer_id)
-        if not expected or expected[0] != addr:
+        if not expected:
             raise ValueError("UDP handshake was not requested")
+        if expected[0][0] != addr[0]:
+            raise ValueError("UDP handshake source host does not match introduced endpoint")
+        self._expected_endpoints[peer_id] = (addr, time.monotonic())
         try:
             Ed25519PublicKey.from_public_bytes(signing_key).verify(signature, _canonical(value))
         except InvalidSignature as exc:
