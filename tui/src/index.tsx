@@ -65,6 +65,13 @@ type ControlStatus = {
   reconnect_attempts: number
   public_endpoint?: unknown[]
 }
+type DebugInfo = {
+  public_endpoint?: [string, number] | null
+  stun_server: string
+  local_tcp_port: number
+  rooms: RoomStatus[]
+  peers: Peer[]
+}
 type Dialog =
   | { kind: "commands" }
   | { kind: "control"; firstRun?: boolean }
@@ -86,6 +93,7 @@ type Dialog =
   | { kind: "block-peer-pick" }
   | { kind: "block-peer"; peerId: string; displayName: string }
   | { kind: "cancel-friend-confirm"; requestId: string; displayName: string }
+  | { kind: "debug" }
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -137,6 +145,7 @@ function ChatApp() {
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
   const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number }>({ connected: false, reconnect_attempts: 0 })
+  const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [dialogDraft, setDialogDraft] = useState("")
   const [dialogError, setDialogError] = useState("")
@@ -460,6 +469,8 @@ function ChatApp() {
     } else if (dialog.kind === "cancel-friend-confirm") {
       showDialog({ kind: "friend-requests", requests: [] })
       void loadFriendRequests()
+    } else if (dialog.kind === "debug") {
+      showDialog({ kind: "commands" })
     } else {
       showDialog({ kind: "commands" })
     }
@@ -822,6 +833,37 @@ function ChatApp() {
     }
   }
 
+  async function reStun() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("debug_re_stun")
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      const endpoint = response.public_endpoint as [string, number] | null
+      showStatus(endpoint ? `STUN complete. Endpoint: ${endpoint[0]}:${endpoint[1]}` : "STUN failed. No public endpoint discovered.")
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function loadDebugInfo() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("debug_info")
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setDebugInfo(response as unknown as DebugInfo)
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
   function runCommand(command: string) {
     if (command === "control") {
       showDialog({ kind: "control" })
@@ -860,6 +902,9 @@ function ChatApp() {
       showDialog({ kind: "remove-friend", peerId: peer.peer_id, displayName: peer.display_name })
     } else if (command === "friend-requests") {
       void loadFriendRequests()
+    } else if (command === "debug") {
+      showDialog({ kind: "debug" })
+      void loadDebugInfo()
     }
   }
 
@@ -1161,6 +1206,7 @@ function ChatApp() {
               : dialog.kind === "block-peer-pick" ? "Block a peer"
               : dialog.kind === "block-peer" ? "Block friend requests"
               : dialog.kind === "cancel-friend-confirm" ? "Cancel friend request"
+              : dialog.kind === "debug" ? "Debug"
               : "Private rooms"}
             bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
             style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
@@ -1176,6 +1222,7 @@ function ChatApp() {
                   { name: "Mute peer", description: "Mute desktop notifications from an online peer", value: "mute" },
                   { name: "Unmute peer", description: "Resume desktop notifications for a muted peer", value: "unmute" },
                   { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
+                  { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
                 ]}
                 onSelect={(_, option) => option && runCommand(option.value as string)}
                 wrapSelection
@@ -1607,6 +1654,52 @@ height={Math.max(5, dialogHeight - 3)}
                       showDialog({ kind: "friend-requests", requests: [] })
                       void loadFriendRequests()
                     }
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "debug" && (
+              <>
+                <text><span fg="#888888">Control: </span>{controlStatus.connected ? "Connected" : "Disconnected"}{controlStatus.reconnect_attempts ? ` (reconnects: ${controlStatus.reconnect_attempts})` : ""}</text>
+                {debugInfo && (
+                  <>
+                    <text><span fg="#888888">STUN server: </span>{debugInfo.stun_server}</text>
+                    <text><span fg="#888888">My public endpoint: </span>{debugInfo.public_endpoint ? `${debugInfo.public_endpoint[0]}:${debugInfo.public_endpoint[1]}` : "None"}</text>
+                    <text><span fg="#888888">Local TCP port: </span>{debugInfo.local_tcp_port}</text>
+                    <text><span fg="#888888">---</span></text>
+                    <text><span fg="#888888">Local (LAN)</span></text>
+                    {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).length === 0 && <text fg="#888888">  No LAN peers</text>}
+                    {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).map((peer) => (
+                      <text key={`lan-${peer.peer_id}`}>  {peer.display_name} ({peer.peer_id.slice(0, 12)}){peer.endpoints.filter((e) => e.transport === "lan_tcp").map((e) => ` ${e.endpoint}${e.active ? " *" : ""}`).join("")}</text>
+                    ))}
+                    <text><span fg="#888888">---</span></text>
+                    {debugInfo.rooms.map((room) => (
+                      <box key={room.room_id} style={{ flexDirection: "column" }}>
+                        <text><span fg="#888888">Room: </span>{room.room_id.slice(0, 12)}<span fg="#888888"> ({room.members} control connections)</span></text>
+                        {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).length === 0 && <text fg="#888888">  No remote peers</text>}
+                        {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).map((peer) => (
+                          <text key={`udp-${peer.peer_id}`}>  {peer.display_name} ({peer.peer_id.slice(0, 12)}){peer.endpoints.filter((e) => e.transport === "remote_udp").map((e) => ` ${e.endpoint}${e.active ? " *" : ""}`).join("")}</text>
+                        ))}
+                      </box>
+                    ))}
+                  </>
+                )}
+                {!debugInfo && <text fg="#888888">Loading debug info...</text>}
+                <select
+                  focused
+                  height={5}
+                  options={[
+                    { name: "Re-STUN", description: "Re-query STUN server and republish endpoint cards", value: "re-stun" },
+                    { name: "Refresh", description: "Reload debug information", value: "refresh" },
+                    { name: "Back to commands", description: "Return to the command palette", value: "back" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (!option) return
+                    if (option.value === "re-stun") void reStun()
+                    else if (option.value === "refresh") void loadDebugInfo()
+                    else showDialog({ kind: "commands" })
                   }}
                   wrapSelection
                   showDescription

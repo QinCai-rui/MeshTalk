@@ -314,6 +314,29 @@ async def main(debug: bool = False) -> None:
         stop_event.set()
         return {"stopping": True}
 
+    async def handle_debug_re_stun(req: dict) -> dict:
+        return await rendezvous.refresh_endpoint()
+
+    async def handle_debug_info(req: dict) -> dict:
+        stun_host, stun_port = settings.stun_server
+        peers_info = []
+        for peer in await db.get_all_peers():
+            info = peer_manager.get_network_info(peer["peer_id"])
+            connection = peer_manager.get_connected_peer(peer["peer_id"])
+            peers_info.append({
+                "peer_id": peer["peer_id"],
+                "display_name": peer["display_name"],
+                "is_online": connection is not None,
+                **info,
+            })
+        return {
+            "public_endpoint": list(rendezvous.public_endpoint) if rendezvous.public_endpoint else None,
+            "stun_server": f"{stun_host}:{stun_port}",
+            "local_tcp_port": peer_manager.tcp_port,
+            "rooms": rendezvous.room_status(),
+            "peers": peers_info,
+        }
+
     ipc_handlers = {
         "send": handle_send,
         "peers": handle_peers,
@@ -341,6 +364,8 @@ async def main(debug: bool = False) -> None:
         "mute": handle_mute,
         "unmute": handle_unmute,
         "muted_peers": handle_muted_peers,
+        "debug_re_stun": handle_debug_re_stun,
+        "debug_info": handle_debug_info,
         "shutdown": handle_shutdown,
     }
     ipc = IPCServer(ipc_handlers, on_tui_disconnect=handle_tui_disconnect)

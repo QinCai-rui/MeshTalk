@@ -131,6 +131,7 @@ class RendezvousService:
         self._last_candidates: dict[str, Endpoint] = {}
         self._candidate_changes: dict[str, list[float]] = {}
         self._candidate_seen: dict[str, float] = {}
+        self._websocket = None
 
     async def start(self) -> None:
         self._running = True
@@ -151,6 +152,18 @@ class RendezvousService:
             {"room_id": room.id, "members": self.member_counts.get(room.id, 0)}
             for room in self.settings.rooms.values()
         ]
+
+    async def refresh_endpoint(self) -> dict:
+        if not self._websocket:
+            return {"error": "Not connected to control server"}
+        try:
+            await self._announce_all(self._websocket)
+        except Exception as exc:
+            return {"error": str(exc)}
+        endpoint = self.public_endpoint
+        return {
+            "public_endpoint": list(endpoint) if endpoint else None,
+        }
 
     async def _connection_loop(self) -> None:
         backoff = 1.0
@@ -174,6 +187,7 @@ class RendezvousService:
                     ping_timeout=CONTROL_PING_TIMEOUT,
                 ) as websocket:
                     self.connected = True
+                    self._websocket = websocket
                     self.reconnect_attempts = 0
                     backoff = 1.0
                     for room in self.settings.rooms.values():
@@ -198,6 +212,7 @@ class RendezvousService:
                 logger.warning("Control connection failed: %s", exc)
             finally:
                 self.connected = False
+                self._websocket = None
                 self.member_counts.clear()
             if self._running:
                 self.reconnect_attempts += 1

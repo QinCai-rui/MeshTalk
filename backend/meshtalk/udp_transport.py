@@ -491,7 +491,7 @@ class UdpTransport:
 
     async def _maintenance_loop(self) -> None:
         while True:
-            await asyncio.sleep(15)
+            await asyncio.sleep(5)
             now = time.monotonic()
             for session in list(self._sessions.values()):
                 if not session.confirmed and now - session.created_at > 10:
