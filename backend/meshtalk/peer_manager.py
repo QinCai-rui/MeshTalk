@@ -419,7 +419,12 @@ class PeerManager:
         )
 
     async def send_packet(self, peer: PeerConnection, packet: Packet) -> None:
-        await self._send_packet(peer, packet)
+        try:
+            await self._send_packet(peer, packet)
+        except ConnectionError:
+            if peer.transport == "remote_udp":
+                await self._on_udp_disconnected(peer.peer_id)
+            raise
 
     async def _send_packet(self, peer: PeerConnection, packet: Packet) -> None:
         if peer.transport == "remote_udp":
