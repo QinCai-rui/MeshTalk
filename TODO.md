@@ -110,6 +110,20 @@ Status reflects verified implementation, not planned code.
 - [x] Backend IPC event emission for incoming messages
 - [x] Direct peer-to-peer integration test
 
+## Social Features
+
+- [x] Friend-only inbound message acceptance (non-friends rejected with a notice)
+- [x] Outgoing and incoming friend requests with optional notes
+- [x] Accept / decline friend requests
+- [x] Cancel outgoing pending friend requests
+- [x] Unfriend
+- [x] One-directional peer blocking (blocks requests and messages)
+- [x] Per-peer notification mute
+- [x] TUI friend-request, friends, block, and mute management UI
+- [x] Desktop notifications for friend requests and incoming events
+- [x] TUI focus presence reporting (active / away / offline)
+- [ ] Friend-request and social-graph UI tests
+
 ## Routing And Relaying
 
 - [x] Hop-count message fields
@@ -156,7 +170,7 @@ Status reflects verified implementation, not planned code.
 - [x] Request/response IDs and correct concurrent response correlation
 - [ ] IPC protocol schema validation
 - [x] IPC event subscription model
-- [ ] Peer-state and delivery-status events
+- [x] Peer-state and delivery-status events
 - [x] Incoming-message events
 - [x] Conversation/history IPC endpoints
 - [ ] IPC client tests
@@ -171,6 +185,10 @@ Status reflects verified implementation, not planned code.
 - [x] Compiled executable build target
 - [x] Show conversations and message history
 - [x] Stream incoming messages/events
+- [x] Friend list and pending friend-request commands
+- [x] Friend send / accept / decline / cancel commands
+- [x] Block / unblock / blocked-list commands
+- [x] Room create / join / leave / list commands
 - [ ] Stable machine-readable output mode
 - [ ] CLI tests
 
@@ -185,9 +203,27 @@ Status reflects verified implementation, not planned code.
 - [x] Incoming-message display
 - [x] Selected conversation and persisted history
 - [ ] Delivery status display
-- [ ] Peer online/offline updates
-- [ ] Keyboard help, error states, and responsive layout
+- [x] Peer online/offline updates
+- [x] Keyboard help, error states, and responsive layout
 - [ ] TUI tests
+
+## Diagnostics
+
+- [x] `debug_re_stun` command (re-query STUN and republish endpoint cards)
+- [x] `debug_info` command (public endpoint, STUN server, local TCP port, rooms, per-peer network info)
+- [x] TUI debug and endpoints browser (grouped by LAN TCP / Remote UDP)
+- [ ] Endpoint-card change logging and connection diagnostics history
+- [ ] Automated connectivity self-test
+
+## Packaging And Distribution
+
+- [x] Standalone TUI executable build target (`bun build --compile`)
+- [x] Standalone CLI executable build target
+- [x] Docker images for control service and TUI client (Dockerfile.control, Dockerfile.client)
+- [x] docker-compose for multi-container local runs
+- [ ] Reproducible dependency lockfiles
+- [ ] CI for lint, type-check, and tests
+- [ ] Signed / reproducible release builds for all executables
 
 ## Security And Reliability
 
