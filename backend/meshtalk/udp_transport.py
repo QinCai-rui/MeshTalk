@@ -36,6 +36,7 @@ ACK = 3
 PING = 4
 PONG = 5
 READY = 6
+GOODBYE = 7
 STUN_COOKIE = 0x2112A442
 FRAGMENT_SIZE = 950
 MAX_FRAGMENTS = (MAX_PACKET_SIZE + HEADER_SIZE + FRAGMENT_SIZE - 1) // FRAGMENT_SIZE
@@ -179,6 +180,11 @@ class UdpTransport:
         for task in list(self._tasks):
             task.cancel()
         if self._transport:
+            for session in list(self._sessions.values()):
+                try:
+                    self._send_authenticated(session, GOODBYE, 0)
+                except Exception:
+                    pass
             self._transport.close()
         await asyncio.gather(
             *(task for task in [self._maintenance_task, *self._tasks] if task),
