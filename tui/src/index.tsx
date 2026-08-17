@@ -1697,7 +1697,11 @@ height={Math.max(5, dialogHeight - 3)}
               <>
                 {!debugInfo && <text fg="#888888">Loading debug info...</text>}
                 {debugInfo && (
-                  <>
+                  <scrollbox
+                    style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+                    contentOptions={{ flexDirection: "column" }}
+                    verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}
+                  >
                     <text><span fg="#888888">My public endpoint: </span>{debugInfo.public_endpoint ? `${debugInfo.public_endpoint[0]}:${debugInfo.public_endpoint[1]}` : "None"}</text>
                     <text><span fg="#888888">Local TCP port: </span>{debugInfo.local_tcp_port}</text>
                     <text><span fg="#888888">---</span></text>
@@ -1716,7 +1720,7 @@ height={Math.max(5, dialogHeight - 3)}
                         <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>  {peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
                       </box>
                     ))}
-                  </>
+                  </scrollbox>
                 )}
                 <select
                   focused
