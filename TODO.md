@@ -238,8 +238,8 @@ Status reflects verified implementation, not planned code.
 ## Verification
 
 - [ ] Unit tests for framing, identity, discovery validation, crypto, persistence, routing, and IPC
-- [ ] Two-peer encrypted direct-message test
+- [x] Two-peer encrypted direct-message test
 - [ ] Three-peer encrypted relay test
 - [ ] Offline recipient store-and-forward test
-- [ ] Restart/recovery test
-- [ ] Manual LAN test on separate devices
+- [x] Restart/recovery test
+- [x] Manual LAN test on separate devices
