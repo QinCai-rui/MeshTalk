@@ -121,6 +121,134 @@ membership, omit cards, replay encrypted cards, or deny service. Age checks,
 nonce replay checks, signatures, and endpoint-bound UDP handshakes prevent it
 from decrypting cards or impersonating peers.
 
+## Social Graph
+
+MeshTalk is friend-oriented: the backend accepts incoming direct messages only
+from peers on the local friend list. A message from a non-friend is rejected and
+answered with a short blocked notice, so an unknown peer can neither deliver a
+message nor probe content. The only inbound channel from an unknown peer is a
+friend request.
+
+### Friend requests
+
+A friend request is a signed, transport-delivered packet (not a chat message).
+The lifecycle is:
+
+- `friend_send` issues an outgoing request to a `peer_id`, optionally with a note.
+  It is rejected if the peer is already a friend, is blocked, or already has a
+  pending request.
+- The recipient receives a desktop notification and an IPC event. `friend_requests`
+  lists pending requests; `friend_respond` accepts or declines by `request_id`.
+  Accepting adds both peers to each other's friend list.
+- `friend_cancel` revokes an outgoing pending request before it is answered.
+- `unfriend` removes a peer from the friend list; it does not block them.
+
+Friend state lives in the local database and is never shared with the control
+service.
+
+### Blocking
+
+`block_peer` records a one-directional block for a `peer_id`. Blocked peers
+cannot send friend requests or messages (their traffic is dropped with a blocked
+notice), and they are hidden from the active conversation surface. `blocked_peers`
+lists the current blocks and `unblock_peer` removes one. Blocking is independent
+of the friend list: a former friend can be blocked, and a block can be lifted
+without re-friending.
+
+## Presence And Notifications
+
+Each connected TUI client reports its focus through `tui_presence` (`active`
+true/false, scoped to a `client_id`). The backend aggregates all TUI clients:
+
+- `active` — at least one TUI client is focused and connected.
+- `away` — the peer is connected but no TUI client is active.
+- `offline` — no connection at all.
+
+Presence is reported per peer in `peers` and is used to decide whether a desktop
+notification should be raised for an incoming event.
+
+Mute is a per-peer preference stored in settings (`muted_peers`): a muted peer's
+desktop notifications are suppressed while delivery and history are unaffected.
+`mute` / `unmute` toggle it and `muted_peers` returns the current set.
+
+## Display Name
+
+Each installation has a persistent, user-chosen display name (maximum 48
+characters, no control characters). It is advertised in LAN discovery beacons and
+peer protocol handshakes so other peers can label the identity without a trusted
+directory. `set_display_name` updates it at runtime; the change propagates to
+peers on the next discovery/endpoint refresh.
+
+## Diagnostics
+
+The Debug surface exposes live connectivity state without leaving the TUI.
+
+- `debug_re_stun` re-issues the STUN binding request and republishes endpoint
+  cards, forcing NAT remapping refresh and re-handshaking with known peers.
+- `debug_info` returns `public_endpoint`, the `stun_server`, the local TCP port,
+  room status, and a per-peer breakdown (`display_name`, `is_online`, and the
+  network info: discovered endpoints and their transport).
+- The Endpoints view groups peers by transport: `lan_tcp` (local) and
+  `remote_udp` (remote), making path selection visible.
+
+## OpenTUI Client
+
+The TUI is a local React (React 19 over `@opentui/react`) client of the Python
+backend. It talks to the backend exclusively over the owner-only Unix-domain IPC
+socket (`meshtalk.sock`) using a request/response protocol with event streaming.
+
+The screen is a single row: a sidebar (your identity, peer list with presence and
+unread indicators) and a conversation pane with a message log and a composer.
+Above this sits a modal dialog layer rendered as an absolutely-positioned,
+centered, bordered overlay.
+
+### Dialog model
+
+A single `dialog` state is a discriminated union covering `commands`, `control`,
+`rooms`, `friends`, `mute`, `rename`, `debug`, `debug-endpoints`, `debug-peer`,
+and confirmation sub-dialogs. Each case renders its own form or `select` list
+inside the shared overlay. The root `Commands` palette navigates into the others
+and every sub-dialog offers a "Back to commands" path.
+
+### Layout and sizing conventions
+
+The overlay is sized to `dialogHeight = min(20, terminalHeight - 4)` and a
+per-kind width. The dialog box is **never** resized to fit its contents; it stays
+fixed so the surrounding layout is stable.
+
+Scrollable lists inside a dialog (the `select` component) are sized as
+`height = min(visibleRows, max(1, dialogHeight - reserved))`, where `reserved`
+accounts for the text lines and gaps above the list. When the terminal is too
+short the list scrolls internally rather than clipping. Because each option
+renders two rows (name + description) under `showDescription`, a menu that must
+show all of its N options at once needs a row budget of `2 * N` (for example, a
+four-option menu uses `8` rows, not `4`).
+
+## IPC API
+
+The backend exposes the following IPC commands over the local socket. All take
+and return JSON; responses are correlated by request id, and asynchronous events
+(incoming messages, peer changes, friend requests) are pushed to subscribers.
+
+- `send` — send an end-to-end encrypted message to a peer.
+- `peers` — list known peers with presence, friend, block, and unread state.
+- `remove_peer` — forget a peer from local state.
+- `messages` — query conversation history with a peer.
+- `identity` — return the local peer id, display name, and setup state.
+- `status` — connection, STUN, and control-service status.
+- `set_display_name` — rename the local identity.
+- `friend_send` / `friend_respond` / `friend_cancel` — friend-request lifecycle.
+- `friends` / `friend_requests` — list friends and pending requests.
+- `unfriend` — remove a friend.
+- `block_peer` / `unblock_peer` / `blocked_peers` — one-directional blocks.
+- `mute` / `unmute` / `muted_peers` — per-peer notification muting.
+- `tui_presence` / `tui_disconnect` — report or clear TUI focus.
+- `control` — inspect or configure the control service URL and STUN server.
+- `room_create` / `room_join` / `room_leave` / `room_invite` / `rooms` — private
+  room lifecycle and invite generation.
+- `debug_re_stun` / `debug_info` — connectivity diagnostics.
+- `shutdown` — stop the backend daemon.
+
 ## Limitations
 
 - Direct connections may fail with symmetric NAT, blocked UDP, or restrictive
@@ -130,6 +258,9 @@ from decrypting cards or impersonating peers.
 - Anyone holding a room invite can decrypt that room's endpoint cards and attempt
   to connect. Invite distribution and rotation are user responsibilities.
 - Direct peers and STUN providers necessarily observe public network endpoints.
+- Messages are accepted only from friends; non-friends must first exchange a
+  friend request. This prevents unsolicited messaging but also means two peers
+  cannot chat until one sends and the other accepts a request.
 
 ## Persistence
 
