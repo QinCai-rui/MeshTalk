@@ -1080,12 +1080,12 @@ function ChatApp() {
           )}
         </box>
         <box title={`Peers: ${activeCount} active`} bottomTitle="Ctrl+D removes offline" style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", padding: 1 }}>
-          {!peers.length && <text fg="#888888">No peers discovered</text>}
           <scrollbox
             style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
             contentOptions={{ flexDirection: "column" }}
             verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}
           >
+            {!peers.length ? <text fg="#888888">No peers discovered</text> : null}
             {peers.map((peer) => {
               const presence = peerPresence(peer)
               const muted = peer.peer_id in mutedPeers
@@ -1117,14 +1117,22 @@ function ChatApp() {
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
-          {!selected && <text fg="#888888">Waiting for a connected peer.</text>}
-          {selected && !messages.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
-          {selected && !selected.is_online ? <text fg="#e0a34a">This peer is offline. Messages cannot be sent until it reconnects.</text> : null}
-          {selected && selected.is_online && !selected.is_friend ? (
-            <text fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (Ctrl+P {'>'} Add friend).</text>
-          ) : null}
-          {selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected ? (
-            <text fg="#ff9f43">Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting ({controlStatus.reconnect_attempts}).</text>
+          {(
+            (selected && !selected.is_online) ||
+            (selected && selected.is_online && !selected.is_friend) ||
+            (selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected)
+          ) ? (
+            <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
+              {selected && !selected.is_online ? (
+                <text wrapMode="word" fg="#e0a34a">This peer is offline. Messages cannot be sent until it reconnects.</text>
+              ) : null}
+              {selected && selected.is_online && !selected.is_friend ? (
+                <text wrapMode="word" fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (commands {'>'} friends {'>'} add friend).</text>
+              ) : null}
+              {selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected ? (
+                <text wrapMode="word" fg="#ff9f43">Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting ({controlStatus.reconnect_attempts}).</text>
+              ) : null}
+            </box>
           ) : null}
           <scrollbox
             ref={scrollboxRef}
@@ -1141,6 +1149,8 @@ function ChatApp() {
               arrowOptions: { foregroundColor: "#6ea8fe" },
             }}
           >
+            {!selected ? <text fg="#888888">Waiting for a connected peer.</text> : null}
+            {selected && !messages.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
             {messages.map((message) => {
               const isLocal = message.sender_id === identity?.peer_id
               const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
