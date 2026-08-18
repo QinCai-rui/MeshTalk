@@ -20,7 +20,47 @@ permissions:
   contents: write
 
 jobs:
+  bump-version:
+    if: inputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Bump hardcoded version strings
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          echo "Bumping version to ${VERSION}"
+
+          # package.json files (root, tui, cli, control)
+          for f in package.json tui/package.json cli/package.json control/package.json; do
+            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" "$f"
+          done
+
+          # backend pyproject.toml
+          sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" backend/pyproject.toml
+
+          # backend __init__.py
+          sed -i "s/__version__ = \"[^\"]*\"/__version__ = \"${VERSION}\"/" backend/meshtalk/__init__.py
+
+          echo "Updated version strings to ${VERSION}"
+          git diff --stat
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: bump version to ${{ inputs.version }}"
+          git push
+
   build:
+    needs: bump-version
+    if: always() && (needs.bump-version.result == 'success' || needs.bump-version.result == 'skipped')
     strategy:
       matrix:
         include:
@@ -50,6 +90,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -60,6 +102,16 @@ jobs:
       - name: Install dependencies
         run: bun install --os="*" --cpu="*"
 
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build backend binary
         run: uv run --project backend --with pyinstaller pyinstaller --noconfirm --onefile --name meshtalk-backend --distpath dist/release --workpath build/pyinstaller --specpath build/pyinstaller backend/meshtalk_launcher.py
 
@@ -67,7 +119,7 @@ jobs:
         run: bun build ./cli/src/index.ts --compile --target=${{ matrix.target }} --outfile dist/release/meshtalk-cli${{ matrix.suffix }}
 
       - name: Build TUI binary
-        run: bun build ./tui/src/index.tsx --compile --target=${{ matrix.target }} --define 'process.env.OPENTUI_LIBC="glibc"' --outfile dist/release/meshtalk-tui${{ matrix.suffix }}
+        run: bun build ./tui/src/index.tsx --compile --target=${{ matrix.target }} --define 'process.env.OPENTUI_LIBC="glibc"' --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --outfile dist/release/meshtalk-tui${{ matrix.suffix }}
 
       - name: Build launcher binary
         run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --outfile dist/release/meshtalk${{ matrix.suffix }}
