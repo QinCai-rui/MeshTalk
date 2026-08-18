@@ -1273,7 +1273,7 @@ function ChatApp() {
                 const m = versionMismatches[selected.peer_id]
                 const remoteMax = m.remote_version === -1 ? 0 : m.remote_version
                 const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
-                return <text wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}><b>{"\u26A0 Version mismatch: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
+                return <text wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}><b>{"\u26A0 Incompatible peer protocol version: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
               })() : null}
             </box>
           ) : null}
