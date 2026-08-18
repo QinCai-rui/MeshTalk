@@ -1,5 +1,7 @@
 FROM oven/bun:slim AS bun-build
 
+ARG APP_VERSION=dev
+
 WORKDIR /app
 
 COPY package.json bun.lock* ./
@@ -16,6 +18,7 @@ RUN bun build tui/src/index.tsx \
     --target=bun \
     --compile \
     --define 'process.env.OPENTUI_LIBC="glibc"' \
+    --define 'APP_VERSION="${APP_VERSION}"' \
     --outfile /app/meshtalk-tui && \
     bun build cli/src/index.ts \
     --target=bun \

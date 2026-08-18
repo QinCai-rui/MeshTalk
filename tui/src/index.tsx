@@ -3,6 +3,8 @@ import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalD
 import { useEffect, useRef, useState } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 
+declare const APP_VERSION: string
+
 const MIN_COMPOSER_HEIGHT = 3
 const MAX_COMPOSER_HEIGHT = 5
 const MAX_MESSAGE_BYTES = 30 * 1024
@@ -1282,6 +1284,9 @@ function ChatApp() {
           />
         </box>
         <text fg={status.includes("error") || status.includes("lost") || status.includes("exceeds") ? "#ff7777" : "#888888"}>{status}</text>
+      </box>
+      <box style={{ position: "absolute", right: 1, bottom: 0 }}>
+        <text><span fg="#66dd88">● </span><span fg="#555555">MeshTalk {typeof APP_VERSION !== "undefined" ? APP_VERSION : "dev"}</span></text>
       </box>
       {copyToast && (
         <box style={{ position: "absolute", right: 2, top: 1, border: true, borderColor: "#66dd88", backgroundColor: "#18251d", paddingLeft: 1, paddingRight: 1 }}>
