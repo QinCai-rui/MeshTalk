@@ -152,6 +152,40 @@ class Database:
             await self._db.execute("ALTER TABLE friend_requests ADD COLUMN recipient_id TEXT NOT NULL DEFAULT ''")
         if "recipient_name" not in friend_request_columns:
             await self._db.execute("ALTER TABLE friend_requests ADD COLUMN recipient_name TEXT NOT NULL DEFAULT ''")
+        group_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(groups)")}
+        if "name" not in group_columns:
+            await self._db.execute("ALTER TABLE groups ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+        if "owner_id" not in group_columns:
+            await self._db.execute("ALTER TABLE groups ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
+        if "epoch" not in group_columns:
+            await self._db.execute("ALTER TABLE groups ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1")
+        if "created_at" not in group_columns:
+            await self._db.execute("ALTER TABLE groups ADD COLUMN created_at REAL NOT NULL DEFAULT 0")
+        if "updated_at" not in group_columns:
+            await self._db.execute("ALTER TABLE groups ADD COLUMN updated_at REAL NOT NULL DEFAULT 0")
+        group_member_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_members)")}
+        if "display_name" not in group_member_columns:
+            await self._db.execute("ALTER TABLE group_members ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+        if "epoch" not in group_member_columns:
+            await self._db.execute("ALTER TABLE group_members ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1")
+        if "active" not in group_member_columns:
+            await self._db.execute("ALTER TABLE group_members ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        group_message_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_messages)")}
+        if "sender_name" not in group_message_columns:
+            await self._db.execute("ALTER TABLE group_messages ADD COLUMN sender_name TEXT NOT NULL DEFAULT ''")
+        if "content" not in group_message_columns:
+            await self._db.execute("ALTER TABLE group_messages ADD COLUMN content BLOB")
+        if "epoch" not in group_message_columns:
+            await self._db.execute("ALTER TABLE group_messages ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1")
+        if "read_at" not in group_message_columns:
+            await self._db.execute("ALTER TABLE group_messages ADD COLUMN read_at REAL")
+        group_rekey_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_pending_rekeys)")}
+        if "epoch" not in group_rekey_columns:
+            await self._db.execute("ALTER TABLE group_pending_rekeys ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1")
+        if "payload" not in group_rekey_columns:
+            await self._db.execute("ALTER TABLE group_pending_rekeys ADD COLUMN payload BLOB")
+        if "created_at" not in group_rekey_columns:
+            await self._db.execute("ALTER TABLE group_pending_rekeys ADD COLUMN created_at REAL NOT NULL DEFAULT 0")
         await self._encrypt_existing_message_content()
         await self._db.commit()
 
