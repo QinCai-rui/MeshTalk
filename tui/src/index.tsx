@@ -1261,7 +1261,7 @@ function ChatApp() {
           ) ? (
             <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
               {selected && !selected.is_online ? (
-                <text wrapMode="word" fg="#e0a34a">This peer is offline. Messages cannot be sent until it reconnects.</text>
+                <text wrapMode="word" fg="#e0a34a">This peer is offline. Messages will be queued and delivered automatically upon reconnection.</text>
               ) : null}
               {selected && selected.is_online && !selected.is_friend ? (
                 <text wrapMode="word" fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (commands {'>'} friends {'>'} add friend).</text>
