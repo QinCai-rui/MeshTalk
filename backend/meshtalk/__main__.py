@@ -356,6 +356,9 @@ async def main(debug: bool = False) -> None:
                 "peer_id": peer["peer_id"],
                 "display_name": peer["display_name"],
                 "is_online": connection is not None,
+                "protocol_version": connection.protocol_version if connection else None,
+                "remote_protocol_version": connection.remote_protocol_version if connection else None,
+                "capabilities": list(connection.capabilities) if connection else [],
                 **info,
             })
         return {

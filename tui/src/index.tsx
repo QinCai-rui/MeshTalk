@@ -1743,20 +1743,20 @@ height={Math.max(5, dialogHeight - 3)}
                   >
                     <text><span fg="#888888">My public endpoint: </span>{debugInfo.public_endpoint ? `${debugInfo.public_endpoint[0]}:${debugInfo.public_endpoint[1]}` : "None"}</text>
                     <text><span fg="#888888">Local TCP port: </span>{debugInfo.local_tcp_port}</text>
-                    <text><span fg="#888888">---</span></text>
+                    <text fg="#888888">{"─".repeat(40)}</text>
                     <text><span fg="#888888">Local</span></text>
                     {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).length === 0 && <text fg="#888888">  No local peers</text>}
                     {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).map((peer) => (
-                      <box key={`lp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column" }}>
-                        <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>  {peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
+                      <box key={`lp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
+                        <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>{"> "}{peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
                       </box>
                     ))}
-                    <text><span fg="#888888">---</span></text>
+                    <text fg="#888888">{"─".repeat(40)}</text>
                     <text><span fg="#888888">Remote</span></text>
                     {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).length === 0 && <text fg="#888888">  No remote peers</text>}
                     {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).map((peer) => (
-                      <box key={`rp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column" }}>
-                        <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>  {peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
+                      <box key={`rp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
+                        <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>{"> "}{peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
                       </box>
                     ))}
                   </scrollbox>
@@ -1777,17 +1777,23 @@ height={Math.max(5, dialogHeight - 3)}
               if (!peer) return <text fg="#888888">Peer not found (try Refresh)</text>
               return (
                 <>
-                  <text><span fg="#888888">Name: </span>{peer.display_name}</text>
-                  <text><span fg="#888888">Peer ID: </span>{peer.peer_id}</text>
-                  <text><span fg="#888888">Online: </span>{peer.is_online ? "Yes" : "No"}</text>
-                  <text><span fg="#888888">Active transport: </span>{peer.active_transport ?? "None"}</text>
-                  <text><span fg="#888888">Active endpoint: </span>{peer.active_endpoint ?? "None"}</text>
-                  {peer.protocol_version != null && <text><span fg="#888888">Protocol version: </span>v{peer.protocol_version}{peer.remote_protocol_version != null ? ` (max: v${peer.remote_protocol_version === -1 ? 0 : peer.remote_protocol_version})` : ""}</text>}
-                  {peer.capabilities?.length ? <text><span fg="#888888">Capabilities: </span>{peer.capabilities.join(", ")}</text> : null}
-                  <text><span fg="#888888">Endpoints:</span></text>
-                  {peer.endpoints.map((e) => (
-                    <text key={`${e.transport}-${e.endpoint}`}>  {e.transport} {e.endpoint}{e.active ? " *" : ""}</text>
-                  ))}
+                  <scrollbox
+                    style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+                    contentOptions={{ flexDirection: "column" }}
+                    verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}
+                  >
+                    <text><span fg="#888888">Name: </span>{peer.display_name}</text>
+                    <text><span fg="#888888">Peer ID: </span>{peer.peer_id}</text>
+                    <text><span fg="#888888">Online: </span>{peer.is_online ? "Yes" : "No"}</text>
+                    <text><span fg="#888888">Active transport: </span>{peer.active_transport ?? "None"}</text>
+                    <text><span fg="#888888">Active endpoint: </span>{peer.active_endpoint ?? "None"}</text>
+                    {peer.protocol_version != null && <text><span fg="#888888">Protocol version: </span>v{peer.protocol_version}{peer.remote_protocol_version != null ? ` (max: v${peer.remote_protocol_version === -1 ? 0 : peer.remote_protocol_version})` : ""}</text>}
+                    {peer.capabilities?.length ? <text><span fg="#888888">Capabilities: </span>{peer.capabilities.join(", ")}</text> : null}
+                    <text><span fg="#888888">Endpoints:</span></text>
+                    {peer.endpoints.map((e) => (
+                      <text key={`${e.transport}-${e.endpoint}`}>  {e.transport} {e.endpoint}{e.active ? " *" : ""}</text>
+                    ))}
+                  </scrollbox>
                   <select
                     focused
                     height={3}
