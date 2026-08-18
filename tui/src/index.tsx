@@ -1286,7 +1286,7 @@ function ChatApp() {
         <text fg={status.includes("error") || status.includes("lost") || status.includes("exceeds") ? "#ff7777" : "#888888"}>{status}</text>
       </box>
       <box style={{ position: "absolute", right: 1, bottom: 0 }}>
-        <text><span fg="#66dd88">● </span><span fg="#555555">MeshTalk {typeof APP_VERSION !== "undefined" ? APP_VERSION : "dev"}</span></text>
+        <text><span fg="#66dd88">● </span><span fg="#bbbbbb">MeshTalk </span><span fg="#888888">{typeof APP_VERSION !== "undefined" ? APP_VERSION : "dev"}</span></text>
       </box>
       {copyToast && (
         <box style={{ position: "absolute", right: 2, top: 1, border: true, borderColor: "#66dd88", backgroundColor: "#18251d", paddingLeft: 1, paddingRight: 1 }}>
