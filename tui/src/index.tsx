@@ -1267,7 +1267,7 @@ function ChatApp() {
                 <text wrapMode="word" fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (commands {'>'} friends {'>'} add friend).</text>
               ) : null}
               {selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected ? (
-                <text wrapMode="word" fg="#ff9f43">Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting ({controlStatus.reconnect_attempts}).</text>
+                <text wrapMode="word" fg="#ff9f43"><b>Out-of-sync with rendezvous server. Peer connectivity may degrade over time;</b> reconnecting ({controlStatus.reconnect_attempts}).</text>
               ) : null}
               {selected && versionMismatches[selected.peer_id] ? (() => {
                 const m = versionMismatches[selected.peer_id]
