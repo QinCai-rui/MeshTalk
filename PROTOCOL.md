@@ -184,14 +184,15 @@ if agreed_version < min_required → reject with IncompatibleProtocolError
                                    + broadcast peer_version_mismatch IPC event
 ```
 
-**Legacy (v0) compatibility.** A peer that omits `protocol_version` from its
-handshake is treated as version 0 with `min_protocol_version` 0. This is
-detected by `HandshakePayload.decode()` checking for the presence of the
-`protocol_version` key in the raw JSON. Support for v0 has been dropped: the
-default `MIN_SUPPORTED_PROTOCOL_VERSION` is `1`, so any peer advertising
-version 0 (including legacy peers that omit the field) is rejected with an
+**Legacy (v0/v1) compatibility.** A peer that omits `protocol_version` from its
+handshake is treated as version 0 with `min_protocol_version` 0; a peer that
+advertises `protocol_version = 1` is treated as v1. This is detected by
+`HandshakePayload.decode()` checking for the presence of the `protocol_version`
+key. Support for both v0 and v1 has been dropped: the default
+`MIN_SUPPORTED_PROTOCOL_VERSION` is `2`, so any peer advertising version 0 or 1
+(including legacy peers that omit the field) is rejected with an
 `IncompatibleProtocolError` and a `peer_version_mismatch` IPC event. There is no
-configuration that re-enables v0; all peers must run protocol version 1 or newer.
+configuration that re-enables v0 or v1; all peers must run protocol version 2.
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`). The agreed capability
@@ -737,7 +738,7 @@ the current code (per TODO.md):
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
 | Protocol version | 2 | protocol.PROTOCOL_VERSION |
-| Min supported protocol version | 1 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
+| Min supported protocol version | 2 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
 | Legacy peer version | 0 | Default for peers omitting `protocol_version` in handshake |
 | Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports | protocol.DEFAULT_CAPABILITIES |
 | Max packet size | 64 KiB | protocol.MAX_PACKET_SIZE |
