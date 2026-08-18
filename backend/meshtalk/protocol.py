@@ -32,7 +32,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MIN_SUPPORTED_PROTOCOL_VERSION = 1
 
 # Feature capability identifiers exchanged during the handshake. A connection

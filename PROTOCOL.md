@@ -157,12 +157,13 @@ HANDSHAKE_CONFIRM (challenge=ack.nonce)    -->
   encryption_public_key (32 B), display_name, nonce (32 B), challenge,
   protocol_version, min_protocol_version, capabilities (string list), and an
   Ed25519 signature over the canonical (sorted, compact) JSON of the
-  non-signature fields. For protocol version 1 the signature canonical covers
-  only the six base fields (peer_id, signing_public_key, encryption_public_key,
-  display_name, nonce, challenge) so that v1 stays byte-compatible with prior
-  releases; `protocol_version`, `min_protocol_version` and `capabilities` are
-  only folded into the signed canonical once a connection negotiates a version
-  above 1.
+  non-signature fields. For protocol version 1 (legacy) the signature canonical
+  covers only the six base fields (peer_id, signing_public_key,
+  encryption_public_key, display_name, nonce, challenge) so that v1 stays
+  byte-compatible with prior releases; `protocol_version`, `min_protocol_version`
+  and `capabilities` are folded into the signed canonical from protocol version 2
+  onward (the current default), so a v2 handshake's signature binds the negotiated
+  version and capability set.
 - _apply_handshake verifies:
   1. peer_id == SHA-256(signing_public_key) (binds ID to key),
   2. challenge matches the expected value from the prior step (prevents a
@@ -185,7 +186,7 @@ if agreed_version < min_required → reject with IncompatibleProtocolError
 ```
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
-`friend_requests`, `delivery_receipts`, `block_reports`). The agreed capability
+`friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`). The agreed capability
 set is the **intersection** of both peers' advertised sets (unknown capabilities
 are ignored), and higher-level code gates behaviour on it: `delivery_receipts`
 enables `MESSAGE_ACK`, `block_reports` enables `MESSAGE_BLOCKED`, `profile_sync`
@@ -247,7 +248,7 @@ then encrypted locally before being sent to the control service:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "kind": "endpoint",
   "peer_id": "<64 hex>",
   "signing_public_key": "<64 hex>",
@@ -262,7 +263,7 @@ then encrypted locally before being sent to the control service:
   json_bytes, aad=room_id); the wire blob is base64url(nonce12 || ct).
 - Decryption & validation (decrypt_endpoint_card):
   1. AES-GCM decrypt with aad = room_id;
-  2. version == 1 and kind == "endpoint";
+  2. version >= 1 (currently 2) and kind == "endpoint";
   3. peer_id == SHA-256(signing_public_key);
   4. card age |now - created_at| <= CARD_MAX_AGE (180 s);
   5. host is a global, non-multicast/unspecified/reserved/link-local IPv4
@@ -379,9 +380,9 @@ JSON hello (canonical, then Ed25519-signed):
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "min_version": 1,
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -404,6 +405,7 @@ During the handshake, peers exchange their maximum protocol `version`, their `mi
   - `friend_requests`: Send, accept, or cancel friend requests.
   - `delivery_receipts`: Acknowledge message delivery (`MESSAGE_ACK`).
   - `block_reports`: Report message blocking status (`MESSAGE_BLOCKED`).
+  - `group_chat`: Exchange group messages, membership, metadata, and rekey (`GROUP_MESSAGE`, `GROUP_MEMBERSHIP`, `GROUP_METADATA`, `GROUP_REKEY`).
 
 ### 6.3 Session Key Derivation
 
@@ -700,9 +702,9 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Protocol version | 1 | protocol.PROTOCOL_VERSION |
+| Protocol version | 2 | protocol.PROTOCOL_VERSION |
 | Min supported protocol version | 1 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat | protocol.DEFAULT_CAPABILITIES |
 | Max packet size | 64 KiB | protocol.MAX_PACKET_SIZE |
 | Discovery interval | 3 s | discovery.BROADCAST_INTERVAL |
 | Handshake timeout | 10 s | peer_manager.HANDSHAKE_TIMEOUT |
