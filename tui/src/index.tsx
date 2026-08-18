@@ -1242,7 +1242,7 @@ function ChatApp() {
           const mismatchCount = Object.keys(versionMismatches).length
           return (
             <box style={{ flexShrink: 0, backgroundColor: "#3a1414", paddingLeft: 1, paddingRight: 1 }}>
-              <text wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}>
+              <text wrapMode="word" fg="#ff5555">
                 <b>{"\u26A0 WARNING: incompatible peer protocol version detected"}{mismatchCount > 1 ? ` (${mismatchCount} peers)` : ""}{". Some features may not work properly."}</b>
               </text>
             </box>
