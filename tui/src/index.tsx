@@ -326,6 +326,14 @@ function ChatApp() {
       void refreshPeers()
       return
     }
+    if (event.event === "peer_version_mismatch") {
+      const remoteVersion = event.remote_version as number
+      const remoteMin = event.remote_min_version as number
+      const localVersion = event.local_version as number
+      const localMin = event.local_min_version as number
+      showStatus(`Version mismatch: peer supports v${remoteMin}-v${remoteVersion}, local is v${localMin}-v${localVersion}`)
+      return
+    }
     if (event.event !== "message") {
       if (event.event === "peer_update") void refreshPeers()
       return
