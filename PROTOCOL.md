@@ -93,7 +93,7 @@ storage_key = HKDF-SHA256(
 
 ## 3. Local State & Persistence
 
-Fresh state lives in ~/.meshtalk (old ~/.lanchat is never read):
+Fresh state lives in ~/.meshtalk:
 
 | File | Mode | Contents |
 |------|------|----------|
