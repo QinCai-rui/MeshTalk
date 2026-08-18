@@ -50,7 +50,7 @@ jobs:
           sed -i "s/__version__ = \"[^\"]*\"/__version__ = \"${VERSION}\"/" backend/meshtalk/__init__.py
 
           # update uv's lockfile
-          uv lock
+          uv lock --directory backend
 
           echo "Updated version strings to ${VERSION}"
           git diff --stat
