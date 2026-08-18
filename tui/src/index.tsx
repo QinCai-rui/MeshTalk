@@ -149,6 +149,7 @@ function ChatApp() {
   const [status, setStatus] = useState("Connecting to backend...")
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
+  const [versionMismatches, setVersionMismatches] = useState<Record<string, { remote_version: number; remote_min: number; local_version: number; local_min: number }>>({})
   const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number }>({ connected: false, reconnect_attempts: 0 })
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
@@ -327,11 +328,17 @@ function ChatApp() {
       return
     }
     if (event.event === "peer_version_mismatch") {
-      const remoteVersion = event.remote_version as number
-      const remoteMin = event.remote_min_version as number
-      const localVersion = event.local_version as number
-      const localMin = event.local_min_version as number
-      showStatus(`Version mismatch: peer supports v${remoteMin}-v${remoteVersion}, local is v${localMin}-v${localVersion}`)
+      const peerId = event.peer_id as string
+      setVersionMismatches((current) => ({
+        ...current,
+        [peerId]: {
+          remote_version: event.remote_version as number,
+          remote_min: event.remote_min_version as number,
+          local_version: event.local_version as number,
+          local_min: event.local_min_version as number,
+        },
+      }))
+      showStatus(`Version mismatch with ${peers.find((p) => p.peer_id === peerId)?.display_name ?? peerId}.`)
       return
     }
     if (event.event !== "message") {
@@ -1131,7 +1138,8 @@ function ChatApp() {
           {(
             (selected && !selected.is_online) ||
             (selected && selected.is_online && !selected.is_friend) ||
-            (selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected)
+            (selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected) ||
+            (selected && versionMismatches[selected.peer_id])
           ) ? (
             <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
               {selected && !selected.is_online ? (
@@ -1143,6 +1151,10 @@ function ChatApp() {
               {selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected ? (
                 <text wrapMode="word" fg="#ff9f43">Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting ({controlStatus.reconnect_attempts}).</text>
               ) : null}
+              {selected && versionMismatches[selected.peer_id] ? (() => {
+                const m = versionMismatches[selected.peer_id]
+                return <text wrapMode="word" fg="#e0a34a">Version mismatch: this peer supports v{m.remote_min}-v{m.remote_version}, local is v{m.local_min}-v{m.local_version}. Features may not work correctly.</text>
+              })() : null}
             </box>
           ) : null}
           <scrollbox
