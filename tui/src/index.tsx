@@ -117,6 +117,7 @@ type Dialog =
   | { kind: "block-peer-pick" }
   | { kind: "block-peer"; peerId: string; displayName: string }
   | { kind: "cancel-friend-confirm"; requestId: string; displayName: string }
+  | { kind: "notifications" }
   | { kind: "debug" }
   | { kind: "storage"; bytes: number }
   | { kind: "debug-endpoints" }
@@ -599,15 +600,17 @@ function ChatApp() {
       showDialog({ kind: "rooms", rooms: [] })
       void loadRooms()
     } else if (dialog.kind === "mute-timeout") {
-      showDialog({ kind: "commands" })
+      showDialog({ kind: "notifications" })
     } else if (dialog.kind === "unmute-confirm") {
-      showDialog({ kind: "commands" })
+      showDialog({ kind: "notifications" })
     } else if (dialog.kind === "friend-request-incoming") {
       showDialog({ kind: "friend-requests", requests: [] })
       void loadFriendRequests()
     } else if (dialog.kind === "friend-requests" || dialog.kind === "add-friend" || dialog.kind === "remove-friend") {
       showDialog({ kind: "friends" })
     } else if (dialog.kind === "friends") {
+      showDialog({ kind: "commands" })
+    } else if (dialog.kind === "notifications") {
       showDialog({ kind: "commands" })
     } else if (dialog.kind === "blocked") {
       showDialog({ kind: "friends" })
@@ -1031,6 +1034,8 @@ function ChatApp() {
       void loadRooms()
     } else if (command === "friends") {
       showDialog({ kind: "friends" })
+    } else if (command === "notifications") {
+      showDialog({ kind: "notifications" })
     } else if (command === "rename") {
       const displayName = identity?.display_name ?? ""
       setNameDraft(displayName)
@@ -1038,14 +1043,17 @@ function ChatApp() {
       setDialogError("")
       setDialog({ kind: "rename" })
     } else if (command === "mute") {
-      const online = peers.filter((p) => p.is_online && p.peer_id !== identity?.peer_id && !mutedPeers[p.peer_id])
-      if (!online.length) { showStatus("No unmuted online peers to mute."); return }
-      showDialog({ kind: "mute-timeout", peerId: online[0].peer_id, displayName: online[0].display_name })
+      const peer = peers.find((p) => p.peer_id === selectedPeerId)
+      if (!peer) { showStatus("Select a peer to mute."); return }
+      if (peer.peer_id === identity?.peer_id) { showStatus("You cannot mute yourself."); return }
+      if (!peer.is_online) { showStatus(`${peer.display_name} is not online.`); return }
+      if (mutedPeers[peer.peer_id]) { showStatus(`${peer.display_name} is already muted.`); return }
+      showDialog({ kind: "mute-timeout", peerId: peer.peer_id, displayName: peer.display_name })
     } else if (command === "unmute") {
-      const mutedIds = Object.keys(mutedPeers)
-      const mutedList = peers.filter((p) => mutedIds.includes(p.peer_id))
-      if (!mutedList.length) { showStatus("No muted peers to unmute."); return }
-      showDialog({ kind: "unmute-confirm", peerId: mutedList[0].peer_id, displayName: mutedList[0].display_name })
+      const peer = peers.find((p) => p.peer_id === selectedPeerId)
+      if (!peer) { showStatus("Select a peer to unmute."); return }
+      if (!mutedPeers[peer.peer_id]) { showStatus(`${peer.display_name} is not muted.`); return }
+      showDialog({ kind: "unmute-confirm", peerId: peer.peer_id, displayName: peer.display_name })
     } else if (command === "add-friend") {
       const peer = peers.find((p) => p.peer_id === selectedPeerId)
       if (!peer) { showStatus("Select a peer to add as a friend."); return }
@@ -1432,6 +1440,7 @@ function ChatApp() {
               : dialog.kind === "friend-requests" ? "Friend requests"
               : dialog.kind === "friend-request-incoming" ? "Friend request"
               : dialog.kind === "friends" ? "Friends"
+              : dialog.kind === "notifications" ? "Notifications"
               : dialog.kind === "blocked" ? "Blocked friends"
               : dialog.kind === "block-peer-pick" ? "Block a peer"
               : dialog.kind === "block-peer" ? "Block friend requests"
@@ -1453,8 +1462,7 @@ function ChatApp() {
                   { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
                   { name: "Groups", description: "Create, join, view, or leave named groups", value: "rooms" },
                   { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
-                  { name: "Mute peer", description: "Mute desktop notifications from an online peer", value: "mute" },
-                  { name: "Unmute peer", description: "Resume desktop notifications for a muted peer", value: "unmute" },
+                  { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
                   { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
                   { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
                 ]}
@@ -1802,6 +1810,39 @@ height={Math.max(5, dialogHeight - 3)}
                 showDescription
               />
             )}
+            {dialog.kind === "notifications" && (() => {
+              const peer = peers.find((p) => p.peer_id === selectedPeerId)
+              const isMuted = peer ? !!mutedPeers[peer.peer_id] : false
+              const isOnline = peer ? peer.is_online : false
+              const isSelf = peer ? peer.peer_id === identity?.peer_id : false
+              const options = []
+              if (peer && !isMuted && isOnline && !isSelf) {
+                options.push({ name: "Mute", description: `Mute notifications from ${peer.display_name}`, value: "mute" })
+              }
+              if (peer && isMuted) {
+                options.push({ name: "Unmute", description: `Resume notifications from ${peer.display_name}`, value: "unmute" })
+              }
+              options.push({ name: "Back to commands", description: "Return to the command palette", value: "back" })
+              return (
+                <>
+                  {!peer && <text fg="#888888">Select a peer in the sidebar first.</text>}
+                  {peer && isSelf && <text fg="#888888">You cannot mute or unmute yourself.</text>}
+                  {peer && !isSelf && !isOnline && !isMuted && <text fg="#888888">{peer.display_name} is not online.</text>}
+                  <MouseSelect
+                    focused
+                    height={Math.max(5, dialogHeight - 4)}
+                    options={options}
+                    onSelect={(_, option) => {
+                      if (!option) return
+                      if (option.value === "back") showDialog({ kind: "commands" })
+                      else runCommand(option.value)
+                    }}
+                    wrapSelection
+                    showDescription
+                  />
+                </>
+              )
+            })()}
             {dialog.kind === "blocked" && (
               <>
                 {!dialog.blocked.length && <text fg="#888888">No blocked peers. Blocked peers cannot send you friend requests.</text>}
