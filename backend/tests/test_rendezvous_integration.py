@@ -128,7 +128,7 @@ class RendezvousIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.05)
                 await friend_b.respond_to_friend_request(request_id, accept=True)
                 await asyncio.sleep(0.05)
-                message_id = await router_a.send_message(identity_b.peer_id, b"rendezvous secret")
+                message_id, _ = await router_a.send_message(identity_b.peer_id, b"rendezvous secret")
                 message = await asyncio.wait_for(received.get(), 2)
                 self.assertEqual(message["message_id"], message_id)
                 self.assertEqual(message["content"], "rendezvous secret")

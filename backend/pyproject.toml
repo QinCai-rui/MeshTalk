@@ -22,3 +22,8 @@ build-backend = "uv_build"
 module-name = "meshtalk"
 module-root = ""
 
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+

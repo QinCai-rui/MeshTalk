@@ -413,17 +413,21 @@ class PeerManager:
             payload.min_protocol_version,
         )
         if agreed_version is None:
+            logger.warning("Incompatible protocol version with peer %s (remote v%d, min v%d); features may not work properly", peer_id, payload.protocol_version, payload.min_protocol_version)
             if self.on_version_mismatch is not None:
                 try:
                     loop = asyncio.get_running_loop()
                     loop.create_task(self.on_version_mismatch(peer_id, payload.protocol_version, payload.min_protocol_version))
                 except RuntimeError:
                     pass
-            raise IncompatibleProtocolError(
-                peer_id=peer_id,
-                remote_version=payload.protocol_version,
-                remote_min=payload.min_protocol_version,
-            )
+            method = getattr(self.db, 'record_version_mismatch', None)
+            if method is not None:
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(method(peer_id, payload.display_name, payload.protocol_version, payload.min_protocol_version))
+                except RuntimeError:
+                    pass
+            agreed_version = MIN_SUPPORTED_PROTOCOL_VERSION
         try:
             Ed25519PublicKey.from_public_bytes(payload.signing_public_key).verify(payload.signature, payload.signed_bytes())
         except InvalidSignature:
@@ -439,6 +443,7 @@ class PeerManager:
         # Legacy peers (no version fields in handshake) are represented as -1
         # internally but displayed as v0 in the TUI.
         peer.remote_protocol_version = -1 if payload.legacy else payload.protocol_version
+        peer.remote_min_protocol_version = payload.min_protocol_version
         # The connection only enables capabilities advertised by *both* peers.
         peer.capabilities = intersect_capabilities(DEFAULT_CAPABILITIES, payload.capabilities)
         logger.debug(

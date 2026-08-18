@@ -73,7 +73,7 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_direct_message_is_authenticated_and_decrypted(self):
         await self._become_friends()
-        message_id = await self.router_a.send_message(self.identity_b.peer_id, b"secret hello")
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"secret hello")
         received = await asyncio.wait_for(self.received.get(), 1)
 
         self.assertEqual(received["message_id"], message_id)
@@ -92,7 +92,7 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_non_friend_message_is_blocked_with_notice(self):
         await self._connect_peers()
-        message_id = await self.router_a.send_message(self.identity_b.peer_id, b"hello stranger")
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"hello stranger")
         blocked = await asyncio.wait_for(self.blocked.get(), 1)
 
         self.assertEqual(blocked["message_id"], message_id)
@@ -120,7 +120,7 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request["direction"], "incoming")
         self.assertFalse(await self.friend_b.is_friend(self.identity_a.peer_id))
 
-        message_id = await self.router_a.send_message(self.identity_b.peer_id, b"blocked hello")
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"blocked hello")
         blocked = await asyncio.wait_for(self.blocked.get(), 1)
         self.assertEqual(blocked["message_id"], message_id)
 
@@ -129,7 +129,7 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.friend_a.is_friend(self.identity_b.peer_id))
         self.assertTrue(await self.friend_b.is_friend(self.identity_a.peer_id))
 
-        message_id = await self.router_a.send_message(self.identity_b.peer_id, b"friend hello")
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"friend hello")
         received = await asyncio.wait_for(self.received.get(), 1)
         self.assertEqual(received["content"], "friend hello")
 
@@ -152,10 +152,27 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         await self.friend_a.unfriend(self.identity_b.peer_id)
         self.assertFalse(await self.friend_a.is_friend(self.identity_b.peer_id))
 
-        message_id = await self.router_b.send_message(self.identity_a.peer_id, b"after unfriend")
+        message_id, _ = await self.router_b.send_message(self.identity_a.peer_id, b"after unfriend")
         blocked = await asyncio.wait_for(self.blocked.get(), 1)
         self.assertEqual(blocked["message_id"], message_id)
         self.assertEqual(blocked["peer_id"], self.identity_a.peer_id)
+
+    async def test_offline_message_is_queued_when_peer_key_is_cached(self):
+        await self._become_friends()
+        # Drop A's live connection to B; B's public key stays cached in A's DB.
+        self.manager_a.get_connected_peer(self.identity_b.peer_id).writer.close()
+        await asyncio.sleep(0.1)
+        self.assertIsNone(self.manager_a.get_connected_peer(self.identity_b.peer_id))
+
+        message_id, queued = await self.router_a.send_message(self.identity_b.peer_id, b"offline hello")
+        self.assertTrue(queued)
+        async with self.router_a.db._db.execute(
+            "SELECT queued FROM messages WHERE message_id = ?", (message_id,)
+        ) as cursor:
+            self.assertEqual((await cursor.fetchone())[0], 1)
+        pending = await self.router_a.db.get_pending_outgoing(self.identity_b.peer_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["packet_type"], PacketType.MESSAGE.value)
 
     async def test_friendship_persists_across_database_reload(self):
         await self._become_friends()

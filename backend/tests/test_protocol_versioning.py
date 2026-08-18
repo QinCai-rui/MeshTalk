@@ -185,8 +185,8 @@ class HandshakePayloadTest(unittest.TestCase):
             "signature": (b"0" * 64).hex(),
         }).encode()
         decoded = HandshakePayload.decode(raw)
-        self.assertEqual(decoded.protocol_version, 1)
-        self.assertEqual(decoded.min_protocol_version, 1)
+        self.assertEqual(decoded.protocol_version, 0)
+        self.assertEqual(decoded.min_protocol_version, 0)
         self.assertEqual(set(decoded.capabilities), set(DEFAULT_CAPABILITIES))
 
 
@@ -206,7 +206,7 @@ class DiscoveryPacketTest(unittest.TestCase):
             "tcp_port": 24891,
         }).encode()
         decoded = DiscoveryPacket.decode(raw)
-        self.assertEqual(decoded.min_protocol, 1)
+        self.assertEqual(decoded.min_protocol, 0)
 
 
 class ApplyHandshakeTest(unittest.TestCase):
@@ -229,8 +229,8 @@ class ApplyHandshakeTest(unittest.TestCase):
             nonce=b"4" * 32,
             challenge=b"",
             signature=b"",
-            protocol_version=1,
-            min_protocol_version=1,
+            protocol_version=2,
+            min_protocol_version=2,
             capabilities=list(DEFAULT_CAPABILITIES),
         )
         fields.update(overrides)
@@ -248,35 +248,23 @@ class ApplyHandshakeTest(unittest.TestCase):
             )
             peer = PeerConnection(remote.peer_id, "127.0.0.1", 24891, PeerState.CONNECTING)
             local._apply_handshake(peer, payload, expected_challenge=b"")
-            self.assertEqual(peer.protocol_version, 1)
+            self.assertEqual(peer.protocol_version, 2)
             self.assertEqual(peer.capabilities, sorted([CAP_TEXT_CHAT, CAP_PROFILE_SYNC]))
             self.assertTrue(peer.supports(CAP_TEXT_CHAT))
             self.assertFalse(peer.supports(CAP_FRIEND_REQUESTS))
             self.assertEqual(
                 peer.negotiated(),
                 {
-                    "protocol_version": 1,
-                    "min_protocol_version": 1,
+                    "protocol_version": 2,
+                    "remote_protocol_version": 2,
+                    "min_protocol_version": 2,
                     "capabilities": sorted([CAP_TEXT_CHAT, CAP_PROFILE_SYNC]),
                 },
             )
 
         asyncio.run(run())
 
-    def test_apply_accepts_legacy_handshake(self):
-        async def run():
-            local = self._manager()
-            remote = Identity.generate("Legacy")
-            payload = self._signed_payload(remote)
-            # Strip version fields the way an old peer would (legacy signature).
-            payload.signature = remote.signing_private_key.sign(payload.signed_bytes(legacy=True))
-            peer = PeerConnection(remote.peer_id, "127.0.0.1", 24891, PeerState.CONNECTING)
-            local._apply_handshake(peer, payload, expected_challenge=b"")
-            self.assertEqual(peer.protocol_version, 1)
-
-        asyncio.run(run())
-
-    def test_apply_rejects_incompatible_version(self):
+    def test_apply_warns_and_allows_incompatible_version(self):
         async def run():
             local = self._manager()
             remote = Identity.generate("Remote")
@@ -288,10 +276,21 @@ class ApplyHandshakeTest(unittest.TestCase):
             local.on_version_mismatch = on_mismatch
             payload = self._signed_payload(remote, protocol_version=3, min_protocol_version=3)
             peer = PeerConnection(remote.peer_id, "127.0.0.1", 24891, PeerState.CONNECTING)
-            with self.assertRaises(IncompatibleProtocolError):
-                local._apply_handshake(peer, payload, expected_challenge=b"")
+            local._apply_handshake(peer, payload, expected_challenge=b"")
             await asyncio.sleep(0.01)
             self.assertEqual(mismatched, [(remote.peer_id, 3, 3)])
+
+        asyncio.run(run())
+
+    def test_apply_allows_v1_legacy_handshake_with_warning(self):
+        async def run():
+            local = self._manager()
+            remote = Identity.generate("Legacy")
+            payload = self._signed_payload(remote, protocol_version=1, min_protocol_version=1)
+            # Strip version fields the way an old peer would (legacy signature).
+            payload.signature = remote.signing_private_key.sign(payload.signed_bytes(legacy=True))
+            peer = PeerConnection(remote.peer_id, "127.0.0.1", 24891, PeerState.CONNECTING)
+            local._apply_handshake(peer, payload, expected_challenge=b"")
 
         asyncio.run(run())
 

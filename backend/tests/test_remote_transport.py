@@ -62,7 +62,7 @@ class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.02)
 
         await self._become_friends()
-        message_id = await self.router_a.send_message(self.identity_b.peer_id, b"remote secret")
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"remote secret")
         received = await asyncio.wait_for(self.received.get(), 2)
         self.assertEqual(received["message_id"], message_id)
         self.assertEqual(received["content"], "remote secret")
