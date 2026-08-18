@@ -12,7 +12,13 @@ import secrets
 import socket
 from typing import Callable, Awaitable
 
-from .protocol import DiscoveryPacket, UDP_PORT, PROTOCOL_VERSION
+from .protocol import (
+    DiscoveryPacket,
+    UDP_PORT,
+    PROTOCOL_VERSION,
+    MIN_SUPPORTED_PROTOCOL_VERSION,
+    negotiate_protocol_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +100,14 @@ class DiscoveryService:
         if packet.discovery_id == self.discovery_id:
             return
 
-        if packet.protocol != PROTOCOL_VERSION:
-            logger.debug("Unknown protocol version from %s", packet.discovery_id)
+        agreed_version = negotiate_protocol_version(
+            PROTOCOL_VERSION,
+            MIN_SUPPORTED_PROTOCOL_VERSION,
+            packet.protocol,
+            packet.min_protocol,
+        )
+        if agreed_version is None:
+            logger.debug("Incompatible protocol version (v%d, min v%d) from %s", packet.protocol, packet.min_protocol, packet.discovery_id)
             return
 
         address = (addr[0], packet.tcp_port)

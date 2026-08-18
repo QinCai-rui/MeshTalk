@@ -20,6 +20,8 @@ from .database import Database
 from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
 from .protocol import (
+    CAP_BLOCK_REPORTS,
+    CAP_FRIEND_REQUESTS,
     FriendRequestCancelledPayload,
     FriendRequestPayload,
     FriendRequestResponsePayload,
@@ -67,6 +69,8 @@ class FriendManager:
         peer = self.peer_manager.get_connected_peer(peer_id)
         if peer is None:
             raise ValueError("Recipient is not directly connected")
+        if not peer.supports(CAP_FRIEND_REQUESTS):
+            raise ValueError("Peer does not support friend requests")
         now = time.time()
         payload = FriendRequestPayload(str(uuid.uuid4()), self.identity.peer_id, note, now, b"")
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
@@ -92,6 +96,8 @@ class FriendManager:
         peer = self.peer_manager.get_connected_peer(request["sender_id"])
         if peer is None:
             raise ValueError("Requester is not connected; try again when they are online")
+        if not peer.supports(CAP_FRIEND_REQUESTS):
+            raise ValueError("Peer does not support friend requests")
         payload = FriendRequestResponsePayload(request_id, self.identity.peer_id, accept, b"")
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
         await self.peer_manager.send_packet(peer, Packet(PacketType.FRIEND_REQUEST_RESPONSE, payload.encode()))
@@ -121,6 +127,8 @@ class FriendManager:
         peer = self.peer_manager.get_connected_peer(request["recipient_id"])
         if peer is None:
             raise ValueError("Recipient is not connected; try again when they are online")
+        if not peer.supports(CAP_FRIEND_REQUESTS):
+            raise ValueError("Peer does not support friend requests")
         payload = FriendRequestCancelledPayload(request_id, self.identity.peer_id, b"")
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
         await self.peer_manager.send_packet(peer, Packet(PacketType.FRIEND_REQUEST_CANCELLED, payload.encode()))
@@ -184,6 +192,9 @@ class FriendManager:
     async def _handle_friend_request(self, peer: PeerConnection, payload: FriendRequestPayload) -> None:
         if payload.sender_id != peer.peer_id:
             raise ValueError("Friend request sender does not match authenticated peer")
+        if not peer.supports(CAP_FRIEND_REQUESTS):
+            logger.info("Ignored friend request from %s: capability not negotiated", peer.peer_id)
+            return
         self._verify_peer_signature(peer, payload.signed_bytes(), payload.signature)
         if await self.db.is_peer_blocked(payload.sender_id):
             logger.info("Ignored friend request %s from blocked peer %s", payload.request_id, peer.peer_id)
@@ -222,6 +233,9 @@ class FriendManager:
     async def _handle_friend_response(self, peer: PeerConnection, payload: FriendRequestResponsePayload) -> None:
         if payload.responder_id != peer.peer_id:
             raise ValueError("Friend response peer does not match authenticated peer")
+        if not peer.supports(CAP_FRIEND_REQUESTS):
+            logger.info("Ignored friend response from %s: capability not negotiated", peer.peer_id)
+            return
         self._verify_peer_signature(peer, payload.signed_bytes(), payload.signature)
         request = await self.db.get_friend_request(payload.request_id)
         if request is None or request["direction"] != "outgoing" or request["status"] != "pending":
@@ -246,6 +260,9 @@ class FriendManager:
     async def _handle_friend_cancelled(self, peer: PeerConnection, payload: FriendRequestCancelledPayload) -> None:
         if payload.sender_id != peer.peer_id:
             raise ValueError("Friend cancelled peer does not match authenticated peer")
+        if not peer.supports(CAP_FRIEND_REQUESTS):
+            logger.info("Ignored friend cancel from %s: capability not negotiated", peer.peer_id)
+            return
         self._verify_peer_signature(peer, payload.signed_bytes(), payload.signature)
         request = await self.db.get_friend_request(payload.request_id)
         if request is None or request["direction"] != "incoming" or request["status"] != "pending":
@@ -262,6 +279,9 @@ class FriendManager:
     async def _handle_message_blocked(self, peer: PeerConnection, payload: MessageBlockedPayload) -> None:
         if payload.blocked_by != peer.peer_id:
             raise ValueError("Blocked notice peer does not match authenticated peer")
+        if not peer.supports(CAP_BLOCK_REPORTS):
+            logger.info("Ignored block report from %s: capability not negotiated", peer.peer_id)
+            return
         self._verify_peer_signature(peer, payload.signed_bytes(), payload.signature)
         removed_friend = await self.is_friend(peer.peer_id)
         if removed_friend:

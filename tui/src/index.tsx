@@ -27,6 +27,10 @@ type Peer = {
   active_transport?: "lan_tcp" | "remote_udp"
   active_endpoint?: string
   endpoints: { transport: "lan_tcp" | "remote_udp"; endpoint: string; active: boolean }[]
+  protocol_version?: number
+  // -1 means legacy peer (no version fields in handshake), displayed as v0
+  remote_protocol_version?: number
+  capabilities?: string[]
 }
 type Message = {
   message_id: string
@@ -200,6 +204,7 @@ function ChatApp() {
   const [status, setStatus] = useState("Connecting to backend...")
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
+  const [versionMismatches, setVersionMismatches] = useState<Record<string, { remote_version: number; remote_min: number; local_version: number; local_min: number }>>({})
   const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number }>({ connected: false, reconnect_attempts: 0 })
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
@@ -375,6 +380,20 @@ function ChatApp() {
       const name = (event.display_name as string) ?? "a peer"
       showStatus(`${name} cancelled their friend request.`)
       void refreshPeers()
+      return
+    }
+    if (event.event === "peer_version_mismatch") {
+      const peerId = event.peer_id as string
+      setVersionMismatches((current) => ({
+        ...current,
+        [peerId]: {
+          remote_version: event.remote_version as number,
+          remote_min: event.remote_min_version as number,
+          local_version: event.local_version as number,
+          local_min: event.local_min_version as number,
+        },
+      }))
+      showStatus(`Version mismatch with ${peers.find((p) => p.peer_id === peerId)?.display_name ?? peerId}.`)
       return
     }
     if (event.event !== "message") {
@@ -1167,14 +1186,15 @@ function ChatApp() {
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
         <box
-          title={selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})` : "Chat"}
+          title={selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
           {(
             (selected && !selected.is_online) ||
             (selected && selected.is_online && !selected.is_friend) ||
-            (selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected)
+            (selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected) ||
+            (selected && versionMismatches[selected.peer_id])
           ) ? (
             <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
               {selected && !selected.is_online ? (
@@ -1186,6 +1206,12 @@ function ChatApp() {
               {selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected ? (
                 <text wrapMode="word" fg="#ff9f43">Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting ({controlStatus.reconnect_attempts}).</text>
               ) : null}
+              {selected && versionMismatches[selected.peer_id] ? (() => {
+                const m = versionMismatches[selected.peer_id]
+                const remoteMax = m.remote_version === -1 ? 0 : m.remote_version
+                const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
+                return <text wrapMode="word" fg="#e0a34a">Version mismatch: this peer supports v{remoteMin}-v{remoteMax}, local is v{m.local_min}-v{m.local_version}. Features may not work correctly.</text>
+              })() : null}
             </box>
           ) : null}
           <scrollbox
@@ -1771,20 +1797,20 @@ height={Math.max(5, dialogHeight - 3)}
                   >
                     <text><span fg="#888888">My public endpoint: </span>{debugInfo.public_endpoint ? `${debugInfo.public_endpoint[0]}:${debugInfo.public_endpoint[1]}` : "None"}</text>
                     <text><span fg="#888888">Local TCP port: </span>{debugInfo.local_tcp_port}</text>
-                    <text><span fg="#888888">---</span></text>
+                    <text fg="#888888">{"─".repeat(40)}</text>
                     <text><span fg="#888888">Local</span></text>
                     {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).length === 0 && <text fg="#888888">  No local peers</text>}
                     {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).map((peer) => (
-                      <box key={`lp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column" }}>
-                        <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>  {peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
+                      <box key={`lp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
+                        <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>{"> "}{peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
                       </box>
                     ))}
-                    <text><span fg="#888888">---</span></text>
+                    <text fg="#888888">{"─".repeat(40)}</text>
                     <text><span fg="#888888">Remote</span></text>
                     {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).length === 0 && <text fg="#888888">  No remote peers</text>}
                     {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).map((peer) => (
-                      <box key={`rp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column" }}>
-                        <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>  {peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
+                      <box key={`rp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
+                        <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>{"> "}{peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
                       </box>
                     ))}
                   </scrollbox>
@@ -1805,15 +1831,23 @@ height={Math.max(5, dialogHeight - 3)}
               if (!peer) return <text fg="#888888">Peer not found (try Refresh)</text>
               return (
                 <>
-                  <text><span fg="#888888">Name: </span>{peer.display_name}</text>
-                  <text><span fg="#888888">Peer ID: </span>{peer.peer_id}</text>
-                  <text><span fg="#888888">Online: </span>{peer.is_online ? "Yes" : "No"}</text>
-                  <text><span fg="#888888">Active transport: </span>{peer.active_transport ?? "None"}</text>
-                  <text><span fg="#888888">Active endpoint: </span>{peer.active_endpoint ?? "None"}</text>
-                  <text><span fg="#888888">Endpoints:</span></text>
-                  {peer.endpoints.map((e) => (
-                    <text key={`${e.transport}-${e.endpoint}`}>  {e.transport} {e.endpoint}{e.active ? " *" : ""}</text>
-                  ))}
+                  <scrollbox
+                    style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+                    contentOptions={{ flexDirection: "column" }}
+                    verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}
+                  >
+                    <text><span fg="#888888">Name: </span>{peer.display_name}</text>
+                    <text><span fg="#888888">Peer ID: </span>{peer.peer_id}</text>
+                    <text><span fg="#888888">Online: </span>{peer.is_online ? "Yes" : "No"}</text>
+                    <text><span fg="#888888">Active transport: </span>{peer.active_transport ?? "None"}</text>
+                    <text><span fg="#888888">Active endpoint: </span>{peer.active_endpoint ?? "None"}</text>
+                    {peer.protocol_version != null && <text><span fg="#888888">Protocol version: </span>v{peer.protocol_version}{peer.remote_protocol_version != null ? ` (max: v${peer.remote_protocol_version === -1 ? 0 : peer.remote_protocol_version})` : ""}</text>}
+                    {peer.capabilities?.length ? <text><span fg="#888888">Capabilities: </span>{peer.capabilities.join(", ")}</text> : null}
+                    <text><span fg="#888888">Endpoints:</span></text>
+                    {peer.endpoints.map((e) => (
+                      <text key={`${e.transport}-${e.endpoint}`}>  {e.transport} {e.endpoint}{e.active ? " *" : ""}</text>
+                    ))}
+                  </scrollbox>
                   <MouseSelect
                     focused
                     height={3}

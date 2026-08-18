@@ -154,16 +154,44 @@ HANDSHAKE_CONFIRM (challenge=ack.nonce)    -->
 ```
 
 - Each HandshakePayload carries: peer_id, signing_public_key (32 B),
-  encryption_public_key (32 B), display_name, nonce (32 B), challenge, and an
+  encryption_public_key (32 B), display_name, nonce (32 B), challenge,
+  protocol_version, min_protocol_version, capabilities (string list), and an
   Ed25519 signature over the canonical (sorted, compact) JSON of the
-  non-signature fields.
+  non-signature fields. For protocol version 1 the signature canonical covers
+  only the six base fields (peer_id, signing_public_key, encryption_public_key,
+  display_name, nonce, challenge) so that v1 stays byte-compatible with prior
+  releases; `protocol_version`, `min_protocol_version` and `capabilities` are
+  only folded into the signed canonical once a connection negotiates a version
+  above 1.
 - _apply_handshake verifies:
   1. peer_id == SHA-256(signing_public_key) (binds ID to key),
   2. challenge matches the expected value from the prior step (prevents a
      reflected/relay handshake from confirming a session),
-  3. the Ed25519 signature is valid.
+  3. protocol versions are mutually compatible via range negotiation (see §4.3.1),
+  4. the Ed25519 signature is valid.
 - Timeouts: HANDSHAKE_TIMEOUT = 10 s, MAX_PENDING_HANDSHAKES = 64,
   MAX_CONNECTED_PEERS = 256.
+
+#### 4.3.1 Version & Capability Negotiation (LAN TCP)
+
+The same algorithm used in the UDP transport (§6.2) applies here. Each
+HandshakePayload includes a `protocol_version` and `min_protocol_version`.
+
+```
+agreed_version = min(local.protocol_version, remote.protocol_version)
+min_required   = max(local.min_protocol_version, remote.min_protocol_version)
+if agreed_version < min_required → reject with IncompatibleProtocolError
+                                   + broadcast peer_version_mismatch IPC event
+```
+
+`capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
+`friend_requests`, `delivery_receipts`, `block_reports`). The agreed capability
+set is the **intersection** of both peers' advertised sets (unknown capabilities
+are ignored), and higher-level code gates behaviour on it: `delivery_receipts`
+enables `MESSAGE_ACK`, `block_reports` enables `MESSAGE_BLOCKED`, `profile_sync`
+enables presence/display-name updates, and `friend_requests` enables the
+friend-request packet family. A peer that does not advertise a capability will
+never receive (or send) the corresponding packets.
 
 TRANSPORT-SECURITY CAVEAT (important). On the LAN TCP path, the link itself is
 NOT encrypted by a separate transport layer. The handshake and every
@@ -346,6 +374,8 @@ JSON hello (canonical, then Ed25519-signed):
 ```json
 {
   "version": 1,
+  "min_version": 1,
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -356,10 +386,18 @@ JSON hello (canonical, then Ed25519-signed):
 }
 ```
 
-_handle_hello verifies: version == 1; peer_id == SHA-256(signing key); all
-keys + nonce are 32 B and signature is 64 B; the source IP matches the
-expected/introduced endpoint (or is a fresh, un-introduced attempt that is
-later accepted); and the Ed25519 signature is valid.
+_handle_hello verifies: peer_id == SHA-256(signing key); mutually compatible protocol version (negotiated version = min(local.version, remote.version) >= max(local.min_version, remote.min_version)); all keys + nonce are 32 B and signature is 64 B; the source IP matches the expected/introduced endpoint (or is a fresh, un-introduced attempt that is later accepted); and the Ed25519 signature is valid. Incompatible protocol versions trigger a `peer_version_mismatch` IPC notification.
+
+#### Protocol Version & Capability Negotiation
+During the handshake, peers exchange their maximum protocol `version`, their `min_version`, and a list of supported `capabilities`. 
+
+- **Version Resolution**: The connection operates at the highest mutually supported version: `agreed_version = min(local.version, remote.version)`. If `agreed_version` is less than `max(local.min_version, remote.min_version)`, the connection is rejected.
+- **Supported Capabilities**:
+  - `text_chat`: Exchange text messaging packets.
+  - `profile_sync`: Exchange display name and active status updates.
+  - `friend_requests`: Send, accept, or cancel friend requests.
+  - `delivery_receipts`: Acknowledge message delivery (`MESSAGE_ACK`).
+  - `block_reports`: Report message blocking status (`MESSAGE_BLOCKED`).
 
 ### 6.3 Session Key Derivation
 
@@ -649,6 +687,8 @@ the current code (per TODO.md):
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
 | Protocol version | 1 | protocol.PROTOCOL_VERSION |
+| Min supported protocol version | 1 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports | protocol.DEFAULT_CAPABILITIES |
 | Max packet size | 64 KiB | protocol.MAX_PACKET_SIZE |
 | Discovery interval | 3 s | discovery.BROADCAST_INTERVAL |
 | Handshake timeout | 10 s | peer_manager.HANDSHAKE_TIMEOUT |

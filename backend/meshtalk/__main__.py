@@ -19,6 +19,7 @@ from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
 from .message_router import MessageRouter
 from .ipc import IPCServer
+from .protocol import PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION
 from .rendezvous import RendezvousService
 from .settings import Settings
 
@@ -51,9 +52,26 @@ async def main(debug: bool = False) -> None:
     peer_manager.on_packet = router.handle_packet
 
     async def handle_peer_changed(peer_id: str) -> None:
-        ipc.broadcast_event({"event": "peer_update", "peer_id": peer_id})
+        event = {"event": "peer_update", "peer_id": peer_id}
+        peer = peer_manager.get_connected_peer(peer_id)
+        if peer is not None:
+            event.update(peer.negotiated())
+        await ipc.broadcast_event(event)
 
     peer_manager.on_peer_changed = handle_peer_changed
+
+    async def handle_version_mismatch(peer_id: str, remote_version: int, remote_min: int) -> None:
+        await ipc.broadcast_event({
+            "event": "peer_version_mismatch",
+            "peer_id": peer_id,
+            "remote_version": remote_version,
+            "remote_min_version": remote_min,
+            "local_version": PROTOCOL_VERSION,
+            "local_min_version": MIN_SUPPORTED_PROTOCOL_VERSION,
+            "error": f"Incompatible protocol version for peer {peer_id}: remote (v{remote_version}, min v{remote_min}) vs local (v{PROTOCOL_VERSION}, min v{MIN_SUPPORTED_PROTOCOL_VERSION})",
+        })
+
+    peer_manager.on_version_mismatch = handle_version_mismatch
 
     async def on_peer_found(address: str, tcp_port: int) -> None:
         await peer_manager.connect_to_peer(None, address, tcp_port)
@@ -98,6 +116,9 @@ async def main(debug: bool = False) -> None:
                 "is_friend": peer["peer_id"] in friends,
                 "is_blocked": peer["peer_id"] in blocked,
                 "friend_request": friend_requests.get(peer["peer_id"]),
+                "protocol_version": connection.protocol_version if connection else None,
+                "remote_protocol_version": connection.remote_protocol_version if connection else None,
+                "capabilities": list(connection.capabilities) if connection else [],
                 **peer_manager.get_network_info(peer["peer_id"]),
             }
             for peer in peers
@@ -208,6 +229,9 @@ async def main(debug: bool = False) -> None:
                     "peer_id": peer.peer_id,
                     "display_name": peer.display_name,
                     "is_online": 1,
+                    "protocol_version": peer.protocol_version,
+                    "remote_protocol_version": peer.remote_protocol_version,
+                    "capabilities": list(peer.capabilities),
                     **peer_manager.get_network_info(peer.peer_id),
                 }
                 for peer in connected
@@ -332,6 +356,9 @@ async def main(debug: bool = False) -> None:
                 "peer_id": peer["peer_id"],
                 "display_name": peer["display_name"],
                 "is_online": connection is not None,
+                "protocol_version": connection.protocol_version if connection else None,
+                "remote_protocol_version": connection.remote_protocol_version if connection else None,
+                "capabilities": list(connection.capabilities) if connection else [],
                 **info,
             })
         return {
