@@ -30,7 +30,6 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT,
     encrypted_content BLOB,
     created_at REAL NOT NULL,
-    expires_at REAL NOT NULL,
     hop_count INTEGER NOT NULL DEFAULT 0,
     max_hops INTEGER NOT NULL DEFAULT 10,
     delivered INTEGER NOT NULL DEFAULT 0,
@@ -113,6 +112,11 @@ class Database:
             await self._db.execute("ALTER TABLE messages ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
         if "queued" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN queued INTEGER NOT NULL DEFAULT 0")
+        if "expires_at" in message_columns:
+            try:
+                await self._db.execute("ALTER TABLE messages DROP COLUMN expires_at")
+            except Exception:
+                pass
         queue_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(outgoing_queue)")}
         if "packet_type" not in queue_columns:
             await self._db.execute("ALTER TABLE outgoing_queue ADD COLUMN packet_type INTEGER NOT NULL DEFAULT 0")
@@ -261,8 +265,8 @@ class Database:
         await self._db.execute(
             """INSERT OR IGNORE INTO messages
                 (message_id, sender_id, recipient_id, content, encrypted_content,
-                 created_at, expires_at, hop_count, max_hops, read_at, blocked, queued)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 created_at, hop_count, max_hops, read_at, blocked, queued)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 msg["message_id"],
                 msg["sender_id"],
@@ -270,7 +274,6 @@ class Database:
                 self._encrypt_content(msg["content"]) if msg.get("content") is not None else None,
                 msg["encrypted_content"],
                 msg["created_at"],
-                msg["expires_at"],
                 msg["hop_count"],
                 msg["max_hops"],
                 msg.get("read_at"),
@@ -303,9 +306,6 @@ class Database:
 
     async def cleanup_expired(self) -> None:
         now = time.time()
-        await self._db.execute(
-            "DELETE FROM messages WHERE expires_at < ?", (now,)
-        )
         await self._db.execute(
             "DELETE FROM seen_messages WHERE seen_at < ?", (now - 86400,)
         )
@@ -352,8 +352,8 @@ class Database:
     async def get_stored_messages_for(self, peer_id: str) -> list[dict]:
         async with self._db.execute(
             """SELECT * FROM messages
-               WHERE recipient_id = ? AND stored = 1 AND expires_at > ?""",
-            (peer_id, time.time()),
+               WHERE recipient_id = ? AND stored = 1""",
+            (peer_id,),
         ) as cursor:
             return [dict(row) async for row in cursor]
 

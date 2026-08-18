@@ -30,7 +30,6 @@ from .protocol import (
 )
 
 logger = logging.getLogger(__name__)
-MESSAGE_EXPIRY = 86400
 MAX_MESSAGE_CONTENT_SIZE = 30 * 1024
 
 
@@ -53,7 +52,7 @@ class MessageRouter:
         if encryption_key is None:
             raise ValueError("No known public key for recipient; connect once before sending offline")
         now = time.time()
-        message = MessagePayload(str(uuid.uuid4()), self.identity.peer_id, recipient_id, now, now + MESSAGE_EXPIRY, 0, 0, b"")
+        message = MessagePayload(str(uuid.uuid4()), self.identity.peer_id, recipient_id, now, 0, 0, b"")
         message.encrypted_content = encrypt_for_recipient(encryption_key, plaintext, message.associated_data())
         message.signature = self.identity.signing_private_key.sign(message.signed_bytes())
         encoded_message = message.encode()
@@ -62,7 +61,7 @@ class MessageRouter:
         await self.db.save_message({
             "message_id": message.message_id, "sender_id": message.sender_id, "recipient_id": message.recipient_id,
             "content": plaintext.decode("utf-8"), "encrypted_content": message.encrypted_content,
-            "created_at": message.created_at, "expires_at": message.expires_at, "hop_count": 0, "max_hops": 0,
+            "created_at": message.created_at, "hop_count": 0, "max_hops": 0,
             "read_at": now, "queued": 1 if peer is None else 0,
         })
         await self.db.mark_message_seen(message.message_id)
@@ -97,7 +96,7 @@ class MessageRouter:
         if not await self.friend_manager.is_friend(message.sender_id):
             await self._send_blocked_notice(peer, message)
             return
-        if message.expires_at < time.time() or message.hop_count != 0 or message.max_hops != 0:
+        if message.hop_count != 0 or message.max_hops != 0:
             raise ValueError("Invalid direct message metadata")
         if len(message.signature) != 64:
             raise ValueError("Invalid message signature")
@@ -114,7 +113,7 @@ class MessageRouter:
         await self.db.save_message({
             "message_id": message.message_id, "sender_id": message.sender_id, "recipient_id": message.recipient_id,
             "content": content, "encrypted_content": message.encrypted_content,
-            "created_at": message.created_at, "expires_at": message.expires_at,
+            "created_at": message.created_at,
             "hop_count": 0, "max_hops": 0, "read_at": None,
         })
         await self._send_delivery_receipt(peer, message.message_id)

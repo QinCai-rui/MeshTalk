@@ -413,6 +413,7 @@ class PeerManager:
             payload.min_protocol_version,
         )
         if agreed_version is None:
+            logger.warning("Incompatible protocol version with peer %s (remote v%d, min v%d); features may not work properly", peer_id, payload.protocol_version, payload.min_protocol_version)
             if self.on_version_mismatch is not None:
                 try:
                     loop = asyncio.get_running_loop()

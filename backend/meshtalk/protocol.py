@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 PROTOCOL_VERSION = 2
-MIN_SUPPORTED_PROTOCOL_VERSION = 1
+MIN_SUPPORTED_PROTOCOL_VERSION = 2
 
 # Feature capability identifiers exchanged during the handshake. A connection
 # only enables a capability when both peers advertise it (see
@@ -325,7 +325,6 @@ class MessagePayload:
     sender_id: str
     recipient_id: str
     created_at: float
-    expires_at: float
     hop_count: int
     max_hops: int
     encrypted_content: bytes
@@ -338,7 +337,6 @@ class MessagePayload:
             "sender_id": self.sender_id,
             "recipient_id": self.recipient_id,
             "created_at": self.created_at,
-            "expires_at": self.expires_at,
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def signed_bytes(self) -> bytes:
@@ -350,7 +348,6 @@ class MessagePayload:
             "sender_id": self.sender_id,
             "recipient_id": self.recipient_id,
             "created_at": self.created_at,
-            "expires_at": self.expires_at,
             "hop_count": self.hop_count,
             "max_hops": self.max_hops,
             "encrypted_content": self.encrypted_content.hex(),
@@ -365,7 +362,6 @@ class MessagePayload:
             sender_id=obj["sender_id"],
             recipient_id=obj["recipient_id"],
             created_at=obj["created_at"],
-            expires_at=obj["expires_at"],
             hop_count=obj["hop_count"],
             max_hops=obj["max_hops"],
             encrypted_content=bytes.fromhex(obj["encrypted_content"]),

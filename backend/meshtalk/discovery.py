@@ -107,7 +107,7 @@ class DiscoveryService:
             packet.min_protocol,
         )
         if agreed_version is None:
-            logger.debug("Incompatible protocol version (v%d, min v%d) from %s", packet.protocol, packet.min_protocol, packet.discovery_id)
+            logger.warning("Incompatible protocol version (v%d, min v%d) from %s; peer will be unreachable and features may not work properly", packet.protocol, packet.min_protocol, packet.discovery_id)
             return
 
         address = (addr[0], packet.tcp_port)

@@ -364,6 +364,7 @@ class UdpTransport:
             remote_min,
         )
         if agreed_version is None:
+            logger.warning("Incompatible UDP protocol version with peer %s (remote v%d, min v%d); features may not work properly", peer_id, remote_version, remote_min)
             if self.on_version_mismatch is not None:
                 self.on_version_mismatch(peer_id, remote_version, remote_min)
             raise ValueError(f"UDP handshake protocol version mismatch: remote (v{remote_version}, min v{remote_min})")

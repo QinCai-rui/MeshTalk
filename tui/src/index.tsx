@@ -233,6 +233,7 @@ function ChatApp() {
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
   const [versionMismatches, setVersionMismatches] = useState<Record<string, { remote_version: number; remote_min: number; local_version: number; local_min: number }>>({})
+  const [blinkOn, setBlinkOn] = useState(true)
   const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number }>({ connected: false, reconnect_attempts: 0 })
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
@@ -355,6 +356,11 @@ function ChatApp() {
     }, 3000)
     return () => clearInterval(interval)
   }, [ipc])
+
+  useEffect(() => {
+    const interval = setInterval(() => setBlinkOn((value) => !value), 600)
+    return () => clearInterval(interval)
+  }, [])
 
   useEffect(() => ipc.onEvent((event: IPCEvent) => {
     if (event.event === "delivered") {
@@ -1232,6 +1238,16 @@ function ChatApp() {
       </box>
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
+        {Object.keys(versionMismatches).length ? (() => {
+          const mismatchCount = Object.keys(versionMismatches).length
+          return (
+            <box style={{ flexShrink: 0, backgroundColor: "#3a1414", paddingLeft: 1, paddingRight: 1 }}>
+              <text wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}>
+                <b>{"\u26A0 WARNING: incompatible peer protocol version detected"}{mismatchCount > 1 ? ` (${mismatchCount} peers)` : ""}{". Some features may not work properly."}</b>
+              </text>
+            </box>
+          )
+        })() : null}
         <box
           title={selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
@@ -1257,7 +1273,7 @@ function ChatApp() {
                 const m = versionMismatches[selected.peer_id]
                 const remoteMax = m.remote_version === -1 ? 0 : m.remote_version
                 const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
-                return <text wrapMode="word" fg="#e0a34a">Version mismatch: this peer supports v{remoteMin}-v{remoteMax}, local is v{m.local_min}-v{m.local_version}. Features may not work correctly.</text>
+                return <text wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}><b>{"\u26A0 Version mismatch: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
               })() : null}
             </box>
           ) : null}
