@@ -28,6 +28,10 @@ from .protocol import (
     Packet,
     PacketType,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .groups import GroupManager
 
 logger = logging.getLogger(__name__)
 MESSAGE_EXPIRY = 86400
@@ -35,11 +39,12 @@ MAX_MESSAGE_CONTENT_SIZE = 30 * 1024
 
 
 class MessageRouter:
-    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None, friend_manager: FriendManager | None = None) -> None:
+    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None, friend_manager: FriendManager | None = None, group_manager: "GroupManager" | None = None) -> None:
         self.identity, self.peer_manager, self.db = identity, peer_manager, db
         self.on_received = on_received
         self.on_delivered = on_delivered
         self.friend_manager = friend_manager or FriendManager(identity, peer_manager, db)
+        self.group_manager = group_manager
 
     async def send_message(self, recipient_id: str, plaintext: bytes) -> str:
         if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:
@@ -79,6 +84,13 @@ class MessageRouter:
             PacketType.MESSAGE_BLOCKED,
         ):
             await self.friend_manager.handle_packet(peer, packet)
+        elif packet.type in (
+            PacketType.GROUP_MESSAGE,
+            PacketType.GROUP_MEMBERSHIP,
+            PacketType.GROUP_METADATA,
+            PacketType.GROUP_REKEY,
+        ) and self.group_manager is not None:
+            await self.group_manager.handle_packet(peer, packet)
 
     async def _handle_message(self, peer: PeerConnection, packet: Packet) -> None:
         message = MessagePayload.decode(packet.payload)

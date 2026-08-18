@@ -205,7 +205,7 @@ authenticated-but-not-link-encrypted until that work lands.
 
 ## 5. Remote Path - Control, STUN, and Encrypted UDP
 
-### 5.1 Private Rooms and Invites (backend/meshtalk/settings.py)
+### 5.1 Named Groups and Invites (backend/meshtalk/settings.py)
 
 A private room is created locally:
 
@@ -216,6 +216,12 @@ invite  = "meshtalk:" + base64url(room_id) + "." + base64url(secret)
 ```
 
 Example: meshtalk:AbCd...xQ.EF12...9w
+
+New invites use a signed, versioned `meshtalk-group:` envelope containing the
+group name, owner signing key, secret, and membership epoch. Legacy
+`meshtalk:` invites remain accepted and are migrated locally as **Untitled
+group** records. The control service receives only IDs and encrypted endpoint
+cards; it never receives group messages or history.
 
 - Only room_id is ever sent to the control service. The secret never leaves the
   client and is required to derive the card-encryption key.
@@ -538,6 +544,14 @@ TCP and UDP carry the same Packet type byte (backend/meshtalk/protocol.py):
 | FRIEND_REQUEST_RESPONSE | 0x0B | Friend Response | Signed accept/decline. |
 | MESSAGE_BLOCKED | 0x0C | Message Blocked | Signed notice that a message was dropped (not a friend). |
 | FRIEND_REQUEST_CANCELLED | 0x0D | Friend Cancelled | Signed cancellation of a pending request. |
+| GROUP_MESSAGE | 0x0E | Group Message | AES-GCM group message signed by the sender and bound to an epoch. |
+| GROUP_MEMBERSHIP | 0x0F | Group Membership | Signed join, leave, or owner membership snapshot. |
+| GROUP_METADATA | 0x10 | Group Metadata | Signed owner rename and epoch metadata. |
+| GROUP_REKEY | 0x11 | Group Rekey | Owner-encrypted new group key for one recipient. |
+
+Group packets require the `group_chat` capability. Owners reject stale epochs,
+limit membership to 64 peers, rotate keys after removals, and retain pending
+rekeys for retry when a peer reconnects. Group history is stored locally only.
 
 UDP transport-level frame types (udp_transport.py): HELLO=1, DATA=2, ACK=3,
 PING=4, PONG=5, READY=6, GOODBYE=7 (distinct from the application types above;

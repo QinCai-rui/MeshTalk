@@ -82,6 +82,44 @@ CREATE TABLE IF NOT EXISTS blocked_peers (
     display_name TEXT NOT NULL,
     created_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS groups (
+    group_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL,
+    peer_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    epoch INTEGER NOT NULL DEFAULT 1,
+    active INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (group_id, peer_id)
+);
+
+CREATE TABLE IF NOT EXISTS group_messages (
+    message_id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    content BLOB NOT NULL,
+    created_at REAL NOT NULL,
+    epoch INTEGER NOT NULL,
+    read_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS group_pending_rekeys (
+    group_id TEXT NOT NULL,
+    peer_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (group_id, peer_id, epoch)
+);
 """
 
 
@@ -128,6 +166,13 @@ class Database:
             # Existing plaintext rows are migrated during connect().
             return content
         return self._cipher.decrypt(content[:12], content[12:], None).decode()
+
+    def encrypt_blob(self, value: bytes) -> bytes:
+        nonce = os.urandom(12)
+        return nonce + self._cipher.encrypt(nonce, value, None)
+
+    def decrypt_blob(self, value: bytes) -> bytes:
+        return self._cipher.decrypt(value[:12], value[12:], None)
 
     async def _encrypt_existing_message_content(self) -> None:
         async with self._db.execute("SELECT message_id, content FROM messages WHERE content IS NOT NULL") as cursor:
@@ -295,13 +340,140 @@ class Database:
 
     async def cleanup_expired(self) -> None:
         now = time.time()
-        await self._db.execute(
-            "DELETE FROM messages WHERE expires_at < ?", (now,)
-        )
+        # Message rows are durable history. Expiry only controls delivery and
+        # queue eligibility; it must never erase a user's local conversation.
         await self._db.execute(
             "DELETE FROM seen_messages WHERE seen_at < ?", (now - 86400,)
         )
         await self._db.commit()
+
+    async def save_group(self, group_id: str, name: str, owner_id: str, epoch: int) -> None:
+        now = time.time()
+        await self._db.execute(
+            """INSERT INTO groups (group_id, name, owner_id, epoch, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(group_id) DO UPDATE SET name=excluded.name, owner_id=excluded.owner_id,
+                 epoch=excluded.epoch, updated_at=excluded.updated_at""",
+            (group_id, name, owner_id, epoch, now, now),
+        )
+        await self._db.commit()
+
+    async def get_groups(self) -> list[dict]:
+        async with self._db.execute("SELECT * FROM groups ORDER BY name, group_id") as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def save_group_member(self, group_id: str, peer_id: str, display_name: str, epoch: int, active: bool = True) -> None:
+        await self._db.execute(
+            """INSERT INTO group_members (group_id, peer_id, display_name, epoch, active)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(group_id, peer_id) DO UPDATE SET display_name=excluded.display_name,
+                 epoch=excluded.epoch, active=excluded.active""",
+            (group_id, peer_id, display_name, epoch, int(active)),
+        )
+        await self._db.commit()
+
+    async def remove_group_member(self, group_id: str, peer_id: str) -> None:
+        await self._db.execute("DELETE FROM group_members WHERE group_id = ? AND peer_id = ?", (group_id, peer_id))
+        await self._db.commit()
+
+    async def get_group_members(self, group_id: str, active_only: bool = True) -> list[dict]:
+        query = "SELECT * FROM group_members WHERE group_id = ?"
+        if active_only:
+            query += " AND active = 1"
+        query += " ORDER BY display_name, peer_id"
+        async with self._db.execute(query, (group_id,)) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def save_group_message(self, message: dict) -> None:
+        await self._db.execute(
+            """INSERT OR IGNORE INTO group_messages
+               (message_id, group_id, sender_id, sender_name, content, created_at, epoch, read_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                message["message_id"], message["group_id"], message["sender_id"],
+                message.get("sender_name", "Unknown"), self._encrypt_content(message["content"]),
+                message["created_at"], message["epoch"], message.get("read_at"),
+            ),
+        )
+        await self._db.commit()
+
+    async def is_group_message_seen(self, message_id: str) -> bool:
+        async with self._db.execute(
+            "SELECT 1 FROM group_messages WHERE message_id = ?", (message_id,)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
+        async with self._db.execute(
+            """SELECT message_id, group_id, sender_id, sender_name, content, created_at, epoch, read_at
+               FROM (SELECT * FROM group_messages WHERE group_id = ? ORDER BY created_at DESC LIMIT ?)
+               ORDER BY created_at ASC""",
+            (group_id, limit),
+        ) as cursor:
+            messages = [dict(row) async for row in cursor]
+        for message in messages:
+            message["content"] = self._decrypt_content(message["content"])
+        return messages
+
+    async def mark_group_read(self, group_id: str) -> None:
+        await self._db.execute("UPDATE group_messages SET read_at = ? WHERE group_id = ? AND read_at IS NULL", (time.time(), group_id))
+        await self._db.commit()
+
+    async def get_group_unread_counts(self) -> dict[str, int]:
+        async with self._db.execute(
+            "SELECT group_id, COUNT(*) AS unread_count FROM group_messages WHERE read_at IS NULL GROUP BY group_id"
+        ) as cursor:
+            return {row["group_id"]: row["unread_count"] async for row in cursor}
+
+    async def save_pending_group_rekey(self, group_id: str, peer_id: str, epoch: int, payload: bytes) -> None:
+        await self._db.execute(
+            "INSERT OR REPLACE INTO group_pending_rekeys (group_id, peer_id, epoch, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+            (group_id, peer_id, epoch, payload, time.time()),
+        )
+        await self._db.commit()
+
+    async def get_pending_group_rekeys(self, group_id: str | None = None) -> list[dict]:
+        if group_id is None:
+            query, params = "SELECT * FROM group_pending_rekeys ORDER BY created_at", ()
+        else:
+            query, params = "SELECT * FROM group_pending_rekeys WHERE group_id = ? ORDER BY created_at", (group_id,)
+        async with self._db.execute(query, params) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def remove_pending_group_rekey(self, group_id: str, peer_id: str, epoch: int) -> None:
+        await self._db.execute("DELETE FROM group_pending_rekeys WHERE group_id = ? AND peer_id = ? AND epoch = ?", (group_id, peer_id, epoch))
+        await self._db.commit()
+
+    async def history_size_bytes(self) -> int:
+        try:
+            return self.db_path.stat().st_size
+        except OSError:
+            return 0
+
+    async def delete_history(
+        self,
+        conversation_type: str,
+        conversation_id: str,
+        before: float | None = None,
+        local_peer_id: str | None = None,
+    ) -> int:
+        if conversation_type == "group":
+            query = "DELETE FROM group_messages WHERE group_id = ?"
+            params: tuple = (conversation_id,)
+            if before is not None:
+                query += " AND created_at < ?"
+                params = (conversation_id, before)
+        else:
+            if not local_peer_id:
+                raise ValueError("local_peer_id is required for direct-message history")
+            query = "DELETE FROM messages WHERE (sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)"
+            params = (local_peer_id, conversation_id, conversation_id, local_peer_id)
+            if before is not None:
+                query += " AND created_at < ?"
+                params += (before,)
+        cursor = await self._db.execute(query, params)
+        await self._db.commit()
+        return cursor.rowcount
 
     async def add_to_outqueue(
         self, message_id: str, recipient_id: str, encrypted_payload: bytes

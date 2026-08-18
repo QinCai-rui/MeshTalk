@@ -86,14 +86,22 @@ class PeerConnection:
         """Whether the negotiated connection with this peer enables ``capability``."""
         return capability in self.capabilities
 
-    def negotiated(self) -> dict:
-        """Snapshot of the negotiated protocol state for IPC/debug consumers."""
-        return {
+    def negotiated(self, *, include_remote: bool = False) -> dict:
+        """Snapshot of the negotiated protocol state for IPC/debug consumers.
+
+        ``remote_protocol_version`` was added after the original helper
+        contract. Keep the default payload stable for callers that consume the
+        negotiated state directly, while allowing IPC events to opt into the
+        additional observability field.
+        """
+        negotiated = {
             "protocol_version": self.protocol_version,
-            "remote_protocol_version": self.remote_protocol_version,
             "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
             "capabilities": list(self.capabilities),
         }
+        if include_remote:
+            negotiated["remote_protocol_version"] = self.remote_protocol_version
+        return negotiated
 
 
 class PeerManager:
@@ -268,6 +276,9 @@ class PeerManager:
         display_name: str,
         encryption_public_key: bytes,
         signing_public_key: bytes,
+        protocol_version: int = PROTOCOL_VERSION,
+        remote_protocol_version: int = PROTOCOL_VERSION,
+        capabilities: list[str] | None = None,
     ) -> None:
         if peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
             logger.warning("Rejecting remote UDP peer %s: peer limit reached", peer_id)
@@ -278,6 +289,10 @@ class PeerManager:
         peer.display_name = display_name
         peer.encryption_public_key = encryption_public_key
         peer.signing_public_key = signing_public_key
+        peer.protocol_version = protocol_version
+        peer.remote_protocol_version = remote_protocol_version
+        negotiated_capabilities = DEFAULT_CAPABILITIES if capabilities is None else capabilities
+        peer.capabilities = intersect_capabilities(DEFAULT_CAPABILITIES, negotiated_capabilities)
         self._udp_peers[peer_id] = peer
         self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = peer.endpoint
         active = self.peers.get(peer_id)

@@ -12,10 +12,15 @@ Commands:
   send <peer-id> <message>    Send an encrypted direct message
   watch                       Print incoming messages until interrupted
   control [set-url <url>]      Show or configure the control service
-  room create                 Create a private multi-peer room
-  room join <invite>          Join a private room
-  room leave <room-id>        Leave a room
-  rooms                       List joined rooms
+  room create                 Legacy alias for creating a group
+  room join <invite>          Legacy alias for joining a group
+  room leave <room-id>        Legacy alias for leaving a group
+  rooms                       Legacy alias for listing groups
+  groups                      List joined named groups
+  group create <name>         Create a named group
+  group join <invite>         Join a named group
+  group send <group-id> <message>  Send a group message
+  group leave <group-id>      Leave a group
   friends                     List your friends
   friend-requests             List pending friend requests
   friend send <peer-id> [note]  Send a friend request
@@ -192,8 +197,42 @@ async function main(): Promise<void> {
       const response = await ipc.send("rooms");
       if (hasError(response)) return;
       const rooms = asRecords(response.rooms);
-      if (!rooms.length) console.log("No joined rooms.");
-      for (const room of rooms) console.log(`${room.room_id} (${room.members} control connections)`);
+      if (!rooms.length) console.log("No joined groups.");
+      for (const room of rooms) console.log(`${room.room_id} ${room.name ?? "Untitled group"} (${room.members} members)`);
+      return;
+    }
+
+    if (command === "groups") {
+      const response = await ipc.send("groups");
+      if (response.error) throw new Error(response.error);
+      const groups = asRecords(response.groups);
+      if (!groups.length) console.log("No joined groups.");
+      for (const group of groups) console.log(`${group.group_id} ${group.name ?? "Untitled group"} (${group.members} members, epoch ${group.epoch})`);
+      return;
+    }
+
+    if (command === "group") {
+      const subcommand = args[0];
+      let response: Record<string, unknown>;
+      if (subcommand === "create" && args.slice(1).join(" ")) {
+        response = await ipc.send("group_create", { name: args.slice(1).join(" ") });
+        if (!response.error) {
+          console.log(`Created ${response.name} (${response.group_id})`);
+          console.log(`Invite: ${response.invite}`);
+        }
+      } else if (subcommand === "join" && args[1]) {
+        response = await ipc.send("group_join", { invite: args[1] });
+        if (!response.error) console.log(`Joined ${response.name} (${response.group_id})`);
+      } else if (subcommand === "send" && args[1] && args.slice(2).join(" ")) {
+        response = await ipc.send("group_send", { group_id: args[1], content: args.slice(2).join(" ") });
+        if (!response.error) console.log(`Sent ${response.message_id}`);
+      } else if (subcommand === "leave" && args[1]) {
+        response = await ipc.send("group_leave", { group_id: args[1] });
+        if (!response.error) console.log(`Left group ${args[1]}`);
+      } else {
+        throw new Error(`Usage: ${PROGRAM} group <create <name>|join <invite>|send <group-id> <message>|leave <group-id>>`);
+      }
+      if (response.error) throw new Error(String(response.error));
       return;
     }
 

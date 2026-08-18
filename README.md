@@ -11,9 +11,10 @@
 Peer-to-peer encrypted messaging over a LAN or direct NAT-traversed UDP links.
 
 MeshTalk keeps the original offline LAN path: UDP broadcast discovers peers and
-TCP carries authenticated messages. Private rooms add remote discovery through
+TCP carries authenticated messages. Named groups add remote discovery through
 an opaque control service and public STUN. The control service exchanges only
-encrypted endpoint cards; chat traffic always goes directly between peers.
+encrypted endpoint cards and group metadata; chat traffic always goes directly
+between peers.
 
 ## Architecture
 
@@ -48,9 +49,11 @@ together in the extracted directory: `meshtalk`, `meshtalk-backend`,
 `meshtalk` launcher is invoked directly.
 
 The first launch offers guided remote-discovery setup. Press `Ctrl+P` at any
-time to open commands for control-server status and setup, private-room
-management, and changing your display name. Room invites can be pasted when
-joining and are copied to the clipboard when creating a room.
+time to open commands for control-server status and setup, named-group
+management, and changing your display name. Group invites can be pasted when
+joining and are copied to the clipboard when creating a group. Drag to select
+text, then press `Ctrl+C` to copy it; `Ctrl+C` without a selection shows a hint.
+`Ctrl+Q` asks the backend to shut down gracefully.
 
 MeshTalk also sends a desktop notification for each incoming message when the
 terminal supports notification OSC sequences. Notifications show the sender,
@@ -129,8 +132,8 @@ bun run dev:control
 ```
 
 In the TUI, press `Ctrl+P`, select **Control server**, and choose the public
-server or enter a custom URL. Then select **Private rooms** to create a room or
-paste an invite. Created invites are copied to the clipboard automatically.
+server or enter a custom URL. Then select **Groups** to create a named group or
+paste a signed invite. Created invites are copied to the clipboard automatically.
 
 For local control-service development, select **Use a custom server** and enter
 `ws://127.0.0.1:8787/v1/rendezvous`.
@@ -139,23 +142,24 @@ The equivalent CLI flow is:
 
 ```bash
 meshtalk control set-url ws://127.0.0.1:8787/v1/rendezvous
-meshtalk room create
+meshtalk group create "Roadhouse"
 ```
 
-Share the `meshtalk:` invite through a trusted channel. On another MeshTalk
-installation, paste it through **Ctrl+P > Private rooms > Join with an invite**,
+Share the signed `meshtalk-group:` invite through a trusted channel. On another
+MeshTalk installation, paste it through **Ctrl+P > Groups > Join with an invite**,
 or use the CLI:
 
 ```bash
 meshtalk control set-url wss://control.example/v1/rendezvous
-meshtalk room join 'meshtalk:...'
+meshtalk group join 'meshtalk-group:...'
 ```
 
 Other room commands:
 
 ```bash
-meshtalk rooms
-meshtalk room leave <room-id>
+meshtalk groups
+meshtalk group send <group-id> "hello everyone"
+meshtalk group leave <group-id>
 meshtalk control
 ```
 

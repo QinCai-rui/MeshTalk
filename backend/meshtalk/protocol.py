@@ -16,6 +16,10 @@ Packet types:
   FRIEND_REQUEST_RESPONSE 0x0B
   MESSAGE_BLOCKED      0x0C
   FRIEND_REQUEST_CANCELLED 0x0D
+  GROUP_MESSAGE 0x0E
+  GROUP_MEMBERSHIP 0x0F
+  GROUP_METADATA 0x10
+  GROUP_REKEY 0x11
 """
 
 from __future__ import annotations
@@ -40,12 +44,14 @@ CAP_PROFILE_SYNC = "profile_sync"
 CAP_FRIEND_REQUESTS = "friend_requests"
 CAP_DELIVERY_RECEIPTS = "delivery_receipts"
 CAP_BLOCK_REPORTS = "block_reports"
+CAP_GROUP_CHAT = "group_chat"
 DEFAULT_CAPABILITIES = [
     CAP_TEXT_CHAT,
     CAP_PROFILE_SYNC,
     CAP_FRIEND_REQUESTS,
     CAP_DELIVERY_RECEIPTS,
     CAP_BLOCK_REPORTS,
+    CAP_GROUP_CHAT,
 ]
 # Capabilities that have a direct counterpart in this implementation. Used to
 # validate that a peer only advertises capabilities we recognise.
@@ -134,6 +140,10 @@ class PacketType(enum.IntEnum):
     FRIEND_REQUEST_RESPONSE = 0x0B
     MESSAGE_BLOCKED = 0x0C
     FRIEND_REQUEST_CANCELLED = 0x0D
+    GROUP_MESSAGE = 0x0E
+    GROUP_MEMBERSHIP = 0x0F
+    GROUP_METADATA = 0x10
+    GROUP_REKEY = 0x11
 
 
 @dataclass
@@ -552,4 +562,164 @@ class FriendRequestCancelledPayload:
             or len(payload.signature) != 64
         ):
             raise ValueError("Invalid friend request cancelled payload")
+        return payload
+
+
+def _valid_group_id(group_id: str) -> bool:
+    return isinstance(group_id, str) and 1 <= len(group_id) <= 128
+
+
+def _group_canonical(value: dict) -> bytes:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+
+
+@dataclass
+class GroupMessagePayload:
+    group_id: str
+    epoch: int
+    message_id: str
+    sender_id: str
+    created_at: float
+    nonce: bytes
+    ciphertext: bytes
+    signature: bytes
+
+    def signed_bytes(self) -> bytes:
+        return _group_canonical({
+            "group_id": self.group_id,
+            "epoch": self.epoch,
+            "message_id": self.message_id,
+            "sender_id": self.sender_id,
+            "created_at": self.created_at,
+            "nonce": self.nonce.hex(),
+            "ciphertext": self.ciphertext.hex(),
+        })
+
+    def encode(self) -> bytes:
+        value = json.loads(self.signed_bytes())
+        value["signature"] = self.signature.hex()
+        return _group_canonical(value)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "GroupMessagePayload":
+        value = json.loads(data)
+        payload = cls(
+            group_id=value["group_id"], epoch=value["epoch"], message_id=value["message_id"],
+            sender_id=value["sender_id"], created_at=value["created_at"],
+            nonce=bytes.fromhex(value["nonce"]), ciphertext=bytes.fromhex(value["ciphertext"]),
+            signature=bytes.fromhex(value["signature"]),
+        )
+        if (
+            not _valid_group_id(payload.group_id)
+            or not _valid_request_id(payload.message_id)
+            or not _valid_peer_id(payload.sender_id)
+            or not isinstance(payload.epoch, int) or isinstance(payload.epoch, bool) or payload.epoch < 1
+            or not isinstance(payload.created_at, (int, float)) or isinstance(payload.created_at, bool)
+            or len(payload.nonce) != 12 or not payload.ciphertext or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid group message payload")
+        return payload
+
+
+@dataclass
+class GroupMembershipPayload:
+    group_id: str
+    epoch: int
+    owner_id: str
+    members: list[dict]
+    signature: bytes
+
+    def signed_bytes(self) -> bytes:
+        return _group_canonical({
+            "group_id": self.group_id, "epoch": self.epoch,
+            "owner_id": self.owner_id, "members": self.members,
+        })
+
+    def encode(self) -> bytes:
+        value = json.loads(self.signed_bytes())
+        value["signature"] = self.signature.hex()
+        return _group_canonical(value)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "GroupMembershipPayload":
+        value = json.loads(data)
+        payload = cls(value["group_id"], value["epoch"], value["owner_id"], value["members"], bytes.fromhex(value["signature"]))
+        if (
+            not _valid_group_id(payload.group_id) or not _valid_peer_id(payload.owner_id)
+            or not isinstance(payload.epoch, int) or isinstance(payload.epoch, bool) or payload.epoch < 1
+            or not isinstance(payload.members, list) or len(payload.members) > 64
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid group membership payload")
+        for member in payload.members:
+            if not isinstance(member, dict) or not _valid_peer_id(member.get("peer_id", "")):
+                raise ValueError("Invalid group member")
+        return payload
+
+
+@dataclass
+class GroupMetadataPayload:
+    group_id: str
+    name: str
+    owner_id: str
+    epoch: int
+    signature: bytes
+
+    def signed_bytes(self) -> bytes:
+        return _group_canonical({
+            "group_id": self.group_id, "name": self.name,
+            "owner_id": self.owner_id, "epoch": self.epoch,
+        })
+
+    def encode(self) -> bytes:
+        value = json.loads(self.signed_bytes())
+        value["signature"] = self.signature.hex()
+        return _group_canonical(value)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "GroupMetadataPayload":
+        value = json.loads(data)
+        payload = cls(value["group_id"], value["name"], value["owner_id"], value["epoch"], bytes.fromhex(value["signature"]))
+        if (
+            not _valid_group_id(payload.group_id) or not _valid_peer_id(payload.owner_id)
+            or not isinstance(payload.name, str) or not 1 <= len(payload.name) <= 80
+            or not isinstance(payload.epoch, int) or isinstance(payload.epoch, bool) or payload.epoch < 1
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid group metadata payload")
+        return payload
+
+
+@dataclass
+class GroupRekeyPayload:
+    group_id: str
+    epoch: int
+    owner_id: str
+    recipient_id: str
+    encrypted_key: bytes
+    signature: bytes
+
+    def signed_bytes(self) -> bytes:
+        return _group_canonical({
+            "group_id": self.group_id, "epoch": self.epoch,
+            "owner_id": self.owner_id, "recipient_id": self.recipient_id,
+            "encrypted_key": self.encrypted_key.hex(),
+        })
+
+    def encode(self) -> bytes:
+        value = json.loads(self.signed_bytes())
+        value["signature"] = self.signature.hex()
+        return _group_canonical(value)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "GroupRekeyPayload":
+        value = json.loads(data)
+        payload = cls(value["group_id"], value["epoch"], value["owner_id"], value["recipient_id"], bytes.fromhex(value["encrypted_key"]), bytes.fromhex(value["signature"]))
+        if (
+            not _valid_group_id(payload.group_id) or not _valid_peer_id(payload.owner_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or not isinstance(payload.epoch, int) or isinstance(payload.epoch, bool) or payload.epoch < 1
+            or len(payload.encrypted_key) < 32 + 12 + 16 or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid group rekey payload")
         return payload

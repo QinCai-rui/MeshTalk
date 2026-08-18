@@ -1,5 +1,5 @@
 import { createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, type MouseEvent as TuiMouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
-import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions, type SelectProps } from "@opentui/react"
+import { createRoot, useBlur, useFocus, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions, type SelectProps } from "@opentui/react"
 import { useEffect, useRef, useState } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 
@@ -9,7 +9,8 @@ const MIN_COMPOSER_HEIGHT = 3
 const MAX_COMPOSER_HEIGHT = 5
 const MAX_MESSAGE_BYTES = 30 * 1024
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
-const DEFAULT_STATUS = "Ctrl+P: commands  Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+C: quit"
+const DEFAULT_STATUS = "Ctrl+P: commands  Ctrl+Up/Down: select  Ctrl+C: copy selection  Ctrl+Q: quit"
+const ALERT_HEIGHT = 4
 
 function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
@@ -62,6 +63,20 @@ type BlockedPeer = {
 type RoomStatus = {
   room_id: string
   members: number
+  name?: string
+  owner_id?: string
+  epoch?: number
+  unread_count?: number
+  is_owner?: boolean
+}
+type GroupStatus = {
+  group_id: string
+  name: string
+  owner_id: string
+  epoch: number
+  members: number
+  unread_count: number
+  is_owner?: boolean
 }
 type ControlStatus = {
   url?: string
@@ -76,6 +91,7 @@ type DebugInfo = {
   stun_server: string
   local_tcp_port: number
   rooms: RoomStatus[]
+  groups?: GroupStatus[]
   peers: Peer[]
 }
 type Dialog =
@@ -84,6 +100,8 @@ type Dialog =
   | { kind: "control-custom"; firstRun?: boolean }
   | { kind: "control-status"; control: ControlStatus }
   | { kind: "rooms"; rooms: RoomStatus[] }
+  | { kind: "group-create" }
+  | { kind: "groups"; groups: GroupStatus[] }
   | { kind: "room-join" }
   | { kind: "room-created"; roomId: string; invite: string; copied: boolean; created?: boolean }
   | { kind: "room-detail"; room: RoomStatus }
@@ -100,6 +118,7 @@ type Dialog =
   | { kind: "block-peer"; peerId: string; displayName: string }
   | { kind: "cancel-friend-confirm"; requestId: string; displayName: string }
   | { kind: "debug" }
+  | { kind: "storage"; bytes: number }
   | { kind: "debug-endpoints" }
   | { kind: "debug-peer"; peerId: string; displayName: string }
 
@@ -193,6 +212,8 @@ function ChatApp() {
   const [peers, setPeers] = useState<Peer[]>([])
   const [identity, setIdentity] = useState<{ peer_id: string; display_name: string }>()
   const [selectedPeerId, setSelectedPeerId] = useState<string>()
+  const [selectedGroupId, setSelectedGroupId] = useState<string>()
+  const [groups, setGroups] = useState<GroupStatus[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [draftLength, setDraftLength] = useState(0)
@@ -201,11 +222,13 @@ function ChatApp() {
   const [nameDraft, setNameDraft] = useState("")
   const [editingName, setEditingName] = useState(false)
   const [scrollFocused, setScrollFocused] = useState(false)
+  const [terminalFocused, setTerminalFocused] = useState(true)
   const [deliveredMessageIds, setDeliveredMessageIds] = useState<Set<string>>(() => new Set())
   const [blockedMessageIds, setBlockedMessageIds] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState("Connecting to backend...")
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
+  const [mutedGroups, setMutedGroups] = useState<Record<string, number>>({})
   const [versionMismatches, setVersionMismatches] = useState<Record<string, { remote_version: number; remote_min: number; local_version: number; local_min: number }>>({})
   const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number }>({ connected: false, reconnect_attempts: 0 })
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
@@ -218,9 +241,14 @@ function ChatApp() {
   const backendDisconnected = useRef(false)
   const statusReset = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const copyToastReset = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const selectionText = useRef("")
+  const shuttingDown = useRef(false)
   const clipboard = useRef<ReturnType<typeof createClipboard> | null>(null)
   const dialogAction = useRef(0)
   const dialogBusyRef = useRef(false)
+
+  useFocus(() => setTerminalFocused(true))
+  useBlur(() => setTerminalFocused(false))
 
   function showStatus(message: string) {
     if (statusReset.current) clearTimeout(statusReset.current)
@@ -244,6 +272,14 @@ function ChatApp() {
     setSelectedPeerId((current) => current && next.some((peer) => peer.peer_id === current) ? current : next[0]?.peer_id)
   }
 
+  async function refreshGroups() {
+    const response = await ipc.send("groups")
+    if (response.error) throw new Error(response.error)
+    const next = (response.groups as GroupStatus[]).sort((a, b) => a.name.localeCompare(b.name))
+    setGroups(next)
+    setSelectedGroupId((current) => current && next.some((group) => group.group_id === current) ? current : undefined)
+  }
+
   useEffect(() => {
     ipc.connect().then(async () => {
       const response = await ipc.send("identity")
@@ -254,8 +290,13 @@ function ChatApp() {
       const presence = await ipc.send("tui_presence", { client_id: tuiClientId, active: true })
       if (presence.error) throw new Error(presence.error)
       await refreshPeers()
+      await refreshGroups()
       const mutedResp = await ipc.send("muted_peers")
       if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
+      const mutedGroupsResp = await ipc.send("group_muted")
+      if (!mutedGroupsResp.error) setMutedGroups(mutedGroupsResp.muted_groups as Record<string, number>)
+      const storage = await ipc.send("storage_info")
+      if (!storage.error && storage.over_limit) setDialog({ kind: "storage", bytes: storage.bytes as number })
       const control = await ipc.send("control")
       if (control.error) throw new Error(control.error)
       setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number })
@@ -294,15 +335,7 @@ function ChatApp() {
   }, [renderer])
 
   useSelectionHandler((selection) => {
-    const text = selection.getSelectedText()
-    if (!text) return
-    void clipboard.current?.writeText(text, {
-      destination: "all-available",
-      allowRemoteHost: true,
-    }).then(() => {
-      renderer.clearSelection()
-      showCopyToast()
-    })
+    selectionText.current = selection.getSelectedText() || ""
   })
 
   useEffect(() => {
@@ -323,6 +356,7 @@ function ChatApp() {
       void refreshPeers().catch((error) => {
         if (!backendDisconnected.current) setStatus(`Peer refresh error: ${String(error)}`)
       })
+      void refreshGroups().catch(() => {})
       void ipc.send("control").then((control) => {
         if (!control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number })
       }).catch(() => {})
@@ -400,13 +434,36 @@ function ChatApp() {
     }
     if (event.event !== "message") {
       if (event.event === "peer_update") void refreshPeers()
+      if (event.event === "group_update") void refreshGroups()
+      return
+    }
+    if (event.conversation === "group") {
+      const groupId = event.group_id as string
+      const group = groups.find((item) => item.group_id === groupId)
+      const mutedUntil = mutedGroups[groupId]
+      const isMuted = mutedUntil !== undefined && (mutedUntil <= 0 || Date.now() / 1000 < mutedUntil)
+      if (renderer.capabilities?.notifications && !isMuted && Boolean(event.mention)) {
+        renderer.triggerNotification(`Mention in ${group?.name ?? "group"}`, "MeshTalk")
+        if (typeof process !== "undefined" && process.stdout?.write) process.stdout.write("\x07")
+      }
+      if (groupId !== selectedGroupId) {
+        setGroups((current) => current.map((item) => item.group_id === groupId ? { ...item, unread_count: item.unread_count + 1 } : item))
+        return
+      }
+      setMessages((current) => [...current, {
+        message_id: event.message_id as string,
+        sender_id: event.sender_id as string,
+        recipient_id: "",
+        content: event.content as string,
+        created_at: event.created_at as number,
+      }])
       return
     }
     const senderId = event.sender_id as string
     const sender = peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "a peer"
     const mutedUntil = mutedPeers[senderId]
     const isMuted = mutedUntil === undefined ? false : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil
-    if (renderer.capabilities?.notifications && !isMuted) {
+    if (renderer.capabilities?.notifications && !isMuted && !terminalFocused) {
       renderer.triggerNotification(`New message from ${sender}`, "MeshTalk")
     }
     if (senderId !== selectedPeerId) {
@@ -425,9 +482,23 @@ function ChatApp() {
     void ipc.send("messages", { peer_id: senderId }).then((response) => {
       if (!response.error) setMessages(response.messages as Message[])
     })
-  }), [ipc, mutedPeers, peers, renderer, selectedPeerId, dialog])
+  }), [ipc, mutedPeers, mutedGroups, peers, groups, renderer, selectedPeerId, selectedGroupId, dialog, terminalFocused])
 
   useEffect(() => {
+    if (selectedGroupId) {
+      setMessages([])
+      setScrollFocused(false)
+      setDraftLength(new TextEncoder().encode(drafts[selectedGroupId] ?? "").length)
+      setComposerHeight(MIN_COMPOSER_HEIGHT)
+      setGroups((current) => current.map((group) => group.group_id === selectedGroupId ? { ...group, unread_count: 0 } : group))
+      ipc.send("group_messages", { group_id: selectedGroupId }).then((response) => {
+        if (response.error) throw new Error(response.error)
+        setMessages(response.messages as Message[])
+      }).catch((error) => {
+        if (!backendDisconnected.current) setStatus(`History error: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
     if (!selectedPeerId) {
       setMessages([])
       setDraftLength(0)
@@ -448,7 +519,7 @@ function ChatApp() {
         setStatus(`History error: ${error instanceof Error ? error.message : String(error)}`)
       }
     })
-  }, [selectedPeerId])
+  }, [selectedPeerId, selectedGroupId])
 
   useEffect(() => {
     const composer = composerRef.current
@@ -524,7 +595,7 @@ function ChatApp() {
       showDialog({ kind: "control", firstRun: dialog.firstRun })
     } else if (dialog.kind === "control-status") {
       showDialog({ kind: "control" })
-    } else if (["room-join", "room-created", "room-detail"].includes(dialog.kind)) {
+    } else if (["group-create", "room-join", "room-created", "room-detail"].includes(dialog.kind)) {
       showDialog({ kind: "rooms", rooms: [] })
       void loadRooms()
     } else if (dialog.kind === "mute-timeout") {
@@ -583,7 +654,9 @@ function ChatApp() {
       const response = await ipc.send("rooms")
       if (response.error) throw new Error(response.error)
       if (dialogAction.current !== action) return
-      setDialog({ kind: "rooms", rooms: response.rooms as RoomStatus[] })
+      const rooms = response.rooms as RoomStatus[]
+      setDialog({ kind: "rooms", rooms })
+      setGroups(rooms.map((room) => ({ group_id: room.room_id, name: room.name ?? "Untitled group", owner_id: room.owner_id ?? "", epoch: room.epoch ?? 1, members: room.members, unread_count: room.unread_count ?? 0, is_owner: room.is_owner })))
     } catch (error) {
       failDialogAction(action, error)
       return
@@ -621,11 +694,11 @@ function ChatApp() {
     }
   }
 
-  async function createRoom() {
+  async function createRoom(name = "Untitled group") {
     const action = beginDialogAction()
     if (action === null) return
     try {
-      const response = await ipc.send("room_create")
+      const response = await ipc.send("group_create", { name })
       if (response.error) throw new Error(response.error)
       const invite = response.invite as string
       let copied = false
@@ -637,7 +710,8 @@ function ChatApp() {
       } catch {}
       if (dialogAction.current !== action) return
       setDialog({ kind: "room-created", roomId: response.room_id as string, invite, copied, created: true })
-      showStatus("Private room created.")
+      await refreshGroups()
+      showStatus("Group created.")
     } catch (error) {
       failDialogAction(action, error)
       return
@@ -655,7 +729,8 @@ function ChatApp() {
       const rooms = await ipc.send("rooms")
       if (rooms.error) throw new Error(rooms.error)
       if (dialogAction.current !== action) return
-      showStatus(`Joined room ${(response.room_id as string).slice(0, 12)}.`)
+      await refreshGroups()
+      showStatus(`Joined group ${(response.room_id as string).slice(0, 12)}.`)
       setDialog({ kind: "rooms", rooms: rooms.rooms as RoomStatus[] })
     } catch (error) {
       failDialogAction(action, error)
@@ -674,7 +749,7 @@ function ChatApp() {
       const rooms = await ipc.send("rooms")
       if (rooms.error) throw new Error(rooms.error)
       if (dialogAction.current !== action) return
-      showStatus(`Left room ${roomId.slice(0, 12)}.`)
+      showStatus(`Left group ${roomId.slice(0, 12)}.`)
       setDialog({ kind: "rooms", rooms: rooms.rooms as RoomStatus[] })
     } catch (error) {
       failDialogAction(action, error)
@@ -993,6 +1068,27 @@ function ChatApp() {
   }
 
   useKeyboard((key) => {
+    if (key.ctrl && key.name === "c") {
+      const text = selectionText.current
+      if (!text) {
+        showStatus("Select text first, then press Ctrl+C to copy.")
+        return
+      }
+      void clipboard.current?.writeText(text, { destination: "all-available", allowRemoteHost: true }).then(() => {
+        renderer.clearSelection()
+        selectionText.current = ""
+        showCopyToast()
+      })
+      return
+    }
+    if (key.ctrl && key.name === "q") {
+      if (shuttingDown.current) return
+      shuttingDown.current = true
+      void ipc.send("shutdown").finally(() => {
+        setTimeout(() => renderer.destroy(), 500)
+      })
+      return
+    }
     if (dialog && dialogBusyRef.current) return
     if (key.ctrl && key.name === "p") {
       if (dialog?.kind === "commands") closeDialog()
@@ -1044,12 +1140,13 @@ function ChatApp() {
   async function send() {
     const composer = composerRef.current
     const recipientId = selectedPeerId
+    const groupId = selectedGroupId
     const content = composer?.plainText.trim() ?? ""
     if (!content) {
       showStatus("Message is empty.")
       return
     }
-    if (!recipientId || !identity || !selected?.is_online) {
+    if (!identity || (!groupId && (!recipientId || !selected?.is_online))) {
       showStatus("Select an active or away peer before sending.")
       return
     }
@@ -1059,12 +1156,14 @@ function ChatApp() {
     }
     setIsSending(true)
     try {
-      const response = await ipc.send("send", { recipient_id: recipientId, content })
+      const response = groupId
+        ? await ipc.send("group_send", { group_id: groupId, content })
+        : await ipc.send("send", { recipient_id: recipientId, content })
       if (response.error) throw new Error(response.error)
       setMessages((current) => [...current, {
         message_id: response.message_id as string,
         sender_id: identity.peer_id,
-        recipient_id: recipientId,
+        recipient_id: recipientId ?? "",
         content,
         created_at: Date.now() / 1000,
         delivered: 0,
@@ -1073,7 +1172,7 @@ function ChatApp() {
         composer.selectAll()
         composer.deleteSelection()
       }
-      setDrafts((current) => ({ ...current, [recipientId]: "" }))
+      setDrafts((current) => ({ ...current, [groupId ?? recipientId ?? ""]: "" }))
       setDraftLength(0)
       setComposerHeight(MIN_COMPOSER_HEIGHT)
       showStatus("Message sent. Waiting for delivery confirmation.")
@@ -1084,6 +1183,24 @@ function ChatApp() {
     } finally {
       setIsSending(false)
     }
+  }
+
+  async function deleteCurrentHistory(lastThirtyDays = false) {
+    const conversation = selectedGroupId ? "group" : "dm"
+    const conversationId = selectedGroupId ?? selectedPeerId
+    if (!conversationId) return
+    const response = await ipc.send("history_delete", {
+      conversation,
+      conversation_id: conversationId,
+      before: lastThirtyDays ? Date.now() / 1000 - 30 * 86400 : undefined,
+    })
+    if (response.error) {
+      showStatus(`History cleanup error: ${response.error}`)
+      return
+    }
+    showStatus(`Deleted ${response.deleted ?? 0} history entries.`)
+    setDialog(null)
+    setMessages([])
   }
 
   async function saveDisplayName(value = nameDraft) {
@@ -1124,6 +1241,7 @@ function ChatApp() {
   }
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId)
+  const selectedGroup = groups.find((group) => group.group_id === selectedGroupId)
   const activeCount = peers.filter((peer) => peerPresence(peer) === "active").length
   const sidebarWidth = width < 72 ? 22 : 32
   const compact = width < 72
@@ -1184,21 +1302,28 @@ function ChatApp() {
             })}
           </scrollbox>
         </box>
+        <box title={`Groups: ${groups.length}`} style={{ border: true, flexShrink: 0, height: Math.min(9, Math.max(4, groups.length + 3)), flexDirection: "column", padding: 1 }}>
+          {!groups.length ? <text fg="#888888">No groups yet (Ctrl+P).</text> : groups.map((group) => (
+            <box key={group.group_id} onMouseDown={() => { setSelectedGroupId(group.group_id); setSelectedPeerId(undefined); setScrollFocused(false) }} style={{ backgroundColor: group.group_id === selectedGroupId ? "#25354d" : undefined }}>
+              <text truncate>{group.group_id === selectedGroupId ? "> " : "  "}{group.name}{group.unread_count ? ` (${group.unread_count} new)` : ""}{group.group_id in mutedGroups ? " M" : ""}</text>
+            </box>
+          ))}
+        </box>
       </box>
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
         <box
-          title={selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
+          title={selectedGroup ? `Group: ${selectedGroup.name} (epoch ${selectedGroup.epoch}, ${selectedGroup.members} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
-          {(
-            (selected && !selected.is_online) ||
-            (selected && selected.is_online && !selected.is_friend) ||
-            (selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected) ||
-            (selected && versionMismatches[selected.peer_id])
-          ) ? (
-            <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
+          <box style={{ height: ALERT_HEIGHT, flexShrink: 0, flexDirection: "column", paddingLeft: 1, paddingRight: 1, backgroundColor: "#111923", overflow: "hidden" }}>
+            {(
+              (!selectedGroup && selected && !selected.is_online) ||
+              (!selectedGroup && selected && selected.is_online && !selected.is_friend) ||
+              (!selectedGroup && selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected) ||
+              (!selectedGroup && selected && versionMismatches[selected.peer_id])
+            ) ? <>
               {selected && !selected.is_online ? (
                 <text wrapMode="word" fg="#e0a34a">This peer is offline. Messages cannot be sent until it reconnects.</text>
               ) : null}
@@ -1214,13 +1339,13 @@ function ChatApp() {
                 const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
                 return <text wrapMode="word" fg="#e0a34a">Version mismatch: this peer supports v{remoteMin}-v{remoteMax}, local is v{m.local_min}-v{m.local_version}. Features may not work correctly.</text>
               })() : null}
-            </box>
-          ) : null}
+            </> : <text> </text>}
+          </box>
           <scrollbox
             ref={scrollboxRef}
             focused={scrollFocused && !dialog}
             onMouseDown={() => setScrollFocused(true)}
-            style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, padding: 1 }}
+            style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, padding: 1, backgroundColor: "#0b1017" }}
             contentOptions={{ flexDirection: "column" }}
             stickyScroll
             stickyStart="bottom"
@@ -1232,6 +1357,7 @@ function ChatApp() {
             }}
           >
             {!selected ? <text fg="#888888">Waiting for a connected peer.</text> : null}
+            {selectedGroup && !messages.length ? <text fg="#888888">No messages yet. Say hello.</text> : null}
             {selected && !messages.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
             {messages.map((message) => {
               const isLocal = message.sender_id === identity?.peer_id
@@ -1241,7 +1367,7 @@ function ChatApp() {
                 <box key={message.message_id} style={{ flexDirection: "column", marginBottom: 1 }}>
                   <text>
                     <span fg="#888888">{formatTime(message.created_at)} </span>
-                    <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selected?.display_name}</span>
+                    <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selectedGroup ? (message.sender_id === selectedGroup.owner_id ? "Owner" : message.sender_id.slice(0, 8)) : selected?.display_name}</span>
                     {isLocal && <span fg={blocked ? "#ff7777" : "#888888"}> {blocked ? "blocked" : delivered ? "delivered" : "sent"}</span>}
                   </text>
                   <text wrapMode="word">{message.content}</text>
@@ -1252,24 +1378,24 @@ function ChatApp() {
         </box>
 
         <box
-          title={selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: peer offline"}
+          title={selectedGroup || selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: peer offline"}
           bottomTitle={isSending ? "Sending..." : `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`}
           titleColor={limitColor ?? "#888888"}
           style={{ border: true, borderColor: limitColor ?? (!scrollFocused && !editingName && selected?.is_online ? "#6ea8fe" : undefined), flexShrink: 0, overflow: "hidden", padding: 1 }}
         >
           <textarea
-            key={selectedPeerId ?? "no-peer"}
+            key={selectedGroupId ?? selectedPeerId ?? "no-peer"}
             ref={composerRef}
-            initialValue={selectedPeerId ? drafts[selectedPeerId] ?? "" : ""}
-            placeholder={selected?.is_online ? "Write a message" : "Select an online peer"}
-            focused={Boolean(selected?.is_online) && !editingName && !scrollFocused && !isSending && !dialog}
+            initialValue={(selectedGroupId ?? selectedPeerId) ? drafts[selectedGroupId ?? selectedPeerId ?? ""] ?? "" : ""}
+            placeholder={selectedGroup || selected?.is_online ? "Write a message" : "Select an online peer or group"}
+            focused={Boolean(selectedGroup || selected?.is_online) && !editingName && !scrollFocused && !isSending && !dialog}
             onMouseDown={() => setScrollFocused(false)}
             onContentChange={() => {
               const composer = composerRef.current
               const content = composer?.plainText ?? ""
               setDraftLength(new TextEncoder().encode(content).length)
               setComposerHeight(getComposerHeight(composer))
-              if (selectedPeerId) setDrafts((current) => ({ ...current, [selectedPeerId]: content }))
+              if (selectedGroupId ?? selectedPeerId) setDrafts((current) => ({ ...current, [(selectedGroupId ?? selectedPeerId) as string]: content }))
             }}
             onSubmit={() => void send()}
             keyBindings={[
@@ -1311,9 +1437,11 @@ function ChatApp() {
               : dialog.kind === "block-peer" ? "Block friend requests"
               : dialog.kind === "cancel-friend-confirm" ? "Cancel friend request"
               : dialog.kind === "debug-peer" ? "Peer details"
+              : dialog.kind === "storage" ? "History storage"
               : dialog.kind === "debug-endpoints" ? "Endpoints"
               : dialog.kind === "debug" ? "Debug"
-              : "Private rooms"}
+              : dialog.kind === "group-create" ? "Create group"
+              : "Groups"}
             bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
             style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
           >
@@ -1323,7 +1451,7 @@ function ChatApp() {
                 height={Math.max(5, dialogHeight - 3)}
                 options={[
                   { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
-                  { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
+                  { name: "Groups", description: "Create, join, view, or leave named groups", value: "rooms" },
                   { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
                   { name: "Mute peer", description: "Mute desktop notifications from an online peer", value: "mute" },
                   { name: "Unmute peer", description: "Resume desktop notifications for a muted peer", value: "unmute" },
@@ -1395,16 +1523,16 @@ function ChatApp() {
                   focused
 height={Math.max(5, dialogHeight - 3)}
                 options={[
-                  { name: "Create a private room", description: "Generate a secret invite and copy it", value: "create" },
+                  { name: "Create a group", description: "Generate a signed invite and copy it", value: "create" },
                   { name: "Join with an invite", description: "Paste a meshtalk: invite", value: "join" },
                     ...dialog.rooms.map((room) => ({
-                      name: `Room ${room.room_id.slice(0, 12)}`,
-                      description: `${room.members} control connection${room.members === 1 ? "" : "s"} - view or leave`,
+                      name: room.name ?? `Group ${room.room_id.slice(0, 12)}`,
+                      description: `${room.members} member${room.members === 1 ? "" : "s"} - view or leave`,
                       value: room.room_id,
                     })),
                   ]}
                   onSelect={(_, option) => {
-                    if (option?.value === "create") void createRoom()
+                    if (option?.value === "create") { setDialogDraft(""); showDialog({ kind: "group-create" }) }
                     else if (option?.value === "join") showDialog({ kind: "room-join" })
                     else {
                       const room = dialog.rooms.find((item) => item.room_id === option?.value)
@@ -1414,12 +1542,12 @@ height={Math.max(5, dialogHeight - 3)}
                   wrapSelection
                   showDescription
                 />
-                {!dialog.rooms.length && <text fg="#888888">No joined rooms yet.</text>}
+                {!dialog.rooms.length && <text fg="#888888">No joined groups yet.</text>}
               </>
             )}
             {dialog.kind === "room-join" && (
               <>
-                <text>Paste the secret invite you received from another room member.</text>
+                <text>Paste the signed group invite you received from another member.</text>
                 <input
                   focused
                   value={dialogDraft}
@@ -1428,12 +1556,26 @@ height={Math.max(5, dialogHeight - 3)}
                   onSubmit={(value) => void joinRoom(typeof value === "string" ? value : dialogDraft)}
                   maxLength={4096}
                 />
-                <text fg="#888888">Enter joins the room. Invites are secrets.</text>
+                <text fg="#888888">Enter joins the group. The name is verified before joining.</text>
+              </>
+            )}
+            {dialog.kind === "group-create" && (
+              <>
+                <text>Choose a name for this group.</text>
+                <input
+                  focused
+                  value={dialogDraft}
+                  placeholder="Group name"
+                  onInput={setDialogDraft}
+                  onSubmit={(value) => void createRoom(typeof value === "string" ? value : dialogDraft)}
+                  maxLength={80}
+                />
+                <text fg="#888888">The signed invite includes this name.</text>
               </>
             )}
             {dialog.kind === "room-created" && (
               <>
-                <text fg="#66dd88">{dialog.created ? "Room created" : "Room invite"}</text>
+                <text fg="#66dd88">{dialog.created ? "Group created" : "Group invite"}</text>
                 <text><span fg="#888888">ID: </span>{dialog.roomId}</text>
                 <text wrapMode="word"><span fg="#888888">Invite: </span>{dialog.invite}</text>
                 <text fg={dialog.copied ? "#66dd88" : "#e0a34a"}>{dialog.copied ? "Copy requested. Paste once to confirm your terminal accepted it." : "Copy the invite before sharing it."}</text>
@@ -1442,7 +1584,7 @@ height={Math.max(5, dialogHeight - 3)}
                   height={5}
                   options={[
                     { name: "Copy invite", description: "Copy the secret invite to the clipboard", value: "copy" },
-                    { name: "Back to rooms", description: "Manage your private rooms", value: "back" },
+                    { name: "Back to groups", description: "Manage your named groups", value: "back" },
                   ]}
                   onSelect={(_, option) => option?.value === "copy" ? void copyInvite(dialog.invite) : void loadRooms()}
                 />
@@ -1450,9 +1592,10 @@ height={Math.max(5, dialogHeight - 3)}
             )}
             {dialog.kind === "room-detail" && (
               <>
-                <text><span fg="#888888">Room ID: </span>{dialog.room.room_id}</text>
-                <text><span fg="#888888">Control connections: </span>{dialog.room.members}</text>
-                <text fg="#e0a34a">Leaving removes this room and its secret from this device.</text>
+                <text><span fg="#888888">Group: </span>{dialog.room.name ?? "Untitled group"}</text>
+                <text><span fg="#888888">Group ID: </span>{dialog.room.room_id}</text>
+                <text><span fg="#888888">Members: </span>{dialog.room.members} <span fg="#888888">Epoch: </span>{dialog.room.epoch ?? 1}</text>
+                <text fg="#e0a34a">Leaving removes this group and its secret from this device.</text>
                 <MouseSelect
                   focused
                   height={6}
@@ -1465,6 +1608,25 @@ height={Math.max(5, dialogHeight - 3)}
                     if (option?.value === "leave") void leaveRoom(dialog.room.room_id)
                     else if (option?.value === "copy") void loadRoomInvite(dialog.room.room_id)
                     else void loadRooms()
+                  }}
+                />
+              </>
+            )}
+            {dialog.kind === "storage" && (
+              <>
+                <text wrapMode="word">Local history is using {(dialog.bytes / 1_000_000_000).toFixed(2)} GB. Choose what to remove; new messages remain durable.</text>
+                <MouseSelect
+                  focused
+                  height={5}
+                  options={[
+                    { name: "Delete current conversation", description: "Remove all messages in the selected DM or group", value: "all" },
+                    { name: "Keep the last 30 days", description: "Remove older messages in the selected conversation", value: "30" },
+                    { name: "Dismiss", description: "Leave history unchanged for now", value: "dismiss" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "all") void deleteCurrentHistory(false)
+                    else if (option?.value === "30") void deleteCurrentHistory(true)
+                    else closeDialog()
                   }}
                 />
               </>
@@ -1872,5 +2034,5 @@ height={Math.max(5, dialogHeight - 3)}
   )
 }
 
-const renderer = await createCliRenderer({ exitOnCtrlC: true, useMouse: true })
+const renderer = await createCliRenderer({ exitOnCtrlC: false, useMouse: true })
 createRoot(renderer).render(<ChatApp />)

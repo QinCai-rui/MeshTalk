@@ -31,6 +31,7 @@ from .protocol import (
     PROTOCOL_VERSION,
     MIN_SUPPORTED_PROTOCOL_VERSION,
     DEFAULT_CAPABILITIES,
+    validate_capabilities,
     Packet,
     negotiate_protocol_version,
 )
@@ -60,7 +61,7 @@ MAX_ATTEMPTS = 128
 MAX_SESSIONS = 256
 
 Endpoint = tuple[str, int]
-ConnectedCallback = Callable[[str, str, int, str, bytes, bytes], Awaitable[None]]
+ConnectedCallback = Callable[[str, str, int, str, bytes, bytes, int, int, list[str]], Awaitable[None]]
 PacketCallback = Callable[[str, Packet], Awaitable[None]]
 DisconnectedCallback = Callable[[str], Awaitable[None]]
 
@@ -147,6 +148,9 @@ class Session:
     last_seen: float = field(default_factory=time.monotonic)
     reassemblies: dict[int, Reassembly] = field(default_factory=dict)
     seen: dict[int, float] = field(default_factory=dict)
+    protocol_version: int = PROTOCOL_VERSION
+    remote_protocol_version: int = PROTOCOL_VERSION
+    capabilities: list[str] = field(default_factory=lambda: list(DEFAULT_CAPABILITIES))
 
 
 class UdpTransport:
@@ -413,10 +417,14 @@ class UdpTransport:
         first_to_second = material[:32], material[32:64]
         second_to_first = material[64:96], material[96:128]
         transmit, receive = (first_to_second, second_to_first) if local_first else (second_to_first, first_to_second)
+        remote_capabilities = validate_capabilities(value.get("capabilities", list(DEFAULT_CAPABILITIES)))
         session = Session(
             peer_id, addr, session_id, transmit[0], receive[0], transmit[1], receive[1],
             Identity.normalize_display_name(value["display_name"]), encryption_key, signing_key,
             attempt.hello, nonce, session_key,
+            protocol_version=agreed_version,
+            remote_protocol_version=-1 if "version" not in value else remote_version,
+            capabilities=remote_capabilities,
         )
         self._sessions[peer_id] = session
         self._sessions_by_id[session_id] = session
@@ -509,6 +517,9 @@ class UdpTransport:
                     session.display_name,
                     session.encryption_public_key,
                     session.signing_public_key,
+                    session.protocol_version,
+                    session.remote_protocol_version,
+                    list(session.capabilities),
                 ))
             return
         if not session.confirmed:

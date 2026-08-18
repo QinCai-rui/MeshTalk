@@ -17,6 +17,7 @@ from .database import Database
 from .discovery import DiscoveryService
 from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
+from .groups import GroupManager
 from .message_router import MessageRouter
 from .ipc import IPCServer
 from .protocol import PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION
@@ -43,11 +44,18 @@ async def main(debug: bool = False) -> None:
     db = Database(DATA_DIR / "meshtalk.db", identity.storage_key())
     await db.connect()
     settings = Settings(DATA_DIR / "settings.json")
+    settings.migrate_legacy_groups(
+        identity.peer_id,
+        identity.signing_public_key_bytes(),
+        identity.signing_private_key,
+    )
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
     friend_manager = FriendManager(identity, peer_manager, db)
-    router = MessageRouter(identity, peer_manager, db, friend_manager=friend_manager)
+    group_manager = GroupManager(identity, settings, peer_manager, db)
+    router = MessageRouter(identity, peer_manager, db, friend_manager=friend_manager, group_manager=group_manager)
     tui_clients: set[str] = set()
+    shutdown_task: asyncio.Task | None = None
 
     peer_manager.on_packet = router.handle_packet
 
@@ -55,8 +63,9 @@ async def main(debug: bool = False) -> None:
         event = {"event": "peer_update", "peer_id": peer_id}
         peer = peer_manager.get_connected_peer(peer_id)
         if peer is not None:
-            event.update(peer.negotiated())
+            event.update(peer.negotiated(include_remote=True))
         await ipc.broadcast_event(event)
+        await group_manager.flush_pending_rekeys(peer_id)
 
     peer_manager.on_peer_changed = handle_peer_changed
 
@@ -191,6 +200,7 @@ async def main(debug: bool = False) -> None:
         return {"blocked": await db.get_blocked_peers()}
 
     async def update_tui_presence(client_id: str, active: bool) -> None:
+        nonlocal shutdown_task
         was_active = bool(tui_clients)
         if active:
             tui_clients.add(client_id)
@@ -198,6 +208,17 @@ async def main(debug: bool = False) -> None:
             tui_clients.discard(client_id)
         if was_active != bool(tui_clients):
             await peer_manager.set_tui_active(bool(tui_clients))
+        if not tui_clients and was_active:
+            async def delayed_shutdown() -> None:
+                await asyncio.sleep(3)
+                if not tui_clients:
+                    stop_event.set()
+            if shutdown_task and not shutdown_task.done():
+                shutdown_task.cancel()
+            shutdown_task = asyncio.create_task(delayed_shutdown())
+        elif tui_clients and shutdown_task and not shutdown_task.done():
+            shutdown_task.cancel()
+            shutdown_task = None
 
     async def handle_tui_presence(req: dict) -> dict:
         client_id = req.get("client_id")
@@ -243,6 +264,7 @@ async def main(debug: bool = False) -> None:
                 if rendezvous.public_endpoint else None
             ),
             "rooms": rendezvous.room_status(),
+            "groups": await group_manager.list_groups(),
         }
 
     async def handle_messages(req: dict) -> dict:
@@ -281,23 +303,23 @@ async def main(debug: bool = False) -> None:
         }
 
     async def handle_room_create(req: dict) -> dict:
-        room = settings.create_room()
+        room = await group_manager.create_group(req.get("name", "Untitled group"))
         rendezvous.configuration_changed()
-        return {"room_id": room.id, "invite": room.invite}
+        return {"room_id": room.id, "group_id": room.id, "name": room.name, "invite": room.invite}
 
     async def handle_room_join(req: dict) -> dict:
         invite = req.get("invite")
         if not isinstance(invite, str):
             return {"error": "invite required"}
-        room = settings.join_room(invite)
+        room = await group_manager.join_group(invite)
         rendezvous.configuration_changed()
-        return {"room_id": room.id}
+        return {"room_id": room.id, "group_id": room.id, "name": room.name, "owner_id": room.owner_id, "epoch": room.epoch}
 
     async def handle_room_leave(req: dict) -> dict:
         room_id = req.get("room_id")
         if not isinstance(room_id, str):
             return {"error": "room_id required"}
-        settings.leave_room(room_id)
+        await group_manager.leave_group(room_id)
         rendezvous.configuration_changed()
         return {"room_id": room_id}
 
@@ -309,7 +331,98 @@ async def main(debug: bool = False) -> None:
         return {"room_id": room.id, "invite": room.invite}
 
     async def handle_rooms(req: dict) -> dict:
-        return {"rooms": rendezvous.room_status()}
+        return {"rooms": await group_manager.list_groups()}
+
+    async def handle_groups(req: dict) -> dict:
+        return {"groups": await group_manager.list_groups()}
+
+    async def handle_group_create(req: dict) -> dict:
+        name = req.get("name", "Untitled group")
+        if not isinstance(name, str):
+            return {"error": "name must be a string"}
+        room = await group_manager.create_group(name)
+        rendezvous.configuration_changed()
+        return {"group_id": room.id, "name": room.name, "owner_id": room.owner_id, "epoch": room.epoch, "invite": room.invite}
+
+    async def handle_group_join(req: dict) -> dict:
+        invite = req.get("invite")
+        if not isinstance(invite, str):
+            return {"error": "invite required"}
+        room = await group_manager.join_group(invite)
+        rendezvous.configuration_changed()
+        return {"group_id": room.id, "name": room.name, "owner_id": room.owner_id, "epoch": room.epoch}
+
+    async def handle_group_messages(req: dict) -> dict:
+        group_id = req.get("group_id")
+        if not isinstance(group_id, str):
+            return {"error": "group_id required"}
+        messages = await db.get_group_messages(group_id)
+        await db.mark_group_read(group_id)
+        return {"messages": messages}
+
+    async def handle_group_send(req: dict) -> dict:
+        group_id, content = req.get("group_id"), req.get("content", "")
+        if not isinstance(group_id, str) or not isinstance(content, str):
+            return {"error": "group_id and content are required"}
+        return {"message_id": await group_manager.send_group(group_id, content)}
+
+    async def handle_group_members(req: dict) -> dict:
+        group_id = req.get("group_id")
+        if not isinstance(group_id, str):
+            return {"error": "group_id required"}
+        return {"members": await db.get_group_members(group_id)}
+
+    async def handle_group_invite(req: dict) -> dict:
+        group_id = req.get("group_id")
+        room = settings.groups.get(group_id) if isinstance(group_id, str) else None
+        if room is None:
+            return {"error": "Unknown group ID"}
+        return {"group_id": room.id, "name": room.name, "invite": room.invite}
+
+    async def handle_group_rename(req: dict) -> dict:
+        group_id, name = req.get("group_id"), req.get("name")
+        if not isinstance(group_id, str) or not isinstance(name, str):
+            return {"error": "group_id and name are required"}
+        room = await group_manager.rename_group(group_id, name)
+        rendezvous.configuration_changed()
+        return {"group_id": room.id, "name": room.name, "epoch": room.epoch}
+
+    async def handle_group_remove_member(req: dict) -> dict:
+        group_id, peer_id = req.get("group_id"), req.get("peer_id")
+        if not isinstance(group_id, str) or not isinstance(peer_id, str):
+            return {"error": "group_id and peer_id are required"}
+        room = await group_manager.remove_member(group_id, peer_id)
+        rendezvous.configuration_changed()
+        return {"group_id": room.id, "epoch": room.epoch}
+
+    async def handle_group_leave(req: dict) -> dict:
+        group_id = req.get("group_id")
+        if not isinstance(group_id, str):
+            return {"error": "group_id required"}
+        await group_manager.leave_group(group_id)
+        rendezvous.configuration_changed()
+        return {"group_id": group_id}
+
+    async def handle_group_mute(req: dict) -> dict:
+        group_id = req.get("group_id")
+        if not isinstance(group_id, str):
+            return {"error": "group_id required"}
+        timeout = req.get("timeout", 0)
+        if not isinstance(timeout, (int, float)):
+            return {"error": "timeout must be a number"}
+        until = time.time() + float(timeout) if float(timeout) > 0 else 0
+        settings.mute_group(group_id, until)
+        return {"group_id": group_id, "until": until}
+
+    async def handle_group_unmute(req: dict) -> dict:
+        group_id = req.get("group_id")
+        if not isinstance(group_id, str):
+            return {"error": "group_id required"}
+        settings.unmute_group(group_id)
+        return {"group_id": group_id}
+
+    async def handle_group_muted(req: dict) -> dict:
+        return {"muted_groups": {gid: until for gid, until in settings.muted_groups.items() if until <= 0 or time.time() < until}}
 
     async def handle_mute(req: dict) -> dict:
         peer_id = req.get("peer_id")
@@ -339,6 +452,24 @@ async def main(debug: bool = False) -> None:
                 muted[peer_id] = until
         return {"muted_peers": muted}
 
+    async def handle_storage_info(req: dict) -> dict:
+        size = await db.history_size_bytes()
+        return {"bytes": size, "limit_bytes": 1_000_000_000, "over_limit": size >= 1_000_000_000}
+
+    async def handle_history_delete(req: dict) -> dict:
+        kind = req.get("conversation", req.get("conversation_type", "group"))
+        conversation_id = req.get("conversation_id", req.get("group_id", req.get("peer_id")))
+        if kind not in ("group", "dm") or not isinstance(conversation_id, str):
+            return {"error": "conversation and conversation_id are required"}
+        before = req.get("before")
+        if before is not None and not isinstance(before, (int, float)):
+            return {"error": "before must be a timestamp"}
+        deleted = await db.delete_history(
+            kind, conversation_id, float(before) if before is not None else None,
+            identity.peer_id if kind == "dm" else None,
+        )
+        return {"deleted": deleted}
+
     async def handle_shutdown(req: dict) -> dict:
         stop_event.set()
         return {"stopping": True}
@@ -366,6 +497,7 @@ async def main(debug: bool = False) -> None:
             "stun_server": f"{stun_host}:{stun_port}",
             "local_tcp_port": peer_manager.tcp_port,
             "rooms": rendezvous.room_status(),
+            "groups": await group_manager.list_groups(),
             "peers": peers_info,
         }
 
@@ -393,9 +525,24 @@ async def main(debug: bool = False) -> None:
         "room_leave": handle_room_leave,
         "room_invite": handle_room_invite,
         "rooms": handle_rooms,
+        "groups": handle_groups,
+        "group_create": handle_group_create,
+        "group_join": handle_group_join,
+        "group_messages": handle_group_messages,
+        "group_send": handle_group_send,
+        "group_members": handle_group_members,
+        "group_invite": handle_group_invite,
+        "group_rename": handle_group_rename,
+        "group_remove_member": handle_group_remove_member,
+        "group_leave": handle_group_leave,
+        "group_mute": handle_group_mute,
+        "group_unmute": handle_group_unmute,
+        "group_muted": handle_group_muted,
         "mute": handle_mute,
         "unmute": handle_unmute,
         "muted_peers": handle_muted_peers,
+        "storage_info": handle_storage_info,
+        "history_delete": handle_history_delete,
         "debug_re_stun": handle_debug_re_stun,
         "debug_info": handle_debug_info,
         "shutdown": handle_shutdown,
@@ -403,6 +550,8 @@ async def main(debug: bool = False) -> None:
     ipc = IPCServer(ipc_handlers, on_tui_disconnect=handle_tui_disconnect)
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
+    group_manager.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
+    group_manager.on_changed = lambda group_id: ipc.broadcast_event({"event": "group_update", "group_id": group_id})
     friend_manager.on_friend_request = lambda event: ipc.broadcast_event({"event": "friend_request", **event})
     friend_manager.on_friend_response = lambda event: ipc.broadcast_event({"event": "friend_response", **event})
     friend_manager.on_friend_cancelled = lambda event: ipc.broadcast_event({"event": "friend_cancelled", **event})
@@ -410,6 +559,7 @@ async def main(debug: bool = False) -> None:
 
     await peer_manager.start()
     await peer_manager.load_endpoints()
+    await group_manager.start()
     await discovery.start()
     await rendezvous.start()
     await ipc.start()
