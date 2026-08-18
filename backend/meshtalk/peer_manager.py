@@ -74,6 +74,7 @@ class PeerConnection:
         self.signing_public_key: bytes | None = None
         self.encryption_public_key: bytes | None = None
         self.protocol_version: int = PROTOCOL_VERSION
+        self.remote_protocol_version: int = PROTOCOL_VERSION
         self.capabilities: list[str] = list(DEFAULT_CAPABILITIES)
         self.last_seen = time.time()
 
@@ -89,6 +90,7 @@ class PeerConnection:
         """Snapshot of the negotiated protocol state for IPC/debug consumers."""
         return {
             "protocol_version": self.protocol_version,
+            "remote_protocol_version": self.remote_protocol_version,
             "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
             "capabilities": list(self.capabilities),
         }
@@ -434,6 +436,7 @@ class PeerManager:
         peer.signing_public_key = payload.signing_public_key
         peer.encryption_public_key = payload.encryption_public_key
         peer.protocol_version = agreed_version
+        peer.remote_protocol_version = payload.protocol_version
         # The connection only enables capabilities advertised by *both* peers.
         peer.capabilities = intersect_capabilities(DEFAULT_CAPABILITIES, payload.capabilities)
         logger.debug(

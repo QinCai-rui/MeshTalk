@@ -27,6 +27,9 @@ type Peer = {
   active_transport?: "lan_tcp" | "remote_udp"
   active_endpoint?: string
   endpoints: { transport: "lan_tcp" | "remote_udp"; endpoint: string; active: boolean }[]
+  protocol_version?: number
+  remote_protocol_version?: number
+  capabilities?: string[]
 }
 type Message = {
   message_id: string
@@ -1113,7 +1116,7 @@ function ChatApp() {
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
         <box
-          title={selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})` : "Chat"}
+          title={selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
@@ -1756,6 +1759,8 @@ height={Math.max(5, dialogHeight - 3)}
                   <text><span fg="#888888">Online: </span>{peer.is_online ? "Yes" : "No"}</text>
                   <text><span fg="#888888">Active transport: </span>{peer.active_transport ?? "None"}</text>
                   <text><span fg="#888888">Active endpoint: </span>{peer.active_endpoint ?? "None"}</text>
+                  {peer.protocol_version != null && <text><span fg="#888888">Protocol version: </span>v{peer.protocol_version}{peer.remote_protocol_version != null ? ` (max: v${peer.remote_protocol_version})` : ""}</text>}
+                  {peer.capabilities?.length ? <text><span fg="#888888">Capabilities: </span>{peer.capabilities.join(", ")}</text> : null}
                   <text><span fg="#888888">Endpoints:</span></text>
                   {peer.endpoints.map((e) => (
                     <text key={`${e.transport}-${e.endpoint}`}>  {e.transport} {e.endpoint}{e.active ? " *" : ""}</text>
