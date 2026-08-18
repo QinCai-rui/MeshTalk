@@ -218,6 +218,7 @@ class HandshakePayload:
     protocol_version: int = PROTOCOL_VERSION
     min_protocol_version: int = MIN_SUPPORTED_PROTOCOL_VERSION
     capabilities: list[str] = field(default_factory=lambda: list(DEFAULT_CAPABILITIES))
+    legacy: bool = False
 
     def signed_bytes(self, legacy: bool = False) -> bytes:
         data = {
@@ -256,6 +257,7 @@ class HandshakePayload:
     @classmethod
     def decode(cls, data: bytes) -> HandshakePayload:
         obj = json.loads(data)
+        has_version = "protocol_version" in obj
         protocol_version = obj.get("protocol_version", 1)
         min_protocol_version = obj.get("min_protocol_version", 1)
         capabilities = validate_capabilities(obj.get("capabilities", list(DEFAULT_CAPABILITIES)))
@@ -271,6 +273,7 @@ class HandshakePayload:
             min_protocol_version=min_protocol_version,
             capabilities=capabilities,
         )
+        payload.legacy = not has_version
         if len(payload.signing_public_key) != 32 or len(payload.encryption_public_key) != 32:
             raise ValueError("Invalid handshake public key length")
         if len(payload.nonce) != 32 or len(payload.challenge) not in (0, 32) or len(payload.signature) != 64:

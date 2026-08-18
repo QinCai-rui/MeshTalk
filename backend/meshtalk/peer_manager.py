@@ -436,7 +436,9 @@ class PeerManager:
         peer.signing_public_key = payload.signing_public_key
         peer.encryption_public_key = payload.encryption_public_key
         peer.protocol_version = agreed_version
-        peer.remote_protocol_version = payload.protocol_version
+        # Legacy peers (no version fields in handshake) are represented as -1
+        # internally but displayed as v0 in the TUI.
+        peer.remote_protocol_version = -1 if payload.legacy else payload.protocol_version
         # The connection only enables capabilities advertised by *both* peers.
         peer.capabilities = intersect_capabilities(DEFAULT_CAPABILITIES, payload.capabilities)
         logger.debug(
