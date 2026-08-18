@@ -28,7 +28,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MIN_SUPPORTED_PROTOCOL_VERSION = 1
 
 # Feature capability identifiers exchanged during the handshake. A connection
@@ -188,7 +188,7 @@ class DiscoveryPacket:
         if not isinstance(obj, dict):
             raise ValueError("Discovery packet must be an object")
         protocol = obj.get("protocol")
-        min_protocol = obj.get("min_protocol", protocol if isinstance(protocol, int) else MIN_SUPPORTED_PROTOCOL_VERSION)
+        min_protocol = obj.get("min_protocol", 0)
         discovery_id = obj.get("discovery_id")
         tcp_port = obj.get("tcp_port")
         if (
@@ -258,8 +258,8 @@ class HandshakePayload:
     def decode(cls, data: bytes) -> HandshakePayload:
         obj = json.loads(data)
         has_version = "protocol_version" in obj
-        protocol_version = obj.get("protocol_version", 1)
-        min_protocol_version = obj.get("min_protocol_version", 1)
+        protocol_version = obj.get("protocol_version", 0)
+        min_protocol_version = obj.get("min_protocol_version", 0)
         capabilities = validate_capabilities(obj.get("capabilities", list(DEFAULT_CAPABILITIES)))
         payload = cls(
             peer_id=obj["peer_id"],

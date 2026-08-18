@@ -67,73 +67,85 @@ class FriendManager:
         if await self.db.get_pending_request_with(peer_id, "outgoing"):
             raise ValueError("A friend request to this peer is already pending")
         peer = self.peer_manager.get_connected_peer(peer_id)
-        if peer is None:
-            raise ValueError("Recipient is not directly connected")
-        if not peer.supports(CAP_FRIEND_REQUESTS):
+        if peer is not None and not peer.supports(CAP_FRIEND_REQUESTS):
             raise ValueError("Peer does not support friend requests")
         now = time.time()
         payload = FriendRequestPayload(str(uuid.uuid4()), self.identity.peer_id, note, now, b"")
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+        stored = await self.db.get_peer(peer_id)
+        recipient_name = peer.display_name if peer is not None else (stored["display_name"] if stored else "Anonymous")
         await self.db.save_friend_request({
             "request_id": payload.request_id,
             "sender_id": self.identity.peer_id,
             "sender_name": self.identity.display_name,
             "recipient_id": peer_id,
-            "recipient_name": peer.display_name,
+            "recipient_name": recipient_name,
             "note": note or None,
             "created_at": now,
             "direction": "outgoing",
             "status": "pending",
         })
-        await self.peer_manager.send_packet(peer, Packet(PacketType.FRIEND_REQUEST, payload.encode()))
-        logger.info("Sent friend request %s to %s", payload.request_id, peer_id)
+        if peer is not None:
+            await self.peer_manager.send_packet(peer, Packet(PacketType.FRIEND_REQUEST, payload.encode()))
+            logger.info("Sent friend request %s to %s", payload.request_id, peer_id)
+        else:
+            await self.db.add_to_outqueue(peer_id, PacketType.FRIEND_REQUEST.value, payload.encode(), payload.request_id)
+            logger.info("Queued friend request %s to %s (offline)", payload.request_id, peer_id)
         return payload.request_id
 
     async def respond_to_friend_request(self, request_id: str, accept: bool) -> None:
         request = await self.db.get_friend_request(request_id)
         if request is None or request["direction"] != "incoming" or request["status"] != "pending":
             raise ValueError("Unknown or already answered friend request")
-        peer = self.peer_manager.get_connected_peer(request["sender_id"])
-        if peer is None:
-            raise ValueError("Requester is not connected; try again when they are online")
-        if not peer.supports(CAP_FRIEND_REQUESTS):
+        requester_id = request["sender_id"]
+        peer = self.peer_manager.get_connected_peer(requester_id)
+        if peer is not None and not peer.supports(CAP_FRIEND_REQUESTS):
             raise ValueError("Peer does not support friend requests")
         payload = FriendRequestResponsePayload(request_id, self.identity.peer_id, accept, b"")
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
-        await self.peer_manager.send_packet(peer, Packet(PacketType.FRIEND_REQUEST_RESPONSE, payload.encode()))
         await self.db.update_friend_request_status(request_id, "accepted" if accept else "declined")
         if accept:
-            await self.db.add_friend(request["sender_id"], request["sender_name"])
+            await self.db.add_friend(requester_id, request["sender_name"])
             # If we also sent an outgoing request to this peer, cancel it
-            outgoing = await self.db.get_pending_request_with(request["sender_id"], "outgoing")
+            outgoing = await self.db.get_pending_request_with(requester_id, "outgoing")
             if outgoing:
                 await self.db.cancel_friend_request(outgoing["request_id"])
                 cancel_payload = FriendRequestCancelledPayload(outgoing["request_id"], self.identity.peer_id, b"")
                 cancel_payload.signature = self.identity.signing_private_key.sign(cancel_payload.signed_bytes())
-                cancel_peer = self.peer_manager.get_connected_peer(request["sender_id"])
+                cancel_peer = self.peer_manager.get_connected_peer(requester_id)
                 if cancel_peer:
                     await self.peer_manager.send_packet(cancel_peer, Packet(PacketType.FRIEND_REQUEST_CANCELLED, cancel_payload.encode()))
-        logger.info(
-            "Responded to friend request %s from %s: %s",
-            request_id,
-            request["sender_id"],
-            "accepted" if accept else "declined",
-        )
+                else:
+                    await self.db.add_to_outqueue(requester_id, PacketType.FRIEND_REQUEST_CANCELLED.value, cancel_payload.encode(), outgoing["request_id"])
+        if peer is not None:
+            await self.peer_manager.send_packet(peer, Packet(PacketType.FRIEND_REQUEST_RESPONSE, payload.encode()))
+            logger.info(
+                "Responded to friend request %s from %s: %s",
+                request_id,
+                requester_id,
+                "accepted" if accept else "declined",
+            )
+        else:
+            await self.db.add_to_outqueue(requester_id, PacketType.FRIEND_REQUEST_RESPONSE.value, payload.encode(), request_id)
+            logger.info("Queued friend request response %s to %s (offline)", request_id, requester_id)
 
     async def cancel_friend_request(self, request_id: str) -> None:
         request = await self.db.get_friend_request(request_id)
         if request is None or request["direction"] != "outgoing" or request["status"] != "pending":
             raise ValueError("Unknown or already answered friend request")
-        peer = self.peer_manager.get_connected_peer(request["recipient_id"])
-        if peer is None:
-            raise ValueError("Recipient is not connected; try again when they are online")
-        if not peer.supports(CAP_FRIEND_REQUESTS):
+        recipient_id = request["recipient_id"]
+        peer = self.peer_manager.get_connected_peer(recipient_id)
+        if peer is not None and not peer.supports(CAP_FRIEND_REQUESTS):
             raise ValueError("Peer does not support friend requests")
         payload = FriendRequestCancelledPayload(request_id, self.identity.peer_id, b"")
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
-        await self.peer_manager.send_packet(peer, Packet(PacketType.FRIEND_REQUEST_CANCELLED, payload.encode()))
         await self.db.cancel_friend_request(request_id)
-        logger.info("Cancelled friend request %s to %s", request_id, request["recipient_id"])
+        if peer is not None:
+            await self.peer_manager.send_packet(peer, Packet(PacketType.FRIEND_REQUEST_CANCELLED, payload.encode()))
+            logger.info("Cancelled friend request %s to %s", request_id, recipient_id)
+        else:
+            await self.db.add_to_outqueue(recipient_id, PacketType.FRIEND_REQUEST_CANCELLED.value, payload.encode(), request_id)
+            logger.info("Queued friend request cancel %s to %s (offline)", request_id, recipient_id)
 
     async def unfriend(self, peer_id: str) -> None:
         if not await self.is_friend(peer_id):

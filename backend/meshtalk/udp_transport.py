@@ -355,8 +355,8 @@ class UdpTransport:
         peer_id = hashlib.sha256(signing_key).hexdigest()
         if value.get("peer_id") != peer_id:
             raise ValueError("UDP handshake identity mismatch")
-        remote_version = value.get("version", 1)
-        remote_min = value.get("min_version", 1)
+        remote_version = value.get("version", 0)
+        remote_min = value.get("min_version", 0)
         agreed_version = negotiate_protocol_version(
             PROTOCOL_VERSION,
             MIN_SUPPORTED_PROTOCOL_VERSION,

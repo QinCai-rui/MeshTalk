@@ -185,8 +185,8 @@ class HandshakePayloadTest(unittest.TestCase):
             "signature": (b"0" * 64).hex(),
         }).encode()
         decoded = HandshakePayload.decode(raw)
-        self.assertEqual(decoded.protocol_version, 1)
-        self.assertEqual(decoded.min_protocol_version, 1)
+        self.assertEqual(decoded.protocol_version, 0)
+        self.assertEqual(decoded.min_protocol_version, 0)
         self.assertEqual(set(decoded.capabilities), set(DEFAULT_CAPABILITIES))
 
 
@@ -206,7 +206,7 @@ class DiscoveryPacketTest(unittest.TestCase):
             "tcp_port": 24891,
         }).encode()
         decoded = DiscoveryPacket.decode(raw)
-        self.assertEqual(decoded.min_protocol, 1)
+        self.assertEqual(decoded.min_protocol, 0)
 
 
 class ApplyHandshakeTest(unittest.TestCase):
@@ -256,6 +256,7 @@ class ApplyHandshakeTest(unittest.TestCase):
                 peer.negotiated(),
                 {
                     "protocol_version": 1,
+                    "remote_protocol_version": 1,
                     "min_protocol_version": 1,
                     "capabilities": sorted([CAP_TEXT_CHAT, CAP_PROFILE_SYNC]),
                 },

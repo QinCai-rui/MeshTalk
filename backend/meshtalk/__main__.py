@@ -19,7 +19,7 @@ from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
 from .message_router import MessageRouter
 from .ipc import IPCServer
-from .protocol import PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION
+from .protocol import PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, Packet, PacketType
 from .rendezvous import RendezvousService
 from .settings import Settings
 
@@ -51,12 +51,39 @@ async def main(debug: bool = False) -> None:
 
     peer_manager.on_packet = router.handle_packet
 
+    async def flush_outgoing(peer_id: str) -> None:
+        peer = peer_manager.get_connected_peer(peer_id)
+        if peer is None:
+            return
+        items = await db.get_pending_outgoing(peer_id)
+        if not items:
+            return
+        for item in items:
+            try:
+                packet = Packet(PacketType(item["packet_type"]), item["encrypted_payload"])
+                await peer_manager.send_packet(peer, packet)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to flush queued packet for %s: %s", peer_id, exc)
+                await db.increment_outqueue_attempts(item["id"])
+                continue
+            if item["message_id"]:
+                await db.mark_message_sent(item["message_id"])
+                await ipc.broadcast_event({
+                    "event": "message_sent",
+                    "message_id": item["message_id"],
+                    "peer_id": peer_id,
+                })
+            await db.remove_from_outqueue(item["id"])
+        logger.info("Flushed %d queued item(s) to %s", len(items), peer_id)
+
     async def handle_peer_changed(peer_id: str) -> None:
         event = {"event": "peer_update", "peer_id": peer_id}
         peer = peer_manager.get_connected_peer(peer_id)
         if peer is not None:
             event.update(peer.negotiated())
         await ipc.broadcast_event(event)
+        if peer is not None:
+            await flush_outgoing(peer_id)
 
     peer_manager.on_peer_changed = handle_peer_changed
 
@@ -86,8 +113,8 @@ async def main(debug: bool = False) -> None:
         content = req.get("content", "")
         if not recipient:
             return {"error": "recipient_id required"}
-        msg_id = await router.send_message(recipient, content.encode())
-        return {"message_id": msg_id}
+        msg_id, queued = await router.send_message(recipient, content.encode())
+        return {"message_id": msg_id, "queued": queued}
 
     async def handle_peers(req: dict) -> dict:
         peers = await db.get_all_peers()

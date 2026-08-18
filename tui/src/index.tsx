@@ -1,6 +1,6 @@
 import { createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, type MouseEvent as TuiMouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions, type SelectProps } from "@opentui/react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 
 declare const APP_VERSION: string
@@ -42,6 +42,8 @@ type Message = {
   created_at: number
   delivered?: number
   blocked?: number
+  queued?: number
+  received_at?: number
 }
 type FriendRequest = {
   request_id: string
@@ -106,6 +108,29 @@ type Dialog =
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+}
+
+function formatDateTime(timestamp: number): string {
+  const d = new Date(timestamp * 1000)
+  const yy = String(d.getFullYear()).slice(-2)
+  const mm = String(d.getMonth() + 1).padStart(2, "0")
+  const dd = String(d.getDate()).padStart(2, "0")
+  return `${dd}/${mm}/${yy} ${formatTime(timestamp)}`
+}
+
+function formatDateSeparator(timestamp: number): string {
+  const d = new Date(timestamp * 1000)
+  return d.toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" })
+}
+
+function dayKey(timestamp: number): string {
+  const d = new Date(timestamp * 1000)
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+}
+
+function formatTimeMinute(timestamp: number): string {
+  const d = new Date(timestamp * 1000)
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()} ${d.getHours()}:${d.getMinutes()}`
 }
 
 function transportName(transport?: Peer["active_transport"]): string {
@@ -336,9 +361,16 @@ function ChatApp() {
       const messageId = event.message_id as string
       setDeliveredMessageIds((current) => new Set(current).add(messageId))
       setMessages((current) => current.map((message) =>
-        message.message_id === messageId ? { ...message, delivered: 1 } : message
+        message.message_id === messageId ? { ...message, delivered: 1, queued: 0, received_at: Date.now() / 1000 } : message
       ))
       showStatus("Message delivered.")
+      return
+    }
+    if (event.event === "message_sent") {
+      const messageId = event.message_id as string
+      setMessages((current) => current.map((message) =>
+        message.message_id === messageId ? { ...message, queued: 0 } : message
+      ))
       return
     }
     if (event.event === "message_blocked") {
@@ -422,6 +454,7 @@ function ChatApp() {
       recipient_id: "",
       content: event.content as string,
       created_at: event.created_at as number,
+      received_at: Date.now() / 1000,
     }])
     void ipc.send("messages", { peer_id: senderId }).then((response) => {
       if (!response.error) setMessages(response.messages as Message[])
@@ -1057,8 +1090,8 @@ function ChatApp() {
       showStatus("Message is empty.")
       return
     }
-    if (!recipientId || !identity || !selected?.is_online) {
-      showStatus("Select an active or away peer before sending.")
+    if (!recipientId || !identity) {
+      showStatus("Select a peer before sending.")
       return
     }
     if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) {
@@ -1069,6 +1102,7 @@ function ChatApp() {
     try {
       const response = await ipc.send("send", { recipient_id: recipientId, content })
       if (response.error) throw new Error(response.error)
+      const queued = Boolean(response.queued)
       setMessages((current) => [...current, {
         message_id: response.message_id as string,
         sender_id: identity.peer_id,
@@ -1076,6 +1110,7 @@ function ChatApp() {
         content,
         created_at: Date.now() / 1000,
         delivered: 0,
+        queued: queued ? 1 : 0,
       }])
       if (composer && composer === composerRef.current) {
         composer.selectAll()
@@ -1084,7 +1119,9 @@ function ChatApp() {
       setDrafts((current) => ({ ...current, [recipientId]: "" }))
       setDraftLength(0)
       setComposerHeight(MIN_COMPOSER_HEIGHT)
-      showStatus("Message sent. Waiting for delivery confirmation.")
+      showStatus(queued
+        ? "Message stored and queued. It will send when the peer is online."
+        : "Message sent. Waiting for delivery confirmation.")
     } catch (error) {
       if (!backendDisconnected.current) {
         setStatus(`Send error: ${error instanceof Error ? error.message : String(error)}`)
@@ -1241,26 +1278,45 @@ function ChatApp() {
           >
             {!selected ? <text fg="#888888">Waiting for a connected peer.</text> : null}
             {selected && !messages.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
-            {messages.map((message) => {
+            {messages.map((message, index) => {
               const isLocal = message.sender_id === identity?.peer_id
               const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
               const blocked = Boolean(message.blocked) || blockedMessageIds.has(message.message_id)
-              return (
+              const queued = Boolean(message.queued)
+              const rows: ReactNode[] = []
+              const prev = messages[index - 1]
+              if (!prev || dayKey(prev.created_at) !== dayKey(message.created_at)) {
+                rows.push(
+                  <box key={`sep-${dayKey(message.created_at)}`} style={{ alignItems: "center", marginTop: 1, marginBottom: 1 }}>
+                    <text fg="#5b6b82">───── {formatDateSeparator(message.created_at)} ─────</text>
+                  </box>
+                )
+              }
+              const showReceived =
+                typeof message.received_at === "number" &&
+                formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
+              rows.push(
                 <box key={message.message_id} style={{ flexDirection: "column", marginBottom: 1 }}>
                   <text>
                     <span fg="#888888">{formatTime(message.created_at)} </span>
                     <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selected?.display_name}</span>
-                    {isLocal && <span fg={blocked ? "#ff7777" : "#888888"}> {blocked ? "blocked" : delivered ? "delivered" : "sent"}</span>}
+                    {isLocal && (
+                      <span fg={blocked ? "#ff7777" : queued ? "#d9b36b" : "#888888"}>
+                        {blocked ? " blocked" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
+                      </span>
+                    )}
+                    {showReceived && <span fg="#888888"> (sent at {formatDateTime(message.received_at!)})</span>}
                   </text>
                   <text wrapMode="word">{message.content}</text>
                 </box>
               )
+              return rows
             })}
           </scrollbox>
         </box>
 
         <box
-          title={selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: peer offline"}
+          title={selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: queued until peer is online"}
           bottomTitle={isSending ? "Sending..." : `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`}
           titleColor={limitColor ?? "#888888"}
           style={{ border: true, borderColor: limitColor ?? (!scrollFocused && !editingName && selected?.is_online ? "#6ea8fe" : undefined), flexShrink: 0, overflow: "hidden", padding: 1 }}
@@ -1269,8 +1325,8 @@ function ChatApp() {
             key={selectedPeerId ?? "no-peer"}
             ref={composerRef}
             initialValue={selectedPeerId ? drafts[selectedPeerId] ?? "" : ""}
-            placeholder={selected?.is_online ? "Write a message" : "Select an online peer"}
-            focused={Boolean(selected?.is_online) && !editingName && !scrollFocused && !isSending && !dialog}
+            placeholder={selected ? "Write a message" : "Select a peer"}
+            focused={Boolean(selected) && !editingName && !scrollFocused && !isSending && !dialog}
             onMouseDown={() => setScrollFocused(false)}
             onContentChange={() => {
               const composer = composerRef.current
