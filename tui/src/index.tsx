@@ -1242,7 +1242,7 @@ function ChatApp() {
           const mismatchCount = Object.keys(versionMismatches).length
           return (
             <box style={{ flexShrink: 0, backgroundColor: "#3a1414", paddingLeft: 1, paddingRight: 1 }}>
-              <text wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}>
+              <text wrapMode="word" fg="#ff5555">
                 <b>{"\u26A0 WARNING: incompatible peer protocol version detected"}{mismatchCount > 1 ? ` (${mismatchCount} peers)` : ""}{". Some features may not work properly."}</b>
               </text>
             </box>
@@ -1273,7 +1273,7 @@ function ChatApp() {
                 const m = versionMismatches[selected.peer_id]
                 const remoteMax = m.remote_version === -1 ? 0 : m.remote_version
                 const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
-                return <text wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}><b>{"\u26A0 Version mismatch: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
+                return <text wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}><b>{"\u26A0 Incompatible peer protocol version: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
               })() : null}
             </box>
           ) : null}
@@ -1321,7 +1321,7 @@ function ChatApp() {
                         {blocked ? " blocked" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
                       </span>
                     )}
-                    {showReceived && <span fg="#888888"> (sent at {formatDateTime(message.received_at!)})</span>}
+                    {showReceived && <span fg="#888888"> (peer received at {formatDateTime(message.received_at!)})</span>}
                   </text>
                   <text wrapMode="word">{message.content}</text>
                 </box>
