@@ -137,6 +137,14 @@ function transportName(transport?: Peer["active_transport"]): string {
   return transport === "lan_tcp" ? "LAN TCP" : transport === "remote_udp" ? "Remote UDP" : "No endpoint"
 }
 
+function isVersionCompatible(
+  remoteMax: number, remoteMin: number,
+  localMax: number, localMin: number,
+): boolean {
+  const agreed = Math.min(localMax, remoteMax)
+  return agreed >= Math.max(localMin, remoteMin)
+}
+
 function peerPresence(peer: Peer): "active" | "away" | "offline" {
   return peer.presence ?? (peer.is_online ? "away" : "offline")
 }
@@ -434,11 +442,40 @@ function ChatApp() {
           local_min: event.local_min_version as number,
         },
       }))
-      showStatus(`Version mismatch with ${peers.find((p) => p.peer_id === peerId)?.display_name ?? peerId}.`)
+      const remoteMax = (event.remote_version as number) === -1 ? 0 : event.remote_version as number
+      const remoteMin = (event.remote_min_version as number) === -1 ? 0 : event.remote_min_version as number
+      const localMin = event.local_min_version as number
+      const localVersion = event.local_version as number
+      showStatus(`Incompatible peer protocol version: this peer supports v${remoteMin}-v${remoteMax}, local is v${localMin}-v${localVersion}. Features may not work correctly.`)
       return
     }
     if (event.event !== "message") {
-      if (event.event === "peer_update") void refreshPeers()
+      if (event.event === "peer_update") {
+        const peerId = event.peer_id as string
+        const isOnline = event.is_online as number
+        // Remove version mismatch when peer disconnects
+        if (!isOnline) {
+          setVersionMismatches((current) => {
+            const next = { ...current }
+            delete next[peerId]
+            return next
+          })
+        } else {
+          // Recheck version compatibility when peer connects
+          setVersionMismatches((current) => {
+            const mismatch = current[peerId]
+            if (!mismatch) return current
+            const remoteMax = (event.remote_protocol_version as number) ?? mismatch.remote_version
+            if (isVersionCompatible(remoteMax, mismatch.remote_min, mismatch.local_version, mismatch.local_min)) {
+              const next = { ...current }
+              delete next[peerId]
+              return next
+            }
+            return current
+          })
+        }
+        void refreshPeers()
+      }
       return
     }
     const senderId = event.sender_id as string
@@ -1224,7 +1261,7 @@ function ChatApp() {
                 style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
               >
                 <text truncate fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>
-                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
+                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.peer_id in versionMismatches ? "incompatible" : presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
                 </text>
                 {peer.endpoints.length ? peer.endpoints.map((endpoint) => (
                   <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>
@@ -1238,16 +1275,7 @@ function ChatApp() {
       </box>
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
-        {Object.keys(versionMismatches).length ? (() => {
-          const mismatchCount = Object.keys(versionMismatches).length
-          return (
-            <box style={{ flexShrink: 0, backgroundColor: "#3a1414", paddingLeft: 1, paddingRight: 1 }}>
-              <text wrapMode="word" fg="#ff5555">
-                <b>{"\u26A0 WARNING: incompatible peer protocol version detected"}{mismatchCount > 1 ? ` (${mismatchCount} peers)` : ""}{". Some features may not work properly."}</b>
-              </text>
-            </box>
-          )
-        })() : null}
+        {null}
         <box
           title={selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
