@@ -1335,7 +1335,7 @@ function ChatApp() {
                         {blocked ? " blocked" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
                       </span>
                     )}
-                    {showReceived && <span fg="#888888"> ({isLocal ? "peer delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
+                    {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                   </text>
                   <text wrapMode="word">{message.content}</text>
                 </box>
