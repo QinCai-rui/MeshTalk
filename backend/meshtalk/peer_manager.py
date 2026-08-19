@@ -75,6 +75,7 @@ class PeerConnection:
         self.encryption_public_key: bytes | None = None
         self.protocol_version: int = PROTOCOL_VERSION
         self.remote_protocol_version: int = PROTOCOL_VERSION
+        self.remote_min_protocol_version: int = MIN_SUPPORTED_PROTOCOL_VERSION
         self.capabilities: list[str] = list(DEFAULT_CAPABILITIES)
         self.last_seen = time.time()
 
@@ -86,12 +87,39 @@ class PeerConnection:
         """Whether the negotiated connection with this peer enables ``capability``."""
         return capability in self.capabilities
 
+    @property
+    def version_mismatch(self) -> dict | None:
+        """Return incompatibility info for this peer, or ``None`` if compatible.
+
+        Legacy peers (``remote_protocol_version == -1``) have no version
+        information, so their compatibility cannot be determined and is treated
+        as unknown (not a mismatch).
+        """
+        if self.remote_protocol_version == -1:
+            return None
+        agreed = negotiate_protocol_version(
+            PROTOCOL_VERSION,
+            MIN_SUPPORTED_PROTOCOL_VERSION,
+            self.remote_protocol_version,
+            self.remote_min_protocol_version,
+        )
+        if agreed is not None:
+            return None
+        return {
+            "remote_version": self.remote_protocol_version,
+            "remote_min": self.remote_min_protocol_version,
+            "local_version": PROTOCOL_VERSION,
+            "local_min": MIN_SUPPORTED_PROTOCOL_VERSION,
+        }
+
     def negotiated(self) -> dict:
         """Snapshot of the negotiated protocol state for IPC/debug consumers."""
         return {
             "protocol_version": self.protocol_version,
             "remote_protocol_version": self.remote_protocol_version,
+            "remote_min_protocol_version": self.remote_min_protocol_version,
             "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
+            "version_mismatch": self.version_mismatch,
             "capabilities": list(self.capabilities),
         }
 

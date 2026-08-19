@@ -145,6 +145,7 @@ async def main(debug: bool = False) -> None:
                 "friend_request": friend_requests.get(peer["peer_id"]),
                 "protocol_version": connection.protocol_version if connection else None,
                 "remote_protocol_version": connection.remote_protocol_version if connection else None,
+                "version_mismatch": connection.version_mismatch if connection else None,
                 "capabilities": list(connection.capabilities) if connection else [],
                 **peer_manager.get_network_info(peer["peer_id"]),
             }
@@ -258,6 +259,7 @@ async def main(debug: bool = False) -> None:
                     "is_online": 1,
                     "protocol_version": peer.protocol_version,
                     "remote_protocol_version": peer.remote_protocol_version,
+                    "version_mismatch": peer.version_mismatch,
                     "capabilities": list(peer.capabilities),
                     **peer_manager.get_network_info(peer.peer_id),
                 }
