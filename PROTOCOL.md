@@ -187,11 +187,14 @@ if agreed_version < min_required → reject with IncompatibleProtocolError
 **Legacy (v0) compatibility.** A peer that omits `protocol_version` from its
 handshake is treated as version 0 with `min_protocol_version` 0. This is
 detected by `HandshakePayload.decode()` checking for the presence of the
-`protocol_version` key in the raw JSON. Support for v0 has been dropped: the
-default `MIN_SUPPORTED_PROTOCOL_VERSION` is `1`, so any peer advertising
-version 0 (including legacy peers that omit the field) is rejected with an
-`IncompatibleProtocolError` and a `peer_version_mismatch` IPC event. There is no
-configuration that re-enables v0; all peers must run protocol version 1 or newer.
+`protocol_version` key in the raw JSON. The minimum supported protocol version
+is now `2` (`MIN_SUPPORTED_PROTOCOL_VERSION`), so a peer advertising a version
+below `2` (including legacy peers that omit the field, treated as v0) is
+incompatible. Rather than dropping the connection, the handshake is allowed to
+complete and a `peer_version_mismatch` IPC event is broadcast; the connection is
+kept but feature behaviour may be degraded. The mismatch is recomputed from each
+handshake, so the warning naturally reappears after a restart once the peer
+reconnects.
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`). The agreed capability
@@ -560,10 +563,10 @@ in an `outgoing_queue` until the peer reconnects, then replays it.
   row. A successful delivery later produces the normal MESSAGE_ACK, which marks
   the message `delivered`.
 - **Bounds.** Packets with `attempts >= 5` are no longer retried and are dropped
-  from the queue (`get_pending_outgoing` filters `attempts < 5`). The usual
-  message lifetime applies: a queued MESSAGE whose `expires_at`
-  (created_at + MESSAGE_EXPIRY = 86400 s) has passed is rejected by the
-  recipient when eventually flushed.
+  from the queue (`get_pending_outgoing` filters `attempts < 5`). Messages no
+  longer carry an expiry (`expires_at` was removed), so a queued message is held
+  until it is successfully flushed or hits the retry bound; the recipient accepts
+  it regardless of age when eventually flushed.
 - **TUI.** Queued outgoing messages render with a `stored and queued` status
   until flushed (`sent`) and finally `delivered` on ACK. When the time a message
   was actually received/delivered differs from its send time, the UI appends a
@@ -737,7 +740,7 @@ the current code (per TODO.md):
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
 | Protocol version | 2 | protocol.PROTOCOL_VERSION |
-| Min supported protocol version | 1 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
+| Min supported protocol version | 2 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
 | Legacy peer version | 0 | Default for peers omitting `protocol_version` in handshake |
 | Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports | protocol.DEFAULT_CAPABILITIES |
 | Max packet size | 64 KiB | protocol.MAX_PACKET_SIZE |

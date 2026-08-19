@@ -1146,7 +1146,12 @@ function ChatApp() {
         : "Message sent. Waiting for delivery confirmation.")
     } catch (error) {
       if (!backendDisconnected.current) {
-        setStatus(`Send error: ${error instanceof Error ? error.message : String(error)}`)
+        const message = error instanceof Error ? error.message : String(error)
+        if (message.includes("No known public key")) {
+          showStatus(`You must connect to ${selected?.display_name ?? "this peer"} at least once before offline messages can be queued.`)
+        } else {
+          setStatus(`Send error: ${message}`)
+        }
       }
     } finally {
       setIsSending(false)
@@ -1254,7 +1259,6 @@ function ChatApp() {
       </box>
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
-        {null}
         <box
           title={selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}

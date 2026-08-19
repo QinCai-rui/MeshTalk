@@ -448,13 +448,6 @@ class PeerManager:
                     loop.create_task(self.on_version_mismatch(peer_id, payload.protocol_version, payload.min_protocol_version))
                 except RuntimeError:
                     pass
-            method = getattr(self.db, 'record_version_mismatch', None)
-            if method is not None:
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(method(peer_id, payload.display_name, payload.protocol_version, payload.min_protocol_version))
-                except RuntimeError:
-                    pass
             agreed_version = MIN_SUPPORTED_PROTOCOL_VERSION
         try:
             Ed25519PublicKey.from_public_bytes(payload.signing_public_key).verify(payload.signature, payload.signed_bytes())
