@@ -500,7 +500,10 @@ function ChatApp() {
       received_at: Date.now() / 1000,
     }])
     void ipc.send("messages", { peer_id: senderId }).then((response) => {
-      if (!response.error) setMessages(response.messages as Message[])
+      if (!response.error) {
+        setMessages(response.messages as Message[])
+        void refreshPeers()
+      }
     })
   }), [ipc, mutedPeers, peers, renderer, selectedPeerId, dialog])
 
@@ -520,6 +523,7 @@ function ChatApp() {
     ipc.send("messages", { peer_id: selectedPeerId }).then((response) => {
       if (response.error) throw new Error(response.error)
       setMessages(response.messages as Message[])
+      void refreshPeers()
     }).catch((error) => {
       if (!backendDisconnected.current) {
         setStatus(`History error: ${error instanceof Error ? error.message : String(error)}`)
@@ -1261,7 +1265,7 @@ function ChatApp() {
                 style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
               >
                 <text truncate fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>
-                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.peer_id in versionMismatches ? "incompatible" : presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
+                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.peer_id in versionMismatches ? <span fg="#8a2e2e">INCOMPATIBLE</span> : presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
                 </text>
                 {peer.endpoints.length ? peer.endpoints.map((endpoint) => (
                   <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>
@@ -1349,7 +1353,7 @@ function ChatApp() {
                         {blocked ? " blocked" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
                       </span>
                     )}
-                    {showReceived && <span fg="#888888"> (peer received at {formatDateTime(message.received_at!)})</span>}
+                    {showReceived && <span fg="#888888"> ({isLocal ? "peer delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                   </text>
                   <text wrapMode="word">{message.content}</text>
                 </box>

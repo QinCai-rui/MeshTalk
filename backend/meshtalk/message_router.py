@@ -114,7 +114,7 @@ class MessageRouter:
             "message_id": message.message_id, "sender_id": message.sender_id, "recipient_id": message.recipient_id,
             "content": content, "encrypted_content": message.encrypted_content,
             "created_at": message.created_at,
-            "hop_count": 0, "max_hops": 0, "read_at": None,
+            "hop_count": 0, "max_hops": 0, "read_at": None, "received_at": time.time(),
         })
         await self._send_delivery_receipt(peer, message.message_id)
         logger.info("Received encrypted message %s from %s", message.message_id, peer.peer_id)

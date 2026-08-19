@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS messages (
     delivered INTEGER NOT NULL DEFAULT 0,
     stored INTEGER NOT NULL DEFAULT 0,
     queued INTEGER NOT NULL DEFAULT 0,
-    read_at REAL
+    read_at REAL,
+    received_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS outgoing_queue (
@@ -112,6 +113,8 @@ class Database:
             await self._db.execute("ALTER TABLE messages ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
         if "queued" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN queued INTEGER NOT NULL DEFAULT 0")
+        if "received_at" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN received_at REAL")
         if "expires_at" in message_columns:
             try:
                 await self._db.execute("ALTER TABLE messages DROP COLUMN expires_at")
@@ -242,9 +245,9 @@ class Database:
     ) -> list[dict]:
         """Return the latest direct messages with one peer in chronological order."""
         async with self._db.execute(
-            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued
+            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, received_at
                FROM (
-                   SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued
+                   SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, received_at
                    FROM messages
                    WHERE (sender_id = ? AND recipient_id = ?)
                       OR (sender_id = ? AND recipient_id = ?)
@@ -265,8 +268,8 @@ class Database:
         await self._db.execute(
             """INSERT OR IGNORE INTO messages
                 (message_id, sender_id, recipient_id, content, encrypted_content,
-                 created_at, hop_count, max_hops, read_at, blocked, queued)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 created_at, hop_count, max_hops, read_at, blocked, queued, received_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 msg["message_id"],
                 msg["sender_id"],
@@ -279,6 +282,7 @@ class Database:
                 msg.get("read_at"),
                 msg.get("blocked", 0),
                 msg.get("queued", 0),
+                msg.get("received_at"),
             ),
         )
         await self._db.commit()
@@ -359,7 +363,8 @@ class Database:
 
     async def mark_message_delivered(self, message_id: str) -> None:
         await self._db.execute(
-            "UPDATE messages SET delivered = 1, queued = 0 WHERE message_id = ?", (message_id,)
+            "UPDATE messages SET delivered = 1, queued = 0, received_at = ? WHERE message_id = ?",
+            (time.time(), message_id),
         )
         await self._db.commit()
 
