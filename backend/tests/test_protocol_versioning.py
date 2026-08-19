@@ -257,7 +257,9 @@ class ApplyHandshakeTest(unittest.TestCase):
                 {
                     "protocol_version": 2,
                     "remote_protocol_version": 2,
+                    "remote_min_protocol_version": 2,
                     "min_protocol_version": 2,
+                    "version_mismatch": None,
                     "capabilities": sorted([CAP_TEXT_CHAT, CAP_PROFILE_SYNC]),
                 },
             )

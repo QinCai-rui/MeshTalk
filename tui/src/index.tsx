@@ -41,6 +41,9 @@ type Peer = {
     local_version: number
     local_min: number
   } | null
+  // Authoritative list of messaging limitations for this peer, computed by
+  // the backend. Rendered directly by the UI (no client-side re-derivation).
+  delivery_warnings?: ("offline" | "not_friend" | "rendezvous_out_of_sync" | "incompatible")[]
   capabilities?: string[]
 }
 type Message = {
@@ -147,7 +150,9 @@ function transportName(transport?: Peer["active_transport"]): string {
 }
 
 function peerPresence(peer: Peer): "active" | "away" | "offline" {
-  return peer.presence ?? (peer.is_online ? "away" : "offline")
+  // `presence` is computed authoritatively by the backend (it also accounts
+  // for `tui_active`); only fall back when the field is genuinely absent.
+  return peer.presence ?? "offline"
 }
 
 function friendMarkers(peer: Peer): string {
@@ -237,7 +242,6 @@ function ChatApp() {
   const [editingName, setEditingName] = useState(false)
   const [scrollFocused, setScrollFocused] = useState(false)
   const [deliveredMessageIds, setDeliveredMessageIds] = useState<Set<string>>(() => new Set())
-  const [blockedMessageIds, setBlockedMessageIds] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState("Connecting to backend...")
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
@@ -390,7 +394,6 @@ function ChatApp() {
     if (event.event === "message_blocked") {
       const messageId = event.message_id as string
       const name = (event.display_name as string) ?? "a peer"
-      setBlockedMessageIds((current) => new Set(current).add(messageId))
       setMessages((current) => current.map((message) =>
         message.message_id === messageId ? { ...message, blocked: 1 } : message
       ))
@@ -1257,28 +1260,26 @@ function ChatApp() {
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
-          {(
-            (selected && !selected.is_online) ||
-            (selected && selected.is_online && !selected.is_friend) ||
-            (selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected) ||
-            (selected && selected.version_mismatch)
-          ) ? (
+          {(selected && (selected.delivery_warnings ?? []).length > 0) ? (
             <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
-              {selected && !selected.is_online ? (
-                <text wrapMode="word" fg="#e0a34a">This peer is offline. Messages will be queued and delivered automatically upon reconnection.</text>
-              ) : null}
-              {selected && selected.is_online && !selected.is_friend ? (
-                <text wrapMode="word" fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (commands {'>'} friends {'>'} add friend).</text>
-              ) : null}
-              {selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected ? (
-                <text wrapMode="word" fg="#ff9f43"><b>Out-of-sync with rendezvous server. Peer connectivity may degrade over time;</b> reconnecting ({controlStatus.reconnect_attempts}).</text>
-              ) : null}
-              {selected && selected.version_mismatch ? (() => {
-                const m = selected.version_mismatch!
-                const remoteMax = m.remote_version === -1 ? 0 : m.remote_version
-                const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
-                return <text wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}><b>{"⚠ Incompatible peer protocol version: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
-              })() : null}
+              {(selected.delivery_warnings ?? []).map((kind) => {
+                if (kind === "offline") {
+                  return <text key="offline" wrapMode="word" fg="#e0a34a">This peer is offline. Messages will be queued and delivered automatically upon reconnection.</text>
+                }
+                if (kind === "not_friend") {
+                  return <text key="not_friend" wrapMode="word" fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (commands {'>'} friends {'>'} add friend).</text>
+                }
+                if (kind === "rendezvous_out_of_sync") {
+                  return <text key="rendezvous_out_of_sync" wrapMode="word" fg="#ff9f43"><b>Out-of-sync with rendezvous server. Peer connectivity may degrade over time;</b> reconnecting ({controlStatus.reconnect_attempts}).</text>
+                }
+                if (kind === "incompatible" && selected.version_mismatch) {
+                  const m = selected.version_mismatch
+                  const remoteMax = m.remote_version === -1 ? 0 : m.remote_version
+                  const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
+                  return <text key="incompatible" wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}><b>{"⚠ Incompatible peer protocol version: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
+                }
+                return null
+              })}
             </box>
           ) : null}
           <scrollbox
@@ -1301,7 +1302,7 @@ function ChatApp() {
             {messages.map((message, index) => {
               const isLocal = message.sender_id === identity?.peer_id
               const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
-              const blocked = Boolean(message.blocked) || blockedMessageIds.has(message.message_id)
+              const blocked = Boolean(message.blocked)
               const queued = Boolean(message.queued)
               const rows: ReactNode[] = []
               const prev = messages[index - 1]
