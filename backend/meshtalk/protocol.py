@@ -28,8 +28,8 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-PROTOCOL_VERSION = 1
-MIN_SUPPORTED_PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
+MIN_SUPPORTED_PROTOCOL_VERSION = 2
 
 # Feature capability identifiers exchanged during the handshake. A connection
 # only enables a capability when both peers advertise it (see
@@ -188,7 +188,7 @@ class DiscoveryPacket:
         if not isinstance(obj, dict):
             raise ValueError("Discovery packet must be an object")
         protocol = obj.get("protocol")
-        min_protocol = obj.get("min_protocol", protocol if isinstance(protocol, int) else MIN_SUPPORTED_PROTOCOL_VERSION)
+        min_protocol = obj.get("min_protocol", 0)
         discovery_id = obj.get("discovery_id")
         tcp_port = obj.get("tcp_port")
         if (
@@ -258,8 +258,8 @@ class HandshakePayload:
     def decode(cls, data: bytes) -> HandshakePayload:
         obj = json.loads(data)
         has_version = "protocol_version" in obj
-        protocol_version = obj.get("protocol_version", 1)
-        min_protocol_version = obj.get("min_protocol_version", 1)
+        protocol_version = obj.get("protocol_version", 0)
+        min_protocol_version = obj.get("min_protocol_version", 0)
         capabilities = validate_capabilities(obj.get("capabilities", list(DEFAULT_CAPABILITIES)))
         payload = cls(
             peer_id=obj["peer_id"],
@@ -325,7 +325,6 @@ class MessagePayload:
     sender_id: str
     recipient_id: str
     created_at: float
-    expires_at: float
     hop_count: int
     max_hops: int
     encrypted_content: bytes
@@ -338,7 +337,6 @@ class MessagePayload:
             "sender_id": self.sender_id,
             "recipient_id": self.recipient_id,
             "created_at": self.created_at,
-            "expires_at": self.expires_at,
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def signed_bytes(self) -> bytes:
@@ -350,7 +348,6 @@ class MessagePayload:
             "sender_id": self.sender_id,
             "recipient_id": self.recipient_id,
             "created_at": self.created_at,
-            "expires_at": self.expires_at,
             "hop_count": self.hop_count,
             "max_hops": self.max_hops,
             "encrypted_content": self.encrypted_content.hex(),
@@ -365,7 +362,6 @@ class MessagePayload:
             sender_id=obj["sender_id"],
             recipient_id=obj["recipient_id"],
             created_at=obj["created_at"],
-            expires_at=obj["expires_at"],
             hop_count=obj["hop_count"],
             max_hops=obj["max_hops"],
             encrypted_content=bytes.fromhex(obj["encrypted_content"]),

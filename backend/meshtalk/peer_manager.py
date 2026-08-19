@@ -75,6 +75,7 @@ class PeerConnection:
         self.encryption_public_key: bytes | None = None
         self.protocol_version: int = PROTOCOL_VERSION
         self.remote_protocol_version: int = PROTOCOL_VERSION
+        self.remote_min_protocol_version: int = MIN_SUPPORTED_PROTOCOL_VERSION
         self.capabilities: list[str] = list(DEFAULT_CAPABILITIES)
         self.last_seen = time.time()
 
@@ -86,12 +87,39 @@ class PeerConnection:
         """Whether the negotiated connection with this peer enables ``capability``."""
         return capability in self.capabilities
 
+    @property
+    def version_mismatch(self) -> dict | None:
+        """Return incompatibility info for this peer, or ``None`` if compatible.
+
+        Legacy peers (``remote_protocol_version == -1``) have no version
+        information, so their compatibility cannot be determined and is treated
+        as unknown (not a mismatch).
+        """
+        if self.remote_protocol_version == -1:
+            return None
+        agreed = negotiate_protocol_version(
+            PROTOCOL_VERSION,
+            MIN_SUPPORTED_PROTOCOL_VERSION,
+            self.remote_protocol_version,
+            self.remote_min_protocol_version,
+        )
+        if agreed is not None:
+            return None
+        return {
+            "remote_version": self.remote_protocol_version,
+            "remote_min": self.remote_min_protocol_version,
+            "local_version": PROTOCOL_VERSION,
+            "local_min": MIN_SUPPORTED_PROTOCOL_VERSION,
+        }
+
     def negotiated(self) -> dict:
         """Snapshot of the negotiated protocol state for IPC/debug consumers."""
         return {
             "protocol_version": self.protocol_version,
             "remote_protocol_version": self.remote_protocol_version,
+            "remote_min_protocol_version": self.remote_min_protocol_version,
             "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
+            "version_mismatch": self.version_mismatch,
             "capabilities": list(self.capabilities),
         }
 
@@ -413,17 +441,14 @@ class PeerManager:
             payload.min_protocol_version,
         )
         if agreed_version is None:
+            logger.warning("Incompatible protocol version with peer %s (remote v%d, min v%d); features may not work properly", peer_id, payload.protocol_version, payload.min_protocol_version)
             if self.on_version_mismatch is not None:
                 try:
                     loop = asyncio.get_running_loop()
                     loop.create_task(self.on_version_mismatch(peer_id, payload.protocol_version, payload.min_protocol_version))
                 except RuntimeError:
                     pass
-            raise IncompatibleProtocolError(
-                peer_id=peer_id,
-                remote_version=payload.protocol_version,
-                remote_min=payload.min_protocol_version,
-            )
+            agreed_version = MIN_SUPPORTED_PROTOCOL_VERSION
         try:
             Ed25519PublicKey.from_public_bytes(payload.signing_public_key).verify(payload.signature, payload.signed_bytes())
         except InvalidSignature:
@@ -439,6 +464,7 @@ class PeerManager:
         # Legacy peers (no version fields in handshake) are represented as -1
         # internally but displayed as v0 in the TUI.
         peer.remote_protocol_version = -1 if payload.legacy else payload.protocol_version
+        peer.remote_min_protocol_version = payload.min_protocol_version
         # The connection only enables capabilities advertised by *both* peers.
         peer.capabilities = intersect_capabilities(DEFAULT_CAPABILITIES, payload.capabilities)
         logger.debug(

@@ -44,6 +44,7 @@ class DiscoveryService:
         self._protocol: DiscoveryProtocol | None = None
         self._running = False
         self._known_addresses: dict[str, tuple[str, int]] = {}
+        self._incompatible_peers: set[str] = set()
         self._pending: asyncio.Queue[tuple[bytes, tuple[str, int]]] = asyncio.Queue(
             maxsize=MAX_PENDING_DISCOVERY_PACKETS
         )
@@ -107,8 +108,9 @@ class DiscoveryService:
             packet.min_protocol,
         )
         if agreed_version is None:
-            logger.debug("Incompatible protocol version (v%d, min v%d) from %s", packet.protocol, packet.min_protocol, packet.discovery_id)
-            return
+            if packet.discovery_id not in self._incompatible_peers:
+                self._incompatible_peers.add(packet.discovery_id)
+                logger.warning("Discovered peer with incompatible protocol version (v%d, min v%d) from %s; connecting anyway", packet.protocol, packet.min_protocol, packet.discovery_id)
 
         address = (addr[0], packet.tcp_port)
         if self._known_addresses.get(packet.discovery_id) == address:

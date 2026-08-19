@@ -30,7 +30,6 @@ from .protocol import (
 )
 
 logger = logging.getLogger(__name__)
-MESSAGE_EXPIRY = 86400
 MAX_MESSAGE_CONTENT_SIZE = 30 * 1024
 
 
@@ -41,15 +40,20 @@ class MessageRouter:
         self.on_delivered = on_delivered
         self.friend_manager = friend_manager or FriendManager(identity, peer_manager, db)
 
-    async def send_message(self, recipient_id: str, plaintext: bytes) -> str:
+    async def send_message(self, recipient_id: str, plaintext: bytes) -> tuple[str, bool]:
         if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:
             raise ValueError("Message exceeds 30 KiB limit")
         peer = self.peer_manager.get_connected_peer(recipient_id)
-        if peer is None or peer.encryption_public_key is None:
-            raise ValueError("Recipient is not directly connected")
+        encryption_key = peer.encryption_public_key if peer is not None else None
+        if encryption_key is None:
+            stored = await self.db.get_peer(recipient_id)
+            if stored and stored.get("public_key"):
+                encryption_key = stored["public_key"]
+        if encryption_key is None:
+            raise ValueError("No known public key for recipient; connect once before sending offline")
         now = time.time()
-        message = MessagePayload(str(uuid.uuid4()), self.identity.peer_id, recipient_id, now, now + MESSAGE_EXPIRY, 0, 0, b"")
-        message.encrypted_content = encrypt_for_recipient(peer.encryption_public_key, plaintext, message.associated_data())
+        message = MessagePayload(str(uuid.uuid4()), self.identity.peer_id, recipient_id, now, 0, 0, b"")
+        message.encrypted_content = encrypt_for_recipient(encryption_key, plaintext, message.associated_data())
         message.signature = self.identity.signing_private_key.sign(message.signed_bytes())
         encoded_message = message.encode()
         if len(encoded_message) > MAX_PACKET_SIZE:
@@ -57,12 +61,15 @@ class MessageRouter:
         await self.db.save_message({
             "message_id": message.message_id, "sender_id": message.sender_id, "recipient_id": message.recipient_id,
             "content": plaintext.decode("utf-8"), "encrypted_content": message.encrypted_content,
-            "created_at": message.created_at, "expires_at": message.expires_at, "hop_count": 0, "max_hops": 0,
-            "read_at": now,
+            "created_at": message.created_at, "hop_count": 0, "max_hops": 0,
+            "read_at": now, "queued": 1 if peer is None else 0,
         })
         await self.db.mark_message_seen(message.message_id)
-        await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE, encoded_message))
-        return message.message_id
+        if peer is not None:
+            await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE, encoded_message))
+            return message.message_id, False
+        await self.db.add_to_outqueue(recipient_id, PacketType.MESSAGE.value, encoded_message, message.message_id)
+        return message.message_id, True
 
     async def handle_packet(self, peer: PeerConnection, packet: Packet) -> None:
         if packet.type == PacketType.MESSAGE:
@@ -89,7 +96,7 @@ class MessageRouter:
         if not await self.friend_manager.is_friend(message.sender_id):
             await self._send_blocked_notice(peer, message)
             return
-        if message.expires_at < time.time() or message.hop_count != 0 or message.max_hops != 0:
+        if message.hop_count != 0 or message.max_hops != 0:
             raise ValueError("Invalid direct message metadata")
         if len(message.signature) != 64:
             raise ValueError("Invalid message signature")
@@ -106,8 +113,8 @@ class MessageRouter:
         await self.db.save_message({
             "message_id": message.message_id, "sender_id": message.sender_id, "recipient_id": message.recipient_id,
             "content": content, "encrypted_content": message.encrypted_content,
-            "created_at": message.created_at, "expires_at": message.expires_at,
-            "hop_count": 0, "max_hops": 0, "read_at": None,
+            "created_at": message.created_at,
+            "hop_count": 0, "max_hops": 0, "read_at": None, "received_at": time.time(),
         })
         await self._send_delivery_receipt(peer, message.message_id)
         logger.info("Received encrypted message %s from %s", message.message_id, peer.peer_id)

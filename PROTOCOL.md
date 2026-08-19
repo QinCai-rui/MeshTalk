@@ -184,6 +184,18 @@ if agreed_version < min_required → reject with IncompatibleProtocolError
                                    + broadcast peer_version_mismatch IPC event
 ```
 
+**Legacy (v0) compatibility.** A peer that omits `protocol_version` from its
+handshake is treated as version 0 with `min_protocol_version` 0. This is
+detected by `HandshakePayload.decode()` checking for the presence of the
+`protocol_version` key in the raw JSON. The minimum supported protocol version
+is now `2` (`MIN_SUPPORTED_PROTOCOL_VERSION`), so a peer advertising a version
+below `2` (including legacy peers that omit the field, treated as v0) is
+incompatible. Rather than dropping the connection, the handshake is allowed to
+complete and a `peer_version_mismatch` IPC event is broadcast; the connection is
+kept but feature behaviour may be degraded. The mismatch is recomputed from each
+handshake, so the warning naturally reappears after a restart once the peer
+reconnects.
+
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`). The agreed capability
 set is the **intersection** of both peers' advertised sets (unknown capabilities
@@ -519,6 +531,47 @@ already seen; valid Ed25519 signature; successful decryption. The receiver then
 persists the message, sends a MESSAGE_ACK carrying the message_id, and emits an
 IPC "message" event. The sender marks delivery on the ACK.
 
+### 7.4 Store-and-Forward (Offline Queueing)
+
+MeshTalk is fully peer-to-peer (no relay or server stores messages), so a
+message can only be delivered while the recipient's device is connected. To
+avoid silently dropping messages sent to an offline peer, the sender performs
+**sender-side store-and-forward**: it encrypts the payload locally and holds it
+in an `outgoing_queue` until the peer reconnects, then replays it.
+
+- **Trigger.** `MessageRouter.send_message` checks for a live connection via
+  `peer_manager.get_connected_peer`. If the peer is online, the message is sent
+  immediately. If it is offline but the sender has a **cached encryption public
+  key** for that peer (persisted in the `peers` table on every handshake), the
+  message is encrypted with that key and enqueued instead of raising. If no key
+  has ever been seen, `send_message` raises
+  `No known public key for recipient; connect once before sending offline`.
+- **Friend-request actions are queued too.** `FriendManager` queues
+  FRIEND_REQUEST, FRIEND_REQUEST_RESPONSE and FRIEND_REQUEST_CANCELLED packets
+  when the target peer is offline, into the same `outgoing_queue`. These packets
+  are signed (not encrypted), so no cached key is required to build them.
+- **Storage.** The `outgoing_queue` table holds
+  `id, message_id (nullable), recipient_id, packet_type, encrypted_payload,
+  created_at, attempts, last_attempt`. The `messages` row for a queued message
+  carries `queued = 1` so the sender's UI can show the pending state. The
+  queued bytes are the exact MESSAGE / FRIEND_REQUEST / … packet payload that
+  would have been sent live, so replay is identical to a live send.
+- **Flush on reconnect.** When a peer transitions to `CONNECTED`,
+  `handle_peer_changed` invokes `flush_outgoing`, which drains
+  `outgoing_queue` for that `recipient_id`, re-transmits each packet over the
+  live connection, marks the local message `queued = 0`, and removes the queue
+  row. A successful delivery later produces the normal MESSAGE_ACK, which marks
+  the message `delivered`.
+- **Bounds.** Packets with `attempts >= 5` are no longer retried and are dropped
+  from the queue (`get_pending_outgoing` filters `attempts < 5`). Messages no
+  longer carry an expiry (`expires_at` was removed), so a queued message is held
+  until it is successfully flushed or hits the retry bound; the recipient accepts
+  it regardless of age when eventually flushed.
+- **TUI.** Queued outgoing messages render with a `stored and queued` status
+  until flushed (`sent`) and finally `delivered` on ACK. When the time a message
+  was actually received/delivered differs from its send time, the UI appends a
+  `(sent at <date/time>)` note so delayed/offline messages stay unambiguous.
+
 ## 8. Application Packet Types
 
 TCP and UDP carry the same Packet type byte (backend/meshtalk/protocol.py):
@@ -686,8 +739,9 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Protocol version | 1 | protocol.PROTOCOL_VERSION |
-| Min supported protocol version | 1 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
+| Protocol version | 2 | protocol.PROTOCOL_VERSION |
+| Min supported protocol version | 2 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
+| Legacy peer version | 0 | Default for peers omitting `protocol_version` in handshake |
 | Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports | protocol.DEFAULT_CAPABILITIES |
 | Max packet size | 64 KiB | protocol.MAX_PACKET_SIZE |
 | Discovery interval | 3 s | discovery.BROADCAST_INTERVAL |

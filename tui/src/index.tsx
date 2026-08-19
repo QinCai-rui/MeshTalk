@@ -1,6 +1,6 @@
 import { createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, type MouseEvent as TuiMouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions, type SelectProps } from "@opentui/react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 
 declare const APP_VERSION: string
@@ -32,6 +32,18 @@ type Peer = {
   protocol_version?: number
   // -1 means legacy peer (no version fields in handshake), displayed as v0
   remote_protocol_version?: number
+  // Present (and non-null) only when the backend determined this peer is
+  // incompatible with the local protocol version range. Computed by the
+  // backend so it survives restarts and missed handshake events.
+  version_mismatch?: {
+    remote_version: number
+    remote_min: number
+    local_version: number
+    local_min: number
+  } | null
+  // Authoritative list of messaging limitations for this peer, computed by
+  // the backend. Rendered directly by the UI (no client-side re-derivation).
+  delivery_warnings?: ("offline" | "not_friend" | "rendezvous_out_of_sync" | "incompatible")[]
   capabilities?: string[]
 }
 type Message = {
@@ -42,6 +54,8 @@ type Message = {
   created_at: number
   delivered?: number
   blocked?: number
+  queued?: number
+  received_at?: number
 }
 type FriendRequest = {
   request_id: string
@@ -108,12 +122,37 @@ function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 }
 
+function formatDateTime(timestamp: number): string {
+  const d = new Date(timestamp * 1000)
+  const yy = String(d.getFullYear()).slice(-2)
+  const mm = String(d.getMonth() + 1).padStart(2, "0")
+  const dd = String(d.getDate()).padStart(2, "0")
+  return `${dd}/${mm}/${yy} ${formatTime(timestamp)}`
+}
+
+function formatDateSeparator(timestamp: number): string {
+  const d = new Date(timestamp * 1000)
+  return d.toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" })
+}
+
+function dayKey(timestamp: number): string {
+  const d = new Date(timestamp * 1000)
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+}
+
+function formatTimeMinute(timestamp: number): string {
+  const d = new Date(timestamp * 1000)
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()} ${d.getHours()}:${d.getMinutes()}`
+}
+
 function transportName(transport?: Peer["active_transport"]): string {
   return transport === "lan_tcp" ? "LAN TCP" : transport === "remote_udp" ? "Remote UDP" : "No endpoint"
 }
 
 function peerPresence(peer: Peer): "active" | "away" | "offline" {
-  return peer.presence ?? (peer.is_online ? "away" : "offline")
+  // `presence` is computed authoritatively by the backend (it also accounts
+  // for `tui_active`); only fall back when the field is genuinely absent.
+  return peer.presence ?? "offline"
 }
 
 function friendMarkers(peer: Peer): string {
@@ -203,11 +242,10 @@ function ChatApp() {
   const [editingName, setEditingName] = useState(false)
   const [scrollFocused, setScrollFocused] = useState(false)
   const [deliveredMessageIds, setDeliveredMessageIds] = useState<Set<string>>(() => new Set())
-  const [blockedMessageIds, setBlockedMessageIds] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState("Connecting to backend...")
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
-  const [versionMismatches, setVersionMismatches] = useState<Record<string, { remote_version: number; remote_min: number; local_version: number; local_min: number }>>({})
+  const [blinkOn, setBlinkOn] = useState(true)
   const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number }>({ connected: false, reconnect_attempts: 0 })
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
@@ -331,20 +369,31 @@ function ChatApp() {
     return () => clearInterval(interval)
   }, [ipc])
 
+  useEffect(() => {
+    const interval = setInterval(() => setBlinkOn((value) => !value), 600)
+    return () => clearInterval(interval)
+  }, [])
+
   useEffect(() => ipc.onEvent((event: IPCEvent) => {
     if (event.event === "delivered") {
       const messageId = event.message_id as string
       setDeliveredMessageIds((current) => new Set(current).add(messageId))
       setMessages((current) => current.map((message) =>
-        message.message_id === messageId ? { ...message, delivered: 1 } : message
+        message.message_id === messageId ? { ...message, delivered: 1, queued: 0, received_at: Date.now() / 1000 } : message
       ))
       showStatus("Message delivered.")
+      return
+    }
+    if (event.event === "message_sent") {
+      const messageId = event.message_id as string
+      setMessages((current) => current.map((message) =>
+        message.message_id === messageId ? { ...message, queued: 0 } : message
+      ))
       return
     }
     if (event.event === "message_blocked") {
       const messageId = event.message_id as string
       const name = (event.display_name as string) ?? "a peer"
-      setBlockedMessageIds((current) => new Set(current).add(messageId))
       setMessages((current) => current.map((message) =>
         message.message_id === messageId ? { ...message, blocked: 1 } : message
       ))
@@ -386,21 +435,22 @@ function ChatApp() {
       return
     }
     if (event.event === "peer_version_mismatch") {
-      const peerId = event.peer_id as string
-      setVersionMismatches((current) => ({
-        ...current,
-        [peerId]: {
-          remote_version: event.remote_version as number,
-          remote_min: event.remote_min_version as number,
-          local_version: event.local_version as number,
-          local_min: event.local_min_version as number,
-        },
-      }))
-      showStatus(`Version mismatch with ${peers.find((p) => p.peer_id === peerId)?.display_name ?? peerId}.`)
+      const remoteMax = (event.remote_version as number) === -1 ? 0 : event.remote_version as number
+      const remoteMin = (event.remote_min_version as number) === -1 ? 0 : event.remote_min_version as number
+      const localMin = event.local_min_version as number
+      const localVersion = event.local_version as number
+      showStatus(`Incompatible peer protocol version: this peer supports v${remoteMin}-v${remoteMax}, local is v${localMin}-v${localVersion}. Features may not work correctly.`)
+      // The authoritative mismatch state is carried on each peer via
+      // refreshPeers()/peer_update; refresh so it shows without waiting.
+      void refreshPeers()
       return
     }
     if (event.event !== "message") {
-      if (event.event === "peer_update") void refreshPeers()
+      if (event.event === "peer_update") {
+        // Peer compatibility is now derived from the backend-computed
+        // `version_mismatch` field on each peer, so just reload the list.
+        void refreshPeers()
+      }
       return
     }
     const senderId = event.sender_id as string
@@ -422,9 +472,13 @@ function ChatApp() {
       recipient_id: "",
       content: event.content as string,
       created_at: event.created_at as number,
+      received_at: Date.now() / 1000,
     }])
     void ipc.send("messages", { peer_id: senderId }).then((response) => {
-      if (!response.error) setMessages(response.messages as Message[])
+      if (!response.error) {
+        setMessages(response.messages as Message[])
+        void refreshPeers()
+      }
     })
   }), [ipc, mutedPeers, peers, renderer, selectedPeerId, dialog])
 
@@ -444,6 +498,7 @@ function ChatApp() {
     ipc.send("messages", { peer_id: selectedPeerId }).then((response) => {
       if (response.error) throw new Error(response.error)
       setMessages(response.messages as Message[])
+      void refreshPeers()
     }).catch((error) => {
       if (!backendDisconnected.current) {
         setStatus(`History error: ${error instanceof Error ? error.message : String(error)}`)
@@ -1057,8 +1112,8 @@ function ChatApp() {
       showStatus("Message is empty.")
       return
     }
-    if (!recipientId || !identity || !selected?.is_online) {
-      showStatus("Select an active or away peer before sending.")
+    if (!recipientId || !identity) {
+      showStatus("Select a peer before sending.")
       return
     }
     if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) {
@@ -1069,6 +1124,7 @@ function ChatApp() {
     try {
       const response = await ipc.send("send", { recipient_id: recipientId, content })
       if (response.error) throw new Error(response.error)
+      const queued = Boolean(response.queued)
       setMessages((current) => [...current, {
         message_id: response.message_id as string,
         sender_id: identity.peer_id,
@@ -1076,6 +1132,7 @@ function ChatApp() {
         content,
         created_at: Date.now() / 1000,
         delivered: 0,
+        queued: queued ? 1 : 0,
       }])
       if (composer && composer === composerRef.current) {
         composer.selectAll()
@@ -1084,10 +1141,17 @@ function ChatApp() {
       setDrafts((current) => ({ ...current, [recipientId]: "" }))
       setDraftLength(0)
       setComposerHeight(MIN_COMPOSER_HEIGHT)
-      showStatus("Message sent. Waiting for delivery confirmation.")
+      showStatus(queued
+        ? "Message stored and queued. It will send when the peer is online."
+        : "Message sent. Waiting for delivery confirmation.")
     } catch (error) {
       if (!backendDisconnected.current) {
-        setStatus(`Send error: ${error instanceof Error ? error.message : String(error)}`)
+        const message = error instanceof Error ? error.message : String(error)
+        if (message.includes("No known public key")) {
+          showStatus(`You must connect to ${selected?.display_name ?? "this peer"} at least once before offline messages can be queued.`)
+        } else {
+          setStatus(`Send error: ${message}`)
+        }
       }
     } finally {
       setIsSending(false)
@@ -1181,7 +1245,7 @@ function ChatApp() {
                 style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
               >
                 <text truncate fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>
-                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
+                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.version_mismatch ? <span fg="#8a2e2e">INCOMPATIBLE</span> : presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
                 </text>
                 {peer.endpoints.length ? peer.endpoints.map((endpoint) => (
                   <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>
@@ -1200,28 +1264,26 @@ function ChatApp() {
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
-          {(
-            (selected && !selected.is_online) ||
-            (selected && selected.is_online && !selected.is_friend) ||
-            (selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected) ||
-            (selected && versionMismatches[selected.peer_id])
-          ) ? (
+          {(selected && (selected.delivery_warnings ?? []).length > 0) ? (
             <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
-              {selected && !selected.is_online ? (
-                <text wrapMode="word" fg="#e0a34a">This peer is offline. Messages cannot be sent until it reconnects.</text>
-              ) : null}
-              {selected && selected.is_online && !selected.is_friend ? (
-                <text wrapMode="word" fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (commands {'>'} friends {'>'} add friend).</text>
-              ) : null}
-              {selected && selected.is_online && selected.active_transport === "remote_udp" && !controlStatus.connected ? (
-                <text wrapMode="word" fg="#ff9f43">Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting ({controlStatus.reconnect_attempts}).</text>
-              ) : null}
-              {selected && versionMismatches[selected.peer_id] ? (() => {
-                const m = versionMismatches[selected.peer_id]
-                const remoteMax = m.remote_version === -1 ? 0 : m.remote_version
-                const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
-                return <text wrapMode="word" fg="#e0a34a">Version mismatch: this peer supports v{remoteMin}-v{remoteMax}, local is v{m.local_min}-v{m.local_version}. Features may not work correctly.</text>
-              })() : null}
+              {(selected.delivery_warnings ?? []).map((kind) => {
+                if (kind === "offline") {
+                  return <text key="offline" wrapMode="word" fg="#e0a34a">This peer is offline. Messages will be queued and delivered automatically upon reconnection.</text>
+                }
+                if (kind === "not_friend") {
+                  return <text key="not_friend" wrapMode="word" fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (commands {'>'} friends {'>'} add friend).</text>
+                }
+                if (kind === "rendezvous_out_of_sync") {
+                  return <text key="rendezvous_out_of_sync" wrapMode="word" fg="#ff9f43"><b>Out-of-sync with rendezvous server. Peer connectivity may degrade over time;</b> reconnecting ({controlStatus.reconnect_attempts}).</text>
+                }
+                if (kind === "incompatible" && selected.version_mismatch) {
+                  const m = selected.version_mismatch
+                  const remoteMax = m.remote_version === -1 ? 0 : m.remote_version
+                  const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
+                  return <text key="incompatible" wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}><b>{"⚠ Incompatible peer protocol version: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
+                }
+                return null
+              })}
             </box>
           ) : null}
           <scrollbox
@@ -1241,26 +1303,45 @@ function ChatApp() {
           >
             {!selected ? <text fg="#888888">Waiting for a connected peer.</text> : null}
             {selected && !messages.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
-            {messages.map((message) => {
+            {messages.map((message, index) => {
               const isLocal = message.sender_id === identity?.peer_id
               const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
-              const blocked = Boolean(message.blocked) || blockedMessageIds.has(message.message_id)
-              return (
+              const blocked = Boolean(message.blocked)
+              const queued = Boolean(message.queued)
+              const rows: ReactNode[] = []
+              const prev = messages[index - 1]
+              if (!prev || dayKey(prev.created_at) !== dayKey(message.created_at)) {
+                rows.push(
+                  <box key={`sep-${dayKey(message.created_at)}`} style={{ alignItems: "center", marginTop: 1, marginBottom: 1 }}>
+                    <text fg="#5b6b82">───── {formatDateSeparator(message.created_at)} ─────</text>
+                  </box>
+                )
+              }
+              const showReceived =
+                typeof message.received_at === "number" &&
+                formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
+              rows.push(
                 <box key={message.message_id} style={{ flexDirection: "column", marginBottom: 1 }}>
                   <text>
                     <span fg="#888888">{formatTime(message.created_at)} </span>
                     <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selected?.display_name}</span>
-                    {isLocal && <span fg={blocked ? "#ff7777" : "#888888"}> {blocked ? "blocked" : delivered ? "delivered" : "sent"}</span>}
+                    {isLocal && (
+                      <span fg={blocked ? "#ff7777" : queued ? "#d9b36b" : "#888888"}>
+                        {blocked ? " blocked" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
+                      </span>
+                    )}
+                    {showReceived && <span fg="#888888"> ({isLocal ? "peer delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                   </text>
                   <text wrapMode="word">{message.content}</text>
                 </box>
               )
+              return rows
             })}
           </scrollbox>
         </box>
 
         <box
-          title={selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: peer offline"}
+          title={selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: queued until peer is online"}
           bottomTitle={isSending ? "Sending..." : `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`}
           titleColor={limitColor ?? "#888888"}
           style={{ border: true, borderColor: limitColor ?? (!scrollFocused && !editingName && selected?.is_online ? "#6ea8fe" : undefined), flexShrink: 0, overflow: "hidden", padding: 1 }}
@@ -1269,8 +1350,8 @@ function ChatApp() {
             key={selectedPeerId ?? "no-peer"}
             ref={composerRef}
             initialValue={selectedPeerId ? drafts[selectedPeerId] ?? "" : ""}
-            placeholder={selected?.is_online ? "Write a message" : "Select an online peer"}
-            focused={Boolean(selected?.is_online) && !editingName && !scrollFocused && !isSending && !dialog}
+            placeholder={selected ? "Write a message" : "Select a peer"}
+            focused={Boolean(selected) && !editingName && !scrollFocused && !isSending && !dialog}
             onMouseDown={() => setScrollFocused(false)}
             onContentChange={() => {
               const composer = composerRef.current

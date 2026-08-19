@@ -93,8 +93,8 @@ def decrypt_endpoint_card(room: Room, payload: str, now: float | None = None) ->
     signing_key = bytes.fromhex(value["signing_public_key"])
     peer_id = hashlib.sha256(signing_key).hexdigest()
     current_time = time.time() if now is None else now
-    remote_version = value.get("version", 1)
-    remote_min = value.get("min_version", 1)
+    remote_version = value.get("version", 0)
+    remote_min = value.get("min_version", 0)
     if value.get("kind") != "endpoint" or negotiate_protocol_version(
         PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, remote_version, remote_min
     ) is None:

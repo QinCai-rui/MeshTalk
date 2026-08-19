@@ -248,9 +248,15 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.friend_a.send_friend_request(self.identity_a.peer_id)
 
-    async def test_send_friend_request_requires_connected_peer(self):
-        with self.assertRaises(ValueError):
-            await self.friend_a.send_friend_request(self.identity_b.peer_id)
+    async def test_offline_friend_request_is_queued(self):
+        request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
+        self.assertTrue(request_id)
+        request = await self.friend_a.db.get_friend_request(request_id)
+        self.assertEqual(request["status"], "pending")
+        self.assertEqual(request["direction"], "outgoing")
+        pending = await self.friend_a.db.get_pending_outgoing(self.identity_b.peer_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["packet_type"], PacketType.FRIEND_REQUEST.value)
 
     async def test_oversized_note_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -356,15 +362,18 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.friend_b.respond_to_friend_request(request_id, accept=True)
 
-    async def test_respond_when_requester_offline_raises(self):
+    async def test_respond_when_requester_offline_is_queued(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
         await asyncio.sleep(0.05)
         self._peer_from(self.manager_b, self.identity_a).writer.close()
         await asyncio.sleep(0.05)
-        with self.assertRaises(ValueError):
-            await self.friend_b.respond_to_friend_request(request_id, accept=True)
-        self.assertEqual((await self.friend_b.db.get_friend_request(request_id))["status"], "pending")
+        await self.friend_b.respond_to_friend_request(request_id, accept=True)
+        request = await self.friend_b.db.get_friend_request(request_id)
+        self.assertEqual(request["status"], "accepted")
+        pending = await self.friend_b.db.get_pending_outgoing(self.identity_a.peer_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["packet_type"], PacketType.FRIEND_REQUEST_RESPONSE.value)
 
     async def test_friend_response_event_contains_expected_fields(self):
         request_id = await self._become_friends()
@@ -465,7 +474,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_valid_blocked_notice_marks_outgoing_message_blocked(self):
         await self._connect_peers()
-        message_id = await self.router_a.send_message(self.identity_b.peer_id, b"hello")
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"hello")
         payload = self._signed_blocked(message_id, self.identity_b, self.identity_b)
         await self.friend_a.handle_packet(
             self._peer_from(self.manager_a, self.identity_b),
@@ -492,7 +501,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_blocked_notice_drops_local_friend(self):
         await self._become_friends()
         await self.friend_b.unfriend(self.identity_a.peer_id)
-        message_id = await self.router_a.send_message(self.identity_b.peer_id, b"hello again")
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"hello again")
         event = await self._wait_for_blocked()
         self.assertIsNotNone(event)
         self.assertEqual(event["message_id"], message_id)
@@ -503,7 +512,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_blocked_notice_for_never_friend_does_not_flag_removal(self):
         await self._connect_peers()
-        message_id = await self.router_a.send_message(self.identity_b.peer_id, b"hello stranger")
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"hello stranger")
         event = await self._wait_for_blocked()
         self.assertIsNotNone(event)
         self.assertEqual(event["message_id"], message_id)
@@ -716,14 +725,18 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.friend_cancelled_events, [])
 
-    async def test_cancel_when_recipient_offline_raises(self):
+    async def test_cancel_when_recipient_offline_is_queued(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
         await asyncio.sleep(0.05)
         self._peer_from(self.manager_a, self.identity_b).writer.close()
         await asyncio.sleep(0.05)
-        with self.assertRaises(ValueError):
-            await self.friend_a.cancel_friend_request(request_id)
+        await self.friend_a.cancel_friend_request(request_id)
+        request = await self.friend_a.db.get_friend_request(request_id)
+        self.assertEqual(request["status"], "cancelled")
+        pending = await self.friend_a.db.get_pending_outgoing(self.identity_b.peer_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["packet_type"], PacketType.FRIEND_REQUEST_CANCELLED.value)
 
     async def test_mutual_request_auto_cancelled_on_accept(self):
         await self._connect_peers()

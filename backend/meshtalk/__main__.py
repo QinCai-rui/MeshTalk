@@ -19,7 +19,7 @@ from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
 from .message_router import MessageRouter
 from .ipc import IPCServer
-from .protocol import PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION
+from .protocol import PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, Packet, PacketType
 from .rendezvous import RendezvousService
 from .settings import Settings
 
@@ -51,12 +51,39 @@ async def main(debug: bool = False) -> None:
 
     peer_manager.on_packet = router.handle_packet
 
+    async def flush_outgoing(peer_id: str) -> None:
+        peer = peer_manager.get_connected_peer(peer_id)
+        if peer is None:
+            return
+        items = await db.get_pending_outgoing(peer_id)
+        if not items:
+            return
+        for item in items:
+            try:
+                packet = Packet(PacketType(item["packet_type"]), item["encrypted_payload"])
+                await peer_manager.send_packet(peer, packet)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to flush queued packet for %s: %s", peer_id, exc)
+                await db.increment_outqueue_attempts(item["id"])
+                continue
+            if item["message_id"]:
+                await db.mark_message_sent(item["message_id"])
+                await ipc.broadcast_event({
+                    "event": "message_sent",
+                    "message_id": item["message_id"],
+                    "peer_id": peer_id,
+                })
+            await db.remove_from_outqueue(item["id"])
+        logger.info("Flushed %d queued item(s) to %s", len(items), peer_id)
+
     async def handle_peer_changed(peer_id: str) -> None:
         event = {"event": "peer_update", "peer_id": peer_id}
         peer = peer_manager.get_connected_peer(peer_id)
         if peer is not None:
             event.update(peer.negotiated())
         await ipc.broadcast_event(event)
+        if peer is not None:
+            await flush_outgoing(peer_id)
 
     peer_manager.on_peer_changed = handle_peer_changed
 
@@ -86,8 +113,31 @@ async def main(debug: bool = False) -> None:
         content = req.get("content", "")
         if not recipient:
             return {"error": "recipient_id required"}
-        msg_id = await router.send_message(recipient, content.encode())
-        return {"message_id": msg_id}
+        msg_id, queued = await router.send_message(recipient, content.encode())
+        return {"message_id": msg_id, "queued": queued}
+
+    def _peer_delivery_warnings(
+        connection: object | None,
+        is_friend: bool,
+        active_transport: str | None,
+        control_connected: bool,
+    ) -> list[str]:
+        """Authoritative per-peer messaging limitations.
+
+        The TUI renders these directly instead of re-deriving the rules
+        client-side, so the displayed warnings cannot drift from the
+        backend's actual policy.
+        """
+        if connection is None:
+            return ["offline"]
+        warnings = []
+        if not is_friend:
+            warnings.append("not_friend")
+        if active_transport == "remote_udp" and not control_connected:
+            warnings.append("rendezvous_out_of_sync")
+        if getattr(connection, "version_mismatch", None):
+            warnings.append("incompatible")
+        return warnings
 
     async def handle_peers(req: dict) -> dict:
         peers = await db.get_all_peers()
@@ -118,8 +168,15 @@ async def main(debug: bool = False) -> None:
                 "friend_request": friend_requests.get(peer["peer_id"]),
                 "protocol_version": connection.protocol_version if connection else None,
                 "remote_protocol_version": connection.remote_protocol_version if connection else None,
+                "version_mismatch": connection.version_mismatch if connection else None,
+                "delivery_warnings": _peer_delivery_warnings(
+                    connection,
+                    peer["peer_id"] in friends,
+                    (network_info := peer_manager.get_network_info(peer["peer_id"])).get("active_transport"),
+                    rendezvous.connected,
+                ),
                 "capabilities": list(connection.capabilities) if connection else [],
-                **peer_manager.get_network_info(peer["peer_id"]),
+                **network_info,
             }
             for peer in peers
         ]}
@@ -221,6 +278,7 @@ async def main(debug: bool = False) -> None:
 
     async def handle_status(req: dict) -> dict:
         connected = peer_manager.get_connected_peers()
+        friends = {peer["peer_id"] for peer in await db.get_friends()}
         return {
             "peer_id": identity.peer_id,
             "connected_peers": len(connected),
@@ -231,8 +289,15 @@ async def main(debug: bool = False) -> None:
                     "is_online": 1,
                     "protocol_version": peer.protocol_version,
                     "remote_protocol_version": peer.remote_protocol_version,
+                    "version_mismatch": peer.version_mismatch,
+                    "delivery_warnings": _peer_delivery_warnings(
+                        peer,
+                        peer.peer_id in friends,
+                        (network_info := peer_manager.get_network_info(peer.peer_id)).get("active_transport"),
+                        rendezvous.connected,
+                    ),
                     "capabilities": list(peer.capabilities),
-                    **peer_manager.get_network_info(peer.peer_id),
+                    **network_info,
                 }
                 for peer in connected
             ],

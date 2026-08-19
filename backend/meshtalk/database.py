@@ -30,18 +30,20 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT,
     encrypted_content BLOB,
     created_at REAL NOT NULL,
-    expires_at REAL NOT NULL,
     hop_count INTEGER NOT NULL DEFAULT 0,
     max_hops INTEGER NOT NULL DEFAULT 10,
     delivered INTEGER NOT NULL DEFAULT 0,
     stored INTEGER NOT NULL DEFAULT 0,
-    read_at REAL
+    queued INTEGER NOT NULL DEFAULT 0,
+    read_at REAL,
+    received_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS outgoing_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    message_id TEXT NOT NULL,
+    message_id TEXT,
     recipient_id TEXT NOT NULL,
+    packet_type INTEGER NOT NULL DEFAULT 0,
     encrypted_payload BLOB NOT NULL,
     created_at REAL NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -109,6 +111,18 @@ class Database:
             await self._db.execute("ALTER TABLE messages ADD COLUMN read_at REAL")
         if "blocked" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
+        if "queued" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN queued INTEGER NOT NULL DEFAULT 0")
+        if "received_at" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN received_at REAL")
+        if "expires_at" in message_columns:
+            try:
+                await self._db.execute("ALTER TABLE messages DROP COLUMN expires_at")
+            except Exception:
+                pass
+        queue_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(outgoing_queue)")}
+        if "packet_type" not in queue_columns:
+            await self._db.execute("ALTER TABLE outgoing_queue ADD COLUMN packet_type INTEGER NOT NULL DEFAULT 0")
         friend_request_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(friend_requests)")}
         if "recipient_id" not in friend_request_columns:
             await self._db.execute("ALTER TABLE friend_requests ADD COLUMN recipient_id TEXT NOT NULL DEFAULT ''")
@@ -231,9 +245,9 @@ class Database:
     ) -> list[dict]:
         """Return the latest direct messages with one peer in chronological order."""
         async with self._db.execute(
-            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked
+            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, received_at
                FROM (
-                   SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked
+                   SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, received_at
                    FROM messages
                    WHERE (sender_id = ? AND recipient_id = ?)
                       OR (sender_id = ? AND recipient_id = ?)
@@ -254,8 +268,8 @@ class Database:
         await self._db.execute(
             """INSERT OR IGNORE INTO messages
                 (message_id, sender_id, recipient_id, content, encrypted_content,
-                 created_at, expires_at, hop_count, max_hops, read_at, blocked)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 created_at, hop_count, max_hops, read_at, blocked, queued, received_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 msg["message_id"],
                 msg["sender_id"],
@@ -263,11 +277,12 @@ class Database:
                 self._encrypt_content(msg["content"]) if msg.get("content") is not None else None,
                 msg["encrypted_content"],
                 msg["created_at"],
-                msg["expires_at"],
                 msg["hop_count"],
                 msg["max_hops"],
                 msg.get("read_at"),
                 msg.get("blocked", 0),
+                msg.get("queued", 0),
+                msg.get("received_at"),
             ),
         )
         await self._db.commit()
@@ -296,29 +311,41 @@ class Database:
     async def cleanup_expired(self) -> None:
         now = time.time()
         await self._db.execute(
-            "DELETE FROM messages WHERE expires_at < ?", (now,)
-        )
-        await self._db.execute(
             "DELETE FROM seen_messages WHERE seen_at < ?", (now - 86400,)
         )
         await self._db.commit()
 
     async def add_to_outqueue(
-        self, message_id: str, recipient_id: str, encrypted_payload: bytes
+        self,
+        recipient_id: str,
+        packet_type: int,
+        encrypted_payload: bytes,
+        message_id: str | None = None,
     ) -> None:
         await self._db.execute(
             """INSERT INTO outgoing_queue
-               (message_id, recipient_id, encrypted_payload, created_at)
-               VALUES (?, ?, ?, ?)""",
-            (message_id, recipient_id, encrypted_payload, time.time()),
+               (message_id, recipient_id, packet_type, encrypted_payload, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (message_id, recipient_id, packet_type, encrypted_payload, time.time()),
         )
         await self._db.commit()
 
-    async def get_pending_outgoing(self) -> list[dict]:
-        async with self._db.execute(
-            "SELECT * FROM outgoing_queue WHERE attempts < 5"
-        ) as cursor:
+    async def get_pending_outgoing(self, recipient_id: str | None = None) -> list[dict]:
+        if recipient_id is None:
+            query = "SELECT * FROM outgoing_queue WHERE attempts < 5"
+            params: tuple = ()
+        else:
+            query = "SELECT * FROM outgoing_queue WHERE recipient_id = ? AND attempts < 5"
+            params = (recipient_id,)
+        async with self._db.execute(query, params) as cursor:
             return [dict(row) async for row in cursor]
+
+    async def increment_outqueue_attempts(self, queue_id: int) -> None:
+        await self._db.execute(
+            "UPDATE outgoing_queue SET attempts = attempts + 1, last_attempt = ? WHERE id = ?",
+            (time.time(), queue_id),
+        )
+        await self._db.commit()
 
     async def remove_from_outqueue(self, queue_id: int) -> None:
         await self._db.execute(
@@ -329,14 +356,21 @@ class Database:
     async def get_stored_messages_for(self, peer_id: str) -> list[dict]:
         async with self._db.execute(
             """SELECT * FROM messages
-               WHERE recipient_id = ? AND stored = 1 AND expires_at > ?""",
-            (peer_id, time.time()),
+               WHERE recipient_id = ? AND stored = 1""",
+            (peer_id,),
         ) as cursor:
             return [dict(row) async for row in cursor]
 
     async def mark_message_delivered(self, message_id: str) -> None:
         await self._db.execute(
-            "UPDATE messages SET delivered = 1 WHERE message_id = ?", (message_id,)
+            "UPDATE messages SET delivered = 1, queued = 0, received_at = ? WHERE message_id = ?",
+            (time.time(), message_id),
+        )
+        await self._db.commit()
+
+    async def mark_message_sent(self, message_id: str) -> None:
+        await self._db.execute(
+            "UPDATE messages SET queued = 0 WHERE message_id = ?", (message_id,)
         )
         await self._db.commit()
 

@@ -355,8 +355,8 @@ class UdpTransport:
         peer_id = hashlib.sha256(signing_key).hexdigest()
         if value.get("peer_id") != peer_id:
             raise ValueError("UDP handshake identity mismatch")
-        remote_version = value.get("version", 1)
-        remote_min = value.get("min_version", 1)
+        remote_version = value.get("version", 0)
+        remote_min = value.get("min_version", 0)
         agreed_version = negotiate_protocol_version(
             PROTOCOL_VERSION,
             MIN_SUPPORTED_PROTOCOL_VERSION,
@@ -364,6 +364,7 @@ class UdpTransport:
             remote_min,
         )
         if agreed_version is None:
+            logger.warning("Incompatible UDP protocol version with peer %s (remote v%d, min v%d); features may not work properly", peer_id, remote_version, remote_min)
             if self.on_version_mismatch is not None:
                 self.on_version_mismatch(peer_id, remote_version, remote_min)
             raise ValueError(f"UDP handshake protocol version mismatch: remote (v{remote_version}, min v{remote_min})")
