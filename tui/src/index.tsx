@@ -114,6 +114,7 @@ type Dialog =
   | { kind: "block-peer"; peerId: string; displayName: string }
   | { kind: "cancel-friend-confirm"; requestId: string; displayName: string }
   | { kind: "notifications" }
+  | { kind: "accessibility" }
   | { kind: "debug" }
   | { kind: "debug-endpoints" }
   | { kind: "debug-peer"; peerId: string; displayName: string }
@@ -246,6 +247,7 @@ function ChatApp() {
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
   const [blinkOn, setBlinkOn] = useState(true)
+  const [flashingEnabled, setFlashingEnabled] = useState(true)
   const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number }>({ connected: false, reconnect_attempts: 0 })
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
@@ -370,9 +372,10 @@ function ChatApp() {
   }, [ipc])
 
   useEffect(() => {
+    if (!flashingEnabled) return
     const interval = setInterval(() => setBlinkOn((value) => !value), 600)
     return () => clearInterval(interval)
-  }, [])
+  }, [flashingEnabled])
 
   useEffect(() => ipc.onEvent((event: IPCEvent) => {
     if (event.event === "delivered") {
@@ -1016,6 +1019,8 @@ function ChatApp() {
       showDialog({ kind: "friends" })
     } else if (command === "notifications") {
       showDialog({ kind: "notifications" })
+    } else if (command === "accessibility") {
+      showDialog({ kind: "accessibility" })
     } else if (command === "rename") {
       const displayName = identity?.display_name ?? ""
       setNameDraft(displayName)
@@ -1280,7 +1285,7 @@ function ChatApp() {
                   const m = selected.version_mismatch
                   const remoteMax = m.remote_version === -1 ? 0 : m.remote_version
                   const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
-                  return <text key="incompatible" wrapMode="word" fg={blinkOn ? "#ff5555" : "#8a2e2e"}><b>{"⚠ Incompatible peer protocol version: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
+                  return <text key="incompatible" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff5555" : "#8a2e2e"}><b>{"⚠ Incompatible peer protocol version: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
                 }
                 return null
               })}
@@ -1396,6 +1401,7 @@ function ChatApp() {
               : dialog.kind === "friend-request-incoming" ? "Friend request"
               : dialog.kind === "friends" ? "Friends"
               : dialog.kind === "notifications" ? "Notifications"
+              : dialog.kind === "accessibility" ? "Accessibility"
               : dialog.kind === "blocked" ? "Blocked friends"
               : dialog.kind === "block-peer-pick" ? "Block a peer"
               : dialog.kind === "block-peer" ? "Block friend requests"
@@ -1416,6 +1422,7 @@ function ChatApp() {
                   { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
                   { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
                   { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
+                  { name: "Accessibility", description: "Reduce motion and other accessibility options", value: "accessibility" },
                   { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
                   { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
                 ]}
@@ -1762,6 +1769,32 @@ height={Math.max(5, dialogHeight - 3)}
                 </>
               )
             })()}
+            {dialog.kind === "accessibility" && (
+              <>
+                <text fg="#888888">Reduce motion and other accessibility options.</text>
+                <MouseSelect
+                  focused
+                  height={Math.max(4, dialogHeight - 4)}
+                  options={[
+                    {
+                      name: flashingEnabled ? "Disable Flashing" : "Re-enable Flashing",
+                      description: flashingEnabled
+                        ? "Stop the incompatible-version warning from blinking (flashing)"
+                        : "Allow the incompatible-version warning to blink (flashing)",
+                      value: "toggle-flash",
+                    },
+                    { name: "Back to commands", description: "Return to the command palette", value: "back" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (!option) return
+                    if (option.value === "toggle-flash") setFlashingEnabled((value) => !value)
+                    else showDialog({ kind: "commands" })
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
             {dialog.kind === "blocked" && (
               <>
                 {!dialog.blocked.length && <text fg="#888888">No blocked peers. Blocked peers cannot send you friend requests.</text>}
