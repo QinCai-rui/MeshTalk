@@ -76,6 +76,7 @@ type GroupMember = {
   peer_id?: string
   member_id?: string
   display_name: string
+  is_online?: boolean
 }
 type Conversation = { kind: "peer" | "group"; id: string }
 type FriendRequest = {
@@ -1473,6 +1474,18 @@ function ChatApp() {
                   {group.group_id === selectedGroupId ? "> " : "  "}{compact ? group.name.slice(0, 14) : group.name}{group.unread_count ? ` (${group.unread_count} new)` : ""}
                 </text>
                 <text fg="#718096">  {group.member_count} member{group.member_count === 1 ? "" : "s"}</text>
+                {group.group_id === selectedGroupId && groupMembers[group.group_id]?.map((member, index) => {
+                  const memberId = member.peer_id ?? member.member_id
+                  const knownPeer = peers.find((peer) => peer.peer_id === memberId)
+                  const color = memberId === identity?.peer_id
+                    ? "#65a9ff"
+                    : knownPeer
+                      ? peerPresence(knownPeer) === "active" ? "#66dd88" : peerPresence(knownPeer) === "away" ? "#e0a34a" : "#888888"
+                      : member.is_online ? "#66dd88" : "#888888"
+                  return <text key={memberId ?? String(index)} truncate fg={color}>
+                    {"    "}{compact ? member.display_name.slice(0, 12) : member.display_name}
+                  </text>
+                })}
               </box>
             ))}
           </scrollbox>
@@ -1534,6 +1547,13 @@ function ChatApp() {
               const senderName = groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === message.sender_id)?.display_name
                 ?? peers.find((peer) => peer.peer_id === message.sender_id)?.display_name
                 ?? "Unknown member"
+              const renderedContent = isSystem
+                ? message.kind === "join"
+                  ? `${senderName} joined the group`
+                  : message.kind === "leave"
+                    ? `${senderName} left the group`
+                    : message.content
+                : message.content
               const rows: ReactNode[] = []
               const prev = messages[index - 1]
               if (!prev || dayKey(prev.created_at) !== dayKey(message.created_at)) {
@@ -1558,7 +1578,7 @@ function ChatApp() {
                     )}
                     {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                   </text>
-                  <text wrapMode="word">{message.content}</text>
+                  <text wrapMode="word">{renderedContent}</text>
                 </box>
               )
               return rows

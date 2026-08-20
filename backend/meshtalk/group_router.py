@@ -60,10 +60,9 @@ class GroupRouter:
         stored = await self.db.get_peer(peer_id)
         display_name = peer.display_name if peer else (stored or {}).get("display_name", "Anonymous")
         capable = peer.supports(CAP_GROUP_CHAT) if peer else None
-        joined = await self.db.upsert_group_member(group_id, peer_id, display_name, group_capable=capable)
-        if joined:
-            await self._save_system_event(group_id, peer_id, f"{display_name} joined the group", "join")
-            await self._emit({"event": "group_member_joined", "group_id": group_id, "peer_id": peer_id, "display_name": display_name})
+        await self.db.upsert_group_member(group_id, peer_id, display_name, group_capable=capable)
+        if peer is not None or (stored and display_name != "Anonymous"):
+            await self._announce_join(group_id, peer_id, display_name)
 
     async def peer_connected(self, peer_id: str) -> None:
         peer = self.peer_manager.get_connected_peer(peer_id)
@@ -76,6 +75,19 @@ class GroupRouter:
                     group["group_id"], peer_id, peer.display_name,
                     group_capable=peer.supports(CAP_GROUP_CHAT),
                 )
+                await self._announce_join(group["group_id"], peer_id, peer.display_name)
+
+    async def _announce_join(self, group_id: str, peer_id: str, display_name: str) -> None:
+        if not await self.db.claim_group_join_announcement(group_id, peer_id):
+            return
+        # The TUI resolves sender_id to the current roster name when rendering.
+        # Persist the immutable ID so name changes do not rewrite group history.
+        content = f"{peer_id} joined the group"
+        await self._save_system_event(group_id, peer_id, content, "join")
+        await self._emit({
+            "event": "group_member_joined", "group_id": group_id,
+            "peer_id": peer_id, "display_name": display_name,
+        })
 
     async def send_message(self, group_id: str, plaintext: bytes) -> tuple[str, list[dict]]:
         if len(plaintext) > MAX_GROUP_MESSAGE_CONTENT_SIZE:
@@ -272,7 +284,8 @@ class GroupRouter:
         await self.db.mark_message_seen(leave.event_id)
         await self.db.mark_group_member_left(leave.group_id, peer.peer_id)
         await self._save_system_event(
-            leave.group_id, peer.peer_id, f"{peer.display_name} left the group", "leave"
+            leave.group_id, peer.peer_id,
+            f"{peer.peer_id} left the group", "leave"
         )
         await self._emit({
             "event": "group_member_left", "group_id": leave.group_id,

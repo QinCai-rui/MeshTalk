@@ -125,7 +125,9 @@ class RendezvousIntegrationTest(unittest.IsolatedAsyncioTestCase):
                     while not manager_b.get_connected_peer(identity_a.peer_id):
                         await asyncio.sleep(0.02)
                 request_id = await friend_a.send_friend_request(identity_b.peer_id)
-                await asyncio.sleep(0.05)
+                async with asyncio.timeout(2):
+                    while await db_b.get_friend_request(request_id) is None:
+                        await asyncio.sleep(0.02)
                 await friend_b.respond_to_friend_request(request_id, accept=True)
                 await asyncio.sleep(0.05)
                 message_id, _ = await router_a.send_message(identity_b.peer_id, b"rendezvous secret")

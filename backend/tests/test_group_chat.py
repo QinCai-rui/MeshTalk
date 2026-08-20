@@ -91,6 +91,22 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
                     break
                 await asyncio.sleep(0.02)
 
+    async def test_join_event_waits_for_handshake_name_and_is_deduplicated(self):
+        group = self.groups[0]
+        peer_id = self.identities[1].peer_id
+        await self.databases[0].remove_group(self.group_id)
+        await self.databases[0].upsert_group(self.group_id, "Core Team")
+        before = await self.databases[0].get_group_messages(self.group_id)
+        await self.databases[0].upsert_group_member(self.group_id, peer_id, "Anonymous")
+        self.assertEqual(len(await self.databases[0].get_group_messages(self.group_id)), len(before))
+
+        await group.peer_connected(peer_id)
+        await group.peer_connected(peer_id)
+        messages = await self.databases[0].get_group_messages(self.group_id)
+        joins = [message for message in messages if message["kind"] == "join"]
+        self.assertEqual(len(joins), len([message for message in before if message["kind"] == "join"]) + 1)
+        self.assertIn(peer_id, joins[0]["content"])
+
     async def test_offline_known_member_is_queued(self):
         peer = self.managers[0].get_connected_peer(self.identities[2].peer_id)
         self.assertIsNotNone(peer)
@@ -117,6 +133,11 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
                 if member and not member["active"]:
                     break
                 await asyncio.sleep(0.02)
+        events = await self.databases[0].get_group_messages(self.group_id)
+        self.assertIn(
+            f"{self.identities[2].peer_id} left the group",
+            [event["content"] for event in events],
+        )
 
     async def test_blocked_member_is_excluded_from_fanout(self):
         await self.databases[0].block_peer(self.identities[2].peer_id, "Cara")
@@ -138,6 +159,14 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
             for item in await self.databases[0].get_group_deliveries(message_id)
         }
         self.assertEqual(statuses[recipient_id], "delivered")
+
+    async def test_delivery_uses_cached_group_member_name(self):
+        peer_id = "f" * 64
+        await self.databases[0].upsert_group_member(self.group_id, peer_id, "Offline peer")
+        message_id, deliveries = await self.groups[0].send_message(self.group_id, b"status")
+
+        matching = next(delivery for delivery in deliveries if delivery["recipient_id"] == peer_id)
+        self.assertEqual(matching["display_name"], "Offline peer")
 
     async def test_one_recipient_send_failure_does_not_abort_fanout(self):
         failed_id = self.identities[1].peer_id

@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS group_members (
     active INTEGER NOT NULL DEFAULT 1,
     left_at REAL,
     group_capable INTEGER,
+    join_announced INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (group_id, peer_id)
 );
 
@@ -170,6 +171,8 @@ class Database:
         group_member_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_members)")}
         if "group_capable" not in group_member_columns:
             await self._db.execute("ALTER TABLE group_members ADD COLUMN group_capable INTEGER")
+        if "join_announced" not in group_member_columns:
+            await self._db.execute("ALTER TABLE group_members ADD COLUMN join_announced INTEGER NOT NULL DEFAULT 0")
         await self._encrypt_existing_message_content()
         await self._db.commit()
 
@@ -471,11 +474,24 @@ class Database:
                  last_seen = excluded.last_seen,
                  active = excluded.active,
                  left_at = NULL,
-                 group_capable = COALESCE(excluded.group_capable, group_members.group_capable)""",
+                 group_capable = COALESCE(excluded.group_capable, group_members.group_capable),
+                 join_announced = CASE
+                   WHEN group_members.active = 0 AND excluded.active = 1 THEN 0
+                   ELSE group_members.join_announced
+                 END""",
             (group_id, peer_id, display_name, now, now, int(active), None if group_capable is None else int(group_capable)),
         )
         await self._db.commit()
         return existing is None or not bool(existing["active"])
+
+    async def claim_group_join_announcement(self, group_id: str, peer_id: str) -> bool:
+        cursor = await self._db.execute(
+            """UPDATE group_members SET join_announced = 1
+               WHERE group_id = ? AND peer_id = ? AND active = 1 AND join_announced = 0""",
+            (group_id, peer_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
 
     async def get_group_member(self, group_id: str, peer_id: str) -> dict | None:
         async with self._db.execute(
@@ -557,9 +573,12 @@ class Database:
 
     async def get_group_deliveries(self, message_id: str) -> list[dict]:
         async with self._db.execute(
-            """SELECT d.recipient_id, COALESCE(p.display_name, d.recipient_id) AS display_name,
+            """SELECT d.recipient_id, COALESCE(p.display_name, gm.display_name, d.recipient_id) AS display_name,
                       d.status, d.updated_at
-               FROM group_deliveries d LEFT JOIN peers p ON p.peer_id = d.recipient_id
+               FROM group_deliveries d
+               LEFT JOIN group_messages m ON m.message_id = d.message_id
+               LEFT JOIN group_members gm ON gm.group_id = m.group_id AND gm.peer_id = d.recipient_id
+               LEFT JOIN peers p ON p.peer_id = d.recipient_id
                WHERE d.message_id = ? ORDER BY display_name""",
             (message_id,),
         ) as cursor:
