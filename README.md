@@ -1,5 +1,9 @@
 # MeshTalk
 
+<div align="center">
+  <sub><i>LETSSS GETTT MESHINGGG...</i></sub>
+</div>
+
 > [!WARNING]
 > MeshTalk does not use post-quantum key exchange. All key agreement uses X25519
 > (Curve25519), which is vulnerable to quantum attacks via Shor's algorithm.
