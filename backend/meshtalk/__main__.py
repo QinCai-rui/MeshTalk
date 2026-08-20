@@ -28,7 +28,7 @@ logger = logging.getLogger("meshtalk")
 DATA_DIR = Path.home() / ".meshtalk"
 
 
-async def main(debug: bool = False) -> None:
+async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
     logging.basicConfig(
         level=logging.DEBUG if debug else logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -269,6 +269,10 @@ async def main(debug: bool = False) -> None:
     async def handle_tui_disconnect(client_id: str) -> None:
         await update_tui_presence(client_id, False)
 
+    async def handle_detached() -> None:
+        logger.info("IPC detachment detected; stopping backend")
+        stop_event.set()
+
     async def handle_identity(req: dict) -> dict:
         return {
             "peer_id": identity.peer_id,
@@ -465,7 +469,12 @@ async def main(debug: bool = False) -> None:
         "debug_info": handle_debug_info,
         "shutdown": handle_shutdown,
     }
-    ipc = IPCServer(ipc_handlers, on_tui_disconnect=handle_tui_disconnect)
+    ipc = IPCServer(
+        ipc_handlers,
+        on_tui_disconnect=handle_tui_disconnect,
+        on_detached=handle_detached if exit_when_detached else None,
+        exit_when_detached=exit_when_detached,
+    )
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
     friend_manager.on_friend_request = lambda event: ipc.broadcast_event({"event": "friend_request", **event})
@@ -511,7 +520,8 @@ async def main(debug: bool = False) -> None:
 
 def run() -> None:
     debug = "--debug" in sys.argv[1:]
-    asyncio.run(main(debug))
+    exit_when_detached = "--exit-when-detached" in sys.argv[1:]
+    asyncio.run(main(debug, exit_when_detached))
 
 
 if __name__ == "__main__":
