@@ -17,6 +17,7 @@ from .identity import Identity
 from .protocol import (
     HEADER_SIZE,
     CAP_PROFILE_SYNC,
+    CAP_GROUP_CHAT,
     HandshakePayload,
     Packet,
     PacketType,
@@ -306,6 +307,7 @@ class PeerManager:
         peer.display_name = display_name
         peer.encryption_public_key = encryption_public_key
         peer.signing_public_key = signing_public_key
+        peer.capabilities = self.udp.get_capabilities(peer_id)
         self._udp_peers[peer_id] = peer
         self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = peer.endpoint
         active = self.peers.get(peer_id)
@@ -452,6 +454,8 @@ class PeerManager:
         try:
             Ed25519PublicKey.from_public_bytes(payload.signing_public_key).verify(payload.signature, payload.signed_bytes())
         except InvalidSignature:
+            if not payload.legacy:
+                raise ValueError("Invalid handshake signature")
             try:
                 Ed25519PublicKey.from_public_bytes(payload.signing_public_key).verify(payload.signature, payload.signed_bytes(legacy=True))
             except InvalidSignature as exc:
@@ -467,6 +471,8 @@ class PeerManager:
         peer.remote_min_protocol_version = payload.min_protocol_version
         # The connection only enables capabilities advertised by *both* peers.
         peer.capabilities = intersect_capabilities(DEFAULT_CAPABILITIES, payload.capabilities)
+        if payload.protocol_version < 2:
+            peer.capabilities = [capability for capability in peer.capabilities if capability != CAP_GROUP_CHAT]
         logger.debug(
             "Authenticated key exchange with %s: signing=%s encryption=%s version=v%d caps=%s",
             peer.peer_id,

@@ -31,7 +31,9 @@ from .protocol import (
     PROTOCOL_VERSION,
     MIN_SUPPORTED_PROTOCOL_VERSION,
     DEFAULT_CAPABILITIES,
+    LEGACY_CAPABILITIES,
     Packet,
+    intersect_capabilities,
     negotiate_protocol_version,
 )
 
@@ -141,6 +143,7 @@ class Session:
     local_hello: bytes
     remote_nonce: bytes
     remote_session_public_key: bytes
+    capabilities: list[str] = field(default_factory=list)
     confirmed: bool = False
     connected_notified: bool = False
     created_at: float = field(default_factory=time.monotonic)
@@ -357,6 +360,7 @@ class UdpTransport:
             raise ValueError("UDP handshake identity mismatch")
         remote_version = value.get("version", 0)
         remote_min = value.get("min_version", 0)
+        remote_capabilities = value.get("capabilities", LEGACY_CAPABILITIES)
         agreed_version = negotiate_protocol_version(
             PROTOCOL_VERSION,
             MIN_SUPPORTED_PROTOCOL_VERSION,
@@ -418,6 +422,7 @@ class UdpTransport:
             peer_id, addr, session_id, transmit[0], receive[0], transmit[1], receive[1],
             Identity.normalize_display_name(value["display_name"]), encryption_key, signing_key,
             attempt.hello, nonce, session_key,
+            intersect_capabilities(DEFAULT_CAPABILITIES, remote_capabilities),
         )
         self._sessions[peer_id] = session
         self._sessions_by_id[session_id] = session
@@ -528,6 +533,10 @@ class UdpTransport:
             header + hmac.digest(session.transmit_authentication_key, header, "sha256")[:16],
             session.endpoint,
         )
+
+    def get_capabilities(self, peer_id: str) -> list[str]:
+        session = self._sessions.get(peer_id)
+        return list(session.capabilities) if session else []
 
     def _session_for(
         self, session_id: bytes, addr: Endpoint, require_confirmation: bool = False

@@ -49,14 +49,37 @@ type Peer = {
 type Message = {
   message_id: string
   sender_id: string
-  recipient_id: string
+  recipient_id?: string
+  group_id?: string
   content: string
   created_at: number
+  kind?: string
+  deliveries?: GroupDelivery[]
   delivered?: number
   blocked?: number
   queued?: number
   received_at?: number
 }
+type GroupDelivery = {
+  recipient_id: string
+  display_name: string
+  status: string
+  updated_at: number
+}
+type Group = {
+  group_id: string
+  name: string
+  member_count: number
+  unread_count: number
+}
+type GroupMember = {
+  peer_id?: string
+  member_id?: string
+  display_name: string
+  is_online?: boolean
+  show_in_sidebar?: boolean
+}
+type Conversation = { kind: "peer" | "group"; id: string }
 type FriendRequest = {
   request_id: string
   sender_id: string
@@ -76,6 +99,8 @@ type BlockedPeer = {
 type RoomStatus = {
   room_id: string
   members: number
+  group_id?: string | null
+  name?: string | null
 }
 type ControlStatus = {
   url?: string
@@ -98,9 +123,11 @@ type Dialog =
   | { kind: "control-custom"; firstRun?: boolean }
   | { kind: "control-status"; control: ControlStatus }
   | { kind: "rooms"; rooms: RoomStatus[] }
+  | { kind: "room-create" }
   | { kind: "room-join" }
   | { kind: "room-created"; roomId: string; invite: string; copied: boolean; created?: boolean }
   | { kind: "room-detail"; room: RoomStatus }
+  | { kind: "group-detail"; group: Group; members: GroupMember[] }
   | { kind: "rename"; firstRun?: boolean }
   | { kind: "mute-timeout"; peerId: string; displayName: string }
   | { kind: "unmute-confirm"; peerId: string; displayName: string }
@@ -172,6 +199,23 @@ function composerLimitColor(length: number): string | undefined {
   return undefined
 }
 
+function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
+  if (!deliveries.length) return "sent"
+  const delivered = deliveries.filter((delivery) => delivery.status === "delivered").length
+  const queued = deliveries.filter((delivery) => delivery.status === "queued")
+  const unavailable = deliveries.filter((delivery) => delivery.status === "unavailable")
+  const details = [`delivered ${delivered}/${deliveries.length}`]
+  if (queued.length) details.push(`queued for ${queued.map((delivery) => delivery.display_name).join(", ")}`)
+  if (unavailable.length) details.push(`unavailable for ${unavailable.map((delivery) => delivery.display_name).join(", ")}`)
+  return details.join(", ")
+}
+
+function groupFromResponse(response: Record<string, unknown>): Group | undefined {
+  if (response.group && typeof response.group === "object") return response.group as Group
+  if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined
+  return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 }
+}
+
 function MouseSelect(props: SelectProps) {
   const computeIndex = (
     sel: {
@@ -232,8 +276,10 @@ function ChatApp() {
   const [ipc] = useState(() => new IPCClient())
   const [tuiClientId] = useState(() => crypto.randomUUID())
   const [peers, setPeers] = useState<Peer[]>([])
+  const [groups, setGroups] = useState<Group[]>([])
+  const [groupMembers, setGroupMembers] = useState<Record<string, GroupMember[]>>({})
   const [identity, setIdentity] = useState<{ peer_id: string; display_name: string }>()
-  const [selectedPeerId, setSelectedPeerId] = useState<string>()
+  const [selection, setSelection] = useState<Conversation>()
   const [messages, setMessages] = useState<Message[]>([])
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [draftLength, setDraftLength] = useState(0)
@@ -262,6 +308,9 @@ function ChatApp() {
   const clipboard = useRef<ReturnType<typeof createClipboard> | null>(null)
   const dialogAction = useRef(0)
   const dialogBusyRef = useRef(false)
+  const selectedPeerId = selection?.kind === "peer" ? selection.id : undefined
+  const selectedGroupId = selection?.kind === "group" ? selection.id : undefined
+  const selectionKey = selection ? `${selection.kind}:${selection.id}` : undefined
 
   function showStatus(message: string) {
     if (statusReset.current) clearTimeout(statusReset.current)
@@ -282,7 +331,28 @@ function ChatApp() {
       second.is_online - first.is_online || first.display_name.localeCompare(second.display_name)
     )
     setPeers(next)
-    setSelectedPeerId((current) => current && next.some((peer) => peer.peer_id === current) ? current : next[0]?.peer_id)
+    setSelection((current) => current && (current.kind === "group" || next.some((peer) => peer.peer_id === current.id))
+      ? current
+      : next[0] ? { kind: "peer", id: next[0].peer_id } : groups[0] ? { kind: "group", id: groups[0].group_id } : undefined)
+  }
+
+  async function refreshGroups() {
+    const response = await ipc.send("groups")
+    if (response.error) throw new Error(response.error)
+    const next = (response.groups as Group[]).sort((first, second) => first.name.localeCompare(second.name))
+    setGroups(next)
+    setSelection((current) => {
+      if (!current) return peers[0] ? { kind: "peer", id: peers[0].peer_id } : next[0] ? { kind: "group", id: next[0].group_id } : undefined
+      if (current?.kind !== "group" || next.some((group) => group.group_id === current.id)) return current
+      return peers[0] ? { kind: "peer", id: peers[0].peer_id } : next[0] ? { kind: "group", id: next[0].group_id } : undefined
+    })
+  }
+
+  async function refreshGroupMembers(groupId: string | undefined = selectedGroupId) {
+    if (!groupId) return
+    const response = await ipc.send("group_members", { group_id: groupId })
+    if (response.error) throw new Error(response.error)
+    setGroupMembers((current) => ({ ...current, [groupId]: response.members as GroupMember[] }))
   }
 
   useEffect(() => {
@@ -295,6 +365,7 @@ function ChatApp() {
       const presence = await ipc.send("tui_presence", { client_id: tuiClientId, active: true })
       if (presence.error) throw new Error(presence.error)
       await refreshPeers()
+      await refreshGroups()
       const mutedResp = await ipc.send("muted_peers")
       if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
       const control = await ipc.send("control")
@@ -364,12 +435,18 @@ function ChatApp() {
       void refreshPeers().catch((error) => {
         if (!backendDisconnected.current) setStatus(`Peer refresh error: ${String(error)}`)
       })
+      void refreshGroups().catch((error) => {
+        if (!backendDisconnected.current) setStatus(`Group refresh error: ${String(error)}`)
+      })
+      void refreshGroupMembers().catch((error) => {
+        if (!backendDisconnected.current && selectedGroupId) setStatus(`Group member refresh error: ${String(error)}`)
+      })
       void ipc.send("control").then((control) => {
         if (!control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number })
       }).catch(() => {})
     }, 3000)
     return () => clearInterval(interval)
-  }, [ipc])
+  }, [ipc, selectedGroupId])
 
   useEffect(() => {
     if (!flashingEnabled) return
@@ -378,6 +455,53 @@ function ChatApp() {
   }, [flashingEnabled])
 
   useEffect(() => ipc.onEvent((event: IPCEvent) => {
+    if (["group_message", "group_member_joined", "group_member_left"].includes(event.event)) {
+      const groupId = event.group_id as string
+      const group = groups.find((item) => item.group_id === groupId)
+      const senderId = event.sender_id as string | undefined
+      const sender = (event.display_name as string | undefined)
+        ?? peers.find((peer) => peer.peer_id === senderId)?.display_name
+        ?? groupMembers[groupId]?.find((member) => (member.peer_id ?? member.member_id) === senderId)?.display_name
+        ?? "a member"
+      if (event.event === "group_message" && renderer.capabilities?.notifications && groupId !== selectedGroupId) {
+        renderer.triggerNotification(`New message from ${sender} in ${group?.name ?? "a group"}`, "MeshTalk")
+      }
+      if (groupId !== selectedGroupId) {
+        setGroups((current) => current.map((item) => item.group_id === groupId ? { ...item, unread_count: item.unread_count + 1 } : item))
+      } else {
+        void ipc.send("group_messages", { group_id: groupId }).then((response) => {
+          if (!response.error) setMessages(response.messages as Message[])
+        })
+      }
+      void refreshGroups()
+      if (event.event !== "group_message") {
+        void ipc.send("group_members", { group_id: groupId }).then((response) => {
+          if (!response.error) setGroupMembers((current) => ({ ...current, [groupId]: response.members as GroupMember[] }))
+        })
+      }
+      return
+    }
+    if (event.event === "group_delivered" || event.event === "group_sent") {
+      const messageId = event.message_id as string
+      setMessages((current) => current.map((message) => {
+        if (message.message_id !== messageId) return message
+        if (Array.isArray(event.deliveries)) return { ...message, deliveries: event.deliveries as GroupDelivery[] }
+        const recipientId = event.recipient_id as string | undefined
+        if (!recipientId) return message
+        return {
+          ...message,
+          deliveries: (message.deliveries ?? []).map((delivery) => delivery.recipient_id === recipientId
+            ? { ...delivery, status: (event.status as string | undefined) ?? (event.event === "group_delivered" ? "delivered" : "sent"), updated_at: (event.updated_at as number | undefined) ?? Date.now() / 1000 }
+            : delivery),
+        }
+      }))
+      if (selectedGroupId && selectedGroupId === event.group_id) {
+        void ipc.send("group_messages", { group_id: selectedGroupId }).then((response) => {
+          if (!response.error) setMessages(response.messages as Message[])
+        })
+      }
+      return
+    }
     if (event.event === "delivered") {
       const messageId = event.message_id as string
       setDeliveredMessageIds((current) => new Set(current).add(messageId))
@@ -483,38 +607,50 @@ function ChatApp() {
         void refreshPeers()
       }
     })
-  }), [ipc, mutedPeers, peers, renderer, selectedPeerId, dialog])
+  }), [ipc, mutedPeers, peers, groups, groupMembers, renderer, selectedPeerId, selectedGroupId, dialog])
 
   useEffect(() => {
-    if (!selectedPeerId) {
+    let cancelled = false
+    if (!selection || !selectionKey) {
       setMessages([])
       setDraftLength(0)
       setComposerHeight(MIN_COMPOSER_HEIGHT)
       return
     }
     setScrollFocused(false)
-    setDraftLength(new TextEncoder().encode(drafts[selectedPeerId] ?? "").length)
+    setDraftLength(new TextEncoder().encode(drafts[selectionKey] ?? "").length)
     setComposerHeight(MIN_COMPOSER_HEIGHT)
-    setPeers((current) => current.map((peer) =>
-      peer.peer_id === selectedPeerId ? { ...peer, unread_count: 0 } : peer
-    ))
-    ipc.send("messages", { peer_id: selectedPeerId }).then((response) => {
+    if (selection.kind === "peer") {
+      setPeers((current) => current.map((peer) => peer.peer_id === selection.id ? { ...peer, unread_count: 0 } : peer))
+    } else {
+      setGroups((current) => current.map((group) => group.group_id === selection.id ? { ...group, unread_count: 0 } : group))
+      void ipc.send("group_members", { group_id: selection.id }).then((response) => {
+        if (!cancelled && !response.error) setGroupMembers((current) => ({ ...current, [selection.id]: response.members as GroupMember[] }))
+      })
+    }
+    const request = selection.kind === "peer"
+      ? ipc.send("messages", { peer_id: selection.id })
+      : ipc.send("group_messages", { group_id: selection.id })
+    request.then((response) => {
       if (response.error) throw new Error(response.error)
+      if (cancelled) return
       setMessages(response.messages as Message[])
-      void refreshPeers()
+      if (selection.kind === "peer") void refreshPeers()
+      else void refreshGroups()
     }).catch((error) => {
-      if (!backendDisconnected.current) {
+      if (!cancelled && !backendDisconnected.current) {
         setStatus(`History error: ${error instanceof Error ? error.message : String(error)}`)
       }
     })
-  }, [selectedPeerId])
+    return () => { cancelled = true }
+  }, [selectionKey])
 
   useEffect(() => {
     const composer = composerRef.current
     if (composer) {
       setComposerHeight(getComposerHeight(composer))
     }
-  }, [selectedPeerId, width])
+  }, [selectionKey, width])
 
   async function removeSelectedPeer() {
     const peer = peers.find((item) => item.peer_id === selectedPeerId)
@@ -528,7 +664,7 @@ function ChatApp() {
       if (response.error) throw new Error(response.error)
       const remaining = peers.filter((item) => item.peer_id !== peer.peer_id)
       setPeers(remaining)
-      setSelectedPeerId(remaining[0]?.peer_id)
+      setSelection(remaining[0] ? { kind: "peer", id: remaining[0].peer_id } : groups[0] ? { kind: "group", id: groups[0].group_id } : undefined)
       showStatus(`Removed ${peer.display_name} from the peer list.`)
     } catch (error) {
       if (!backendDisconnected.current) {
@@ -583,9 +719,11 @@ function ChatApp() {
       showDialog({ kind: "control", firstRun: dialog.firstRun })
     } else if (dialog.kind === "control-status") {
       showDialog({ kind: "control" })
-    } else if (["room-join", "room-created", "room-detail"].includes(dialog.kind)) {
+    } else if (["room-create", "room-join", "room-created", "room-detail"].includes(dialog.kind)) {
       showDialog({ kind: "rooms", rooms: [] })
       void loadRooms()
+    } else if (dialog.kind === "group-detail") {
+      closeDialog()
     } else if (dialog.kind === "mute-timeout") {
       showDialog({ kind: "notifications" })
     } else if (dialog.kind === "unmute-confirm") {
@@ -682,11 +820,11 @@ function ChatApp() {
     }
   }
 
-  async function createRoom() {
+  async function createRoom(name: string) {
     const action = beginDialogAction()
     if (action === null) return
     try {
-      const response = await ipc.send("room_create")
+      const response = await ipc.send("room_create", { name: name.trim() })
       if (response.error) throw new Error(response.error)
       const invite = response.invite as string
       let copied = false
@@ -697,8 +835,16 @@ function ChatApp() {
         copied = result?.host.status === "written" || result?.terminal.status === "attempted"
       } catch {}
       if (dialogAction.current !== action) return
-      setDialog({ kind: "room-created", roomId: response.room_id as string, invite, copied, created: true })
-      showStatus("Private room created.")
+      const group = groupFromResponse(response)
+      const groupId = group?.group_id ?? response.room_id as string
+      setDialog({ kind: "room-created", roomId: groupId, invite, copied, created: true })
+      if (group) {
+        setGroups((current) => [...current.filter((item) => item.group_id !== group.group_id), group].sort((first, second) => first.name.localeCompare(second.name)))
+        setSelection({ kind: "group", id: group.group_id })
+      } else {
+        void refreshGroups()
+      }
+      showStatus(`Group ${group?.name ?? name.trim()} created.`)
     } catch (error) {
       failDialogAction(action, error)
       return
@@ -716,8 +862,16 @@ function ChatApp() {
       const rooms = await ipc.send("rooms")
       if (rooms.error) throw new Error(rooms.error)
       if (dialogAction.current !== action) return
-      showStatus(`Joined room ${(response.room_id as string).slice(0, 12)}.`)
+      const group = groupFromResponse(response)
+      showStatus(`Joined room ${(group?.group_id ?? response.room_id as string).slice(0, 12)}.`)
       setDialog({ kind: "rooms", rooms: rooms.rooms as RoomStatus[] })
+      if (group) {
+        setGroups((current) => [...current.filter((item) => item.group_id !== group.group_id), group].sort((first, second) => first.name.localeCompare(second.name)))
+        setSelection({ kind: "group", id: group.group_id })
+        showStatus(`Joined ${group.name}.`)
+      } else {
+        void refreshGroups()
+      }
     } catch (error) {
       failDialogAction(action, error)
       return
@@ -764,6 +918,43 @@ function ChatApp() {
     } catch (error) {
       failDialogAction(action, error)
       return
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function loadGroupDetails(group: Group) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("group_members", { group_id: group.group_id })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      const members = response.members as GroupMember[]
+      setGroupMembers((current) => ({ ...current, [group.group_id]: members }))
+      setDialog({ kind: "group-detail", group, members })
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function leaveGroup(group: Group) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("group_leave", { group_id: group.group_id })
+      if (response.error) throw new Error(response.error)
+      const remaining = groups.filter((item) => item.group_id !== group.group_id)
+      setGroups(remaining)
+      if (selectedGroupId === group.group_id) {
+        setSelection(peers[0] ? { kind: "peer", id: peers[0].peer_id } : remaining[0] ? { kind: "group", id: remaining[0].group_id } : undefined)
+      }
+      showStatus(`Left ${group.name}.`)
+      closeDialog()
+    } catch (error) {
+      failDialogAction(action, error)
     } finally {
       finishDialogAction(action)
     }
@@ -1015,6 +1206,11 @@ function ChatApp() {
     } else if (command === "rooms") {
       showDialog({ kind: "rooms", rooms: [] })
       void loadRooms()
+    } else if (command === "group-details") {
+      const group = groups.find((item) => item.group_id === selectedGroupId)
+      if (!group) { showStatus("Select a group first."); return }
+      showDialog({ kind: "group-detail", group, members: groupMembers[group.group_id] ?? [] })
+      void loadGroupDetails(group)
     } else if (command === "friends") {
       showDialog({ kind: "friends" })
     } else if (command === "notifications") {
@@ -1088,10 +1284,14 @@ function ChatApp() {
       void removeSelectedPeer()
       return
     }
-    if ((key.name === "up" || key.name === "down") && key.ctrl && peers.length) {
-      const index = peers.findIndex((peer) => peer.peer_id === selectedPeerId)
+    if ((key.name === "up" || key.name === "down") && key.ctrl && (peers.length || groups.length)) {
+      const conversations: Conversation[] = [
+        ...peers.map((peer) => ({ kind: "peer" as const, id: peer.peer_id })),
+        ...groups.map((group) => ({ kind: "group" as const, id: group.group_id })),
+      ]
+      const index = conversations.findIndex((item) => item.kind === selection?.kind && item.id === selection.id)
       const direction = key.name === "up" ? -1 : 1
-      setSelectedPeerId(peers[(index + direction + peers.length) % peers.length].peer_id)
+      setSelection(conversations[(index + direction + conversations.length) % conversations.length])
     }
     if (key.name === "pageup") {
       setScrollFocused(true)
@@ -1111,14 +1311,13 @@ function ChatApp() {
 
   async function send() {
     const composer = composerRef.current
-    const recipientId = selectedPeerId
     const content = composer?.plainText.trim() ?? ""
     if (!content) {
       showStatus("Message is empty.")
       return
     }
-    if (!recipientId || !identity) {
-      showStatus("Select a peer before sending.")
+    if (!selection || !selectionKey || !identity) {
+      showStatus("Select a peer or group before sending.")
       return
     }
     if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) {
@@ -1127,13 +1326,15 @@ function ChatApp() {
     }
     setIsSending(true)
     try {
-      const response = await ipc.send("send", { recipient_id: recipientId, content })
+      const response = selection.kind === "peer"
+        ? await ipc.send("send", { recipient_id: selection.id, content })
+        : await ipc.send("group_send", { group_id: selection.id, content })
       if (response.error) throw new Error(response.error)
       const queued = Boolean(response.queued)
       setMessages((current) => [...current, {
         message_id: response.message_id as string,
         sender_id: identity.peer_id,
-        recipient_id: recipientId,
+        ...(selection.kind === "peer" ? { recipient_id: selection.id } : { group_id: selection.id, deliveries: response.deliveries as GroupDelivery[] }),
         content,
         created_at: Date.now() / 1000,
         delivered: 0,
@@ -1143,12 +1344,14 @@ function ChatApp() {
         composer.selectAll()
         composer.deleteSelection()
       }
-      setDrafts((current) => ({ ...current, [recipientId]: "" }))
+      setDrafts((current) => ({ ...current, [selectionKey]: "" }))
       setDraftLength(0)
       setComposerHeight(MIN_COMPOSER_HEIGHT)
-      showStatus(queued
-        ? "Message stored and queued. It will send when the peer is online."
-        : "Message sent. Waiting for delivery confirmation.")
+      showStatus(selection.kind === "group"
+        ? `Group message sent: ${groupDeliveryLabel(response.deliveries as GroupDelivery[])}.`
+        : queued
+          ? "Message stored and queued. It will send when the peer is online."
+          : "Message sent. Waiting for delivery confirmation.")
     } catch (error) {
       if (!backendDisconnected.current) {
         const message = error instanceof Error ? error.message : String(error)
@@ -1201,6 +1404,7 @@ function ChatApp() {
   }
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId)
+  const selectedGroup = groups.find((group) => group.group_id === selectedGroupId)
   const activeCount = peers.filter((peer) => peerPresence(peer) === "active").length
   const sidebarWidth = width < 72 ? 22 : 32
   const compact = width < 72
@@ -1208,7 +1412,7 @@ function ChatApp() {
   const dialogWidth = Math.min(68, Math.max(1, width - 4))
   const dialogHeight = Math.min(20, Math.max(1, height - 4))
   function dialogWidthFor(kind: Dialog["kind"]): number {
-    if (kind === "room-detail") return Math.min(78, Math.max(1, width - 2))
+    if (kind === "room-detail" || kind === "group-detail") return Math.min(78, Math.max(1, width - 2))
     return dialogWidth
   }
   return (
@@ -1231,7 +1435,7 @@ function ChatApp() {
             </>
           )}
         </box>
-        <box title={`Peers: ${activeCount} active`} bottomTitle="Ctrl+D removes offline" style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", padding: 1 }}>
+        <box title={`Peers: ${activeCount} active`} bottomTitle="Ctrl+D removes offline" style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 3, flexDirection: "column", padding: 1 }}>
           <scrollbox
             style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
             contentOptions={{ flexDirection: "column" }}
@@ -1244,7 +1448,7 @@ function ChatApp() {
               return <box
                 key={peer.peer_id}
                 onMouseDown={() => {
-                  setSelectedPeerId(peer.peer_id)
+                  setSelection({ kind: "peer", id: peer.peer_id })
                   setScrollFocused(false)
                 }}
                 style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
@@ -1261,11 +1465,47 @@ function ChatApp() {
             })}
           </scrollbox>
         </box>
+        <box title={`Groups: ${groups.length}`} style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 3, flexDirection: "column", padding: 1 }}>
+          <scrollbox
+            style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+            contentOptions={{ flexDirection: "column" }}
+            verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}
+          >
+            {!groups.length ? <text fg="#888888">No groups joined</text> : null}
+            {groups.map((group) => (
+              <box
+                key={group.group_id}
+                onMouseDown={() => {
+                  setSelection({ kind: "group", id: group.group_id })
+                  setScrollFocused(false)
+                }}
+                style={{ width: "100%", flexDirection: "column", backgroundColor: group.group_id === selectedGroupId ? "#25354d" : undefined }}
+              >
+                <text truncate fg="#b69cff">
+                  {group.group_id === selectedGroupId ? "> " : "  "}{compact ? group.name.slice(0, 14) : group.name}{group.unread_count ? ` (${group.unread_count} new)` : ""}
+                </text>
+                <text fg="#718096">  {group.member_count} member{group.member_count === 1 ? "" : "s"}</text>
+                {group.group_id === selectedGroupId && groupMembers[group.group_id]?.filter((member) => member.show_in_sidebar !== false).map((member, index) => {
+                  const memberId = member.peer_id ?? member.member_id
+                  const knownPeer = peers.find((peer) => peer.peer_id === memberId)
+                  const color = memberId === identity?.peer_id
+                    ? "#65a9ff"
+                    : knownPeer
+                      ? peerPresence(knownPeer) === "active" ? "#66dd88" : peerPresence(knownPeer) === "away" ? "#e0a34a" : "#888888"
+                      : member.is_online ? "#66dd88" : "#888888"
+                  return <text key={memberId ?? String(index)} truncate fg={color}>
+                    {"    "}{compact ? member.display_name.slice(0, 12) : member.display_name}
+                  </text>
+                })}
+              </box>
+            ))}
+          </scrollbox>
+        </box>
       </box>
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
         <box
-          title={selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
+          title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
@@ -1306,13 +1546,25 @@ function ChatApp() {
               arrowOptions: { foregroundColor: "#6ea8fe" },
             }}
           >
-            {!selected ? <text fg="#888888">Waiting for a connected peer.</text> : null}
+            {!selected && !selectedGroup ? <text fg="#888888">Select a peer or group.</text> : null}
             {selected && !messages.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
+            {selectedGroup && !messages.length ? <text fg="#888888">No messages yet. Say hello to the group.</text> : null}
             {messages.map((message, index) => {
               const isLocal = message.sender_id === identity?.peer_id
               const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
               const blocked = Boolean(message.blocked)
               const queued = Boolean(message.queued)
+              const isSystem = Boolean(selectedGroup && message.kind && message.kind !== "message" && message.kind !== "text")
+              const senderName = groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === message.sender_id)?.display_name
+                ?? peers.find((peer) => peer.peer_id === message.sender_id)?.display_name
+                ?? "Unknown member"
+              const renderedContent = isSystem
+                ? message.kind === "join"
+                  ? `${senderName} joined the group`
+                  : message.kind === "leave"
+                    ? `${senderName} left the group`
+                    : message.content
+                : message.content
               const rows: ReactNode[] = []
               const prev = messages[index - 1]
               if (!prev || dayKey(prev.created_at) !== dayKey(message.created_at)) {
@@ -1329,15 +1581,15 @@ function ChatApp() {
                 <box key={message.message_id} style={{ flexDirection: "column", marginBottom: 1 }}>
                   <text>
                     <span fg="#888888">{formatTime(message.created_at)} </span>
-                    <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selected?.display_name}</span>
-                    {isLocal && (
+                    <span fg={isSystem ? "#e0a34a" : isLocal ? "#65a9ff" : "#66dd88"}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
+                    {isLocal && !isSystem && (
                       <span fg={blocked ? "#ff7777" : queued ? "#d9b36b" : "#888888"}>
-                        {blocked ? " blocked" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
+                        {selectedGroup ? ` ${groupDeliveryLabel(message.deliveries)}` : blocked ? " blocked" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
                       </span>
                     )}
                     {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                   </text>
-                  <text wrapMode="word">{message.content}</text>
+                  <text wrapMode="word">{renderedContent}</text>
                 </box>
               )
               return rows
@@ -1346,24 +1598,24 @@ function ChatApp() {
         </box>
 
         <box
-          title={selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: queued until peer is online"}
+          title={selectedGroup || selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: queued until peer is online"}
           bottomTitle={isSending ? "Sending..." : `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`}
           titleColor={limitColor ?? "#888888"}
-          style={{ border: true, borderColor: limitColor ?? (!scrollFocused && !editingName && selected?.is_online ? "#6ea8fe" : undefined), flexShrink: 0, overflow: "hidden", padding: 1 }}
+          style={{ border: true, borderColor: limitColor ?? (!scrollFocused && !editingName && (selected?.is_online || selectedGroup) ? "#6ea8fe" : undefined), flexShrink: 0, overflow: "hidden", padding: 1 }}
         >
           <textarea
-            key={selectedPeerId ?? "no-peer"}
+            key={selectionKey ?? "no-conversation"}
             ref={composerRef}
-            initialValue={selectedPeerId ? drafts[selectedPeerId] ?? "" : ""}
-            placeholder={selected ? "Write a message" : "Select a peer"}
-            focused={Boolean(selected) && !editingName && !scrollFocused && !isSending && !dialog}
+            initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""}
+            placeholder={selectedGroup ? `Message ${selectedGroup.name}` : selected ? "Write a message" : "Select a peer or group"}
+            focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !isSending && !dialog}
             onMouseDown={() => setScrollFocused(false)}
             onContentChange={() => {
               const composer = composerRef.current
               const content = composer?.plainText ?? ""
               setDraftLength(new TextEncoder().encode(content).length)
               setComposerHeight(getComposerHeight(composer))
-              if (selectedPeerId) setDrafts((current) => ({ ...current, [selectedPeerId]: content }))
+              if (selectionKey) setDrafts((current) => ({ ...current, [selectionKey]: content }))
             }}
             onSubmit={() => void send()}
             keyBindings={[
@@ -1409,6 +1661,7 @@ function ChatApp() {
               : dialog.kind === "debug-peer" ? "Peer details"
               : dialog.kind === "debug-endpoints" ? "Endpoints"
               : dialog.kind === "debug" ? "Debug"
+              : dialog.kind === "group-detail" ? "Group details"
               : "Private rooms"}
             bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
             style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
@@ -1420,6 +1673,7 @@ function ChatApp() {
                 options={[
                   { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
                   { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
+                  ...(selectedGroup ? [{ name: "Group details", description: `View members or leave ${selectedGroup.name}`, value: "group-details" }] : []),
                   { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
                   { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
                   { name: "Accessibility", description: "Reduce motion and other accessibility options", value: "accessibility" },
@@ -1492,15 +1746,15 @@ function ChatApp() {
 height={Math.max(5, dialogHeight - 3)}
                 options={[
                   { name: "Create a private room", description: "Generate a secret invite and copy it", value: "create" },
-                  { name: "Join with an invite", description: "Paste a meshtalk: invite", value: "join" },
+                  { name: "Join with an invite", description: "Paste a room or group invite", value: "join" },
                     ...dialog.rooms.map((room) => ({
-                      name: `Room ${room.room_id.slice(0, 12)}`,
+                      name: room.name ?? `Room ${room.room_id.slice(0, 12)}`,
                       description: `${room.members} control connection${room.members === 1 ? "" : "s"} - view or leave`,
                       value: room.room_id,
                     })),
                   ]}
                   onSelect={(_, option) => {
-                    if (option?.value === "create") void createRoom()
+                    if (option?.value === "create") showDialog({ kind: "room-create" })
                     else if (option?.value === "join") showDialog({ kind: "room-join" })
                     else {
                       const room = dialog.rooms.find((item) => item.room_id === option?.value)
@@ -1513,13 +1767,27 @@ height={Math.max(5, dialogHeight - 3)}
                 {!dialog.rooms.length && <text fg="#888888">No joined rooms yet.</text>}
               </>
             )}
+            {dialog.kind === "room-create" && (
+              <>
+                <text>Choose a name for the new group.</text>
+                <input
+                  focused
+                  value={dialogDraft}
+                  placeholder="Group name"
+                  onInput={setDialogDraft}
+                  onSubmit={(value) => void createRoom(typeof value === "string" ? value : dialogDraft)}
+                  maxLength={80}
+                />
+                <text fg="#888888">Enter creates the group and copies its secret invite.</text>
+              </>
+            )}
             {dialog.kind === "room-join" && (
               <>
                 <text>Paste the secret invite you received from another room member.</text>
                 <input
                   focused
                   value={dialogDraft}
-                  placeholder="meshtalk:..."
+                  placeholder="meshtalk:... or meshtalk-group:..."
                   onInput={setDialogDraft}
                   onSubmit={(value) => void joinRoom(typeof value === "string" ? value : dialogDraft)}
                   maxLength={4096}
@@ -1558,10 +1826,44 @@ height={Math.max(5, dialogHeight - 3)}
                     { name: "Leave room", description: "Permanently remove this room from this device", value: "leave" },
                   ]}
                   onSelect={(_, option) => {
-                    if (option?.value === "leave") void leaveRoom(dialog.room.room_id)
+                    if (option?.value === "leave") {
+                      const group = groups.find((item) => item.group_id === dialog.room.group_id)
+                      if (group) void leaveGroup(group)
+                      else void leaveRoom(dialog.room.room_id)
+                    }
                     else if (option?.value === "copy") void loadRoomInvite(dialog.room.room_id)
                     else void loadRooms()
                   }}
+                />
+              </>
+            )}
+            {dialog.kind === "group-detail" && (
+              <>
+                <text><span fg="#888888">Name: </span>{dialog.group.name}</text>
+                <text><span fg="#888888">Group ID: </span>{dialog.group.group_id}</text>
+                <scrollbox
+                  style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+                  contentOptions={{ flexDirection: "column" }}
+                  verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}
+                >
+                  {!dialog.members.length ? <text fg="#888888">No member details available.</text> : null}
+                  {dialog.members.map((member, index) => (
+                    <text key={member.peer_id ?? member.member_id ?? String(index)}>
+                      <span fg={(member.peer_id ?? member.member_id) === identity?.peer_id ? "#65a9ff" : "#66dd88"}>{member.display_name}</span>
+                      <span fg="#718096"> {(member.peer_id ?? member.member_id ?? "").slice(0, 12)}</span>
+                    </text>
+                  ))}
+                </scrollbox>
+                <MouseSelect
+                  focused
+                  height={4}
+                  options={[
+                    { name: "Close", description: "Return to the group chat", value: "close" },
+                    { name: "Leave group", description: "Remove this group from this device", value: "leave" },
+                  ]}
+                  onSelect={(_, option) => option?.value === "leave" ? void leaveGroup(dialog.group) : closeDialog()}
+                  wrapSelection
+                  showDescription
                 />
               </>
             )}

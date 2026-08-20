@@ -12,10 +12,16 @@ Commands:
   send <peer-id> <message>    Send an encrypted direct message
   watch                       Print incoming messages until interrupted
   control [set-url <url>]      Show or configure the control service
-  room create                 Create a private multi-peer room
+  room create [name]          Create a private room or named group chat
   room join <invite>          Join a private room
   room leave <room-id>        Leave a room
   rooms                       List joined rooms
+  groups                      List group chats
+  group list                  List group chats
+  group members <group-id>    List group members
+  group messages <group-id>   Show group message history
+  group send <group-id> <message>  Send a group message
+  group leave <group-id>      Leave a group chat
   friends                     List your friends
   friend-requests             List pending friend requests
   friend send <peer-id> [note]  Send a friend request
@@ -143,6 +149,12 @@ async function main(): Promise<void> {
       ipc.onEvent((event) => {
         if (event.event === "message") {
           console.log(`${String(event.sender_id).slice(0, 12)}: ${event.content ?? ""}`);
+        } else if (event.event === "group_message") {
+          console.log(`[Group ${String(event.group_id).slice(0, 12)}] ${String(event.sender_id).slice(0, 12)}: ${event.content ?? ""}`);
+        } else if (event.event === "group_member_joined") {
+          console.log(`[Group ${String(event.group_id).slice(0, 12)}] ${event.display_name ?? String(event.peer_id).slice(0, 12)} joined.`);
+        } else if (event.event === "group_member_left") {
+          console.log(`[Group ${String(event.group_id).slice(0, 12)}] ${event.display_name ?? String(event.peer_id).slice(0, 12)} left.`);
         }
       });
       await new Promise<void>((resolve) => process.once("SIGINT", resolve));
@@ -168,10 +180,12 @@ async function main(): Promise<void> {
 
     if (command === "room") {
       let response: IPCResponse;
-      if (args[0] === "create" && args.length === 1) {
-        response = await ipc.send("room_create");
+      if (args[0] === "create") {
+        const name = args.slice(1).join(" ");
+        response = await ipc.send("room_create", name ? { name } : {});
         if (hasError(response)) return;
         console.log(`Room ID: ${response.room_id}`);
+        if (response.name) console.log(`Group: ${response.name}`);
         console.log(`Invite: ${response.invite}`);
         console.log("Treat this invite as a secret. Anyone holding it can join the room.");
         return;
@@ -184,7 +198,11 @@ async function main(): Promise<void> {
         throw new Error(`Usage: ${PROGRAM} room <create|join|leave> [value]`);
       }
       if (hasError(response)) return;
-      console.log(`${args[0] === "join" ? "Joined" : "Left"} room ${response.room_id}`);
+      if (args[0] === "join" && response.group_id) {
+        console.log(`Joined group ${response.name ?? "Unnamed group"} (${response.group_id})`);
+      } else {
+        console.log(`${args[0] === "join" ? "Joined" : "Left"} room ${response.room_id}`);
+      }
       return;
     }
 
@@ -195,6 +213,68 @@ async function main(): Promise<void> {
       if (!rooms.length) console.log("No joined rooms.");
       for (const room of rooms) console.log(`${room.room_id} (${room.members} control connections)`);
       return;
+    }
+
+    if (command === "groups" || (command === "group" && args[0] === "list" && args.length === 1)) {
+      const response = await ipc.send("groups");
+      if (hasError(response)) return;
+      const groups = asRecords(response.groups);
+      if (!groups.length) console.log("No group chats.");
+      for (const group of groups) {
+        const unread = Number(group.unread_count) || 0;
+        console.log(`${group.name} (${group.group_id}) - ${group.member_count} members${unread ? `, ${unread} unread` : ""}`);
+      }
+      return;
+    }
+
+    if (command === "group") {
+      const [subcommand, groupId, ...words] = args;
+      if (!groupId) throw new Error(`Usage: ${PROGRAM} group <members|messages|send|leave> <group-id> [message]`);
+
+      if (subcommand === "members" && !words.length) {
+        const response = await ipc.send("group_members", { group_id: groupId });
+        if (hasError(response)) return;
+        const members = asRecords(response.members);
+        if (!members.length) console.log("No group members.");
+        for (const member of members) {
+          console.log(`${member.display_name} (${String(member.peer_id).slice(0, 12)}) - ${member.is_online ? "online" : "offline"}`);
+        }
+        return;
+      }
+
+      if (subcommand === "messages" && !words.length) {
+        const response = await ipc.send("group_messages", { group_id: groupId });
+        if (hasError(response)) return;
+        const messages = asRecords(response.messages);
+        if (!messages.length) console.log("No group messages.");
+        for (const message of messages) {
+          const time = new Date(Number(message.created_at) * 1000).toLocaleString();
+          if (message.kind === "join" || message.kind === "leave") {
+            console.log(`[${time}] ${message.content ?? ""}`);
+          } else {
+            console.log(`[${time}] ${String(message.sender_id).slice(0, 12)}: ${message.content ?? ""}`);
+          }
+        }
+        return;
+      }
+
+      if (subcommand === "send") {
+        const content = words.join(" ");
+        if (!content) throw new Error(`Usage: ${PROGRAM} group send <group-id> <message>`);
+        const response = await ipc.send("group_send", { group_id: groupId, content });
+        if (hasError(response)) return;
+        console.log(`Sent group message ${response.message_id}`);
+        return;
+      }
+
+      if (subcommand === "leave" && !words.length) {
+        const response = await ipc.send("group_leave", { group_id: groupId });
+        if (hasError(response)) return;
+        console.log(`Left group ${response.group_id}`);
+        return;
+      }
+
+      throw new Error(`Usage: ${PROGRAM} group <members|messages|send|leave> <group-id> [message]`);
     }
 
     if (command === "friends") {

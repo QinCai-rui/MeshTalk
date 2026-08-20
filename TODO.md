@@ -110,6 +110,24 @@ Status reflects verified implementation, not planned code.
 - [x] Backend IPC event emission for incoming messages
 - [x] Direct peer-to-peer integration test
 
+## Group Chat
+
+- [x] Named groups backed by private rendezvous rooms
+- [x] Versioned `meshtalk-group:` invites with encrypted group-name metadata
+- [x] Negotiated `group_chat` capability and group packet family
+- [x] Pairwise per-recipient encryption and signatures
+- [x] Local cached roster populated from decrypted room endpoint cards
+- [x] Authorized group-traffic exception to friend-only direct messaging
+- [x] Bidirectional local group-traffic suppression for blocked members
+- [x] Per-member sent, delivered, queued, and unavailable state
+- [x] Sender-side offline queue and reconnect flush for group messages
+- [x] Signed leave events with offline queueing for known capable members
+- [x] Local group history, system events, unread counts, IPC, CLI, and TUI surfaces
+- [x] Three-peer LAN and remote-UDP group integration tests
+- [ ] Group history replay or synchronization for newly joined/reconnected members
+- [ ] Authoritative membership, administrators, member revocation, and invite rotation
+- [ ] Advanced group cryptography (sender keys, group epochs, efficient rekeying, post-compromise security)
+
 ## Social Features
 
 - [x] Friend-only inbound message acceptance (non-friends rejected with a notice)
@@ -146,8 +164,9 @@ Status reflects verified implementation, not planned code.
 - [ ] Enforce 500 stored-message limit
 - [x] Enforce transport-safe 30 KiB plaintext message limit
 - [ ] Enforce 24-hour maximum stored-message age
-- [ ] Deliver stored messages when recipient reconnects
-- [ ] Retry accounting, backoff, and durable queue states
+- [x] Deliver queued direct/group messages when recipient reconnects
+- [x] Basic retry accounting (maximum five failed flush attempts)
+- [ ] Backoff and durable failed/expired queue states
 - [ ] Storage-limit and expiry tests
 
 ## Persistence
@@ -189,6 +208,7 @@ Status reflects verified implementation, not planned code.
 - [x] Friend send / accept / decline / cancel commands
 - [x] Block / unblock / blocked-list commands
 - [x] Room create / join / leave / list commands
+- [x] Group list / members / messages / send / leave commands and watch events
 - [ ] Stable machine-readable output mode
 - [ ] CLI tests
 
@@ -202,7 +222,8 @@ Status reflects verified implementation, not planned code.
 - [x] Peer selection and focus management
 - [x] Incoming-message display
 - [x] Selected conversation and persisted history
-- [ ] Delivery status display
+- [x] Direct and per-member group delivery status display
+- [x] Group list, conversation, member details, create/join, and leave UI
 - [x] Peer online/offline updates
 - [x] Keyboard help, error states, and responsive layout
 - [ ] TUI tests
@@ -240,6 +261,7 @@ Status reflects verified implementation, not planned code.
 - [ ] Unit tests for framing, identity, discovery validation, crypto, persistence, routing, and IPC
 - [x] Two-peer encrypted direct-message test
 - [ ] Three-peer encrypted relay test
-- [ ] Offline recipient store-and-forward test
+- [x] Offline recipient group queue test
+- [ ] Offline direct/group reconnect-flush integration test
 - [x] Restart/recovery test
 - [x] Manual LAN test on separate devices

@@ -33,6 +33,7 @@ from .udp_transport import Endpoint, UdpTransport
 logger = logging.getLogger(__name__)
 
 CandidateCallback = Callable[[str, Endpoint], Awaitable[None]]
+RoomMemberCallback = Callable[[str, str], Awaitable[None]]
 CARD_MAX_AGE = 180
 REFRESH_INTERVAL = 30
 PEER_FETCH_INTERVAL = 120
@@ -64,14 +65,14 @@ def _room_key(room: Room) -> bytes:
     ).derive(room.secret)
 
 
-def encrypt_endpoint_card(identity: Identity, room: Room, endpoint: Endpoint) -> str:
+def encrypt_endpoint_card(identity: Identity, room: Room, endpoint: Endpoint | None) -> str:
     value = {
         "version": PROTOCOL_VERSION,
         "min_version": MIN_SUPPORTED_PROTOCOL_VERSION,
         "kind": "endpoint",
         "peer_id": identity.peer_id,
         "signing_public_key": identity.signing_public_key_bytes().hex(),
-        "candidate": {"host": endpoint[0], "port": endpoint[1]},
+        "candidate": {"host": endpoint[0], "port": endpoint[1]} if endpoint else None,
         "created_at": int(time.time()),
         "nonce": os.urandom(16).hex(),
     }
@@ -105,10 +106,12 @@ def decrypt_endpoint_card(room: Room, payload: str, now: float | None = None) ->
     if not isinstance(created_at, int) or abs(current_time - created_at) > CARD_MAX_AGE:
         raise ValueError("Expired endpoint card")
     candidate = value.get("candidate")
-    if not isinstance(candidate, dict) or not isinstance(candidate.get("host"), str):
+    if candidate is not None and (
+        not isinstance(candidate, dict)
+        or not isinstance(candidate.get("host"), str)
+        or not isinstance(candidate.get("port"), int)
+    ):
         raise ValueError("Invalid endpoint card candidate")
-    if not isinstance(candidate.get("port"), int):
-        raise ValueError("Invalid endpoint card port")
     try:
         Ed25519PublicKey.from_public_bytes(signing_key).verify(signature, _canonical(value))
     except InvalidSignature as exc:
@@ -124,12 +127,14 @@ class RendezvousService:
         settings: Settings,
         udp: UdpTransport,
         on_candidate: CandidateCallback,
+        on_room_member: RoomMemberCallback | None = None,
         allow_loopback: bool = False,
     ) -> None:
         self.identity = identity
         self.settings = settings
         self.udp = udp
         self.on_candidate = on_candidate
+        self.on_room_member = on_room_member
         self.allow_loopback = allow_loopback
         self.connected = False
         self.public_endpoint: Endpoint | None = None
@@ -165,7 +170,12 @@ class RendezvousService:
 
     def room_status(self) -> list[dict]:
         return [
-            {"room_id": room.id, "members": self.member_counts.get(room.id, 0)}
+            {
+                "room_id": room.id,
+                "members": self.member_counts.get(room.id, 0),
+                "group_id": room.id if room.group_name else None,
+                "name": room.group_name,
+            }
             for room in self.settings.rooms.values()
         ]
 
@@ -304,15 +314,11 @@ class RendezvousService:
             await asyncio.sleep(REFRESH_INTERVAL)
 
     async def _announce_all(self, websocket) -> None:
-        if not self.public_endpoint:
-            return
         self._last_published_endpoint = self.public_endpoint
         for room in self.settings.rooms.values():
             await self._announce(websocket, room)
 
     async def _announce(self, websocket, room: Room) -> None:
-        if not self.public_endpoint:
-            return
         payload = encrypt_endpoint_card(self.identity, room, self.public_endpoint)
         await websocket.send(json.dumps({"type": "signal", "room_id": room.id, "payload": payload}))
 
@@ -329,7 +335,11 @@ class RendezvousService:
         self._seen_cards = {
             key: seen_at for key, seen_at in self._seen_cards.items() if now - seen_at < CARD_MAX_AGE
         }
+        if self.on_room_member:
+            await self.on_room_member(room.id, peer_id)
         candidate = value["candidate"]
+        if candidate is None:
+            return
         address = ipaddress.ip_address(candidate["host"])
         port = candidate["port"]
         valid_address = isinstance(address, ipaddress.IPv4Address) and address.is_global and not (

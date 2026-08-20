@@ -52,9 +52,9 @@ together in the extracted directory: `meshtalk`, `meshtalk-backend`,
 `meshtalk` launcher is invoked directly.
 
 The first launch offers guided remote-discovery setup. Press `Ctrl+P` at any
-time to open commands for control-server status and setup, private-room
-management, and changing your display name. Room invites can be pasted when
-joining and are copied to the clipboard when creating a room.
+time to open commands for control-server status and setup, named group-chat
+room management, and changing your display name. Group invites can be pasted
+when joining and are copied to the clipboard when creating a group.
 
 MeshTalk also sends a desktop notification for each incoming message when the
 terminal supports notification OSC sequences. Notifications show the sender,
@@ -81,6 +81,12 @@ meshtalk identity "Alice"
 meshtalk messages <peer-id>
 meshtalk send <peer-id> "hello"
 meshtalk watch
+meshtalk room create "Project Team"
+meshtalk group list
+meshtalk group members <group-id>
+meshtalk group messages <group-id>
+meshtalk group send <group-id> "hello team"
+meshtalk group leave <group-id>
 meshtalk backend status
 meshtalk backend stop
 ```
@@ -124,7 +130,7 @@ docker compose build
 docker compose run -it client
 ```
 
-## Remote Rooms
+## Group Chats And Remote Rooms
 
 Run the control service locally for development:
 
@@ -133,8 +139,10 @@ bun run dev:control
 ```
 
 In the TUI, press `Ctrl+P`, select **Control server**, and choose the public
-server or enter a custom URL. Then select **Private rooms** to create a room or
-paste an invite. Created invites are copied to the clipboard automatically.
+server or enter a custom URL. Then select **Private rooms** to create a named
+group or paste an invite. Groups appear beside direct conversations; the TUI
+shows their cached member list, local history, unread count, and per-member
+delivery state. Created invites are copied to the clipboard automatically.
 
 For local control-service development, select **Use a custom server** and enter
 `ws://127.0.0.1:8787/v1/rendezvous`.
@@ -143,10 +151,10 @@ The equivalent CLI flow is:
 
 ```bash
 meshtalk control set-url ws://127.0.0.1:8787/v1/rendezvous
-meshtalk room create
+meshtalk room create "Project Team"
 ```
 
-Share the `meshtalk:` invite through a trusted channel. On another MeshTalk
+Share the `meshtalk:` room invite or `meshtalk-group:` group invite through a trusted channel. On another MeshTalk
 installation, paste it through **Ctrl+P > Private rooms > Join with an invite**,
 or use the CLI:
 
@@ -162,6 +170,25 @@ meshtalk rooms
 meshtalk room leave <room-id>
 meshtalk control
 ```
+
+Named groups are backed by private rendezvous rooms. A `meshtalk-group:` invite
+has a third, encrypted metadata segment containing the group name;
+two-segment `meshtalk:` room invites remain ordinary unnamed rooms. Signed room
+cards form each device's local cached roster even when no public STUN endpoint
+is available. Group
+messages are fanned out directly and encrypted separately for every recipient,
+not encrypted once with a shared group key.
+
+An outgoing group message records `sent`, `delivered`, `queued`, or
+`unavailable` independently for each cached member. Messages for offline members
+with a known encryption key are durably queued on the sender and sent when that
+peer reconnects. There is no server-side storage or group-history replay: a
+member receives only messages addressed to that device while it is in the
+sender's cached roster, plus later delivery of messages already queued for it.
+Leaving sends a signed leave event to online members and queues it for known
+offline group-capable members before removing the group locally. Existing local
+history is retained and becomes visible again if the same invite is rejoined;
+messages missed while absent are not replayed.
 
 Production control services must be exposed through TLS as `wss://`. Plain
 `ws://` configuration is accepted only for localhost. Set `PORT` for the
@@ -201,6 +228,11 @@ The control URL can similarly be supplied as `MESHTALK_CONTROL_URL`.
 - A room member can read that room's endpoint cards. Anyone with the invite can
   join, so send invites only through a trusted channel and create a new room if
   an invite leaks.
+- Group traffic may be accepted from a non-friend only when the sender is an
+  active member in the recipient's local roster and negotiated `group_chat`.
+  Ordinary direct messages remain friend-only.
+- Blocking a group member suppresses their incoming group messages and excludes
+  them from local outgoing fanout without changing the shared roster.
 - STUN providers learn the source address of STUN requests. Direct peers
   necessarily learn each other's public IP and UDP port.
 
@@ -212,11 +244,16 @@ fails closed instead of routing chat content through the control service.
 
 - Offline LAN discovery and authenticated TCP peer connections
 - Encrypted multi-peer room rendezvous through a configurable control service
+- Named room-backed group chats with pairwise per-recipient E2EE and offline queueing
 - Public endpoint discovery through configurable STUN
 - Reliable, encrypted, authenticated UDP peer transport with NAT hole punching
 - End-to-end message encryption using X25519 and AES-GCM
 - SQLite persistence, conversation history, and unread counts
 - Endpoint and active-transport visibility in the CLI and TUI
+
+Group chats currently have no administrators, member revocation, invite
+rotation protocol, history synchronization, or advanced group cryptography
+such as sender keys, tree-based key agreement, or post-compromise security.
 
 ## License
 

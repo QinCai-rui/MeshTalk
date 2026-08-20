@@ -11,9 +11,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
 DEFAULT_STUN_HOST = "stun.l.google.com"
 DEFAULT_STUN_PORT = 19302
 INVITE_PREFIX = "meshtalk:"
+GROUP_INVITE_PREFIX = "meshtalk-group:"
+MAX_GROUP_NAME_LENGTH = 64
 
 
 def _encode(value: bytes) -> str:
@@ -24,10 +30,26 @@ def _decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
+def _group_metadata_key(room_id: bytes, secret: bytes) -> bytes:
+    return HKDF(
+        algorithm=SHA256(), length=32, salt=room_id, info=b"meshtalk-group-invite-v1"
+    ).derive(secret)
+
+
+def normalize_group_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Group name required")
+    name = value.strip()
+    if not name or len(name) > MAX_GROUP_NAME_LENGTH or any(ord(char) < 32 or ord(char) == 127 for char in name):
+        raise ValueError(f"Group name must be 1-{MAX_GROUP_NAME_LENGTH} printable characters")
+    return name
+
+
 @dataclass(frozen=True)
 class Room:
     room_id: bytes
     secret: bytes
+    group_name: str | None = None
 
     @property
     def id(self) -> str:
@@ -35,19 +57,53 @@ class Room:
 
     @property
     def invite(self) -> str:
-        return f"{INVITE_PREFIX}{_encode(self.room_id)}.{_encode(self.secret)}"
+        prefix = GROUP_INVITE_PREFIX if self.group_name is not None else INVITE_PREFIX
+        invite = f"{prefix}{_encode(self.room_id)}.{_encode(self.secret)}"
+        if self.group_name is None:
+            return invite
+        metadata = json.dumps(
+            {"version": 1, "group_name": self.group_name}, separators=(",", ":"), sort_keys=True
+        ).encode()
+        nonce = os.urandom(12)
+        encrypted = AESGCM(_group_metadata_key(self.room_id, self.secret)).encrypt(
+            nonce, metadata, self.room_id
+        )
+        return f"{invite}.{_encode(nonce + encrypted)}"
 
     @classmethod
-    def create(cls) -> Room:
-        return cls(secrets.token_bytes(16), secrets.token_bytes(32))
+    def create(cls, group_name: str | None = None) -> Room:
+        return cls(
+            secrets.token_bytes(16),
+            secrets.token_bytes(32),
+            normalize_group_name(group_name) if group_name is not None else None,
+        )
 
     @classmethod
     def from_invite(cls, invite: str) -> Room:
-        if not isinstance(invite, str) or not invite.startswith(INVITE_PREFIX):
+        if not isinstance(invite, str):
+            raise ValueError("Invalid MeshTalk room invite")
+        is_group = invite.startswith(GROUP_INVITE_PREFIX)
+        prefix = GROUP_INVITE_PREFIX if is_group else INVITE_PREFIX
+        if not invite.startswith(prefix):
             raise ValueError("Invalid MeshTalk room invite")
         try:
-            room_id_text, secret_text = invite[len(INVITE_PREFIX):].split(".", 1)
-            room = cls(_decode(room_id_text), _decode(secret_text))
+            parts = invite[len(prefix):].split(".")
+            if len(parts) != (3 if is_group else 2):
+                raise ValueError("Invalid invite fields")
+            room_id, secret = _decode(parts[0]), _decode(parts[1])
+            group_name = None
+            if is_group:
+                encrypted = _decode(parts[2])
+                if len(encrypted) < 28:
+                    raise ValueError("Truncated group metadata")
+                plaintext = AESGCM(_group_metadata_key(room_id, secret)).decrypt(
+                    encrypted[:12], encrypted[12:], room_id
+                )
+                metadata = json.loads(plaintext)
+                if metadata.get("version") != 1:
+                    raise ValueError("Unsupported group metadata")
+                group_name = normalize_group_name(metadata.get("group_name"))
+            room = cls(room_id, secret, group_name)
         except Exception as exc:
             raise ValueError("Invalid MeshTalk room invite") from exc
         if len(room.room_id) != 16 or len(room.secret) != 32:
@@ -113,14 +169,17 @@ class Settings:
             raise ValueError("Remote control URLs must use wss://")
         return url
 
-    def create_room(self) -> Room:
-        room = Room.create()
+    def create_room(self, group_name: str | None = None) -> Room:
+        room = Room.create(group_name)
         self.rooms[room.id] = room
         self.save()
         return room
 
     def join_room(self, invite: str) -> Room:
         room = Room.from_invite(invite)
+        existing = self.rooms.get(room.id)
+        if existing and existing != room:
+            raise ValueError("Invite conflicts with the existing room")
         self.rooms[room.id] = room
         self.save()
         return room
@@ -158,7 +217,11 @@ class Settings:
             "identity_setup_dismissed": self._identity_setup_dismissed,
             "stun_server": {"host": self._stun_host, "port": self._stun_port},
             "rooms": [
-                {"room_id": _encode(room.room_id), "secret": _encode(room.secret)}
+                {
+                    "room_id": _encode(room.room_id),
+                    "secret": _encode(room.secret),
+                    "group_name": room.group_name,
+                }
                 for room in self.rooms.values()
             ],
             "muted_peers": self.muted_peers,
@@ -184,7 +247,12 @@ class Settings:
         self._stun_host = stun.get("host", DEFAULT_STUN_HOST)
         self._stun_port = int(stun.get("port", DEFAULT_STUN_PORT))
         for item in data.get("rooms", []):
-            room = Room(_decode(item["room_id"]), _decode(item["secret"]))
+            group_name = item.get("group_name")
+            room = Room(
+                _decode(item["room_id"]),
+                _decode(item["secret"]),
+                normalize_group_name(group_name) if group_name is not None else None,
+            )
             if len(room.room_id) != 16 or len(room.secret) != 32:
                 raise ValueError("Invalid room in settings")
             self.rooms[room.id] = room
