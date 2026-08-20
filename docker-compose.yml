@@ -1,6 +1,8 @@
 services:
   control:
+    # docker compose up control
     image: ghcr.io/qincai-rui/meshtalk/control:latest
+    # docker compose up --build control
     build:
       context: .
       dockerfile: Dockerfile.control
@@ -15,7 +17,9 @@ services:
       start_period: 5s
 
   client:
+    # docker compose up client
     image: ghcr.io/qincai-rui/meshtalk/client:latest
+    # docker compose up --build client
     build:
       context: .
       dockerfile: Dockerfile.client
