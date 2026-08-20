@@ -77,6 +77,7 @@ type GroupMember = {
   member_id?: string
   display_name: string
   is_online?: boolean
+  show_in_sidebar?: boolean
 }
 type Conversation = { kind: "peer" | "group"; id: string }
 type FriendRequest = {
@@ -347,6 +348,13 @@ function ChatApp() {
     })
   }
 
+  async function refreshGroupMembers(groupId: string | undefined = selectedGroupId) {
+    if (!groupId) return
+    const response = await ipc.send("group_members", { group_id: groupId })
+    if (response.error) throw new Error(response.error)
+    setGroupMembers((current) => ({ ...current, [groupId]: response.members as GroupMember[] }))
+  }
+
   useEffect(() => {
     ipc.connect().then(async () => {
       const response = await ipc.send("identity")
@@ -430,12 +438,15 @@ function ChatApp() {
       void refreshGroups().catch((error) => {
         if (!backendDisconnected.current) setStatus(`Group refresh error: ${String(error)}`)
       })
+      void refreshGroupMembers().catch((error) => {
+        if (!backendDisconnected.current && selectedGroupId) setStatus(`Group member refresh error: ${String(error)}`)
+      })
       void ipc.send("control").then((control) => {
         if (!control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number })
       }).catch(() => {})
     }, 3000)
     return () => clearInterval(interval)
-  }, [ipc])
+  }, [ipc, selectedGroupId])
 
   useEffect(() => {
     if (!flashingEnabled) return
@@ -1474,7 +1485,7 @@ function ChatApp() {
                   {group.group_id === selectedGroupId ? "> " : "  "}{compact ? group.name.slice(0, 14) : group.name}{group.unread_count ? ` (${group.unread_count} new)` : ""}
                 </text>
                 <text fg="#718096">  {group.member_count} member{group.member_count === 1 ? "" : "s"}</text>
-                {group.group_id === selectedGroupId && groupMembers[group.group_id]?.map((member, index) => {
+                {group.group_id === selectedGroupId && groupMembers[group.group_id]?.filter((member) => member.show_in_sidebar !== false).map((member, index) => {
                   const memberId = member.peer_id ?? member.member_id
                   const knownPeer = peers.find((peer) => peer.peer_id === memberId)
                   const color = memberId === identity?.peer_id
