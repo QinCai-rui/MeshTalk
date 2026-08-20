@@ -84,6 +84,43 @@ CREATE TABLE IF NOT EXISTS blocked_peers (
     display_name TEXT NOT NULL,
     created_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS groups (
+    group_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    joined_at REAL NOT NULL,
+    read_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL,
+    peer_id TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT 'Anonymous',
+    joined_at REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    left_at REAL,
+    group_capable INTEGER,
+    PRIMARY KEY (group_id, peer_id)
+);
+
+CREATE TABLE IF NOT EXISTS group_messages (
+    message_id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    content BLOB,
+    created_at REAL NOT NULL,
+    received_at REAL,
+    kind TEXT NOT NULL DEFAULT 'message'
+);
+
+CREATE TABLE IF NOT EXISTS group_deliveries (
+    message_id TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (message_id, recipient_id)
+);
 """
 
 
@@ -123,11 +160,16 @@ class Database:
         queue_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(outgoing_queue)")}
         if "packet_type" not in queue_columns:
             await self._db.execute("ALTER TABLE outgoing_queue ADD COLUMN packet_type INTEGER NOT NULL DEFAULT 0")
+        if "group_id" not in queue_columns:
+            await self._db.execute("ALTER TABLE outgoing_queue ADD COLUMN group_id TEXT")
         friend_request_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(friend_requests)")}
         if "recipient_id" not in friend_request_columns:
             await self._db.execute("ALTER TABLE friend_requests ADD COLUMN recipient_id TEXT NOT NULL DEFAULT ''")
         if "recipient_name" not in friend_request_columns:
             await self._db.execute("ALTER TABLE friend_requests ADD COLUMN recipient_name TEXT NOT NULL DEFAULT ''")
+        group_member_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_members)")}
+        if "group_capable" not in group_member_columns:
+            await self._db.execute("ALTER TABLE group_members ADD COLUMN group_capable INTEGER")
         await self._encrypt_existing_message_content()
         await self._db.commit()
 
@@ -321,12 +363,13 @@ class Database:
         packet_type: int,
         encrypted_payload: bytes,
         message_id: str | None = None,
+        group_id: str | None = None,
     ) -> None:
         await self._db.execute(
             """INSERT INTO outgoing_queue
-               (message_id, recipient_id, packet_type, encrypted_payload, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (message_id, recipient_id, packet_type, encrypted_payload, time.time()),
+               (message_id, recipient_id, packet_type, encrypted_payload, created_at, group_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (message_id, recipient_id, packet_type, encrypted_payload, time.time(), group_id),
         )
         await self._db.commit()
 
@@ -379,6 +422,148 @@ class Database:
             "UPDATE messages SET blocked = 1 WHERE message_id = ?", (message_id,)
         )
         await self._db.commit()
+
+    async def upsert_group(self, group_id: str, name: str) -> None:
+        await self._db.execute(
+            """INSERT INTO groups (group_id, name, joined_at) VALUES (?, ?, ?)
+               ON CONFLICT(group_id) DO UPDATE SET name = excluded.name""",
+            (group_id, name, time.time()),
+        )
+        await self._db.commit()
+
+    async def remove_group(self, group_id: str) -> None:
+        # History remains local so rejoining restores the user's previous view,
+        # but pending traffic must not escape after membership is removed.
+        await self._db.execute("DELETE FROM outgoing_queue WHERE group_id = ?", (group_id,))
+        await self._db.execute("DELETE FROM groups WHERE group_id = ?", (group_id,))
+        await self._db.execute("DELETE FROM group_members WHERE group_id = ?", (group_id,))
+        await self._db.commit()
+
+    async def get_groups(self, local_peer_id: str) -> list[dict]:
+        async with self._db.execute(
+            """SELECT g.group_id, g.name, g.joined_at,
+                      COUNT(DISTINCT CASE WHEN gm.active = 1 THEN gm.peer_id END) AS member_count,
+                      COUNT(DISTINCT CASE WHEN m.sender_id != ? AND m.received_at > COALESCE(g.read_at, 0) THEN m.message_id END) AS unread_count
+               FROM groups g
+               LEFT JOIN group_members gm ON gm.group_id = g.group_id
+               LEFT JOIN group_messages m ON m.group_id = g.group_id
+               GROUP BY g.group_id, g.name, g.joined_at
+               ORDER BY g.name""",
+            (local_peer_id,),
+        ) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def upsert_group_member(
+        self,
+        group_id: str,
+        peer_id: str,
+        display_name: str,
+        active: bool = True,
+        group_capable: bool | None = None,
+    ) -> bool:
+        existing = await self.get_group_member(group_id, peer_id)
+        now = time.time()
+        await self._db.execute(
+            """INSERT INTO group_members (group_id, peer_id, display_name, joined_at, last_seen, active, left_at, group_capable)
+               VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+               ON CONFLICT(group_id, peer_id) DO UPDATE SET
+                 display_name = excluded.display_name,
+                 last_seen = excluded.last_seen,
+                 active = excluded.active,
+                 left_at = NULL,
+                 group_capable = COALESCE(excluded.group_capable, group_members.group_capable)""",
+            (group_id, peer_id, display_name, now, now, int(active), None if group_capable is None else int(group_capable)),
+        )
+        await self._db.commit()
+        return existing is None or not bool(existing["active"])
+
+    async def get_group_member(self, group_id: str, peer_id: str) -> dict | None:
+        async with self._db.execute(
+            "SELECT * FROM group_members WHERE group_id = ? AND peer_id = ?", (group_id, peer_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_group_members(self, group_id: str, include_inactive: bool = False) -> list[dict]:
+        query = "SELECT * FROM group_members WHERE group_id = ?"
+        if not include_inactive:
+            query += " AND active = 1"
+        query += " ORDER BY display_name"
+        async with self._db.execute(query, (group_id,)) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def mark_group_member_left(self, group_id: str, peer_id: str) -> None:
+        await self._db.execute(
+            "UPDATE group_members SET active = 0, left_at = ? WHERE group_id = ? AND peer_id = ?",
+            (time.time(), group_id, peer_id),
+        )
+        await self._db.commit()
+
+    async def save_group_message(self, message: dict) -> bool:
+        content = message.get("content")
+        cursor = await self._db.execute(
+            """INSERT OR IGNORE INTO group_messages
+               (message_id, group_id, sender_id, content, created_at, received_at, kind)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                message["message_id"], message["group_id"], message["sender_id"],
+                self._encrypt_content(content) if content is not None else None,
+                message["created_at"], message.get("received_at"), message.get("kind", "message"),
+            ),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
+        async with self._db.execute(
+            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind
+               FROM (SELECT rowid AS sequence, * FROM group_messages WHERE group_id = ? ORDER BY rowid DESC LIMIT ?)
+               ORDER BY sequence ASC""",
+            (group_id, limit),
+        ) as cursor:
+            messages = [dict(row) async for row in cursor]
+        for message in messages:
+            message["content"] = self._decrypt_content(message["content"])
+            message["deliveries"] = await self.get_group_deliveries(message["message_id"])
+        return messages
+
+    async def get_group_message(self, message_id: str) -> dict | None:
+        async with self._db.execute(
+            "SELECT * FROM group_messages WHERE message_id = ?", (message_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def mark_group_read(self, group_id: str) -> None:
+        await self._db.execute("UPDATE groups SET read_at = ? WHERE group_id = ?", (time.time(), group_id))
+        await self._db.commit()
+
+    async def set_group_delivery(self, message_id: str, recipient_id: str, status: str) -> None:
+        await self._db.execute(
+            """INSERT INTO group_deliveries (message_id, recipient_id, status, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(message_id, recipient_id) DO UPDATE SET
+                 status = CASE
+                   WHEN group_deliveries.status = 'delivered' THEN 'delivered'
+                   ELSE excluded.status
+                 END,
+                 updated_at = CASE
+                   WHEN group_deliveries.status = 'delivered' THEN group_deliveries.updated_at
+                   ELSE excluded.updated_at
+                 END""",
+            (message_id, recipient_id, status, time.time()),
+        )
+        await self._db.commit()
+
+    async def get_group_deliveries(self, message_id: str) -> list[dict]:
+        async with self._db.execute(
+            """SELECT d.recipient_id, COALESCE(p.display_name, d.recipient_id) AS display_name,
+                      d.status, d.updated_at
+               FROM group_deliveries d LEFT JOIN peers p ON p.peer_id = d.recipient_id
+               WHERE d.message_id = ? ORDER BY display_name""",
+            (message_id,),
+        ) as cursor:
+            return [dict(row) async for row in cursor]
 
     async def add_friend(self, peer_id: str, display_name: str) -> None:
         await self._db.execute(

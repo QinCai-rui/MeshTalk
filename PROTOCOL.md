@@ -98,8 +98,8 @@ Fresh state lives in ~/.meshtalk:
 | File | Mode | Contents |
 |------|------|----------|
 | identity.json | 0600 | Signing + encryption private keys, peer ID, display name. |
-| settings.json | 0600 | Control URL, STUN server, room invites (room ID + secret), muted peers. |
-| meshtalk.db | - | SQLite: peers, conversations, messages, outgoing queue, seen IDs, friend relationships, config. |
+| settings.json | 0600 | Control URL, STUN server, room secrets and group names, muted peers. |
+| meshtalk.db | - | SQLite: peers, direct/group messages, cached group rosters and deliveries, outgoing queue, seen IDs, friend relationships, config. |
 | meshtalk.sock | 0600 | Owner-only Unix-domain IPC socket while the backend runs (TCP fallback on Windows). |
 | meshtalk.port | 0600 | Loopback TCP port when the Unix socket is unavailable. |
 | meshtalk.token | 0600 | Random per-backend IPC auth token. |
@@ -197,13 +197,16 @@ handshake, so the warning naturally reappears after a restart once the peer
 reconnects.
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
-`friend_requests`, `delivery_receipts`, `block_reports`). The agreed capability
-set is the **intersection** of both peers' advertised sets (unknown capabilities
-are ignored), and higher-level code gates behaviour on it: `delivery_receipts`
+`friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`). The
+agreed capability set is the **intersection** of both peers' advertised sets
+(unknown capabilities are ignored), and higher-level code gates behaviour on
+it: `delivery_receipts`
 enables `MESSAGE_ACK`, `block_reports` enables `MESSAGE_BLOCKED`, `profile_sync`
-enables presence/display-name updates, and `friend_requests` enables the
-friend-request packet family. A peer that does not advertise a capability will
-never receive (or send) the corresponding packets.
+enables presence/display-name updates, `friend_requests` enables the
+friend-request packet family, and `group_chat` enables the group packet family.
+A peer that does not advertise a capability will not be sent the corresponding
+packets. Handshakes that omit capabilities receive the legacy set, which excludes
+`group_chat`, preventing new group packets from being sent to older clients.
 
 TRANSPORT-SECURITY CAVEAT (important). On the LAN TCP path, the link itself is
 NOT encrypted by a separate transport layer. The handshake and every
@@ -219,7 +222,7 @@ authenticated-but-not-link-encrypted until that work lands.
 
 ### 5.1 Private Rooms and Invites (backend/meshtalk/settings.py)
 
-A private room is created locally:
+A private unnamed room is created locally:
 
 ```
 room_id = 16 random bytes     # 128-bit opaque routing ID
@@ -235,6 +238,26 @@ Example: meshtalk:AbCd...xQ.EF12...9w
   attempt connection. Invite distribution/rotation is the user's
   responsibility.
 
+A named group is a room whose invite uses a distinct prefix and encrypted third
+segment:
+
+```
+invite = "meshtalk-group:" + base64url(room_id) + "." + base64url(secret)
+       + "." + base64url(nonce12 || encrypted_metadata)
+
+metadata_key = HKDF-SHA256(secret, salt=room_id,
+                           info=b"meshtalk-group-invite-v1", len=32)
+encrypted_metadata = AESGCM(metadata_key).encrypt(
+    nonce12, {"version":1,"group_name":"..."}, aad=room_id)
+```
+
+The group ID equals the room ID. Group names are 1-64 characters after trimming
+and reject ASCII controls.
+Two-segment `meshtalk:` invites remain valid and produce unnamed rooms without
+group-chat state. The distinct prefix prevents metadata stripping from silently
+downgrading an existing group. The complete three-segment invite remains secret;
+the control service sees neither the name nor the metadata key.
+
 ### 5.2 Room Key and Endpoint Cards (backend/meshtalk/rendezvous.py)
 
 The room secret derives an AES-256-GCM key via HKDF:
@@ -248,16 +271,17 @@ room_key = HKDF-SHA256(
 )
 ```
 
-An endpoint card advertises a peer's public UDP address. It is built, signed,
+An endpoint card advertises room membership and, when available, a public UDP
+address. It is built, signed,
 then encrypted locally before being sent to the control service:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "kind": "endpoint",
   "peer_id": "<64 hex>",
   "signing_public_key": "<64 hex>",
-  "candidate": { "host": "<ipv4>", "port": 12345 },
+  "candidate": { "host": "<ipv4>", "port": 12345 } | null,
   "created_at": 1700000000,
   "nonce": "<32 hex>",
   "signature": "<128 hex>"
@@ -271,8 +295,9 @@ then encrypted locally before being sent to the control service:
   2. version == 1 and kind == "endpoint";
   3. peer_id == SHA-256(signing_public_key);
   4. card age |now - created_at| <= CARD_MAX_AGE (180 s);
-  5. host is a global, non-multicast/unspecified/reserved/link-local IPv4
-     (loopback only allowed with allow_loopback);
+  5. when a candidate is present, its host is a global,
+     non-multicast/unspecified/reserved/link-local IPv4 (loopback only allowed
+     with allow_loopback);
   6. Ed25519 signature over the card body is valid.
 - Replay protection: (room_id, peer_id, nonce) is remembered for CARD_MAX_AGE;
   duplicates are dropped.
@@ -387,7 +412,7 @@ JSON hello (canonical, then Ed25519-signed):
 {
   "version": 1,
   "min_version": 1,
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -410,6 +435,8 @@ During the handshake, peers exchange their maximum protocol `version`, their `mi
   - `friend_requests`: Send, accept, or cancel friend requests.
   - `delivery_receipts`: Acknowledge message delivery (`MESSAGE_ACK`).
   - `block_reports`: Report message blocking status (`MESSAGE_BLOCKED`).
+  - `group_chat`: Exchange `GROUP_MESSAGE`, `GROUP_MESSAGE_ACK`, and
+    `GROUP_LEAVE` packets for mutually joined named rooms.
 
 ### 6.3 Session Key Derivation
 
@@ -550,6 +577,12 @@ in an `outgoing_queue` until the peer reconnects, then replays it.
   FRIEND_REQUEST, FRIEND_REQUEST_RESPONSE and FRIEND_REQUEST_CANCELLED packets
   when the target peer is offline, into the same `outgoing_queue`. These packets
   are signed (not encrypted), so no cached key is required to build them.
+- **Group packets are queued per recipient.** `GROUP_MESSAGE` is independently
+  encrypted for each offline active roster member with a cached key and stored
+  with its `group_id`; its delivery state is `queued` until reconnect flushes it
+  to `sent`, and `GROUP_MESSAGE_ACK` changes it to `delivered`. Signed
+  `GROUP_LEAVE` events are also queued for known offline members previously
+  observed to support `group_chat`.
 - **Storage.** The `outgoing_queue` table holds
   `id, message_id (nullable), recipient_id, packet_type, encrypted_payload,
   created_at, attempts, last_attempt`. The `messages` row for a queued message
@@ -562,8 +595,9 @@ in an `outgoing_queue` until the peer reconnects, then replays it.
   live connection, marks the local message `queued = 0`, and removes the queue
   row. A successful delivery later produces the normal MESSAGE_ACK, which marks
   the message `delivered`.
-- **Bounds.** Packets with `attempts >= 5` are no longer retried and are dropped
-  from the queue (`get_pending_outgoing` filters `attempts < 5`). Messages no
+- **Bounds.** Packets with `attempts >= 5` are no longer selected for retry
+  (`get_pending_outgoing` filters `attempts < 5`), but their rows are not
+  currently deleted or transitioned to an explicit failed state. Messages no
   longer carry an expiry (`expires_at` was removed), so a queued message is held
   until it is successfully flushed or hits the retry bound; the recipient accepts
   it regardless of age when eventually flushed.
@@ -571,6 +605,67 @@ in an `outgoing_queue` until the peer reconnects, then replays it.
   until flushed (`sent`) and finally `delivered` on ACK. When the time a message
   was actually received/delivered differs from its send time, the UI appends a
   `(sent at <date/time>)` note so delayed/offline messages stay unambiguous.
+
+### 7.5 Room-Backed Group Messages
+
+A named room's decrypted room cards populate a persistent, device-local
+`group_members` cache. Seeing a card activates or refreshes that peer and records
+whether its current connection negotiated `group_chat`. This cache is the
+fan-out roster; control-service member counts are not an authenticated identity
+list. The local peer is inserted when named rooms are synchronized from
+settings.
+The candidate field may be null. Such a card still authenticates room membership
+and populates the roster, but does not trigger UDP punching; this supports LAN
+groups and control connectivity when STUN discovery fails.
+
+`GROUP_MESSAGE` contains:
+
+```json
+{
+  "message_id": "<uuid>",
+  "group_id": "<32 lowercase hex>",
+  "sender_id": "<64 hex>",
+  "recipient_id": "<64 hex>",
+  "created_at": 1700000000.0,
+  "encrypted_content": "<hex>",
+  "signature": "<128 hex>"
+}
+```
+
+The AAD is canonical JSON of `message_id`, `group_id`, `sender_id`,
+`recipient_id`, and `created_at`. Content uses the same one-time ephemeral
+X25519/AES-GCM construction as direct messages, independently for each
+recipient. The signature is Ed25519 over
+`SHA-256(AAD || encrypted_content)`. Content is limited to 30 KiB before
+encryption.
+
+Receipt requires negotiated `group_chat`; authenticated peer ID equal to
+`sender_id`; the local ID equal to `recipient_id`; a locally joined named room;
+an active cached member row for the sender; and a valid signature and decrypt.
+These checks authorize group traffic without consulting the friend list. Other
+traffic still follows the normal friend policy. Duplicate message IDs do not
+create another history row, but are ACKed again.
+If the sender is locally blocked, the packet is suppressed without an ACK.
+Blocked members are also excluded from local outgoing fanout.
+
+`GROUP_MESSAGE_ACK` signs canonical JSON containing `message_id`, `group_id`,
+and the acknowledging `recipient_id`. The sender accepts it only from that
+authenticated recipient and only for a known delivery row in the same group,
+then records `delivered` and emits `group_delivered`.
+
+`GROUP_LEAVE` contains a UUID `event_id`, `group_id`, leaving `peer_id`,
+`created_at`, and an Ed25519 signature over those canonical fields. A receiver
+accepts it only from that authenticated active member, rejects duplicate IDs and
+events more than 24 hours from its clock, marks the roster row inactive, stores
+a local `leave` system event, and emits `group_member_left`. The leaver sends it
+to online capable members and stores it in the durable outgoing queue for
+offline members known to be capable before deleting its local group and room.
+Previously stored local history and delivery records are retained so they can be
+shown after rejoining, while pending group-message queue rows are deleted.
+
+There is no group-history protocol. `group_messages` reads at most the newest
+200 locally persisted rows; neither joining nor reconnecting requests old group
+messages from peers or the control service.
 
 ## 8. Application Packet Types
 
@@ -591,6 +686,9 @@ TCP and UDP carry the same Packet type byte (backend/meshtalk/protocol.py):
 | FRIEND_REQUEST_RESPONSE | 0x0B | Friend Response | Signed accept/decline. |
 | MESSAGE_BLOCKED | 0x0C | Message Blocked | Signed notice that a message was dropped (not a friend). |
 | FRIEND_REQUEST_CANCELLED | 0x0D | Friend Cancelled | Signed cancellation of a pending request. |
+| GROUP_MESSAGE | 0x0E | Group Message | Signed pairwise-encrypted copy for one group recipient. |
+| GROUP_MESSAGE_ACK | 0x0F | Group Message ACK | Signed per-recipient delivery acknowledgement. |
+| GROUP_LEAVE | 0x10 | Group Leave | Signed durable member-leave event. |
 
 UDP transport-level frame types (udp_transport.py): HELLO=1, DATA=2, ACK=3,
 PING=4, PONG=5, READY=6, GOODBYE=7 (distinct from the application types above;
@@ -659,11 +757,16 @@ over IPC.
 | messages | peer_id | Conversation history (marks read). |
 | set_display_name | display_name | New name; broadcasts PROFILE. |
 | control | url?, dismiss_setup? | Control/STUN config + connection state. |
-| room_create | - | room_id, invite |
-| room_join | invite | room_id |
+| room_create | name | room_id, group_id, name, invite |
+| room_join | invite | room_id, group_id and name when the invite names a group |
 | room_leave | room_id | room_id |
 | room_invite | room_id | Re-export the invite. |
 | rooms | - | Room membership counts. |
+| groups | - | Named groups with cached active-member and unread counts. |
+| group_members | group_id | Cached active roster with online state. |
+| group_messages | group_id | Last 200 local messages/system events and per-recipient deliveries; marks read. |
+| group_send | group_id, content | message_id and per-recipient `sent`, `delivered`, `queued`, or `unavailable` status. |
+| group_leave | group_id | Sends/queues signed leave events, removes local room/group state, returns group_id. |
 | mute / unmute | peer_id, timeout? | Mute state. |
 | muted_peers | - | Current mutes. |
 | debug_re_stun | - | Re-run STUN + re-announce. |
@@ -672,9 +775,17 @@ over IPC.
 
 ### 10.2 Events (server to clients)
 
-peer_update, message, delivered, friend_request, friend_response,
-friend_cancelled, message_blocked. Each carries the relevant fields from the
-corresponding handler.
+`peer_update`, `message`, `delivered`, `friend_request`, `friend_response`,
+`friend_cancelled`, `message_blocked`, `group_message`, `group_member_joined`,
+`group_member_left`, `group_sent`, and `group_delivered`. Group events identify
+the group and affected message/member; `group_sent` reports an offline queued
+copy being flushed, and `group_delivered` reports its recipient ACK.
+
+The CLI exposes `room create <name>`, `room join`, `groups` / `group list`, and
+`group members|messages|send|leave`. `watch` prints incoming group messages and
+member join/leave events. The TUI lists groups beside peers, provides named
+create/join and member/leave dialogs, renders local group history and unread
+counts, and summarizes per-member delivery states.
 
 ## 11. Threat Model & Trust Boundaries
 
@@ -710,6 +821,14 @@ Cryptographic assumptions & limits:
   routing content through infrastructure.
 - Anyone with a room invite can join that room; invite secrecy is the user's
   responsibility.
+- A group roster is a device-local cache derived from decrypted room endpoint
+  cards and signed leave events, not an authoritative membership service. The
+  friend-only policy is bypassed only for packets that negotiate `group_chat`
+  and pass local active-membership and routing checks.
+- There are no administrators, server-enforced bans/revocation, invite rotation,
+  or history replay. Pairwise fan-out does not provide advanced group properties
+  such as sender keys, group epochs, efficient large-group rekeying, or
+  post-compromise security.
 
 ## 12. Planned / Not Yet Wired (Hybrid Section)
 
@@ -721,9 +840,10 @@ the current code (per TODO.md):
   DIRECT delivery (hop_count == max_hops == 0). Relay forwarding, loop
   resistance, and "relay cannot decrypt content" guarantees are not
   implemented.
-- Store-and-forward for offline recipients. Outgoing-queue and seen-message
-  tables exist, but offline delivery, the 500-message limit, and the 24-hour
-  stored-message age limit are not enforced.
+- Queue limits, expiry, and durable failed/expired states remain incomplete.
+  Sender-side direct and group delivery on reconnect is active, but queue rows
+  are only retried up to five failed flush attempts and no 500-message or
+  24-hour age bound is enforced.
 - LAN TCP transport encryption. DESIGN claims "an additional independent
   authenticated encryption layer" from the transport; only the remote UDP
   transport implements this today. LAN TCP links are authenticated (signed) but
@@ -742,7 +862,7 @@ the current code (per TODO.md):
 | Protocol version | 2 | protocol.PROTOCOL_VERSION |
 | Min supported protocol version | 2 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
 | Legacy peer version | 0 | Default for peers omitting `protocol_version` in handshake |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat | protocol.DEFAULT_CAPABILITIES |
 | Max packet size | 64 KiB | protocol.MAX_PACKET_SIZE |
 | Discovery interval | 3 s | discovery.BROADCAST_INTERVAL |
 | Handshake timeout | 10 s | peer_manager.HANDSHAKE_TIMEOUT |

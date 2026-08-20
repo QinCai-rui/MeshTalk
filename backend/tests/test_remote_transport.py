@@ -45,7 +45,9 @@ class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
 
     async def _become_friends(self):
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(2):
+            while await self.db_b.get_friend_request(request_id) is None:
+                await asyncio.sleep(0.02)
         await self.friend_b.respond_to_friend_request(request_id, accept=True)
         await asyncio.sleep(0.05)
 
@@ -102,6 +104,15 @@ class PrivateRoomTest(unittest.TestCase):
         self.assertEqual(card["candidate"], {"host": "203.0.113.7", "port": 42424})
         with self.assertRaises(InvalidTag):
             decrypt_endpoint_card(Room.create(), payload)
+
+    def test_room_member_card_can_omit_public_endpoint(self):
+        room = Room.create("LAN Group")
+        identity = Identity.generate("Alice")
+
+        card = decrypt_endpoint_card(room, encrypt_endpoint_card(identity, room, None))
+
+        self.assertEqual(card["peer_id"], identity.peer_id)
+        self.assertIsNone(card["candidate"])
 
     def test_settings_persist_private_rooms(self):
         with tempfile.TemporaryDirectory() as temporary:

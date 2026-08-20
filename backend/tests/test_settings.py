@@ -88,6 +88,22 @@ class RoomInvitePersistenceTest(unittest.TestCase):
             self.assertEqual(loaded.rooms[room.id].invite, invite)
             self.assertEqual(Room.from_invite(invite), loaded.rooms[room.id])
 
+    def test_group_name_is_encrypted_in_invite_and_survives_reload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            room = settings.create_room("Project Nightfall")
+            invite = room.invite
+
+            self.assertNotIn("Project Nightfall", invite)
+            self.assertTrue(invite.startswith("meshtalk-group:"))
+            self.assertEqual(Room.from_invite(invite).group_name, "Project Nightfall")
+            self.assertEqual(Settings(path).rooms[room.id].group_name, "Project Nightfall")
+
+            stripped = "meshtalk:" + invite.removeprefix("meshtalk-group:").rsplit(".", 1)[0]
+            with self.assertRaisesRegex(ValueError, "conflicts"):
+                settings.join_room(stripped)
+
 
 class MutePeerPersistenceTest(unittest.TestCase):
     def test_permanent_mute_survives_reload(self):

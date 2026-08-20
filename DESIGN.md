@@ -42,13 +42,27 @@ When both paths are authenticated, LAN TCP is active and remote UDP remains a
 fallback. The backend reports all known endpoints and marks the active endpoint
 through IPC.
 
-## Private Rooms
+## Private Rooms And Named Groups
 
-An invite is:
+An unnamed legacy room invite is:
 
 ```text
 meshtalk:<128-bit opaque room ID>.<256-bit room secret>
 ```
+
+A named group uses a distinct, versioned prefix while retaining the room ID and
+secret fields:
+
+```text
+meshtalk-group:<room ID>.<room secret>.<encrypted group metadata>
+```
+
+The third segment is `nonce || AES-256-GCM ciphertext`, encoded as base64url.
+Its key is derived from the room secret with HKDF-SHA256 using the room ID as
+salt and `meshtalk-group-invite-v1` as info; the room ID is AAD. The encrypted
+JSON contains metadata version 1 and the group name. The distinct prefix prevents
+stripping the metadata from silently downgrading a group into an unnamed room.
+Parsers continue to accept two-segment `meshtalk:` invites as unnamed rooms.
 
 Only the room ID is sent to the control service. The room secret derives an
 AES-256-GCM key with HKDF-SHA256. Endpoint cards contain:
@@ -57,7 +71,7 @@ AES-256-GCM key with HKDF-SHA256. Endpoint cards contain:
 protocol version
 peer ID
 Ed25519 public key
-public UDP address and port
+optional public UDP address and port
 creation time
 random replay nonce
 Ed25519 signature
@@ -69,6 +83,39 @@ enforce a short age limit, reject replayed nonces, and only then begin punching.
 
 The control service knows opaque room membership and connection metadata, but
 not room secrets, peer identities, endpoint-card contents, or messages.
+
+### Group membership and delivery
+
+For a named room, the room ID is also the group ID. Decrypted room cards
+from room signals and `get_peers` responses populate a persistent local roster;
+the control service does not provide an authoritative identity roster. A card
+can add or refresh a member, while a verified `GROUP_LEAVE` marks that member
+inactive. Consequently, roster views are cached and may lag room membership.
+
+The `group_chat` capability gates group-message sending and receipt. Sending
+fans one signed `GROUP_MESSAGE` envelope out to every active cached member
+except the sender.
+Each copy is encrypted independently to that member's X25519 key, so there is no
+shared group message key. A `GROUP_MESSAGE_ACK` updates that recipient's status
+from `sent` (or previously `queued`) to `delivered`; missing keys or capability
+produce `unavailable`. Offline members with cached keys receive durable
+sender-side queue entries which become `sent` on reconnect.
+Cards without a public candidate still populate the roster, allowing LAN group
+membership to work when STUN fails. They simply do not initiate UDP punching.
+
+Group authorization is the only exception to friend-only inbound chat. The
+receiver requires negotiated `group_chat`, an exact authenticated sender and
+recipient match, a locally joined named room, and an active local roster entry.
+Traffic that does not pass those checks is rejected; the exception does not
+make ordinary non-friend direct messages acceptable.
+Locally blocked members are excluded from outgoing fanout and their incoming
+group messages are suppressed while their roster entries remain visible.
+
+Group history is local only. Joining does not request or replay prior messages,
+and online members do not backfill history to newcomers. Join/leave system rows
+reflect local observations. A leave event is signed, replay-checked, persisted
+as a local system event by recipients, and queued by the leaver for known
+offline group-capable members before local room state is removed.
 
 ## Remote UDP Session
 
@@ -127,7 +174,7 @@ MeshTalk is friend-oriented: the backend accepts incoming direct messages only
 from peers on the local friend list. A message from a non-friend is rejected and
 answered with a short blocked notice, so an unknown peer can neither deliver a
 message nor probe content. The only inbound channel from an unknown peer is a
-friend request.
+friend request, except for strictly authorized group packets described above.
 
 ### Friend requests
 
@@ -197,8 +244,9 @@ The TUI is a local React (React 19 over `@opentui/react`) client of the Python
 backend. It talks to the backend exclusively over the owner-only Unix-domain IPC
 socket (`meshtalk.sock`) using a request/response protocol with event streaming.
 
-The screen is a single row: a sidebar (your identity, peer list with presence and
-unread indicators) and a conversation pane with a message log and a composer.
+The screen is a single row: a sidebar (your identity, peer and group lists with
+presence/unread indicators) and a conversation pane with a message log and a
+composer.
 Above this sits a modal dialog layer rendered as an absolutely-positioned,
 centered, bordered overlay.
 
@@ -245,7 +293,10 @@ and return JSON; responses are correlated by request id, and asynchronous events
 - `tui_presence` / `tui_disconnect` — report or clear TUI focus.
 - `control` — inspect or configure the control service URL and STUN server.
 - `room_create` / `room_join` / `room_leave` / `room_invite` / `rooms` — private
-  room lifecycle and invite generation.
+  room lifecycle and invite generation; `room_create` takes a group name.
+- `groups` / `group_members` / `group_messages` — list local groups, cached
+  active rosters, and local history.
+- `group_send` / `group_leave` — send to or leave a named group.
 - `debug_re_stun` / `debug_info` — connectivity diagnostics.
 - `shutdown` — stop the backend daemon.
 
@@ -258,9 +309,12 @@ and return JSON; responses are correlated by request id, and asynchronous events
 - Anyone holding a room invite can decrypt that room's endpoint cards and attempt
   to connect. Invite distribution and rotation are user responsibilities.
 - Direct peers and STUN providers necessarily observe public network endpoints.
-- Messages are accepted only from friends; non-friends must first exchange a
-  friend request. This prevents unsolicited messaging but also means two peers
-  cannot chat until one sends and the other accepts a request.
+- Messages are accepted only from friends for direct chat. Authorized
+  room-backed group traffic is the narrow exception.
+- There are no group administrators, member revocation, invite rotation,
+  history replay, or authoritative synchronized rosters.
+- Group encryption is pairwise fan-out. Sender keys, group key agreement,
+  forward-secure group epochs, and post-compromise security are not implemented.
 
 ## Persistence
 

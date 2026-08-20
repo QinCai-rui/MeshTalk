@@ -16,6 +16,9 @@ Packet types:
   FRIEND_REQUEST_RESPONSE 0x0B
   MESSAGE_BLOCKED      0x0C
   FRIEND_REQUEST_CANCELLED 0x0D
+  GROUP_MESSAGE          0x0E
+  GROUP_MESSAGE_ACK      0x0F
+  GROUP_LEAVE            0x10
 """
 
 from __future__ import annotations
@@ -40,13 +43,16 @@ CAP_PROFILE_SYNC = "profile_sync"
 CAP_FRIEND_REQUESTS = "friend_requests"
 CAP_DELIVERY_RECEIPTS = "delivery_receipts"
 CAP_BLOCK_REPORTS = "block_reports"
+CAP_GROUP_CHAT = "group_chat"
 DEFAULT_CAPABILITIES = [
     CAP_TEXT_CHAT,
     CAP_PROFILE_SYNC,
     CAP_FRIEND_REQUESTS,
     CAP_DELIVERY_RECEIPTS,
     CAP_BLOCK_REPORTS,
+    CAP_GROUP_CHAT,
 ]
+LEGACY_CAPABILITIES = [capability for capability in DEFAULT_CAPABILITIES if capability != CAP_GROUP_CHAT]
 # Capabilities that have a direct counterpart in this implementation. Used to
 # validate that a peer only advertises capabilities we recognise.
 KNOWN_CAPABILITIES = frozenset(DEFAULT_CAPABILITIES)
@@ -90,13 +96,11 @@ def validate_capabilities(capabilities: list[str]) -> list[str]:
     Returns a list safe to store on a :class:`PeerConnection`.
     """
     if not isinstance(capabilities, list):
-        return list(DEFAULT_CAPABILITIES)
+        return []
     cleaned = []
     for cap in capabilities:
         if isinstance(cap, str) and cap in KNOWN_CAPABILITIES and cap not in cleaned:
             cleaned.append(cap)
-    if not cleaned:
-        return list(DEFAULT_CAPABILITIES)
     return cleaned
 
 
@@ -134,6 +138,9 @@ class PacketType(enum.IntEnum):
     FRIEND_REQUEST_RESPONSE = 0x0B
     MESSAGE_BLOCKED = 0x0C
     FRIEND_REQUEST_CANCELLED = 0x0D
+    GROUP_MESSAGE = 0x0E
+    GROUP_MESSAGE_ACK = 0x0F
+    GROUP_LEAVE = 0x10
 
 
 @dataclass
@@ -260,7 +267,7 @@ class HandshakePayload:
         has_version = "protocol_version" in obj
         protocol_version = obj.get("protocol_version", 0)
         min_protocol_version = obj.get("min_protocol_version", 0)
-        capabilities = validate_capabilities(obj.get("capabilities", list(DEFAULT_CAPABILITIES)))
+        capabilities = validate_capabilities(obj.get("capabilities", list(LEGACY_CAPABILITIES)))
         payload = cls(
             peer_id=obj["peer_id"],
             signing_public_key=bytes.fromhex(obj["signing_public_key"]),
@@ -367,6 +374,153 @@ class MessagePayload:
             encrypted_content=bytes.fromhex(obj["encrypted_content"]),
             signature=bytes.fromhex(obj.get("signature", "")),
         )
+
+
+@dataclass
+class GroupMessagePayload:
+    message_id: str
+    group_id: str
+    sender_id: str
+    recipient_id: str
+    created_at: float
+    encrypted_content: bytes
+    signature: bytes = b""
+
+    def associated_data(self) -> bytes:
+        return json.dumps({
+            "message_id": self.message_id,
+            "group_id": self.group_id,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+        }, separators=(",", ":"), sort_keys=True).encode()
+
+    def signed_bytes(self) -> bytes:
+        return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
+
+    def encode(self) -> bytes:
+        return json.dumps({
+            "message_id": self.message_id,
+            "group_id": self.group_id,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+            "encrypted_content": self.encrypted_content.hex(),
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> GroupMessagePayload:
+        obj = json.loads(data)
+        payload = cls(
+            message_id=obj["message_id"],
+            group_id=obj["group_id"],
+            sender_id=obj["sender_id"],
+            recipient_id=obj["recipient_id"],
+            created_at=obj["created_at"],
+            encrypted_content=bytes.fromhex(obj["encrypted_content"]),
+            signature=bytes.fromhex(obj.get("signature", "")),
+        )
+        if (
+            not _valid_request_id(payload.message_id)
+            or not isinstance(payload.group_id, str)
+            or not re.fullmatch(r"[a-f0-9]{32}", payload.group_id)
+            or not _valid_peer_id(payload.sender_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or not isinstance(payload.created_at, (int, float))
+            or isinstance(payload.created_at, bool)
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid group message payload")
+        return payload
+
+
+@dataclass
+class GroupAckPayload:
+    message_id: str
+    group_id: str
+    recipient_id: str
+    signature: bytes = b""
+
+    def signed_bytes(self) -> bytes:
+        return json.dumps({
+            "message_id": self.message_id,
+            "group_id": self.group_id,
+            "recipient_id": self.recipient_id,
+        }, separators=(",", ":"), sort_keys=True).encode()
+
+    def encode(self) -> bytes:
+        return json.dumps({
+            "message_id": self.message_id,
+            "group_id": self.group_id,
+            "recipient_id": self.recipient_id,
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> GroupAckPayload:
+        obj = json.loads(data)
+        payload = cls(
+            message_id=obj["message_id"],
+            group_id=obj["group_id"],
+            recipient_id=obj["recipient_id"],
+            signature=bytes.fromhex(obj.get("signature", "")),
+        )
+        if (
+            not _valid_request_id(payload.message_id)
+            or not re.fullmatch(r"[a-f0-9]{32}", payload.group_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid group acknowledgement")
+        return payload
+
+
+@dataclass
+class GroupLeavePayload:
+    event_id: str
+    group_id: str
+    peer_id: str
+    created_at: float
+    signature: bytes = b""
+
+    def signed_bytes(self) -> bytes:
+        return json.dumps({
+            "event_id": self.event_id,
+            "group_id": self.group_id,
+            "peer_id": self.peer_id,
+            "created_at": self.created_at,
+        }, separators=(",", ":"), sort_keys=True).encode()
+
+    def encode(self) -> bytes:
+        return json.dumps({
+            "event_id": self.event_id,
+            "group_id": self.group_id,
+            "peer_id": self.peer_id,
+            "created_at": self.created_at,
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> GroupLeavePayload:
+        obj = json.loads(data)
+        payload = cls(
+            event_id=obj["event_id"],
+            group_id=obj["group_id"],
+            peer_id=obj["peer_id"],
+            created_at=obj["created_at"],
+            signature=bytes.fromhex(obj.get("signature", "")),
+        )
+        if (
+            not _valid_request_id(payload.event_id)
+            or not re.fullmatch(r"[a-f0-9]{32}", payload.group_id)
+            or not _valid_peer_id(payload.peer_id)
+            or not isinstance(payload.created_at, (int, float))
+            or isinstance(payload.created_at, bool)
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid group leave payload")
+        return payload
 
 
 MAX_FRIEND_NOTE_LENGTH = 1024

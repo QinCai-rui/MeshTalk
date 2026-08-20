@@ -9,9 +9,11 @@ from meshtalk.protocol import (
     CAP_BLOCK_REPORTS,
     CAP_DELIVERY_RECEIPTS,
     CAP_FRIEND_REQUESTS,
+    CAP_GROUP_CHAT,
     CAP_PROFILE_SYNC,
     CAP_TEXT_CHAT,
     DEFAULT_CAPABILITIES,
+    LEGACY_CAPABILITIES,
     DiscoveryPacket,
     HandshakePayload,
     IncompatibleProtocolError,
@@ -70,9 +72,9 @@ class CapabilityTest(unittest.TestCase):
     def test_validate_filters_unknown(self):
         self.assertEqual(validate_capabilities(["text_chat", 123, "nope"]), [CAP_TEXT_CHAT])
 
-    def test_validate_empty_falls_back_to_default(self):
-        self.assertEqual(set(validate_capabilities([])), set(DEFAULT_CAPABILITIES))
-        self.assertEqual(set(validate_capabilities("not-a-list")), set(DEFAULT_CAPABILITIES))
+    def test_validate_empty_enables_no_capabilities(self):
+        self.assertEqual(validate_capabilities([]), [])
+        self.assertEqual(validate_capabilities("not-a-list"), [])
 
 
 class HandshakeSignatureCompatTest(unittest.TestCase):
@@ -187,7 +189,7 @@ class HandshakePayloadTest(unittest.TestCase):
         decoded = HandshakePayload.decode(raw)
         self.assertEqual(decoded.protocol_version, 0)
         self.assertEqual(decoded.min_protocol_version, 0)
-        self.assertEqual(set(decoded.capabilities), set(DEFAULT_CAPABILITIES))
+        self.assertEqual(set(decoded.capabilities), set(LEGACY_CAPABILITIES))
 
 
 class DiscoveryPacketTest(unittest.TestCase):
@@ -293,6 +295,7 @@ class ApplyHandshakeTest(unittest.TestCase):
             payload.signature = remote.signing_private_key.sign(payload.signed_bytes(legacy=True))
             peer = PeerConnection(remote.peer_id, "127.0.0.1", 24891, PeerState.CONNECTING)
             local._apply_handshake(peer, payload, expected_challenge=b"")
+            self.assertFalse(peer.supports(CAP_GROUP_CHAT))
 
         asyncio.run(run())
 

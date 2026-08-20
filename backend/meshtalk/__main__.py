@@ -17,6 +17,7 @@ from .database import Database
 from .discovery import DiscoveryService
 from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
+from .group_router import GroupRouter
 from .message_router import MessageRouter
 from .ipc import IPCServer
 from .protocol import PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, Packet, PacketType
@@ -46,7 +47,10 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
     friend_manager = FriendManager(identity, peer_manager, db)
-    router = MessageRouter(identity, peer_manager, db, friend_manager=friend_manager)
+    group_router = GroupRouter(identity, peer_manager, db, settings)
+    router = MessageRouter(
+        identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router
+    )
     tui_clients: set[str] = set()
 
     peer_manager.on_packet = router.handle_packet
@@ -59,14 +63,28 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
         if not items:
             return
         for item in items:
+            if not await group_router.can_flush(peer, item):
+                if item["message_id"] and item.get("group_id"):
+                    await db.set_group_delivery(item["message_id"], peer_id, "unavailable")
+                await db.remove_from_outqueue(item["id"])
+                continue
             try:
                 packet = Packet(PacketType(item["packet_type"]), item["encrypted_payload"])
+                if item["message_id"] and item.get("group_id"):
+                    await db.set_group_delivery(item["message_id"], peer_id, "sent")
                 await peer_manager.send_packet(peer, packet)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to flush queued packet for %s: %s", peer_id, exc)
                 await db.increment_outqueue_attempts(item["id"])
                 continue
-            if item["message_id"]:
+            if item["message_id"] and item.get("group_id"):
+                await ipc.broadcast_event({
+                    "event": "group_sent",
+                    "message_id": item["message_id"],
+                    "group_id": item["group_id"],
+                    "recipient_id": peer_id,
+                })
+            elif item["message_id"]:
                 await db.mark_message_sent(item["message_id"])
                 await ipc.broadcast_event({
                     "event": "message_sent",
@@ -83,6 +101,7 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
             event.update(peer.negotiated())
         await ipc.broadcast_event(event)
         if peer is not None:
+            await group_router.peer_connected(peer_id)
             await flush_outgoing(peer_id)
 
     peer_manager.on_peer_changed = handle_peer_changed
@@ -105,7 +124,11 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
 
     discovery = DiscoveryService(24891, on_peer_found)
     rendezvous = RendezvousService(
-        identity, settings, peer_manager.udp, peer_manager.record_remote_candidate
+        identity,
+        settings,
+        peer_manager.udp,
+        peer_manager.record_remote_candidate,
+        group_router.record_room_member,
     )
 
     async def handle_send(req: dict) -> dict:
@@ -350,22 +373,35 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
         }
 
     async def handle_room_create(req: dict) -> dict:
-        room = settings.create_room()
+        name = req.get("name")
+        if name is not None and not isinstance(name, str):
+            return {"error": "name must be a string"}
+        room = settings.create_room(name)
+        await group_router.sync_groups()
         rendezvous.configuration_changed()
-        return {"room_id": room.id, "invite": room.invite}
+        return {
+            "room_id": room.id,
+            "group_id": room.id if room.group_name else None,
+            "name": room.group_name,
+            "invite": room.invite,
+        }
 
     async def handle_room_join(req: dict) -> dict:
         invite = req.get("invite")
         if not isinstance(invite, str):
             return {"error": "invite required"}
         room = settings.join_room(invite)
+        await group_router.sync_groups()
         rendezvous.configuration_changed()
-        return {"room_id": room.id}
+        return {"room_id": room.id, "group_id": room.id if room.group_name else None, "name": room.group_name}
 
     async def handle_room_leave(req: dict) -> dict:
         room_id = req.get("room_id")
         if not isinstance(room_id, str):
             return {"error": "room_id required"}
+        room = settings.rooms.get(room_id)
+        if room and room.group_name is not None:
+            return {"error": "Use group_leave for a room-backed group"}
         settings.leave_room(room_id)
         rendezvous.configuration_changed()
         return {"room_id": room_id}
@@ -379,6 +415,43 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
 
     async def handle_rooms(req: dict) -> dict:
         return {"rooms": rendezvous.room_status()}
+
+    async def handle_groups(req: dict) -> dict:
+        return {"groups": await db.get_groups(identity.peer_id)}
+
+    async def handle_group_members(req: dict) -> dict:
+        group_id = req.get("group_id")
+        if not isinstance(group_id, str) or group_id not in settings.rooms:
+            return {"error": "valid group_id required"}
+        members = await db.get_group_members(group_id)
+        for member in members:
+            connection = peer_manager.get_connected_peer(member["peer_id"])
+            member["is_online"] = member["peer_id"] == identity.peer_id or connection is not None
+        return {"members": members}
+
+    async def handle_group_messages(req: dict) -> dict:
+        group_id = req.get("group_id")
+        if not isinstance(group_id, str) or group_id not in settings.rooms:
+            return {"error": "valid group_id required"}
+        messages = await db.get_group_messages(group_id)
+        await db.mark_group_read(group_id)
+        return {"messages": messages}
+
+    async def handle_group_send(req: dict) -> dict:
+        group_id = req.get("group_id")
+        content = req.get("content")
+        if not isinstance(group_id, str) or not isinstance(content, str):
+            return {"error": "group_id and content required"}
+        message_id, deliveries = await group_router.send_message(group_id, content.encode())
+        return {"message_id": message_id, "deliveries": deliveries}
+
+    async def handle_group_leave(req: dict) -> dict:
+        group_id = req.get("group_id")
+        if not isinstance(group_id, str):
+            return {"error": "group_id required"}
+        await group_router.leave_group(group_id)
+        rendezvous.configuration_changed()
+        return {"group_id": group_id}
 
     async def handle_mute(req: dict) -> dict:
         peer_id = req.get("peer_id")
@@ -462,6 +535,11 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
         "room_leave": handle_room_leave,
         "room_invite": handle_room_invite,
         "rooms": handle_rooms,
+        "groups": handle_groups,
+        "group_members": handle_group_members,
+        "group_messages": handle_group_messages,
+        "group_send": handle_group_send,
+        "group_leave": handle_group_leave,
         "mute": handle_mute,
         "unmute": handle_unmute,
         "muted_peers": handle_muted_peers,
@@ -477,6 +555,7 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
     )
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
+    group_router.on_event = ipc.broadcast_event
     friend_manager.on_friend_request = lambda event: ipc.broadcast_event({"event": "friend_request", **event})
     friend_manager.on_friend_response = lambda event: ipc.broadcast_event({"event": "friend_response", **event})
     friend_manager.on_friend_cancelled = lambda event: ipc.broadcast_event({"event": "friend_cancelled", **event})
@@ -484,6 +563,7 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
 
     await peer_manager.start()
     await peer_manager.load_endpoints()
+    await group_router.sync_groups()
     await discovery.start()
     await rendezvous.start()
     await ipc.start()
