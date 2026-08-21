@@ -188,14 +188,26 @@ async function stopBackend(pid?: number): Promise<void> {
     try { pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim()); } catch {}
   }
   if (!pid || !Number.isInteger(pid)) return;
-  try { process.kill(pid, "SIGTERM"); } catch { return; }
+  // On POSIX the backend is spawned detached (its own process group), so target
+  // the group to also reach the underlying interpreter/child it spawns. Windows
+  // has no process groups and the backend is a single .exe, so kill the pid directly.
+  const useGroup = process.platform !== "win32";
+  const killGroup = (signal: NodeJS.Signal) => {
+    try {
+      process.kill(useGroup ? -pid! : pid!, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!killGroup("SIGTERM")) return;
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     await Bun.sleep(200);
     try { process.kill(pid!, 0); } catch { return; }
   }
   log("Backend did not stop gracefully; sending SIGKILL.");
-  try { process.kill(pid, "SIGKILL"); } catch {}
+  killGroup("SIGKILL");
 }
 
 function startBackend(backend: Component): ChildProcess {
@@ -249,14 +261,23 @@ async function main() {
         console.log("No backend PID file found.");
         return;
       }
-      try { process.kill(pid, "SIGTERM"); } catch { console.log("Backend is not running."); return; }
+      const useGroup = process.platform !== "win32";
+      const killGroup = (signal: NodeJS.Signal) => {
+        try {
+          process.kill(useGroup ? -pid! : pid!, signal);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      if (!killGroup("SIGTERM")) { console.log("Backend is not running."); return; }
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
         await Bun.sleep(200);
         try { process.kill(pid, 0); } catch { console.log("Backend stopped."); return; }
       }
       log("Backend did not stop gracefully; sending SIGKILL.");
-      try { process.kill(pid, "SIGKILL"); } catch {}
+      killGroup("SIGKILL");
       await Bun.sleep(1_000);
       try { process.kill(pid, 0); console.log("Backend still running."); } catch { console.log("Backend stopped."); }
       return;
@@ -268,12 +289,16 @@ async function main() {
   let backendPid: number | undefined;
 
   const alreadyRunning = await backendRunning();
+  const launchTui = args.length === 0;
   let iStartedIt = false;
 
   if (alreadyRunning) {
     log("Connecting to existing backend daemon...");
   } else {
-    const backendProcess = startBackend(components.backend);
+    const backendComponent = launchTui
+      ? { ...components.backend, command: [...components.backend.command, "--exit-when-detached"] }
+      : components.backend;
+    const backendProcess = startBackend(backendComponent);
     backendPid = backendProcess.pid ?? undefined;
     iStartedIt = true;
     log("Waiting for backend to be ready...");
