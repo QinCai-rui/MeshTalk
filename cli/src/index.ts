@@ -32,6 +32,9 @@ Commands:
   blocked                     List peers whose friend requests are ignored
   block <peer-id>             Ignore friend requests from a peer
   unblock <peer-id>           Allow friend requests from a peer again
+  backend status              Show backend status
+  backend start --daemonise   Start a persistent backend daemon
+  backend stop                Stop the backend daemon
 `;
 
 function hasError(response: IPCResponse): boolean {

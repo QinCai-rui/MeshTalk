@@ -183,15 +183,12 @@ async function waitForBackend(backendProcess?: ChildProcess): Promise<boolean> {
   return false;
 }
 
-async function stopBackend(pid?: number): Promise<void> {
-  if (!pid) {
+async function stopBackend(pid?: number, daemonise = true): Promise<void> {
+  if (!pid && daemonise) {
     try { pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim()); } catch {}
   }
   if (!pid || !Number.isInteger(pid)) return;
-  // On POSIX the backend is spawned detached (its own process group), so target
-  // the group to also reach the underlying interpreter/child it spawns. Windows
-  // has no process groups and the backend is a single .exe, so kill the pid directly.
-  const useGroup = process.platform !== "win32";
+  const useGroup = daemonise && process.platform !== "win32";
   const killGroup = (signal: NodeJS.Signal) => {
     try {
       process.kill(useGroup ? -pid! : pid!, signal);
@@ -210,20 +207,22 @@ async function stopBackend(pid?: number): Promise<void> {
   killGroup("SIGKILL");
 }
 
-function startBackend(backend: Component): ChildProcess {
+function startBackend(backend: Component, daemonise = true): ChildProcess {
   const logFile = openSync(BACKEND_LOG_PATH, "a");
   try {
     const proc = spawnProcess(backend.command[0], backend.command.slice(1), {
       cwd: backend.cwd,
-      detached: true,
+      detached: daemonise,
       stdio: ["ignore", logFile, logFile],
       windowsHide: true,
     });
-    proc.unref();
-    if (proc.pid) {
-      writeFileSync(`${DATA_DIR}/meshtalk.pid`, String(proc.pid));
+    if (daemonise) {
+      proc.unref();
+      if (proc.pid) {
+        writeFileSync(`${DATA_DIR}/meshtalk.pid`, String(proc.pid));
+      }
     }
-    log(`Starting backend daemon (pid ${proc.pid}); logs: ${BACKEND_LOG_PATH}`);
+    log(`Starting backend${daemonise ? " daemon" : ""} (pid ${proc.pid}); logs: ${BACKEND_LOG_PATH}`);
     return proc;
   } finally {
     closeSync(logFile);
@@ -282,7 +281,22 @@ async function main() {
       try { process.kill(pid, 0); console.log("Backend still running."); } catch { console.log("Backend stopped."); }
       return;
     }
-    throw new Error(`Usage: ${PROGRAM} backend [status|stop]`);
+    if (command === "start" && args.length === 3 && args[2] === "--daemonise") {
+      if (await backendRunning()) {
+        console.log("Backend is already running.");
+        return;
+      }
+      const backendProcess = startBackend(resolveComponents().backend);
+      log("Waiting for backend to be ready...");
+      if (!await waitForBackend(backendProcess)) {
+        log("Backend did not start within timeout.");
+        backendProcess.kill();
+        log(`See ${BACKEND_LOG_PATH} for details.`);
+        process.exitCode = 1;
+      }
+      return;
+    }
+    throw new Error(`Usage: ${PROGRAM} backend [status|stop|start --daemonise]`);
   }
 
   const components = resolveComponents();
@@ -293,12 +307,9 @@ async function main() {
   let iStartedIt = false;
 
   if (alreadyRunning) {
-    log("Connecting to existing backend daemon...");
+    log("Connecting to existing backend...");
   } else {
-    const backendComponent = launchTui
-      ? { ...components.backend, command: [...components.backend.command, "--exit-when-detached"] }
-      : components.backend;
-    const backendProcess = startBackend(backendComponent);
+    const backendProcess = startBackend(components.backend, !launchTui);
     backendPid = backendProcess.pid ?? undefined;
     iStartedIt = true;
     log("Waiting for backend to be ready...");
@@ -316,7 +327,7 @@ async function main() {
     let cleanupPromise: Promise<void> | undefined;
     const cleanup = () => {
       if (!iStartedIt) return Promise.resolve();
-      return (cleanupPromise ??= stopBackend(backendPid));
+      return (cleanupPromise ??= stopBackend(backendPid, false));
     };
     const handleSignal = () => {
       void cleanup().finally(() => process.exit(130));
