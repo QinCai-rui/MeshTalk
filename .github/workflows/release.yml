@@ -189,10 +189,10 @@ jobs:
             NOTES_FLAG="--generate-notes"
             EXTRA_NOTES=$(cat <<'EOF'
 
-        ## Platform Notes
+          ## Platform Notes
 
-        **Linux:** The precompiled binaries require **glibc 2.38** or newer (Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). If your distribution ships an older glibc, [compile from source](https://github.com/QinCai-rui/MeshTalk#compile-from-source) instead.
-        EOF
+          **Linux:** The precompiled binaries require **glibc 2.38** or newer (Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). If your distribution ships an older glibc, [compile from source](https://github.com/QinCai-rui/MeshTalk#compile-from-source) instead.
+          EOF
           )
             RELEASE_ARGS=("$V" dist/*/* --title "$V" "$NOTES_FLAG" --notes "$EXTRA_NOTES")
             if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
