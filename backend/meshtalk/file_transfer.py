@@ -18,6 +18,7 @@ Cross-platform notes:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import math
@@ -49,6 +50,7 @@ from .protocol import (
 logger = logging.getLogger(__name__)
 
 FILES_SUBDIR = "files"
+MAX_EARLY_CHUNKS = 64
 
 
 def _files_base(data_dir: Path) -> Path:
@@ -73,14 +75,11 @@ class FileTransferManager:
         self.db = db
         self.data_dir = data_dir
         self.on_event = on_event
-        # Track in-progress inbound transfers: file_id -> set of received indices
-        self._received: dict[str, set[int]] = {}
-        # Track pending offers awaiting chunks (for quick lookup)
-        self._pending_offers: set[str] = set()
+        self._packet_locks: dict[str, asyncio.Lock] = {}
+        self._early_chunks: dict[str, list[tuple[PeerConnection, FileChunkPayload]]] = {}
 
     def _emit(self, event: dict) -> None:
         if self.on_event:
-            import asyncio
             asyncio.create_task(self.on_event(event))
 
     async def send_file(self, recipient_id: str, file_path_str: str, group_id: str | None = None) -> str:
@@ -224,9 +223,10 @@ class FileTransferManager:
             await self.db.update_file_transfer(file_id, status="failed")
             raise ValueError(f"Failed to read file: {exc}") from exc
 
-    async def flush_for_peer(self, peer_id: str) -> None:
+    async def flush_for_peer(self, peer_id: str) -> int:
         # Flush queued file transfers for this peer - re-read file and resend
         transfers = [t for t in await self.db.get_file_transfers(peer_id) if t["status"] == "queued" and t["direction"] == "outbound"]
+        flushed = 0
         for t in transfers:
             peer = self.peer_manager.get_connected_peer(peer_id)
             if not peer or not peer.supports(CAP_FILE_TRANSFER):
@@ -257,23 +257,55 @@ class FileTransferManager:
                     await self.db.remove_from_outqueue(item["id"])
             await self.db.update_file_transfer(t["file_id"], status="transferring")
             await self._send_chunks(path, t["file_id"], peer_id, t["group_id"], t["chunk_size"], t["total_chunks"], encryption_key, peer)
+            updated_transfer = await self.db.get_file_transfer(t["file_id"])
+            if updated_transfer and updated_transfer["status"] != "queued":
+                flushed += 1
             # Remove queued chunk entries as they are now sent
             pending = await self.db.get_pending_outgoing(peer_id)
             for item in pending:
                 if item["message_id"] == t["file_id"] and item["packet_type"] == PacketType.FILE_CHUNK.value:
                     await self.db.remove_from_outqueue(item["id"])
+        return flushed
+
+    async def resume_for_peer(self, peer_id: str) -> None:
+        peer = self.peer_manager.get_connected_peer(peer_id)
+        if not peer or not peer.supports(CAP_FILE_TRANSFER):
+            return
+        transfers = await self.db.get_file_transfers(peer_id)
+        for transfer in transfers:
+            if (
+                transfer["direction"] != "inbound"
+                or transfer["sender_id"] != peer_id
+                or transfer["recipient_id"] != self.identity.peer_id
+            ):
+                continue
+            if transfer["status"] == "completed":
+                await self._send_completion_ack(peer, transfer["file_id"])
+                continue
+            if transfer["status"] != "transferring":
+                continue
+            missing_ranges = await self.db.get_missing_file_chunk_ranges(
+                transfer["file_id"], transfer["total_chunks"]
+            )
+            if missing_ranges:
+                await self._send_missing_request(peer, transfer["file_id"], missing_ranges)
+            else:
+                await self._complete_inbound_transfer(peer, transfer)
 
     async def handle_packet(self, peer: PeerConnection, packet: Packet) -> bool:
-        if packet.type == PacketType.FILE_OFFER:
-            await self._handle_offer(peer, packet)
-            return True
-        elif packet.type == PacketType.FILE_CHUNK:
-            await self._handle_chunk(peer, packet)
-            return True
-        elif packet.type == PacketType.FILE_ACK:
-            await self._handle_ack(peer, packet)
-            return True
-        return False
+        if packet.type not in (PacketType.FILE_OFFER, PacketType.FILE_CHUNK, PacketType.FILE_ACK):
+            return False
+        # UDP dispatches application handlers independently. Serialize file
+        # packets per peer so an offer creates its transfer before its chunks.
+        lock = self._packet_locks.setdefault(peer.peer_id, asyncio.Lock())
+        async with lock:
+            if packet.type == PacketType.FILE_OFFER:
+                await self._handle_offer(peer, packet)
+            elif packet.type == PacketType.FILE_CHUNK:
+                await self._handle_chunk(peer, packet)
+            else:
+                await self._handle_ack(peer, packet)
+        return True
 
     async def _handle_offer(self, peer: PeerConnection, packet: Packet) -> None:
         if not peer.supports(CAP_FILE_TRANSFER):
@@ -287,18 +319,32 @@ class FileTransferManager:
             Ed25519PublicKey.from_public_bytes(peer.signing_public_key).verify(offer.signature, offer.signed_bytes())
         except InvalidSignature as exc:
             raise ValueError("Invalid file offer signature") from exc
+        existing = await self.db.get_file_transfer(offer.file_id)
+        if existing:
+            if (
+                existing["direction"] != "inbound"
+                or existing["sender_id"] != offer.sender_id
+                or existing["recipient_id"] != offer.recipient_id
+                or existing["file_size"] != offer.file_size
+                or existing["chunk_size"] != offer.chunk_size
+                or existing["total_chunks"] != offer.total_chunks
+                or existing["group_id"] != offer.group_id
+            ):
+                raise ValueError("Conflicting file offer")
+            if existing["status"] == "completed":
+                await self._send_completion_ack(peer, offer.file_id)
+                return
+            await self._store_early_chunks(offer.file_id)
+            return
         if await self.db.is_message_seen(offer.file_id):
             return
-        await self.db.mark_message_seen(offer.file_id)
         # Check friend policy: require friend for direct files
-        from .friends import FriendManager  # avoid circular
-        # We'll check via DB friend check if available; allow if peer is friend or group case
-        # For direct, require friend
         if not offer.group_id:
             is_friend = await self.db.is_friend(peer.peer_id)
             if not is_friend:
                 logger.info("Blocked file %s from non-friend %s", offer.file_id, peer.peer_id)
                 return
+        await self.db.mark_message_seen(offer.file_id)
         # Create inbound transfer record and prepare file
         safe_name = sanitize_filename(offer.filename)
         incoming_path = _incoming_dir(self.data_dir, offer.file_id) / safe_name
@@ -327,10 +373,9 @@ class FileTransferManager:
             "created_at": offer.created_at,
             "received_chunks": 0,
         })
-        self._received[offer.file_id] = set()
-        self._pending_offers.add(offer.file_id)
         self._emit({"event": "file_offer", "file_id": offer.file_id, "filename": safe_name, "file_size": offer.file_size, "sender_id": peer.peer_id})
         logger.info("Accepted file offer %s (%s, %d bytes, %d chunks) from %s", offer.file_id, safe_name, offer.file_size, offer.total_chunks, peer.peer_id)
+        await self._store_early_chunks(offer.file_id)
 
     async def _handle_chunk(self, peer: PeerConnection, packet: Packet) -> None:
         if not peer.supports(CAP_FILE_TRANSFER):
@@ -345,19 +390,48 @@ class FileTransferManager:
         except InvalidSignature as exc:
             raise ValueError("Invalid file chunk signature") from exc
         transfer = await self.db.get_file_transfer(chunk.file_id)
-        if not transfer or transfer["status"] not in ("transferring", "pending"):
-            # Possibly offer arrived out of order; if no record, create placeholder? But need size info; so drop
-            logger.debug("Received chunk for unknown file %s", chunk.file_id)
+        if not transfer:
+            if sum(len(chunks) for chunks in self._early_chunks.values()) < MAX_EARLY_CHUNKS:
+                self._early_chunks.setdefault(chunk.file_id, []).append((peer, chunk))
+                logger.debug("Buffered chunk for file offer %s", chunk.file_id)
+            else:
+                logger.warning("Dropped early file chunk for %s: buffer is full", chunk.file_id)
             return
-        # Deduplicate
-        received = self._received.setdefault(chunk.file_id, set())
-        if chunk.chunk_index in received:
+        if transfer["status"] == "completed":
+            await self._send_completion_ack(peer, chunk.file_id)
+            return
+        await self._store_chunk(peer, chunk, transfer)
+
+    async def _store_early_chunks(self, file_id: str) -> None:
+        for peer, chunk in self._early_chunks.pop(file_id, []):
+            transfer = await self.db.get_file_transfer(file_id)
+            if transfer:
+                await self._store_chunk(peer, chunk, transfer)
+
+    async def _store_chunk(self, peer: PeerConnection, chunk: FileChunkPayload, transfer: dict) -> None:
+        if (
+            transfer["direction"] != "inbound"
+            or transfer["status"] not in ("transferring", "pending")
+            or transfer["sender_id"] != chunk.sender_id
+            or transfer["recipient_id"] != chunk.recipient_id
+            or transfer["group_id"] != chunk.group_id
+            or transfer["total_chunks"] != chunk.total_chunks
+            or chunk.chunk_index >= transfer["total_chunks"]
+        ):
+            raise ValueError("File chunk does not match its offer")
+        if await self.db.is_file_chunk_received(chunk.file_id, chunk.chunk_index):
             return
         # Decrypt
         try:
             plaintext = decrypt_as_recipient(self.identity.encryption_private_key, chunk.encrypted_content, chunk.associated_data())
         except Exception as exc:
             raise ValueError("Failed to decrypt file chunk") from exc
+        expected_size = min(
+            transfer["chunk_size"],
+            transfer["file_size"] - chunk.chunk_index * transfer["chunk_size"],
+        )
+        if len(plaintext) != expected_size:
+            raise ValueError("Invalid file chunk size")
         # Write at offset
         file_path = Path(transfer["file_path"])
         try:
@@ -370,38 +444,42 @@ class FileTransferManager:
         except OSError as exc:
             logger.warning("Failed to write chunk %d for %s: %s", chunk.chunk_index, chunk.file_id, exc)
             raise
-        received.add(chunk.chunk_index)
-        await self.db.update_file_transfer(chunk.file_id, received_chunks=len(received))
-        self._emit({"event": "file_progress", "file_id": chunk.file_id, "chunk_index": chunk.chunk_index, "total_chunks": chunk.total_chunks, "direction": "inbound", "received": len(received)})
+        received_count = await self.db.record_file_chunk_received(chunk.file_id, chunk.chunk_index)
+        self._emit({"event": "file_progress", "file_id": chunk.file_id, "chunk_index": chunk.chunk_index, "total_chunks": chunk.total_chunks, "direction": "inbound", "received": received_count})
         # Check completion
-        if len(received) == transfer["total_chunks"]:
-            # Verify file size (last chunk may be smaller)
-            try:
-                actual_size = file_path.stat().st_size
-                # Truncate if preallocated size includes trailing zeros beyond actual? Actually we preallocated to file_size, so actual should equal file_size
-                if actual_size != transfer["file_size"]:
-                    # Truncate or pad? For safety, truncate to expected size if larger, but ours should match
-                    with open(file_path, "ab") as f:
-                        f.truncate(transfer["file_size"])
-            except OSError:
-                pass
-            await self.db.update_file_transfer(chunk.file_id, status="completed", completed_at=time.time())
-            self._pending_offers.discard(chunk.file_id)
-            self._received.pop(chunk.file_id, None)
-            # Send ack
-            ack = FileAckPayload(file_id=chunk.file_id, recipient_id=self.identity.peer_id, status="completed")
-            ack.signature = self.identity.signing_private_key.sign(ack.signed_bytes())
-            try:
-                await self.peer_manager.send_packet(peer, Packet(PacketType.FILE_ACK, ack.encode()))
-            except Exception:
-                pass
-            self._emit({"event": "file_completed", "file_id": chunk.file_id, "filename": transfer["filename"], "file_path": str(file_path), "file_size": transfer["file_size"], "sender_id": peer.peer_id})
-            logger.info("Completed file %s from %s -> %s", chunk.file_id, peer.peer_id, file_path)
-            # Set file permissions to owner-only where possible (0600). On Windows, chmod is best-effort.
-            try:
-                os.chmod(file_path, 0o600)
-            except OSError:
-                pass
+        if received_count == transfer["total_chunks"]:
+            await self._complete_inbound_transfer(peer, transfer)
+
+    async def _complete_inbound_transfer(self, peer: PeerConnection, transfer: dict) -> None:
+        file_path = Path(transfer["file_path"])
+        if file_path.stat().st_size != transfer["file_size"]:
+            raise ValueError("Received file has an invalid size")
+        await self.db.complete_file_transfer(transfer["file_id"], time.time())
+        await self._send_completion_ack(peer, transfer["file_id"])
+        self._emit({"event": "file_completed", "file_id": transfer["file_id"], "filename": transfer["filename"], "file_path": str(file_path), "file_size": transfer["file_size"], "sender_id": peer.peer_id})
+        logger.info("Completed file %s from %s -> %s", transfer["file_id"], peer.peer_id, file_path)
+        try:
+            os.chmod(file_path, 0o600)
+        except OSError:
+            pass
+
+    async def _send_completion_ack(self, peer: PeerConnection, file_id: str) -> None:
+        ack = FileAckPayload(file_id=file_id, recipient_id=self.identity.peer_id, status="completed")
+        ack.signature = self.identity.signing_private_key.sign(ack.signed_bytes())
+        try:
+            await self.peer_manager.send_packet(peer, Packet(PacketType.FILE_ACK, ack.encode()))
+        except Exception:
+            pass
+
+    async def _send_missing_request(self, peer: PeerConnection, file_id: str, missing_ranges: list[tuple[int, int]]) -> None:
+        ack = FileAckPayload(
+            file_id=file_id,
+            recipient_id=self.identity.peer_id,
+            status="missing",
+            missing_ranges=missing_ranges,
+        )
+        ack.signature = self.identity.signing_private_key.sign(ack.signed_bytes())
+        await self.peer_manager.send_packet(peer, Packet(PacketType.FILE_ACK, ack.encode()))
 
     async def _handle_ack(self, peer: PeerConnection, packet: Packet) -> None:
         ack = FileAckPayload.decode(packet.payload)
@@ -412,12 +490,50 @@ class FileTransferManager:
         except InvalidSignature as exc:
             raise ValueError("Invalid file ack signature") from exc
         transfer = await self.db.get_file_transfer(ack.file_id)
-        if not transfer or transfer["direction"] != "outbound":
+        if (
+            not transfer
+            or transfer["direction"] != "outbound"
+            or transfer["sender_id"] != self.identity.peer_id
+            or transfer["recipient_id"] != peer.peer_id
+        ):
             return
         if ack.status == "completed":
             await self.db.update_file_transfer(ack.file_id, status="completed", completed_at=time.time())
             self._emit({"event": "file_delivered", "file_id": ack.file_id, "recipient_id": peer.peer_id})
             logger.info("File %s delivered to %s", ack.file_id, peer.peer_id)
+        elif ack.status == "missing":
+            if any(end >= transfer["total_chunks"] for _, end in ack.missing_ranges):
+                raise ValueError("Invalid missing file chunk range")
+            await self._resend_missing_chunks(peer, transfer, ack.missing_ranges)
+
+    async def _resend_missing_chunks(self, peer: PeerConnection, transfer: dict, missing_ranges: list[tuple[int, int]]) -> None:
+        path = Path(transfer["file_path"]) if transfer["file_path"] else None
+        if not path or not path.is_file() or not peer.encryption_public_key:
+            await self.db.update_file_transfer(transfer["file_id"], status="failed")
+            return
+        try:
+            with open(path, "rb") as file:
+                for start, end in missing_ranges:
+                    for index in range(start, end + 1):
+                        file.seek(index * transfer["chunk_size"])
+                        plaintext = file.read(transfer["chunk_size"])
+                        payload = FileChunkPayload(
+                            file_id=transfer["file_id"],
+                            chunk_index=index,
+                            total_chunks=transfer["total_chunks"],
+                            sender_id=self.identity.peer_id,
+                            recipient_id=peer.peer_id,
+                            group_id=transfer["group_id"],
+                            encrypted_content=b"",
+                        )
+                        payload.encrypted_content = encrypt_for_recipient(
+                            peer.encryption_public_key, plaintext, payload.associated_data()
+                        )
+                        payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+                        await self.peer_manager.send_packet(peer, Packet(PacketType.FILE_CHUNK, payload.encode()))
+        except (OSError, ConnectionError) as exc:
+            await self.db.update_file_transfer(transfer["file_id"], status="queued")
+            logger.warning("Failed to resume file %s: %s", transfer["file_id"], exc)
 
     async def list_transfers(self) -> list[dict]:
         return await self.db.get_file_transfers()

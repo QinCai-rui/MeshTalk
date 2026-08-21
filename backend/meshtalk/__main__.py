@@ -67,15 +67,20 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
         peer = peer_manager.get_connected_peer(peer_id)
         if peer is None:
             return
+        try:
+            await file_manager.resume_for_peer(peer_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to resume inbound files for %s: %s", peer_id, exc)
         # First flush queued file transfers via file manager (re-reads file)
         try:
-            await file_manager.flush_for_peer(peer_id)
+            flushed_files = await file_manager.flush_for_peer(peer_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to flush queued files for %s: %s", peer_id, exc)
+            flushed_files = 0
         items = await db.get_pending_outgoing(peer_id)
         if not items:
-            # Still log file flush even if no generic queue
-            logger.info("Flushed queued files to %s", peer_id)
+            if flushed_files:
+                logger.info("Flushed %d queued file transfer(s) to %s", flushed_files, peer_id)
             return
         for item in items:
             # File chunks/offers are not handled via generic pending flush when file_manager already handled;

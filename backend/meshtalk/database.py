@@ -139,6 +139,12 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     completed_at REAL,
     received_chunks INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS file_received_chunks (
+    file_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    PRIMARY KEY (file_id, chunk_index)
+);
 """
 
 
@@ -797,3 +803,52 @@ class Database:
     async def get_pending_file_offers(self) -> list[dict]:
         async with self._db.execute("SELECT * FROM file_transfers WHERE status IN ('pending','transferring')") as cursor:
             return [dict(row) async for row in cursor]
+
+    async def is_file_chunk_received(self, file_id: str, chunk_index: int) -> bool:
+        async with self._db.execute(
+            "SELECT 1 FROM file_received_chunks WHERE file_id = ? AND chunk_index = ?",
+            (file_id, chunk_index),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def record_file_chunk_received(self, file_id: str, chunk_index: int) -> int:
+        await self._db.execute(
+            "INSERT OR IGNORE INTO file_received_chunks (file_id, chunk_index) VALUES (?, ?)",
+            (file_id, chunk_index),
+        )
+        async with self._db.execute(
+            "SELECT COUNT(*) FROM file_received_chunks WHERE file_id = ?", (file_id,)
+        ) as cursor:
+            received_chunks = (await cursor.fetchone())[0]
+        await self._db.execute(
+            "UPDATE file_transfers SET received_chunks = ? WHERE file_id = ?",
+            (received_chunks, file_id),
+        )
+        await self._db.commit()
+        return received_chunks
+
+    async def get_missing_file_chunk_ranges(self, file_id: str, total_chunks: int) -> list[tuple[int, int]]:
+        async with self._db.execute(
+            "SELECT chunk_index FROM file_received_chunks WHERE file_id = ? ORDER BY chunk_index",
+            (file_id,),
+        ) as cursor:
+            received = {row[0] async for row in cursor}
+        ranges: list[tuple[int, int]] = []
+        start: int | None = None
+        for index in range(total_chunks):
+            if index not in received and start is None:
+                start = index
+            elif index in received and start is not None:
+                ranges.append((start, index - 1))
+                start = None
+        if start is not None:
+            ranges.append((start, total_chunks - 1))
+        return ranges
+
+    async def complete_file_transfer(self, file_id: str, completed_at: float) -> None:
+        await self._db.execute(
+            "UPDATE file_transfers SET status = 'completed', completed_at = ? WHERE file_id = ?",
+            (completed_at, file_id),
+        )
+        await self._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (file_id,))
+        await self._db.commit()

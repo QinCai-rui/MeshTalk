@@ -3,6 +3,7 @@ import { createRoot, useKeyboard, usePaste, useRenderer, useSelectionHandler, us
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
+import { resolve } from "path"
 
 declare const APP_VERSION: string
 
@@ -133,6 +134,9 @@ type FileTransfer = {
   received_chunks?: number
   total_chunks?: number
 }
+type ConversationItem =
+  | { type: "message"; createdAt: number; message: Message }
+  | { type: "file"; createdAt: number; file: FileTransfer }
 
 type Dialog =
   | { kind: "commands" }
@@ -1313,15 +1317,16 @@ function ChatApp() {
     try {
       const trimmed = filePath.trim()
       if (!trimmed) throw new Error("File path is empty")
+      const absolutePath = resolve(trimmed)
       // Cross-platform: expand separators — backend will normalize again, but do minimal client check
       if (selection?.kind === "peer") {
-        const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: trimmed })
+        const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: absolutePath })
         if (response.error) throw new Error(response.error)
-        showStatus(`File transfer started: ${trimmed} -> ${selection.id.slice(0, 8)}`)
+        showStatus(`File transfer started: ${absolutePath} -> ${selection.id.slice(0, 8)}`)
       } else if (selection?.kind === "group") {
-        const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: trimmed })
+        const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: absolutePath })
         if (response.error) throw new Error(response.error)
-        showStatus(`Group file transfer started: ${trimmed}`)
+        showStatus(`Group file transfer started: ${absolutePath}`)
       } else {
         throw new Error("Select a peer or group first")
       }
@@ -1616,8 +1621,8 @@ function ChatApp() {
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId)
   const selectedGroup = groups.find((group) => group.group_id === selectedGroupId)
-  const imageFiles = useMemo(() => fileTransfers.filter((f) => {
-    if (!f.file_path || !isImageFile(f.filename)) return false
+  const conversationFiles = useMemo(() => fileTransfers.filter((f) => {
+    if (!f.file_path) return false
     if (f.status !== "completed" && f.status !== "sent") return false
     if (selection?.kind === "peer") {
       return !f.group_id && (f.sender_id === selection.id || f.recipient_id === selection.id)
@@ -1626,7 +1631,11 @@ function ChatApp() {
       return f.group_id === selection.id
     }
     return false
-  }).sort((a,b) => a.created_at - b.created_at), [fileTransfers, selection])
+  }).sort((a, b) => a.created_at - b.created_at), [fileTransfers, selection])
+  const conversationItems = useMemo<ConversationItem[]>(() => [
+    ...messages.map((message) => ({ type: "message" as const, createdAt: message.created_at, message })),
+    ...conversationFiles.map((file) => ({ type: "file" as const, createdAt: file.created_at, file })),
+  ].sort((a, b) => a.createdAt - b.createdAt || (a.type === b.type ? 0 : a.type === "message" ? -1 : 1)), [messages, conversationFiles])
   const activeCount = peers.filter((peer) => peerPresence(peer) === "active").length
   const sidebarWidth = width < 72 ? 22 : 32
   const compact = width < 72
@@ -1769,9 +1778,40 @@ function ChatApp() {
             }}
           >
             {!selected && !selectedGroup ? <text fg="#888888">Select a peer or group.</text> : null}
-            {selected && !messages.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
-            {selectedGroup && !messages.length ? <text fg="#888888">No messages yet. Say hello to the group.</text> : null}
-            {messages.map((message, index) => {
+            {selected && !conversationItems.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
+            {selectedGroup && !conversationItems.length ? <text fg="#888888">No messages yet. Say hello to the group.</text> : null}
+            {conversationItems.map((item, index) => {
+              const rows: ReactNode[] = []
+              const prev = conversationItems[index - 1]
+              if (!prev || dayKey(prev.createdAt) !== dayKey(item.createdAt)) {
+                rows.push(
+                  <box key={`sep-${dayKey(item.createdAt)}`} style={{ alignItems: "center", marginTop: 1, marginBottom: 1 }}>
+                    <text fg="#5b6b82">───── {formatDateSeparator(item.createdAt)} ─────</text>
+                  </box>
+                )
+              }
+              if (item.type === "file") {
+                const file = item.file
+                const isLocal = file.sender_id === identity?.peer_id
+                const senderName = peers.find((peer) => peer.peer_id === file.sender_id)?.display_name
+                  ?? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === file.sender_id)?.display_name
+                  ?? "Unknown member"
+                rows.push(
+                  <box key={`file-${file.file_id}`} style={{ flexDirection: "column", marginBottom: 1 }}>
+                    <text>
+                      <span fg="#888888">{formatTime(file.created_at)} </span>
+                      <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
+                      <span fg="#888888"> shared an attachment</span>
+                    </text>
+                    <text wrapMode="word"><span fg="#7aa2d6">{file.filename}</span><span fg="#888888"> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
+                    {isImageFile(file.filename) && (
+                      <image source={toFileUrl(file.file_path!)} fit="fit" protocol="auto" style={{ width: 40, height: 12 }} onError={() => {}} />
+                    )}
+                  </box>
+                )
+                return rows
+              }
+              const message = item.message
               const isLocal = message.sender_id === identity?.peer_id
               const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
               const blocked = Boolean(message.blocked)
@@ -1787,15 +1827,6 @@ function ChatApp() {
                     ? `${senderName} left the group`
                     : message.content
                 : message.content
-              const rows: ReactNode[] = []
-              const prev = messages[index - 1]
-              if (!prev || dayKey(prev.created_at) !== dayKey(message.created_at)) {
-                rows.push(
-                  <box key={`sep-${dayKey(message.created_at)}`} style={{ alignItems: "center", marginTop: 1, marginBottom: 1 }}>
-                    <text fg="#5b6b82">───── {formatDateSeparator(message.created_at)} ─────</text>
-                  </box>
-                )
-              }
               const showReceived =
                 typeof message.received_at === "number" &&
                 formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
@@ -1815,21 +1846,6 @@ function ChatApp() {
                 </box>
               )
               return rows
-            })}
-            {imageFiles.map((f) => {
-              const isLocal = f.sender_id === identity?.peer_id
-              const senderName = peers.find((p) => p.peer_id === f.sender_id)?.display_name ?? groupMembers[selectedGroupId ?? ""]?.find((m) => (m.peer_id ?? m.member_id) === f.sender_id)?.display_name ?? "Unknown"
-              return (
-                <box key={`img-${f.file_id}`} style={{ flexDirection: "column", marginBottom: 1, border: true, padding: 1 }}>
-                  <text>
-                    <span fg="#888888">{formatTime(f.created_at)} </span>
-                    <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : senderName}</span>
-                    <span fg="#888888"> sent picture {f.filename} ({(f.file_size/1024).toFixed(1)} KiB)</span>
-                  </text>
-                  <image source={toFileUrl(f.file_path!)} fit="fit" protocol="auto" style={{ width: 40, height: 12 }} onError={() => {}} />
-                  <text fg="#888888">{f.file_path}</text>
-                </box>
-              )
             })}
            </scrollbox>
          </box>

@@ -918,35 +918,61 @@ class FileAckPayload:
     recipient_id: str
     status: str
     signature: bytes = b""
+    missing_ranges: list[tuple[int, int]] = field(default_factory=list)
 
     def signed_bytes(self) -> bytes:
-        return json.dumps({
+        data: dict[str, object] = {
             "file_id": self.file_id,
             "recipient_id": self.recipient_id,
             "status": self.status,
-        }, separators=(",", ":"), sort_keys=True).encode()
+        }
+        if self.missing_ranges:
+            data["missing_ranges"] = self.missing_ranges
+        return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
-        return json.dumps({
+        payload: dict[str, object] = {
             "file_id": self.file_id,
             "recipient_id": self.recipient_id,
             "status": self.status,
             "signature": self.signature.hex(),
-        }).encode()
+        }
+        if self.missing_ranges:
+            payload["missing_ranges"] = self.missing_ranges
+        return json.dumps(payload, separators=(",", ":")).encode()
 
     @classmethod
     def decode(cls, data: bytes) -> FileAckPayload:
         obj = json.loads(data)
+        raw_ranges = obj.get("missing_ranges", [])
+        if not isinstance(raw_ranges, list):
+            raise ValueError("Invalid file ack payload")
+        missing_ranges: list[tuple[int, int]] = []
+        previous_end = -1
+        for value in raw_ranges:
+            if (
+                not isinstance(value, list)
+                or len(value) != 2
+                or not all(isinstance(index, int) and not isinstance(index, bool) for index in value)
+            ):
+                raise ValueError("Invalid file ack payload")
+            start, end = value
+            if start < 0 or end < start or end >= 10000 or start <= previous_end:
+                raise ValueError("Invalid file ack payload")
+            missing_ranges.append((start, end))
+            previous_end = end
         payload = cls(
             file_id=obj["file_id"],
             recipient_id=obj["recipient_id"],
             status=obj["status"],
             signature=bytes.fromhex(obj.get("signature", "")),
+            missing_ranges=missing_ranges,
         )
         if (
             not _valid_request_id(payload.file_id)
             or not _valid_peer_id(payload.recipient_id)
-            or payload.status not in ("completed", "ack")
+            or payload.status not in ("completed", "ack", "missing")
+            or (payload.status == "missing") != bool(payload.missing_ranges)
             or len(payload.signature) != 64
         ):
             raise ValueError("Invalid file ack payload")
