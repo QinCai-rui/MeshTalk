@@ -571,7 +571,10 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
     await rendezvous.start()
     await ipc.start()
 
-    logger.info("MeshTalk backend running")
+    logger.info(
+        "MeshTalk backend running%s",
+        " (exits when IPC detaches)" if exit_when_detached else "",
+    )
 
     def _signal_handler() -> None:
         stop_event.set()
