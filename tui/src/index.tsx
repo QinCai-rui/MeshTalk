@@ -1782,7 +1782,7 @@ function ChatApp() {
                   focused
                   height={Math.max(6, dialogHeight - 4)}
                   options={[
-                    { name: "Use MeshTalk public server", description: "A: 104.21.6.171, 172.67.135.15  AAAA: 2606:4700:3032::6815:6ab, 2606:4700:3037::ac43:870f", value: "public" },
+                    { name: "Use MeshTalk public server", description: "wss://meshtalk-control.qincai.xyz/v1/rendezvous", value: "public" },
                     { name: "Use a custom server", description: "Enter another secure WebSocket URL", value: "custom" },
                     { name: "View connection status", description: "See the current URL, connection, STUN, and endpoint", value: "status" },
                     ...(dialog.firstRun ? [{ name: "Continue with LAN only", description: "You can configure this later with Ctrl+P", value: "skip" }] : []),
