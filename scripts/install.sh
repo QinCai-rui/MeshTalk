@@ -9,6 +9,7 @@ METADATA_NAME=".meshtalk-installer"
 
 ACTION="install"
 DRY_RUN=0
+AS_ROOT=0
 VERSION=""
 INSTALL_DIR=""
 AUTH_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
@@ -65,6 +66,7 @@ Options:
   --install-dir DIRECTORY Use a specific user-owned installation directory.
   --uninstall             Remove an installation recorded by its metadata file.
   --dry-run               Show the planned action without network or filesystem changes.
+  --i-understand-the-risks-of-running-as-root          Allow running as root (not recommended).
   --help                  Show this help.
 
 The installer is intended for Bash on POSIX systems, Git Bash, and WSL.
@@ -147,8 +149,8 @@ prompt_read() {
 }
 
 require_not_root() {
-  if [[ ${EUID:-1} -eq 0 ]]; then
-    die "Do not run this installer as root; MeshTalk is installed per user."
+  if [[ ${AS_ROOT} -eq 0 && ${EUID:-1} -eq 0 ]]; then
+    die "Do not run this installer as root. Running as root can overwrite system files, create security vulnerabilities, and cause permission conflicts with your user account. Use --i-understand-the-risks-of-running-as-root if you accept these risks."
   fi
 }
 
@@ -224,6 +226,9 @@ parse_arguments() {
         ;;
       --dry-run)
         DRY_RUN=1
+        ;;
+      --i-understand-the-risks-of-running-as-root)
+        AS_ROOT=1
         ;;
       --uninstall)
         ACTION=uninstall
@@ -747,8 +752,8 @@ uninstall_mesh_talk() {
 
 main() {
   init_colors
-  require_not_root
   parse_arguments "$@"
+  require_not_root
   detect_platform
   show_banner
   choose_action
