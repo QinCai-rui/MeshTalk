@@ -1578,9 +1578,9 @@ function ChatApp() {
                 ?? "Unknown member"
               const renderedContent = isSystem
                 ? message.kind === "join"
-                  ? `${senderName} joined the group`
+                  ? `${isLocal ? "You" : senderName} joined the group`
                   : message.kind === "leave"
-                    ? `${senderName} left the group`
+                    ? `${isLocal ? "You" : senderName} left the group`
                     : message.content
                 : message.content
               const rows: ReactNode[] = []
