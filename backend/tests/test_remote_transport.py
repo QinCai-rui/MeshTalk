@@ -128,6 +128,59 @@ class PrivateRoomTest(unittest.TestCase):
 
 
 class CandidateValidationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_initial_room_signals_are_roster_snapshots_but_later_signals_are_live(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            local = Identity.generate("Local")
+            remote = Identity.generate("Remote")
+            settings = Settings(Path(temporary) / "settings.json")
+            room = settings.create_room("Group")
+            observed = []
+
+            class FakeUdp:
+                def expect_peer(self, *_):
+                    pass
+
+            async def record_candidate(*_):
+                pass
+
+            async def record_member(group_id, peer_id, announce_join):
+                observed.append((group_id, peer_id, announce_join))
+
+            class FakeWebsocket:
+                def __init__(self, messages):
+                    self.messages = messages
+
+                def __aiter__(self):
+                    return self
+
+                async def __anext__(self):
+                    if not self.messages:
+                        raise StopAsyncIteration
+                    return self.messages.pop(0)
+
+            service = RendezvousService(
+                local, settings, FakeUdp(), record_candidate, record_member
+            )
+            service._initializing_rooms.add(room.id)
+            websocket = FakeWebsocket([
+                json.dumps({
+                    "type": "signal", "room_id": room.id,
+                    "payload": encrypt_endpoint_card(remote, room, None),
+                }),
+                json.dumps({"type": "joined", "room_id": room.id, "member_count": 2}),
+                json.dumps({
+                    "type": "signal", "room_id": room.id,
+                    "payload": encrypt_endpoint_card(remote, room, None),
+                }),
+            ])
+
+            await service._receive_loop(websocket)
+
+            self.assertEqual(
+                observed,
+                [(room.id, remote.peer_id, False), (room.id, remote.peer_id, True)],
+            )
+
     async def test_private_target_is_rejected_before_punching_or_display(self):
         with tempfile.TemporaryDirectory() as temporary:
             local_identity = Identity.generate("Local")

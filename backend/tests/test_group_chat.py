@@ -1,6 +1,5 @@
 import asyncio
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -62,7 +61,7 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.02)
         for group in self.groups:
             for identity in self.identities:
-                await group.record_room_member(self.group_id, identity.peer_id, int(time.time()))
+                await group.record_room_member(self.group_id, identity.peer_id, announce_join=True)
 
     async def asyncTearDown(self):
         for manager in self.managers:
@@ -109,19 +108,49 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(joins), len([message for message in before if message["kind"] == "join"]) + 1)
         self.assertIn(peer_id, joins[0]["content"])
 
-    async def test_retained_prejoin_card_does_not_emit_a_join_event(self):
+    async def test_roster_snapshot_does_not_emit_a_join_event(self):
         group = self.groups[0]
         peer_id = self.identities[1].peer_id
         await self.databases[0].remove_group(self.group_id)
         await self.databases[0].upsert_group(self.group_id, "Core Team")
-        stored_group = await self.databases[0].get_group(self.group_id)
         before = await self.databases[0].get_group_messages(self.group_id)
 
-        await group.record_room_member(self.group_id, peer_id, int(stored_group["joined_at"]) - 1)
+        await group.record_room_member(self.group_id, peer_id, announce_join=False)
         await group.peer_connected(peer_id)
 
         messages = await self.databases[0].get_group_messages(self.group_id)
         self.assertEqual(len(messages), len(before))
+
+    async def test_local_join_and_leave_are_persisted(self):
+        await self.groups[0].record_local_join(self.group_id)
+        await self.groups[0].leave_group(self.group_id)
+
+        messages = await self.databases[0].get_group_messages(self.group_id)
+        local_events = [
+            message["content"] for message in messages
+            if message["sender_id"] == self.identities[0].peer_id
+        ]
+        self.assertIn("You joined the group", local_events)
+        self.assertIn("You left the group", local_events)
+
+    async def test_repeated_local_rejoins_do_not_announce_existing_members(self):
+        group = self.groups[0]
+        invite = self.settings[0].rooms[self.group_id].invite
+        before = await self.databases[0].get_group_messages(self.group_id)
+
+        for _ in range(3):
+            self.settings[0].leave_room(self.group_id)
+            await self.databases[0].remove_group(self.group_id)
+            self.settings[0].join_room(invite)
+            await group.sync_groups()
+            for identity in self.identities[1:]:
+                await group.record_room_member(
+                    self.group_id, identity.peer_id, announce_join=False
+                )
+                await group.peer_connected(identity.peer_id)
+
+        after = await self.databases[0].get_group_messages(self.group_id)
+        self.assertEqual(len(after), len(before))
 
     async def test_offline_known_member_is_queued(self):
         peer = self.managers[0].get_connected_peer(self.identities[2].peer_id)
@@ -204,6 +233,9 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
         invite = self.settings[2].rooms[self.group_id].invite
         before = await self.databases[2].get_group_messages(self.group_id)
         await self.groups[2].leave_group(self.group_id)
+        after_leave = await self.databases[2].get_group_messages(self.group_id)
+        self.assertEqual(len(after_leave), len(before) + 1)
+        self.assertEqual(after_leave[-1]["content"], "You left the group")
 
         self.settings[2].join_room(invite)
         await self.groups[2].sync_groups()
@@ -211,7 +243,7 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [message["message_id"] for message in after],
-            [message["message_id"] for message in before],
+            [message["message_id"] for message in after_leave],
         )
 
     async def test_group_message_fans_out_over_remote_udp(self):

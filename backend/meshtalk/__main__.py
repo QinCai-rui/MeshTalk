@@ -386,6 +386,8 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
             return {"error": "name must be a string"}
         room = settings.create_room(name)
         await group_router.sync_groups()
+        if room.group_name:
+            await group_router.record_local_join(room.id)
         rendezvous.configuration_changed()
         return {
             "room_id": room.id,
@@ -400,6 +402,8 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
             return {"error": "invite required"}
         room = settings.join_room(invite)
         await group_router.sync_groups()
+        if room.group_name:
+            await group_router.record_local_join(room.id)
         rendezvous.configuration_changed()
         return {"room_id": room.id, "group_id": room.id if room.group_name else None, "name": room.group_name}
 
