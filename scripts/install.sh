@@ -671,6 +671,7 @@ install_mesh_talk() {
     download_source="GitHub Releases API"
   fi
   task_start "Downloading ${ASSET_NAME} from GitHub Releases via ${download_source}"
+  echo ''
   download_archive "$archive"
   task_finish
 
