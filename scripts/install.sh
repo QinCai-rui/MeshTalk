@@ -329,7 +329,7 @@ sha256_file() {
 }
 
 curl_args() {
-  CURL_ARGS=(-fsSL --retry 2 -H 'Accept: application/vnd.github+json')
+  CURL_ARGS=(-fSL --retry 2 -H 'Accept: application/vnd.github+json')
   if [[ -n $AUTH_TOKEN ]]; then
     CURL_ARGS+=(-H "Authorization: Bearer ${AUTH_TOKEN}")
   fi
