@@ -205,18 +205,10 @@ bun install
 mkdir -p dist/local
 
 # Compile the launcher, CLI, and TUI for the current platform.
-bun build ./bin/meshtalk.ts --compile \
-  --define 'APP_VERSION="local"' \
-  --define 'MESHTALK_RELEASE=true' \
-  --outfile dist/local/meshtalk
-bun build ./cli/src/index.ts --compile \
-  --define 'APP_VERSION="local"' \
-  --define 'MESHTALK_RELEASE=true' \
-  --outfile dist/local/meshtalk-cli
+bun build ./bin/meshtalk.ts --compile --outfile dist/local/meshtalk
+bun build ./cli/src/index.ts --compile --outfile dist/local/meshtalk-cli
 bun build ./tui/src/index.tsx --compile \
   --define 'process.env.OPENTUI_LIBC="glibc"' \
-  --define 'APP_VERSION="local"' \
-  --define 'MESHTALK_RELEASE=true' \
   --outfile dist/local/meshtalk-tui
 
 # Compile the Python backend into a standalone executable.
