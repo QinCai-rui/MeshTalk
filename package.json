@@ -1,6 +1,6 @@
 {
   "name": "meshtalk",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
   "workspaces": ["tui", "cli", "control"],
   "bin": {
