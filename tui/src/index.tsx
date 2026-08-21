@@ -1908,7 +1908,7 @@ function ChatApp() {
             {dialog.kind === "advanced-control-ip" && (
               <>
                 <text>Enter comma-separated IPv4 or IPv6 addresses for the control server.</text>
-                <input focused value={dialogDraft} placeholder="203.0.113.10, 2001:db8::10" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ control_pinned_ip: typeof value === "string" ? value : dialogDraft }, "Control server IPs pinned.")} maxLength={1024} />
+                <input focused value={dialogDraft} placeholder="104.21.6.171, 172.67.135.15, 2606:4700:3032::6815:6ab, 2606:4700:3037::ac43:870f" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ control_pinned_ip: typeof value === "string" ? value : dialogDraft }, "Control server IPs pinned.")} maxLength={1024} />
                 <text fg="#888888">Enter saves the IP pin.</text>
               </>
             )}
