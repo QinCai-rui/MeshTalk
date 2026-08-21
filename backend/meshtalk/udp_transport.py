@@ -143,6 +143,9 @@ class Session:
     local_hello: bytes
     remote_nonce: bytes
     remote_session_public_key: bytes
+    protocol_version: int
+    remote_protocol_version: int
+    remote_min_protocol_version: int
     capabilities: list[str] = field(default_factory=list)
     confirmed: bool = False
     connected_notified: bool = False
@@ -371,7 +374,9 @@ class UdpTransport:
             logger.warning("Incompatible UDP protocol version with peer %s (remote v%d, min v%d); features may not work properly", peer_id, remote_version, remote_min)
             if self.on_version_mismatch is not None:
                 self.on_version_mismatch(peer_id, remote_version, remote_min)
-            raise ValueError(f"UDP handshake protocol version mismatch: remote (v{remote_version}, min v{remote_min})")
+            # Retain the encrypted UDP session in degraded mode, matching the
+            # LAN TCP path. Higher layers surface the incompatibility warning.
+            agreed_version = MIN_SUPPORTED_PROTOCOL_VERSION
         if any(len(item) != 32 for item in (signing_key, encryption_key, session_key, nonce)) or len(signature) != 64:
             raise ValueError("Invalid UDP handshake key length")
         expected = self._expected_endpoints.get(peer_id)
@@ -421,7 +426,7 @@ class UdpTransport:
         session = Session(
             peer_id, addr, session_id, transmit[0], receive[0], transmit[1], receive[1],
             Identity.normalize_display_name(value["display_name"]), encryption_key, signing_key,
-            attempt.hello, nonce, session_key,
+            attempt.hello, nonce, session_key, agreed_version, remote_version, remote_min,
             intersect_capabilities(DEFAULT_CAPABILITIES, remote_capabilities),
         )
         self._sessions[peer_id] = session
@@ -537,6 +542,12 @@ class UdpTransport:
     def get_capabilities(self, peer_id: str) -> list[str]:
         session = self._sessions.get(peer_id)
         return list(session.capabilities) if session else []
+
+    def get_negotiated_protocol(self, peer_id: str) -> tuple[int, int, int] | None:
+        session = self._sessions.get(peer_id)
+        if session is None:
+            return None
+        return session.protocol_version, session.remote_protocol_version, session.remote_min_protocol_version
 
     def _session_for(
         self, session_id: bytes, addr: Endpoint, require_confirmation: bool = False

@@ -308,6 +308,9 @@ class PeerManager:
         peer.encryption_public_key = encryption_public_key
         peer.signing_public_key = signing_public_key
         peer.capabilities = self.udp.get_capabilities(peer_id)
+        negotiated = self.udp.get_negotiated_protocol(peer_id)
+        if negotiated is not None:
+            peer.protocol_version, peer.remote_protocol_version, peer.remote_min_protocol_version = negotiated
         self._udp_peers[peer_id] = peer
         self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = peer.endpoint
         active = self.peers.get(peer_id)

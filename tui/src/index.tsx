@@ -78,6 +78,7 @@ type GroupMember = {
   display_name: string
   is_online?: boolean
   show_in_sidebar?: boolean
+  is_incompatible?: boolean
 }
 type Conversation = { kind: "peer" | "group"; id: string }
 type FriendRequest = {
@@ -1405,6 +1406,9 @@ function ChatApp() {
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId)
   const selectedGroup = groups.find((group) => group.group_id === selectedGroupId)
+  const incompatibleGroupMembers = selectedGroup
+    ? (groupMembers[selectedGroup.group_id] ?? []).filter((member) => member.is_incompatible)
+    : []
   const activeCount = peers.filter((peer) => peerPresence(peer) === "active").length
   const sidebarWidth = width < 72 ? 22 : 32
   const compact = width < 72
@@ -1529,6 +1533,13 @@ function ChatApp() {
                 }
                 return null
               })}
+            </box>
+          ) : null}
+          {selectedGroup && incompatibleGroupMembers.length > 0 ? (
+            <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
+              <text wrapMode="word" fg="#ff9f43">
+                Some group peers are incompatible: {incompatibleGroupMembers.map((member) => member.display_name).join(", ")}. Messages may not work correctly.
+              </text>
             </box>
           ) : null}
           <scrollbox

@@ -427,6 +427,7 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
         for member in members:
             connection = peer_manager.get_connected_peer(member["peer_id"])
             member["is_online"] = member["peer_id"] == identity.peer_id or connection is not None
+            member["is_incompatible"] = bool(connection and connection.version_mismatch)
             member["show_in_sidebar"] = (
                 member["is_online"] or time.time() - member["last_seen"] <= 24 * 60 * 60
             )
