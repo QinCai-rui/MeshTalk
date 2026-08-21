@@ -307,7 +307,7 @@ function ChatApp() {
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
   const [blinkOn, setBlinkOn] = useState(true)
   const [flashingEnabled, setFlashingEnabled] = useState(true)
-  const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number }>({ connected: false, reconnect_attempts: 0 })
+  const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number; control_url?: string | null }>({ connected: false, reconnect_attempts: 0 })
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [dialogDraft, setDialogDraft] = useState("")
@@ -374,6 +374,7 @@ function ChatApp() {
       if (response.error) throw new Error(response.error)
       const nextIdentity = { peer_id: response.peer_id as string, display_name: response.display_name as string }
       setIdentity(nextIdentity)
+      setFlashingEnabled(response.flashing_enabled as boolean)
       setNameDraft(nextIdentity.display_name)
       const presence = await ipc.send("tui_presence", { client_id: tuiClientId, active: true })
       if (presence.error) throw new Error(presence.error)
@@ -383,7 +384,7 @@ function ChatApp() {
       if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
       const control = await ipc.send("control")
       if (control.error) throw new Error(control.error)
-      setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number })
+      setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number, control_url: control.url as string | null | undefined })
       if (!(response.setup_dismissed as boolean)) {
         setDialog({ kind: "rename", firstRun: true })
       } else if (!control.url && !control.setup_dismissed) {
@@ -455,7 +456,7 @@ function ChatApp() {
         if (!backendDisconnected.current && selectedGroupId) setStatus(`Group member refresh error: ${String(error)}`)
       })
       void ipc.send("control").then((control) => {
-        if (!control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number })
+        if (!control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number, control_url: control.url as string | null | undefined })
       }).catch(() => {})
     }, 3000)
     return () => clearInterval(interval)
@@ -466,6 +467,21 @@ function ChatApp() {
     const interval = setInterval(() => setBlinkOn((value) => !value), 600)
     return () => clearInterval(interval)
   }, [flashingEnabled])
+
+  async function setAccessibilityFlashing(enabled: boolean) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("accessibility", { flashing_enabled: enabled })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setFlashingEnabled(response.flashing_enabled as boolean)
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
 
   useEffect(() => ipc.onEvent((event: IPCEvent) => {
     if (["group_message", "group_member_joined", "group_member_left"].includes(event.event)) {
@@ -1567,6 +1583,13 @@ function ChatApp() {
       </box>
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
+        {controlStatus.control_url && !controlStatus.connected ? (
+          <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
+            <text wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"}>
+              <b>Out-of-sync with rendezvous server. Peer connectivity may degrade over time;</b> reconnecting ({controlStatus.reconnect_attempts}).
+            </text>
+          </box>
+        ) : null}
         <box
           title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
@@ -1580,9 +1603,6 @@ function ChatApp() {
                 }
                 if (kind === "not_friend") {
                   return <text key="not_friend" wrapMode="word" fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (commands {'>'} friends {'>'} add friend).</text>
-                }
-                if (kind === "rendezvous_out_of_sync") {
-                  return <text key="rendezvous_out_of_sync" wrapMode="word" fg="#ff9f43"><b>Out-of-sync with rendezvous server. Peer connectivity may degrade over time;</b> reconnecting ({controlStatus.reconnect_attempts}).</text>
                 }
                 if (kind === "incompatible" && selected.version_mismatch) {
                   return <text key="incompatible" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff5555" : "#8a2e2e"}><b>Incompatible peer protocol. Most features are disabled until both peers support a compatible protocol version.</b></text>
@@ -2241,15 +2261,15 @@ height={Math.max(5, dialogHeight - 3)}
                     {
                       name: flashingEnabled ? "Disable Flashing" : "Re-enable Flashing",
                       description: flashingEnabled
-                        ? "Stop the incompatible-version warning from blinking (flashing)"
-                        : "Allow the incompatible-version warning to blink (flashing)",
+                        ? "Stop incompatible-protocol and rendezvous warnings from blinking"
+                        : "Allow incompatible-protocol and rendezvous warnings to blink",
                       value: "toggle-flash",
                     },
                     { name: "Back to commands", description: "Return to the command palette", value: "back" },
                   ]}
                   onSelect={(_, option) => {
                     if (!option) return
-                    if (option.value === "toggle-flash") setFlashingEnabled((value) => !value)
+                    if (option.value === "toggle-flash") void setAccessibilityFlashing(!flashingEnabled)
                     else showDialog({ kind: "commands" })
                   }}
                   wrapSelection
