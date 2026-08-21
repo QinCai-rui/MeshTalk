@@ -620,8 +620,15 @@ install_mesh_talk() {
       info "Installation cancelled."
       return
     fi
-  elif [[ -d $INSTALL_DIR && -n $(ls -A "$INSTALL_DIR" 2>/dev/null) ]]; then
-    if ! confirm "${INSTALL_DIR} is not empty. Install MeshTalk there?" n; then
+  else
+    local existing_file=""
+    for file in "${EXPECTED_FILES[@]}"; do
+      if [[ -e $INSTALL_DIR/$file || -L $INSTALL_DIR/$file ]]; then
+        existing_file=$file
+        break
+      fi
+    done
+    if [[ -n $existing_file ]] && ! confirm "${INSTALL_DIR}/${existing_file} already exists. Replace the MeshTalk installation?" n; then
       info "Installation cancelled."
       return
     fi
