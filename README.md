@@ -88,11 +88,14 @@ meshtalk group messages <group-id>
 meshtalk group send <group-id> "hello team"
 meshtalk group leave <group-id>
 meshtalk backend status
+meshtalk backend start --daemonise
 meshtalk backend stop
 ```
 
-The launcher starts the backend as a detached daemon and writes its output to
-`~/.meshtalk/backend.log`. Later TUI and CLI invocations reuse that daemon.
+The TUI starts an attached backend and stops it when the TUI exits. Its output
+is written to `~/.meshtalk/backend.log`, so it does not interfere with the TUI.
+Use `meshtalk backend start --daemonise` to run a persistent backend; later TUI
+and CLI invocations reuse any running backend.
 
 MeshTalk creates fresh state in `~/.meshtalk`.
 
