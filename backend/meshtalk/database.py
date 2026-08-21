@@ -122,6 +122,23 @@ CREATE TABLE IF NOT EXISTS group_deliveries (
     updated_at REAL NOT NULL,
     PRIMARY KEY (message_id, recipient_id)
 );
+
+CREATE TABLE IF NOT EXISTS file_transfers (
+    file_id TEXT PRIMARY KEY,
+    filename TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    chunk_size INTEGER NOT NULL,
+    total_chunks INTEGER NOT NULL,
+    sender_id TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    group_id TEXT,
+    direction TEXT NOT NULL,
+    status TEXT NOT NULL,
+    file_path TEXT,
+    created_at REAL NOT NULL,
+    completed_at REAL,
+    received_chunks INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -173,6 +190,35 @@ class Database:
             await self._db.execute("ALTER TABLE group_members ADD COLUMN group_capable INTEGER")
         if "join_announced" not in group_member_columns:
             await self._db.execute("ALTER TABLE group_members ADD COLUMN join_announced INTEGER NOT NULL DEFAULT 0")
+        # Migrate groups table from very old DBs that lacked joined_at/read_at
+        try:
+            group_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(groups)")}
+            if group_columns and "joined_at" not in group_columns:
+                await self._db.execute("ALTER TABLE groups ADD COLUMN joined_at REAL NOT NULL DEFAULT 0")
+            if group_columns and "read_at" not in group_columns:
+                await self._db.execute("ALTER TABLE groups ADD COLUMN read_at REAL")
+            if group_columns and "name" not in group_columns:
+                await self._db.execute("ALTER TABLE groups ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+        # Migrate group_messages table (older DBs lacked received_at/kind)
+        try:
+            gm_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_messages)")}
+            if gm_columns and "received_at" not in gm_columns:
+                await self._db.execute("ALTER TABLE group_messages ADD COLUMN received_at REAL")
+            if gm_columns and "kind" not in gm_columns:
+                await self._db.execute("ALTER TABLE group_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'message'")
+            if gm_columns and "content" not in gm_columns:
+                await self._db.execute("ALTER TABLE group_messages ADD COLUMN content BLOB")
+        except Exception:
+            pass
+        # Ensure group_deliveries exists (older DBs may lack it entirely - SCHEMA already handled)
+        try:
+            gd_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_deliveries)")}
+            if not gd_columns:
+                await self._db.execute("CREATE TABLE IF NOT EXISTS group_deliveries (message_id TEXT NOT NULL, recipient_id TEXT NOT NULL, status TEXT NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY (message_id, recipient_id))")
+        except Exception:
+            pass
         await self._encrypt_existing_message_content()
         await self._db.commit()
 
@@ -702,4 +748,52 @@ class Database:
         async with self._db.execute(
             "SELECT peer_id, display_name, created_at FROM blocked_peers ORDER BY display_name"
         ) as cursor:
+            return [dict(row) async for row in cursor]
+
+    # ------------------------------------------------------------------ file transfers
+    async def save_file_transfer(self, transfer: dict) -> None:
+        await self._db.execute(
+            """INSERT OR REPLACE INTO file_transfers
+               (file_id, filename, file_size, chunk_size, total_chunks, sender_id, recipient_id, group_id, direction, status, file_path, created_at, completed_at, received_chunks)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                transfer["file_id"], transfer["filename"], transfer["file_size"], transfer["chunk_size"],
+                transfer["total_chunks"], transfer["sender_id"], transfer["recipient_id"], transfer.get("group_id"),
+                transfer["direction"], transfer["status"], transfer.get("file_path"), transfer["created_at"],
+                transfer.get("completed_at"), transfer.get("received_chunks", 0),
+            ),
+        )
+        await self._db.commit()
+
+    async def get_file_transfer(self, file_id: str) -> dict | None:
+        async with self._db.execute("SELECT * FROM file_transfers WHERE file_id = ?", (file_id,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def update_file_transfer(self, file_id: str, **fields) -> None:
+        if not fields:
+            return
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [file_id]
+        await self._db.execute(f"UPDATE file_transfers SET {sets} WHERE file_id = ?", tuple(values))
+        await self._db.commit()
+
+    async def get_file_transfers(self, peer_id: str | None = None, group_id: str | None = None) -> list[dict]:
+        query = "SELECT * FROM file_transfers"
+        clauses: list[str] = []
+        params: list[str] = []
+        if peer_id:
+            clauses.append("(sender_id = ? OR recipient_id = ?)")
+            params.extend([peer_id, peer_id])
+        if group_id:
+            clauses.append("group_id = ?")
+            params.append(group_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC"
+        async with self._db.execute(query, tuple(params)) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def get_pending_file_offers(self) -> list[dict]:
+        async with self._db.execute("SELECT * FROM file_transfers WHERE status IN ('pending','transferring')") as cursor:
             return [dict(row) async for row in cursor]
