@@ -307,7 +307,16 @@ async def main(debug: bool = False) -> None:
             "peer_id": identity.peer_id,
             "display_name": identity.display_name,
             "setup_dismissed": settings.identity_setup_dismissed or identity.display_name != "Anonymous",
+            "flashing_enabled": settings.flashing_enabled,
         }
+
+    async def handle_accessibility(req: dict) -> dict:
+        flashing_enabled = req.get("flashing_enabled")
+        if flashing_enabled is not None:
+            if not isinstance(flashing_enabled, bool):
+                return {"error": "flashing_enabled must be boolean"}
+            settings.set_flashing_enabled(flashing_enabled)
+        return {"flashing_enabled": settings.flashing_enabled}
 
     async def handle_status(req: dict) -> dict:
         connected = peer_manager.get_connected_peers()
@@ -594,6 +603,7 @@ async def main(debug: bool = False) -> None:
         "blocked_peers": handle_blocked_peers,
         "tui_presence": handle_tui_presence,
         "identity": handle_identity,
+        "accessibility": handle_accessibility,
         "status": handle_status,
         "messages": handle_messages,
         "set_display_name": handle_set_display_name,

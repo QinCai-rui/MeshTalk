@@ -50,6 +50,12 @@ class SettingsControlSetupTest(unittest.TestCase):
         self.assertTrue(loaded.identity_setup_dismissed)
         self.assertFalse(loaded.control_setup_dismissed)
 
+    def test_flashing_preference_persists(self):
+        settings = Settings(self.path)
+        settings.set_flashing_enabled(False)
+
+        self.assertFalse(Settings(self.path).flashing_enabled)
+
     def test_environment_control_url_does_not_mutate_persisted_settings(self):
         settings = Settings(self.path)
         settings.dismiss_control_setup()

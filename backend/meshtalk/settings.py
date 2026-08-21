@@ -119,6 +119,7 @@ class Settings:
         self._control_pinned_ips: tuple[str, ...] = ()
         self._control_setup_dismissed = False
         self._identity_setup_dismissed = False
+        self._flashing_enabled = True
         self._stun_host = DEFAULT_STUN_HOST
         self._stun_port = DEFAULT_STUN_PORT
         self._stun_pinned_ips: tuple[str, ...] = ()
@@ -187,6 +188,14 @@ class Settings:
 
     def dismiss_identity_setup(self) -> None:
         self._identity_setup_dismissed = True
+        self.save()
+
+    @property
+    def flashing_enabled(self) -> bool:
+        return self._flashing_enabled
+
+    def set_flashing_enabled(self, enabled: bool) -> None:
+        self._flashing_enabled = enabled
         self.save()
 
     @staticmethod
@@ -262,6 +271,7 @@ class Settings:
             "control_pinned_ips": list(self._control_pinned_ips),
             "control_setup_dismissed": self._control_setup_dismissed,
             "identity_setup_dismissed": self._identity_setup_dismissed,
+            "flashing_enabled": self._flashing_enabled,
             "stun_server": {"host": self._stun_host, "port": self._stun_port},
             "stun_pinned_ips": list(self._stun_pinned_ips),
             "rooms": [
@@ -298,6 +308,7 @@ class Settings:
                 self._control_pinned_ips = self._validate_pinned_ips(control_pinned_ips)
         self._control_setup_dismissed = bool(data.get("control_setup_dismissed", False))
         self._identity_setup_dismissed = bool(data.get("identity_setup_dismissed", False))
+        self._flashing_enabled = bool(data.get("flashing_enabled", True))
         if self._control_url:
             self._control_url = self._validate_control_url(self._control_url)
         stun = data.get("stun_server", {})
