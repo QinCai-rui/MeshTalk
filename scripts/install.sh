@@ -175,7 +175,15 @@ detect_platform() {
     DEFAULT_INSTALL_DIR="${HOME}/.local/bin"
   fi
 
-  ASSET_NAME="meshtalk-${PLATFORM}-${ARCH}${EXECUTABLE_SUFFIX}.tar.gz"
+  ASSET_ARCH=$ARCH
+  WINDOWS_ARM64_EMULATION=0
+  if [[ $PLATFORM == windows && $ARCH == arm64 ]]; then
+    # GitHub releases currently provide Windows x64 only; Windows ARM64 runs it through emulation.
+    ASSET_ARCH=x64
+    WINDOWS_ARM64_EMULATION=1
+  fi
+
+  ASSET_NAME="meshtalk-${PLATFORM}-${ASSET_ARCH}${EXECUTABLE_SUFFIX}.tar.gz"
   LAUNCHER_NAME="meshtalk${EXECUTABLE_SUFFIX}"
   EXPECTED_FILES=(
     "meshtalk${EXECUTABLE_SUFFIX}"
@@ -528,6 +536,10 @@ configure_path() {
 install_mesh_talk() {
   choose_version
   choose_install_dir
+
+  if [[ $WINDOWS_ARM64_EMULATION -eq 1 ]]; then
+    warn "Windows ARM64 detected. MeshTalk has no native ARM64 Windows release; installing the x64 build through Windows emulation."
+  fi
 
   if [[ $DRY_RUN -eq 1 ]]; then
     info "No network or filesystem changes will be made."
