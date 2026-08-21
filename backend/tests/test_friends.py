@@ -89,7 +89,9 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id, "hi bob")
         await self._wait_for_request(request_id, self.friend_b.db)
         await self.friend_b.respond_to_friend_request(request_id, accept=True)
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(2):
+            while not await self.friend_a.is_friend(self.identity_b.peer_id):
+                await asyncio.sleep(0.02)
         return request_id
 
     async def _wait_for_request(self, request_id: str, db: Database):

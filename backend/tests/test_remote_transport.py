@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,7 +13,7 @@ from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
 from meshtalk.rendezvous import RendezvousService, decrypt_endpoint_card, encrypt_endpoint_card
 from meshtalk.settings import Room, Settings
-from meshtalk.udp_transport import Attempt, READY, UdpTransport
+from meshtalk.udp_transport import Attempt, HELLO, MAGIC, READY, UdpTransport
 
 
 class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
@@ -152,6 +153,40 @@ class CandidateValidationTest(unittest.IsolatedAsyncioTestCase):
 
 
 class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_incompatible_version_still_creates_degraded_session(self):
+        local = Identity.generate("Local")
+        remote = Identity.generate("Remote")
+        mismatches = []
+
+        async def ignore(*args):
+            pass
+
+        transport = UdpTransport(local, ignore, ignore, ignore)
+        transport.on_version_mismatch = lambda peer_id, version, minimum: mismatches.append(
+            (peer_id, version, minimum)
+        )
+        endpoint = ("127.0.0.1", 45454)
+        transport._sendto = lambda *_: None
+        transport.expect_peer(remote.peer_id, endpoint)
+        remote_transport = UdpTransport(remote, ignore, ignore, ignore)
+        hello = remote_transport._make_hello(Attempt(local.peer_id, endpoint))
+        value = json.loads(hello[5:])
+        value.pop("signature")
+        value["version"] = 4
+        value["min_version"] = 4
+        value["signature"] = remote.signing_private_key.sign(
+            json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+        ).hex()
+
+        transport.datagram_received(MAGIC + bytes([HELLO]) + json.dumps(value).encode(), endpoint)
+
+        self.assertEqual(mismatches, [(remote.peer_id, 4, 4)])
+        self.assertEqual(
+            transport.get_negotiated_protocol(remote.peer_id),
+            (2, 4, 4),
+        )
+        await transport.stop()
+
     async def test_reflected_ready_does_not_confirm_session(self):
         local = Identity.generate("Local")
         remote = Identity.generate("Remote")
