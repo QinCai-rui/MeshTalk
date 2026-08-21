@@ -31,8 +31,8 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-PROTOCOL_VERSION = 3
-MIN_SUPPORTED_PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 4
+MIN_SUPPORTED_PROTOCOL_VERSION = 4
 
 # Feature capability identifiers exchanged during the handshake. A connection
 # only enables a capability when both peers advertise it (see
