@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -26,8 +27,8 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
         self.settings[2].join_room(room.invite)
         self.events = [asyncio.Queue() for _ in range(3)]
         self.managers = [
-            PeerManager(identity, database, lambda *_: None, tcp_port=35101 + index)
-            for index, (identity, database) in enumerate(zip(self.identities, self.databases))
+            PeerManager(identity, database, lambda *_: None, tcp_port=0)
+            for identity, database in zip(self.identities, self.databases)
         ]
         self.groups = [
             GroupRouter(identity, manager, database, settings, events.put)
@@ -45,6 +46,7 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
             manager.on_packet = router.handle_packet
             await group.sync_groups()
             await manager.start()
+        self.tcp_ports = [manager._server.sockets[0].getsockname()[1] for manager in self.managers]
         for first in range(3):
             for second in range(first + 1, 3):
                 initiator, target = (
@@ -53,14 +55,14 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
                     else (second, first)
                 )
                 await self.managers[initiator].connect_to_peer(
-                    self.identities[target].peer_id, "127.0.0.1", 35101 + target
+                    self.identities[target].peer_id, "127.0.0.1", self.tcp_ports[target]
                 )
         async with asyncio.timeout(3):
             while any(len(manager.get_connected_peers()) < 2 for manager in self.managers):
                 await asyncio.sleep(0.02)
         for group in self.groups:
             for identity in self.identities:
-                await group.record_room_member(self.group_id, identity.peer_id)
+                await group.record_room_member(self.group_id, identity.peer_id, int(time.time()))
 
     async def asyncTearDown(self):
         for manager in self.managers:
@@ -106,6 +108,20 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
         joins = [message for message in messages if message["kind"] == "join"]
         self.assertEqual(len(joins), len([message for message in before if message["kind"] == "join"]) + 1)
         self.assertIn(peer_id, joins[0]["content"])
+
+    async def test_retained_prejoin_card_does_not_emit_a_join_event(self):
+        group = self.groups[0]
+        peer_id = self.identities[1].peer_id
+        await self.databases[0].remove_group(self.group_id)
+        await self.databases[0].upsert_group(self.group_id, "Core Team")
+        stored_group = await self.databases[0].get_group(self.group_id)
+        before = await self.databases[0].get_group_messages(self.group_id)
+
+        await group.record_room_member(self.group_id, peer_id, int(stored_group["joined_at"]) - 1)
+        await group.peer_connected(peer_id)
+
+        messages = await self.databases[0].get_group_messages(self.group_id)
+        self.assertEqual(len(messages), len(before))
 
     async def test_offline_known_member_is_queued(self):
         peer = self.managers[0].get_connected_peer(self.identities[2].peer_id)

@@ -434,6 +434,13 @@ class Database:
         )
         await self._db.commit()
 
+    async def get_group(self, group_id: str) -> dict | None:
+        async with self._db.execute(
+            "SELECT * FROM groups WHERE group_id = ?", (group_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
     async def remove_group(self, group_id: str) -> None:
         # History remains local so rejoining restores the user's previous view,
         # but pending traffic must not escape after membership is removed.
