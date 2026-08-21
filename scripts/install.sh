@@ -606,7 +606,7 @@ configure_path() {
   printf '  %ssource %s%s\n' "$BOLD" "$startup_file" "$RESET"
 }
 
-install_mesh_talk() {
+install_meshtalk() {
   choose_version
   choose_install_dir
 
@@ -724,7 +724,7 @@ install_mesh_talk() {
   trap - EXIT
 }
 
-uninstall_mesh_talk() {
+uninstall_meshtalk() {
   choose_install_dir
 
   if [[ $DRY_RUN -eq 1 ]]; then
@@ -769,9 +769,9 @@ main() {
 
   if [[ $ACTION == uninstall ]]; then
     choose_install_dir
-    uninstall_mesh_talk
+    uninstall_meshtalk
   else
-    install_mesh_talk
+    install_meshtalk
   fi
 }
 
