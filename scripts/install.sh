@@ -291,9 +291,17 @@ choose_version() {
 choose_install_dir() {
   if [[ -z $INSTALL_DIR ]]; then
     if [[ $ACTION == uninstall ]]; then
-      info "MeshTalk will be removed without root or sudo."
+      if [[ ${EUID:-1} -eq 0 ]]; then
+        info "MeshTalk will be removed as root."
+      else
+        info "MeshTalk will be removed without root or sudo."
+      fi
     else
-      info "MeshTalk will be installed without root or sudo."
+      if [[ ${EUID:-1} -eq 0 ]]; then
+        info "MeshTalk will be installed as root."
+      else
+        info "MeshTalk will be installed without root or sudo."
+      fi
     fi
     prompt_read INSTALL_DIR "${BOLD}Installation directory${RESET} ${DIM}[${DEFAULT_INSTALL_DIR}]${RESET}: " || true
     INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}
