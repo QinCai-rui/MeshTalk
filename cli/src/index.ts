@@ -42,6 +42,8 @@ Commands:
   backend status              Show backend status
   backend start --daemonise   Start a persistent backend daemon
   backend stop                Stop the backend daemon
+  update [--install]          Check for and install a compiled-release update
+  update token <token>|clear  Save or remove a GitHub token for update checks
 `;
 
 function hasError(response: IPCResponse): boolean {
