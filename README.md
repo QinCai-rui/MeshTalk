@@ -243,9 +243,10 @@ UDP hole punching does not work through every symmetric NAT, firewall, carrier
 network, or UDP-blocking policy. MeshTalk does not include a TURN relay, so it
 fails closed instead of routing chat content through the control service.
 
-All networking is IPv4-only. Sockets bind to `0.0.0.0`/`127.0.0.1`, STUN
-resolution is forced to `AF_INET`, LAN discovery uses IPv4 broadcast, and
-endpoint candidates must be global unicast IPv4.
+Peer networking and STUN are IPv4-only. Sockets bind to `0.0.0.0`/`127.0.0.1`,
+STUN resolution is forced to `AF_INET`, LAN discovery uses IPv4 broadcast, and
+endpoint candidates must be global unicast IPv4. Control-server IP pins support
+both IPv4 and IPv6.
 
 ## Features
 

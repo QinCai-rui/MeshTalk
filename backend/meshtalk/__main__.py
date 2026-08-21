@@ -8,9 +8,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import socket
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .identity import Identity
 from .database import Database
@@ -379,29 +381,53 @@ async def main(debug: bool = False) -> None:
     async def handle_advanced_config(req: dict) -> dict:
         changed = False
         if req.get("clear_control_pinned_ip") is True:
-            settings.clear_control_pinned_ip()
+            settings.clear_control_pinned_ips()
             changed = True
         elif "control_pinned_ip" in req:
             control_pinned_ip = req["control_pinned_ip"]
             if not isinstance(control_pinned_ip, str):
                 return {"error": "control_pinned_ip must be a string"}
-            settings.set_control_pinned_ip(control_pinned_ip)
+            settings.set_control_pinned_ips(control_pinned_ip)
+            changed = True
+        elif req.get("auto_control_pinned_ip") is True:
+            control_url = settings.control_url
+            if not control_url:
+                return {"error": "Configure a control server before auto-pinning it"}
+            parsed = urlparse(control_url)
+            addresses = await asyncio.get_running_loop().getaddrinfo(
+                parsed.hostname, parsed.port or (443 if parsed.scheme == "wss" else 80),
+                family=socket.AF_UNSPEC, type=socket.SOCK_STREAM,
+            )
+            values = list(dict.fromkeys(item[4][0] for item in addresses))
+            if not values:
+                return {"error": "Control server did not resolve to an IP address"}
+            settings.set_control_pinned_ips(",".join(values))
             changed = True
         if req.get("clear_stun_pinned_ip") is True:
-            settings.clear_stun_pinned_ip()
+            settings.clear_stun_pinned_ips()
             changed = True
         elif "stun_pinned_ip" in req:
             stun_pinned_ip = req["stun_pinned_ip"]
             if not isinstance(stun_pinned_ip, str):
                 return {"error": "stun_pinned_ip must be a string"}
-            settings.set_stun_pinned_ip(stun_pinned_ip)
+            settings.set_stun_pinned_ips(stun_pinned_ip)
+            changed = True
+        elif req.get("auto_stun_pinned_ip") is True:
+            stun_host, stun_port = settings.stun_server
+            addresses = await asyncio.get_running_loop().getaddrinfo(
+                stun_host, stun_port, family=socket.AF_INET, type=socket.SOCK_DGRAM,
+            )
+            values = list(dict.fromkeys(item[4][0] for item in addresses))
+            if not values:
+                return {"error": "STUN server did not resolve to an IPv4 address"}
+            settings.set_stun_pinned_ips(",".join(values))
             changed = True
         if changed:
             rendezvous.configuration_changed()
         stun_host, stun_port = settings.stun_server
         return {
-            "control_pinned_ip": settings.control_pinned_ip,
-            "stun_pinned_ip": settings.stun_pinned_ip,
+            "control_pinned_ips": list(settings.control_pinned_ips),
+            "stun_pinned_ips": list(settings.stun_pinned_ips),
             "control_url": settings.control_url or None,
             "stun_server": f"{stun_host}:{stun_port}",
         }

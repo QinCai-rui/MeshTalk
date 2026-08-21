@@ -114,9 +114,9 @@ type ControlStatus = {
 }
 type AdvancedConfig = {
   control_url?: string | null
-  control_pinned_ip?: string | null
+  control_pinned_ips: string[]
   stun_server: string
-  stun_pinned_ip?: string | null
+  stun_pinned_ips: string[]
 }
 type DebugInfo = {
   public_endpoint?: [string, number] | null
@@ -131,6 +131,8 @@ type Dialog =
   | { kind: "control-custom"; firstRun?: boolean }
   | { kind: "control-status"; control: ControlStatus }
   | { kind: "advanced"; config: AdvancedConfig }
+  | { kind: "advanced-control"; config: AdvancedConfig }
+  | { kind: "advanced-stun"; config: AdvancedConfig }
   | { kind: "advanced-control-ip" }
   | { kind: "advanced-stun-ip" }
   | { kind: "rooms"; rooms: RoomStatus[] }
@@ -739,6 +741,8 @@ function ChatApp() {
     } else if (dialog.kind === "control-status") {
       showDialog({ kind: "control" })
     } else if (dialog.kind === "advanced-control-ip" || dialog.kind === "advanced-stun-ip") {
+      void loadAdvancedConfig()
+    } else if (dialog.kind === "advanced-control" || dialog.kind === "advanced-stun") {
       void loadAdvancedConfig()
     } else if (dialog.kind === "advanced") {
       showDialog({ kind: "commands" })
@@ -1758,7 +1762,7 @@ function ChatApp() {
                   focused
                   height={Math.max(6, dialogHeight - 4)}
                   options={[
-                    { name: "Use MeshTalk public server", description: PUBLIC_CONTROL_URL, value: "public" },
+                    { name: "Use MeshTalk public server", description: "A: 104.21.6.171, 172.67.135.15  AAAA: 2606:4700:3032::6815:6ab, 2606:4700:3037::ac43:870f", value: "public" },
                     { name: "Use a custom server", description: "Enter another secure WebSocket URL", value: "custom" },
                     { name: "View connection status", description: "See the current URL, connection, STUN, and endpoint", value: "status" },
                     ...(dialog.firstRun ? [{ name: "Continue with LAN only", description: "You can configure this later with Ctrl+P", value: "skip" }] : []),
@@ -1807,28 +1811,19 @@ function ChatApp() {
             )}
             {dialog.kind === "advanced" && (
               <>
-                <text wrapMode="word" fg="#888888">Pins bypass DNS. Control server pins retain the configured hostname for TLS verification. STUN pins must be IPv4.</text>
                 <MouseSelect
                   focused
-                  height={Math.max(5, dialogHeight - 6)}
+                  height={Math.max(5, dialogHeight - 3)}
                   options={[
-                    { name: "Pin control server IP", description: dialog.config.control_pinned_ip ?? `Current: DNS (${dialog.config.control_url ?? "no control server"})`, value: "control-pin" },
-                    ...(dialog.config.control_pinned_ip ? [{ name: "Clear control server IP pin", description: `Pinned: ${dialog.config.control_pinned_ip}`, value: "control-clear" }] : []),
-                    { name: "Pin STUN server IP", description: dialog.config.stun_pinned_ip ?? `Current: DNS (${dialog.config.stun_server})`, value: "stun-pin" },
-                    ...(dialog.config.stun_pinned_ip ? [{ name: "Clear STUN server IP pin", description: `Pinned: ${dialog.config.stun_pinned_ip}`, value: "stun-clear" }] : []),
+                    { name: "Control server", description: dialog.config.control_pinned_ips.length ? `Pinned: ${dialog.config.control_pinned_ips.join(", ")}` : "No IP pin", value: "control" },
+                    { name: "STUN server", description: dialog.config.stun_pinned_ips.length ? `Pinned: ${dialog.config.stun_pinned_ips.join(", ")}` : "No IP pin", value: "stun" },
                     { name: "Back to commands", description: "Return to the command palette", value: "back" },
                   ]}
                   onSelect={(_, option) => {
-                    if (option?.value === "control-pin") {
-                      setDialogDraft(dialog.config.control_pinned_ip ?? "")
-                      setDialog({ kind: "advanced-control-ip" })
-                    } else if (option?.value === "control-clear") {
-                      void saveAdvancedConfig({ clear_control_pinned_ip: true }, "Control server IP pin cleared.")
-                    } else if (option?.value === "stun-pin") {
-                      setDialogDraft(dialog.config.stun_pinned_ip ?? "")
-                      setDialog({ kind: "advanced-stun-ip" })
-                    } else if (option?.value === "stun-clear") {
-                      void saveAdvancedConfig({ clear_stun_pinned_ip: true }, "STUN server IP pin cleared.")
+                    if (option?.value === "control") {
+                      showDialog({ kind: "advanced-control", config: dialog.config })
+                    } else if (option?.value === "stun") {
+                      showDialog({ kind: "advanced-stun", config: dialog.config })
                     } else if (option?.value === "back") {
                       showDialog({ kind: "commands" })
                     }
@@ -1838,17 +1833,69 @@ function ChatApp() {
                 />
               </>
             )}
+            {dialog.kind === "advanced-control" && (
+              <MouseSelect
+                focused
+                height={Math.max(5, dialogHeight - 3)}
+                options={[
+                  { name: "Manual IP address", description: "Enter one or more comma-separated IPv4 or IPv6 addresses", value: "manual" },
+                  { name: "Auto: resolve and pin", description: "Query A and AAAA records, then save the results as pins", value: "auto" },
+                  ...(dialog.config.control_pinned_ips.length ? [{ name: "Remove IP pin", description: `Pinned: ${dialog.config.control_pinned_ips.join(", ")}`, value: "clear" }] : []),
+                  { name: "Back", description: "Return to Advanced Configuration", value: "back" },
+                ]}
+                onSelect={(_, option) => {
+                  if (option?.value === "manual") {
+                    setDialogDraft(dialog.config.control_pinned_ips.join(", "))
+                    setDialog({ kind: "advanced-control-ip" })
+                  } else if (option?.value === "auto") {
+                    void saveAdvancedConfig({ auto_control_pinned_ip: true }, "Control server addresses resolved and pinned.")
+                  } else if (option?.value === "clear") {
+                    void saveAdvancedConfig({ clear_control_pinned_ip: true }, "Control server IP pin cleared.")
+                  } else if (option?.value === "back") {
+                    showDialog({ kind: "advanced", config: dialog.config })
+                  }
+                }}
+                wrapSelection
+                showDescription
+              />
+            )}
+            {dialog.kind === "advanced-stun" && (
+              <MouseSelect
+                focused
+                height={Math.max(5, dialogHeight - 3)}
+                options={[
+                  { name: "Manual IP address", description: "Enter one or more comma-separated IPv4 addresses", value: "manual" },
+                  { name: "Auto: resolve and pin", description: "Query A records, then save the results as pins", value: "auto" },
+                  ...(dialog.config.stun_pinned_ips.length ? [{ name: "Remove IP pin", description: `Pinned: ${dialog.config.stun_pinned_ips.join(", ")}`, value: "clear" }] : []),
+                  { name: "Back", description: "Return to Advanced Configuration", value: "back" },
+                ]}
+                onSelect={(_, option) => {
+                  if (option?.value === "manual") {
+                    setDialogDraft(dialog.config.stun_pinned_ips.join(", "))
+                    setDialog({ kind: "advanced-stun-ip" })
+                  } else if (option?.value === "auto") {
+                    void saveAdvancedConfig({ auto_stun_pinned_ip: true }, "STUN server addresses resolved and pinned.")
+                  } else if (option?.value === "clear") {
+                    void saveAdvancedConfig({ clear_stun_pinned_ip: true }, "STUN server IP pin cleared.")
+                  } else if (option?.value === "back") {
+                    showDialog({ kind: "advanced", config: dialog.config })
+                  }
+                }}
+                wrapSelection
+                showDescription
+              />
+            )}
             {dialog.kind === "advanced-control-ip" && (
               <>
-                <text>Enter the IP address to use instead of DNS for the control server.</text>
-                <input focused value={dialogDraft} placeholder="203.0.113.10" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ control_pinned_ip: typeof value === "string" ? value : dialogDraft }, "Control server IP pinned.")} maxLength={45} />
+                <text>Enter comma-separated IPv4 or IPv6 addresses for the control server.</text>
+                <input focused value={dialogDraft} placeholder="203.0.113.10, 2001:db8::10" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ control_pinned_ip: typeof value === "string" ? value : dialogDraft }, "Control server IPs pinned.")} maxLength={1024} />
                 <text fg="#888888">Enter saves the IP pin.</text>
               </>
             )}
             {dialog.kind === "advanced-stun-ip" && (
               <>
-                <text>Enter the IPv4 address to use instead of DNS for the STUN server.</text>
-                <input focused value={dialogDraft} placeholder="203.0.113.10" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ stun_pinned_ip: typeof value === "string" ? value : dialogDraft }, "STUN server IP pinned.")} maxLength={15} />
+                <text>Enter comma-separated IPv4 addresses for the STUN server.</text>
+                <input focused value={dialogDraft} placeholder="203.0.113.10, 203.0.113.11" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ stun_pinned_ip: typeof value === "string" ? value : dialogDraft }, "STUN server IPs pinned.")} maxLength={1024} />
                 <text fg="#888888">Enter saves the IP pin.</text>
               </>
             )}

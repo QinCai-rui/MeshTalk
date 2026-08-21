@@ -12,11 +12,13 @@ Commands:
   send <peer-id> <message>    Send an encrypted direct message
   watch                       Print incoming messages until interrupted
   control [set-url <url>]      Show or configure the control service
-  advanced                     Show server IP pins that override DNS
-  advanced set-control-ip <ip> Pin an IP address for the control server
-  advanced clear-control-ip    Clear the control server IP pin
-  advanced set-stun-ip <ip>    Pin an IPv4 address for the STUN server
-  advanced clear-stun-ip       Clear the STUN server IP pin
+  advanced                         Show server IP pins that override DNS
+  advanced control manual <ips>     Pin comma-separated IPv4/IPv6 control IPs
+  advanced control auto             Resolve and pin control A/AAAA records
+  advanced control clear            Clear control server IP pins
+  advanced stun manual <ips>        Pin comma-separated IPv4 STUN IPs
+  advanced stun auto                Resolve and pin STUN A records
+  advanced stun clear               Clear STUN server IP pins
   room create [name]          Create a private room or named group chat
   room join <invite>          Join a private room
   room leave <room-id>        Leave a room
@@ -190,22 +192,26 @@ async function main(): Promise<void> {
       let response: IPCResponse;
       if (!args.length) {
         response = await ipc.send("advanced_config");
-      } else if (args[0] === "set-control-ip" && args[1] && args.length === 2) {
-        response = await ipc.send("advanced_config", { control_pinned_ip: args[1] });
-      } else if (args[0] === "clear-control-ip" && args.length === 1) {
+      } else if (args[0] === "control" && args[1] === "manual" && args[2] && args.length === 3) {
+        response = await ipc.send("advanced_config", { control_pinned_ip: args[2] });
+      } else if (args[0] === "control" && args[1] === "auto" && args.length === 2) {
+        response = await ipc.send("advanced_config", { auto_control_pinned_ip: true });
+      } else if (args[0] === "control" && args[1] === "clear" && args.length === 2) {
         response = await ipc.send("advanced_config", { clear_control_pinned_ip: true });
-      } else if (args[0] === "set-stun-ip" && args[1] && args.length === 2) {
-        response = await ipc.send("advanced_config", { stun_pinned_ip: args[1] });
-      } else if (args[0] === "clear-stun-ip" && args.length === 1) {
+      } else if (args[0] === "stun" && args[1] === "manual" && args[2] && args.length === 3) {
+        response = await ipc.send("advanced_config", { stun_pinned_ip: args[2] });
+      } else if (args[0] === "stun" && args[1] === "auto" && args.length === 2) {
+        response = await ipc.send("advanced_config", { auto_stun_pinned_ip: true });
+      } else if (args[0] === "stun" && args[1] === "clear" && args.length === 2) {
         response = await ipc.send("advanced_config", { clear_stun_pinned_ip: true });
       } else {
-        throw new Error(`Usage: ${PROGRAM} advanced [set-control-ip <ip>|clear-control-ip|set-stun-ip <ip>|clear-stun-ip]`);
+        throw new Error(`Usage: ${PROGRAM} advanced [control <manual <ips>|auto|clear>|stun <manual <ips>|auto|clear>]`);
       }
       if (hasError(response)) return;
       console.log(`Control server: ${response.control_url ?? "not configured"}`);
-      console.log(`Control IP pin: ${response.control_pinned_ip ?? "not pinned (DNS)"}`);
+      console.log(`Control IP pins: ${Array.isArray(response.control_pinned_ips) && response.control_pinned_ips.length ? response.control_pinned_ips.join(", ") : "not pinned"}`);
       console.log(`STUN server: ${response.stun_server}`);
-      console.log(`STUN IP pin: ${response.stun_pinned_ip ?? "not pinned (DNS)"}`);
+      console.log(`STUN IP pins: ${Array.isArray(response.stun_pinned_ips) && response.stun_pinned_ips.length ? response.stun_pinned_ips.join(", ") : "not pinned"}`);
       return;
     }
 
