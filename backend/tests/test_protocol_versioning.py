@@ -19,6 +19,7 @@ from meshtalk.protocol import (
     IncompatibleProtocolError,
     Packet,
     PacketType,
+    ProfilePayload,
     intersect_capabilities,
     negotiate_protocol_version,
     validate_capabilities,
@@ -292,6 +293,33 @@ class ApplyHandshakeTest(unittest.TestCase):
             self.assertTrue(peer.is_quarantined)
             with self.assertRaisesRegex(ValueError, "most features are disabled"):
                 await local.send_packet(peer, Packet(PacketType.MESSAGE, b"blocked"))
+
+        asyncio.run(run())
+
+    def test_incompatible_peer_can_exchange_signed_presence(self):
+        async def run():
+            local = self._manager()
+            remote = Identity.generate("Remote")
+            payload = self._signed_payload(remote, protocol_version=4, min_protocol_version=4)
+            peer = PeerConnection(remote.peer_id, "127.0.0.1", 24891, PeerState.CONNECTING)
+            local._apply_handshake(peer, payload, expected_challenge=b"")
+            peer.state = PeerState.CONNECTED
+            sent = []
+
+            async def capture_sent(_peer, packet):
+                sent.append(packet)
+
+            local._send_packet = capture_sent
+            await local._send_profile_update(peer)
+            self.assertEqual([packet.type for packet in sent], [PacketType.PROFILE])
+
+            remote_profile = ProfilePayload(remote.peer_id, "Remote", True, b"")
+            remote_profile.signature = remote.signing_private_key.sign(remote_profile.signed_bytes())
+            local._udp_peers[remote.peer_id] = peer
+            await local._on_udp_packet(
+                remote.peer_id, Packet(PacketType.PROFILE, remote_profile.encode())
+            )
+            self.assertTrue(peer.tui_active)
 
         asyncio.run(run())
 

@@ -338,10 +338,10 @@ class PeerManager:
             await self._send_packet(peer, Packet(PacketType.PONG))
         elif packet.type == PacketType.GOODBYE:
             await self._on_udp_disconnected(peer_id)
-        elif peer.is_quarantined:
-            logger.debug("Discarded application packet from incompatible UDP peer %s", peer_id)
         elif packet.type == PacketType.PROFILE:
             await self._apply_profile_update(peer, packet)
+        elif peer.is_quarantined:
+            logger.debug("Discarded application packet from incompatible UDP peer %s", peer_id)
         else:
             await self.on_packet(peer, packet)
 
@@ -380,8 +380,10 @@ class PeerManager:
         await self.broadcast_profile_update()
 
     async def _send_profile_update(self, peer: PeerConnection) -> None:
-        # Presence/display-name synchronisation is opt-in per negotiated capabilities.
-        if not peer.supports(CAP_PROFILE_SYNC):
+        # Incompatible peers may still exchange signed presence updates when
+        # both sides advertised profile sync; all other application traffic
+        # remains quarantined.
+        if CAP_PROFILE_SYNC not in peer.capabilities:
             return
         await self._send_packet(peer, Packet(PacketType.PROFILE, self._profile_payload().encode()))
 
@@ -393,7 +395,7 @@ class PeerManager:
             key = peer.peer_id, peer.transport
             if key in sent or peer.state != PeerState.CONNECTED:
                 continue
-            if not peer.supports(CAP_PROFILE_SYNC):
+            if CAP_PROFILE_SYNC not in peer.capabilities:
                 continue
             sent.add(key)
             try:
@@ -508,10 +510,10 @@ class PeerManager:
                     await self._send_packet(peer, Packet(PacketType.PONG))
                 elif packet.type == PacketType.GOODBYE:
                     break
-                elif peer.is_quarantined:
-                    logger.debug("Discarded application packet from incompatible TCP peer %s", peer.peer_id)
                 elif packet.type == PacketType.PROFILE:
                     await self._apply_profile_update(peer, packet)
+                elif peer.is_quarantined:
+                    logger.debug("Discarded application packet from incompatible TCP peer %s", peer.peer_id)
                 else:
                     await self.on_packet(peer, packet)
         finally:
@@ -551,7 +553,7 @@ class PeerManager:
         await self._notify_peer_changed(peer.peer_id)
 
     async def send_packet(self, peer: PeerConnection, packet: Packet) -> None:
-        if peer.is_quarantined and packet.type not in (PacketType.PING, PacketType.PONG, PacketType.GOODBYE):
+        if peer.is_quarantined and packet.type not in (PacketType.PING, PacketType.PONG, PacketType.GOODBYE, PacketType.PROFILE):
             raise ValueError("Peer protocol is incompatible; most features are disabled")
         try:
             await self._send_packet(peer, packet)
