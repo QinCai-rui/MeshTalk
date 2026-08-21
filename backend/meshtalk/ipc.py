@@ -15,9 +15,13 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 
-logger = logging.getLogger(__name__)
+def _get_data_dir() -> Path:
+    env = os.environ.get("MESHTALK_DATA_DIR")
+    if env and env.strip():
+        return Path(env.strip()).expanduser()
+    return Path.home() / ".meshtalk"
 
-DATA_DIR = Path.home() / ".meshtalk"
+DATA_DIR = _get_data_dir()
 IPC_SOCKET_PATH = DATA_DIR / "meshtalk.sock"
 IPC_PORT_PATH = DATA_DIR / "meshtalk.port"
 IPC_TOKEN_PATH = DATA_DIR / "meshtalk.token"

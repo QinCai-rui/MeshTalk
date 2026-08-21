@@ -8,7 +8,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 
 const HOME = process.env.HOME || process.env.USERPROFILE || "";
-const DATA_DIR = `${HOME}/.meshtalk`;
+const DATA_DIR = process.env.MESHTALK_DATA_DIR || `${HOME}/.meshtalk`;
 const SOCKET_PATH = process.env.MESHTALK_IPC_SOCKET || `${DATA_DIR}/meshtalk.sock`;
 const PORT_PATH = `${DATA_DIR}/meshtalk.port`;
 const TOKEN_PATH = process.env.MESHTALK_IPC_TOKEN || `${DATA_DIR}/meshtalk.token`;

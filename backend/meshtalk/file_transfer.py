@@ -54,11 +54,24 @@ MAX_EARLY_CHUNKS = 64
 
 
 def _files_base(data_dir: Path) -> Path:
+    # Respect MESHTALK_FILES_DIR env var for cross-platform custom drive (e.g., E:\Storage)
+    env = os.environ.get("MESHTALK_FILES_DIR")
+    if env and env.strip():
+        return Path(env.strip()).expanduser()
     return data_dir / FILES_SUBDIR
 
 
 def _incoming_dir(data_dir: Path, file_id: str) -> Path:
     return _files_base(data_dir) / file_id
+
+def _resolve_files_base(data_dir: Path, settings=None) -> Path:
+    # Settings takes precedence over env/data_dir (user can change via TUI/CLI and persist)
+    if settings is not None:
+        try:
+            return settings.files_dir
+        except Exception:
+            pass
+    return _files_base(data_dir)
 
 
 class FileTransferManager:
@@ -69,14 +82,23 @@ class FileTransferManager:
         db: Database,
         data_dir: Path,
         on_event: Callable[[dict], Awaitable[None]] | None = None,
+        settings=None,
     ) -> None:
         self.identity = identity
         self.peer_manager = peer_manager
         self.db = db
         self.data_dir = data_dir
+        self.settings = settings
         self.on_event = on_event
         self._packet_locks: dict[str, asyncio.Lock] = {}
         self._early_chunks: dict[str, list[tuple[PeerConnection, FileChunkPayload]]] = {}
+
+    @property
+    def files_base(self) -> Path:
+        return _resolve_files_base(self.data_dir, self.settings)
+
+    def _incoming_dir_for(self, file_id: str) -> Path:
+        return self.files_base / file_id
 
     def _emit(self, event: dict) -> None:
         if self.on_event:
@@ -347,7 +369,7 @@ class FileTransferManager:
         await self.db.mark_message_seen(offer.file_id)
         # Create inbound transfer record and prepare file
         safe_name = sanitize_filename(offer.filename)
-        incoming_path = _incoming_dir(self.data_dir, offer.file_id) / safe_name
+        incoming_path = self._incoming_dir_for(offer.file_id) / safe_name
         incoming_path.parent.mkdir(parents=True, exist_ok=True)
         # Preallocate file to file_size with zeros (cross-platform)
         try:

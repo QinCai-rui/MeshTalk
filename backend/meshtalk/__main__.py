@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import time
@@ -27,7 +28,14 @@ from .settings import Settings
 
 logger = logging.getLogger("meshtalk")
 
-DATA_DIR = Path.home() / ".meshtalk"
+def _get_data_dir() -> Path:
+    import os
+    env = os.environ.get("MESHTALK_DATA_DIR")
+    if env and env.strip():
+        return Path(env.strip()).expanduser()
+    return Path.home() / ".meshtalk"
+
+DATA_DIR = _get_data_dir()
 
 
 async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
@@ -52,7 +60,7 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
     router = MessageRouter(
         identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router
     )
-    file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR)
+    file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings)
     tui_clients: set[str] = set()
 
     async def _combined_packet_handler(peer: PeerConnection, packet: Packet) -> None:
@@ -615,6 +623,23 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
             return {"error": str(exc)}
         return {"file_id": file_id, "dest_path": final}
 
+    async def handle_files_dir(req: dict) -> dict:
+        # Get or set files storage directory (cross-platform: supports E:\, /mnt/e, etc.)
+        new_path = req.get("path") or req.get("files_dir") or req.get("dir")
+        if new_path is not None:
+            if not isinstance(new_path, str) or not new_path.strip():
+                return {"error": "path must be a non-empty string"}
+            # Allow clearing to default via empty or "default"
+            if new_path.strip().lower() in ("default", "clear", "reset"):
+                settings.clear_files_dir()
+                return {"files_dir": str(settings.files_dir), "configured": None, "env": os.environ.get("MESHTALK_FILES_DIR")}
+            try:
+                final = settings.set_files_dir(new_path)
+            except ValueError as exc:
+                return {"error": str(exc)}
+            return {"files_dir": str(final), "configured": settings._files_dir, "env": os.environ.get("MESHTALK_FILES_DIR")}
+        return {"files_dir": str(settings.files_dir), "configured": settings._files_dir, "env": os.environ.get("MESHTALK_FILES_DIR"), "data_dir": str(DATA_DIR)}
+
     ipc_handlers = {
         "send": handle_send,
         "peers": handle_peers,
@@ -654,6 +679,8 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
         "files": handle_files,
         "file_info": handle_file_info,
         "file_download": handle_file_download,
+        "files_dir": handle_files_dir,
+        "set_files_dir": handle_files_dir,
         "shutdown": handle_shutdown,
     }
     ipc = IPCServer(

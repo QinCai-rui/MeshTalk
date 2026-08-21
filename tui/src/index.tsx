@@ -169,6 +169,7 @@ type Dialog =
   | { kind: "file-send" }
   | { kind: "file-list"; files: FileTransfer[] }
   | { kind: "file-download"; fileId: string; filename: string; filePath: string }
+  | { kind: "files-dir"; filesDir: string; env?: string; configured?: string; dataDir?: string }
   | { kind: "group-file-send" }
 
 function formatTime(timestamp: number): string {
@@ -841,6 +842,8 @@ function ChatApp() {
       showDialog({ kind: "commands" })
     } else if (dialog.kind === "file-download") {
       showDialog({ kind: "file-list", files: fileTransfers })
+    } else if (dialog.kind === "files-dir") {
+      showDialog({ kind: "file-list", files: fileTransfers })
     } else {
       showDialog({ kind: "commands" })
     }
@@ -1357,6 +1360,41 @@ function ChatApp() {
       if (dialogAction.current !== action) return
       showStatus(`Saved ${response.dest_path as string}`)
       closeDialog()
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function loadFilesDir() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("files_dir")
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setDialog({ kind: "files-dir", filesDir: response.files_dir as string, env: response.env as string | undefined, configured: response.configured as string | undefined, dataDir: response.data_dir as string | undefined })
+      setDialogDraft(response.files_dir as string)
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function setFilesDir(path: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const trimmed = path.trim()
+      if (!trimmed) throw new Error("Path required")
+      const response = await ipc.send("files_dir", { path: trimmed })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      showStatus(`Files storage set to ${response.files_dir as string}. New files will go there.`)
+      setDialog({ kind: "files-dir", filesDir: response.files_dir as string, env: response.env as string | undefined, configured: response.configured as string | undefined, dataDir: response.data_dir as string | undefined })
+      setDialogDraft(response.files_dir as string)
     } catch (error) {
       failDialogAction(action, error)
     } finally {
@@ -2613,13 +2651,14 @@ height={Math.max(5, dialogHeight - 3)}
                 </scrollbox>
                 <MouseSelect
                   focused
-                  height={Math.min(6, dialogHeight - 4)}
+                  height={Math.min(8, dialogHeight - 4)}
                   options={[
                     ...dialog.files.filter((f) => f.status === "completed" || f.status === "sent").map((f) => ({
                       name: `Download ${f.filename}`,
                       description: `${f.file_id.slice(0,8)} -> choose destination`,
                       value: `dl:${f.file_id}`,
                     })),
+                    { name: "Storage location", description: "View/change where received files are saved (e.g., E:\\ drive)", value: "storage" },
                     { name: "Refresh", description: "Reload file list", value: "refresh" },
                     { name: "Back", description: "Return to commands", value: "back" },
                   ]}
@@ -2627,6 +2666,7 @@ height={Math.max(5, dialogHeight - 3)}
                     if (!option) return
                     if (option.value === "refresh") void loadFiles()
                     else if (option.value === "back") showDialog({ kind: "commands" })
+                    else if (option.value === "storage") void loadFilesDir()
                     else if (option.value.startsWith("dl:")) {
                       const fid = option.value.slice(3)
                       const f = dialog.files.find((x) => x.file_id === fid)
@@ -2638,6 +2678,31 @@ height={Math.max(5, dialogHeight - 3)}
                   }}
                   wrapSelection
                   showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "files-dir" && (
+              <>
+                <text>Files storage directory (cross-platform):</text>
+                <text fg="#66dd88" wrapMode="word">{dialog.filesDir}</text>
+                {dialog.env && <text fg="#e0a34a">Overridden by MESHTALK_FILES_DIR={dialog.env} (env var takes precedence)</text>}
+                {dialog.configured && !dialog.env && <text fg="#888888">Custom (from settings.json)</text>}
+                {!dialog.configured && !dialog.env && <text fg="#888888">Default: {dialog.dataDir}/files</text>}
+                <text fg="#888888">Examples: Windows E:\MeshTalkFiles  Linux /mnt/e/MeshTalkFiles  macOS /Volumes/E/MeshTalkFiles</text>
+                <input
+                  focused
+                  value={dialogDraft}
+                  placeholder="E:\MeshTalkFiles"
+                  onInput={setDialogDraft}
+                  onSubmit={(v) => void setFilesDir(typeof v === "string" ? v : dialogDraft)}
+                  maxLength={4096}
+                />
+                <text fg="#888888">Enter saves. New files go there; existing files stay in old location.</text>
+                <MouseSelect
+                  focused={false}
+                  height={3}
+                  options={[{ name: "Back to files", description: "Return to file list", value: "back" }]}
+                  onSelect={() => void loadFiles()}
                 />
               </>
             )}

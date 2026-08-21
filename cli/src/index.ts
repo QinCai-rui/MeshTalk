@@ -12,6 +12,8 @@ Commands:
   send <peer-id> <message>    Send an encrypted direct message
   send-file <peer-id> <path>   Send a file to a peer (cross-platform path)
   files                       List file transfers
+  files dir                   Show current files storage directory
+  files set-dir <path>        Set files storage directory (e.g., E:\\MeshTalkFiles)
   download <file-id> <dest>   Download a received file to dest path/folder
   watch                       Print incoming messages until interrupted
   control [set-url <url>]      Show or configure the control service
@@ -161,6 +163,25 @@ async function main(): Promise<void> {
     }
 
     if (command === "files") {
+      if (args[0] === "dir") {
+        const response = await ipc.send("files_dir");
+        if (hasError(response)) return;
+        console.log(`Files dir: ${response.files_dir}`);
+        if (response.env) console.log(`(overridden by MESHTALK_FILES_DIR=${response.env})`);
+        else if (response.configured) console.log(`(custom)`);
+        else console.log(`(default: <data_dir>/files)`);
+        console.log(`Data dir: ${response.data_dir}`);
+        return;
+      }
+      if (args[0] === "set-dir" && args[1]) {
+        const { resolve } = await import("path");
+        const p = resolve(args.slice(1).join(" "));
+        const response = await ipc.send("files_dir", { path: p });
+        if (hasError(response)) return;
+        console.log(`Files dir set to: ${response.files_dir}`);
+        console.log(`Restart backend to apply to new transfers (existing files stay in old location).`);
+        return;
+      }
       const response = await ipc.send("files");
       if (hasError(response)) return;
       const files = asRecords(response.files);
