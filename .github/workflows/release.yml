@@ -122,13 +122,13 @@ jobs:
         run: uv run --project backend --with pyinstaller pyinstaller --noconfirm --onefile --name meshtalk-backend --distpath dist/release --workpath build/pyinstaller --specpath build/pyinstaller backend/meshtalk_launcher.py
 
       - name: Build CLI binary
-        run: bun build ./cli/src/index.ts --compile --target=${{ matrix.target }} --outfile dist/release/meshtalk-cli${{ matrix.suffix }}
+        run: bun build ./cli/src/index.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --outfile dist/release/meshtalk-cli${{ matrix.suffix }}
 
       - name: Build TUI binary
-        run: bun build ./tui/src/index.tsx --compile --target=${{ matrix.target }} --define 'process.env.OPENTUI_LIBC="glibc"' --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --outfile dist/release/meshtalk-tui${{ matrix.suffix }}
+        run: bun build ./tui/src/index.tsx --compile --target=${{ matrix.target }} --define 'process.env.OPENTUI_LIBC="glibc"' --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --outfile dist/release/meshtalk-tui${{ matrix.suffix }}
 
       - name: Build launcher binary
-        run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --outfile dist/release/meshtalk${{ matrix.suffix }}
+        run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --outfile dist/release/meshtalk${{ matrix.suffix }}
 
       - name: Package standalone release
         run: tar -czf dist/${{ matrix.artifact }}.tar.gz -C dist/release .
@@ -185,8 +185,18 @@ jobs:
           V="${{ steps.version.outputs.version }}"
           if gh release view "$V" --json tagName > /dev/null 2>&1; then
             echo "Release ${V} already exists - skipping creation"
-          elif [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
-            gh release create "$V" dist/*/* --title "$V" --generate-notes --prerelease
           else
-            gh release create "$V" dist/*/* --title "$V" --generate-notes
+            NOTES_FLAG="--generate-notes"
+            EXTRA_NOTES=$(cat <<'EOF'
+
+        ## Platform Notes
+
+        **Linux:** The precompiled binaries require **glibc 2.38** or newer (Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). If your distribution ships an older glibc, [compile from source](https://github.com/QinCai-rui/MeshTalk#compile-from-source) instead.
+        EOF
+          )
+            RELEASE_ARGS=("$V" dist/*/* --title "$V" "$NOTES_FLAG" --notes "$EXTRA_NOTES")
+            if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
+              RELEASE_ARGS+=(--prerelease)
+            fi
+            gh release create "${RELEASE_ARGS[@]}"
           fi
