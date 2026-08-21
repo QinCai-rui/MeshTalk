@@ -86,7 +86,12 @@ class PeerConnection:
 
     def supports(self, capability: str) -> bool:
         """Whether the negotiated connection with this peer enables ``capability``."""
-        return capability in self.capabilities
+        return self.version_mismatch is None and capability in self.capabilities
+
+    @property
+    def is_quarantined(self) -> bool:
+        """Whether application traffic is disabled for an incompatible peer."""
+        return self.state == PeerState.CONNECTED and self.version_mismatch is not None
 
     @property
     def version_mismatch(self) -> dict | None:
@@ -333,6 +338,8 @@ class PeerManager:
             await self._send_packet(peer, Packet(PacketType.PONG))
         elif packet.type == PacketType.GOODBYE:
             await self._on_udp_disconnected(peer_id)
+        elif peer.is_quarantined:
+            logger.debug("Discarded application packet from incompatible UDP peer %s", peer_id)
         elif packet.type == PacketType.PROFILE:
             await self._apply_profile_update(peer, packet)
         else:
@@ -501,6 +508,8 @@ class PeerManager:
                     await self._send_packet(peer, Packet(PacketType.PONG))
                 elif packet.type == PacketType.GOODBYE:
                     break
+                elif peer.is_quarantined:
+                    logger.debug("Discarded application packet from incompatible TCP peer %s", peer.peer_id)
                 elif packet.type == PacketType.PROFILE:
                     await self._apply_profile_update(peer, packet)
                 else:
@@ -542,6 +551,8 @@ class PeerManager:
         await self._notify_peer_changed(peer.peer_id)
 
     async def send_packet(self, peer: PeerConnection, packet: Packet) -> None:
+        if peer.is_quarantined and packet.type not in (PacketType.PING, PacketType.PONG, PacketType.GOODBYE):
+            raise ValueError("Peer protocol is incompatible; most features are disabled")
         try:
             await self._send_packet(peer, packet)
         except ConnectionError:

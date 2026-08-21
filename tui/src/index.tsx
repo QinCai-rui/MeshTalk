@@ -58,6 +58,7 @@ type Message = {
   delivered?: number
   blocked?: number
   queued?: number
+  failed?: number
   received_at?: number
 }
 type GroupDelivery = {
@@ -528,6 +529,14 @@ function ChatApp() {
       if (event.removed_friend) showStatus(`${name} removed you as a friend. You are no longer friends.`)
       else showStatus(`Message blocked: ${name} hasn't added you as a friend yet.`)
       void refreshPeers()
+      return
+    }
+    if (event.event === "message_failed") {
+      const messageId = event.message_id as string
+      setMessages((current) => current.map((message) =>
+        message.message_id === messageId ? { ...message, failed: 1, queued: 0 } : message
+      ))
+      showStatus("Message cancelled because the peer protocol is incompatible.")
       return
     }
     if (event.event === "friend_request") {
@@ -1458,7 +1467,7 @@ function ChatApp() {
                 style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
               >
                 <text truncate fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>
-                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.version_mismatch ? <span fg="#8a2e2e">INCOMPATIBLE</span> : presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
+                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.version_mismatch ? "INCOMPATIBLE" : presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
                 </text>
                 {peer.endpoints.length ? peer.endpoints.map((endpoint) => (
                   <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>
@@ -1526,10 +1535,7 @@ function ChatApp() {
                   return <text key="rendezvous_out_of_sync" wrapMode="word" fg="#ff9f43"><b>Out-of-sync with rendezvous server. Peer connectivity may degrade over time;</b> reconnecting ({controlStatus.reconnect_attempts}).</text>
                 }
                 if (kind === "incompatible" && selected.version_mismatch) {
-                  const m = selected.version_mismatch
-                  const remoteMax = m.remote_version === -1 ? 0 : m.remote_version
-                  const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
-                  return <text key="incompatible" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff5555" : "#8a2e2e"}><b>{"⚠ Incompatible peer protocol version: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
+                  return <text key="incompatible" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff5555" : "#8a2e2e"}><b>Incompatible peer protocol. Most features are disabled until both peers support a compatible protocol version.</b></text>
                 }
                 return null
               })}
@@ -1538,7 +1544,7 @@ function ChatApp() {
           {selectedGroup && incompatibleGroupMembers.length > 0 ? (
             <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
               <text wrapMode="word" fg="#ff9f43">
-                Some group peers are incompatible: {incompatibleGroupMembers.map((member) => member.display_name).join(", ")}. Messages may not work correctly.
+                Some group peers are incompatible: {incompatibleGroupMembers.map((member) => member.display_name).join(", ")}. Most features are disabled for these peers.
               </text>
             </box>
           ) : null}
@@ -1565,6 +1571,7 @@ function ChatApp() {
               const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
               const blocked = Boolean(message.blocked)
               const queued = Boolean(message.queued)
+              const failed = Boolean(message.failed)
               const isSystem = Boolean(selectedGroup && message.kind && message.kind !== "message" && message.kind !== "text")
               const senderName = groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === message.sender_id)?.display_name
                 ?? peers.find((peer) => peer.peer_id === message.sender_id)?.display_name
@@ -1594,8 +1601,8 @@ function ChatApp() {
                     <span fg="#888888">{formatTime(message.created_at)} </span>
                     <span fg={isSystem ? "#e0a34a" : isLocal ? "#65a9ff" : "#66dd88"}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
                     {isLocal && !isSystem && (
-                      <span fg={blocked ? "#ff7777" : queued ? "#d9b36b" : "#888888"}>
-                        {selectedGroup ? ` ${groupDeliveryLabel(message.deliveries)}` : blocked ? " blocked" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
+                      <span fg={blocked || failed ? "#ff7777" : queued ? "#d9b36b" : "#888888"}>
+                        {selectedGroup ? ` ${groupDeliveryLabel(message.deliveries)}` : blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
                       </span>
                     )}
                     {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
