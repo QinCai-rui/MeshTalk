@@ -192,6 +192,8 @@ changing persisted settings:
 MESHTALK_STUN_SERVER=stun.example.com:3478 meshtalk
 ```
 
+The control URL can similarly be supplied as `MESHTALK_CONTROL_URL`.
+
 ## Compile From Source
 
 To produce local standalone binaries, install [Bun](https://bun.sh),
@@ -226,8 +228,6 @@ On Linux, the compiled backend uses the glibc version available on the build
 system. Building on an older Linux distribution generally provides broader
 compatibility with newer distributions; it cannot run on a system with an
 older glibc than the build system.
-
-The control URL can similarly be supplied as `MESHTALK_CONTROL_URL`.
 
 ## Security
 
