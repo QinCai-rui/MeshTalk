@@ -33,7 +33,7 @@ from .udp_transport import Endpoint, UdpTransport
 logger = logging.getLogger(__name__)
 
 CandidateCallback = Callable[[str, Endpoint], Awaitable[None]]
-RoomMemberCallback = Callable[[str, str], Awaitable[None]]
+RoomMemberCallback = Callable[[str, str, int], Awaitable[None]]
 CARD_MAX_AGE = 180
 REFRESH_INTERVAL = 30
 PEER_FETCH_INTERVAL = 120
@@ -336,7 +336,7 @@ class RendezvousService:
             key: seen_at for key, seen_at in self._seen_cards.items() if now - seen_at < CARD_MAX_AGE
         }
         if self.on_room_member:
-            await self.on_room_member(room.id, peer_id)
+            await self.on_room_member(room.id, peer_id, value["created_at"])
         candidate = value["candidate"]
         if candidate is None:
             return

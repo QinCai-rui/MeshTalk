@@ -278,11 +278,13 @@ class ApplyHandshakeTest(unittest.TestCase):
                 mismatched.append((peer_id, rv, rmin))
 
             local.on_version_mismatch = on_mismatch
-            payload = self._signed_payload(remote, protocol_version=3, min_protocol_version=3)
+            payload = self._signed_payload(remote, protocol_version=4, min_protocol_version=4)
             peer = PeerConnection(remote.peer_id, "127.0.0.1", 24891, PeerState.CONNECTING)
             local._apply_handshake(peer, payload, expected_challenge=b"")
-            await asyncio.sleep(0.01)
-            self.assertEqual(mismatched, [(remote.peer_id, 3, 3)])
+            async with asyncio.timeout(1):
+                while not mismatched:
+                    await asyncio.sleep(0.01)
+            self.assertEqual(mismatched, [(remote.peer_id, 4, 4)])
 
         asyncio.run(run())
 
