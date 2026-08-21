@@ -94,19 +94,25 @@ success() {
 
 task_start() {
   TASK_LABEL=$1
+  [[ -t 1 ]] || return
   printf '  %s[%si%s] %s...' "$CYAN" "$BOLD" "$RESET" "$TASK_LABEL"
 }
 
 task_finish() {
   local marker=${1:-"${GREEN}[${BOLD}✓${RESET}${GREEN}]${RESET}"}
+  local completed_label=${2:-$TASK_LABEL}
+  local lines_to_clear=${3:-1}
   [[ -n $TASK_LABEL ]] || return 0
 
   if [[ -t 1 ]]; then
-    printf '\r\033[K'
-  else
-    printf '\n'
+    local line
+    for ((line = 0; line < lines_to_clear; line++)); do
+      printf '\033[2K'
+      (( line + 1 < lines_to_clear )) && printf '\033[1A'
+    done
+    printf '\r'
   fi
-  printf '  %s %s\n' "$marker" "$TASK_LABEL"
+  printf '  %s %s\n' "$marker" "$completed_label"
   TASK_LABEL=""
 }
 
@@ -339,7 +345,7 @@ fetch_api() {
   local url=$1
   curl_args
   if command_exists curl; then
-    curl "${CURL_ARGS[@]}" "$url"
+    curl "${CURL_ARGS[@]}" "$url" 2>/dev/null
   elif command_exists wget; then
     if [[ -n $AUTH_TOKEN ]]; then
       wget -qO- --header="Accept: application/vnd.github+json" --header="Authorization: Bearer ${AUTH_TOKEN}" "$url"
@@ -661,7 +667,7 @@ install_meshtalk() {
 
   task_start "Resolving MeshTalk ${VERSION} release metadata"
   load_release "$temp_dir/release.json"
-  task_finish
+  task_finish "" "Resolved MeshTalk ${VERSION} release metadata"
   info "Release ${RELEASE_TAG}; selected asset ${ASSET_NAME}."
   [[ -z $CHECKSUM_NOTE ]] || info "$CHECKSUM_NOTE"
   archive="$temp_dir/$ASSET_NAME"
@@ -671,14 +677,14 @@ install_meshtalk() {
     download_source="GitHub Releases API"
   fi
   task_start "Downloading ${ASSET_NAME} from GitHub Releases via ${download_source}"
-  echo ''
+  printf '\n'
   download_archive "$archive"
-  task_finish
+  task_finish "" "Downloaded ${ASSET_NAME} from GitHub Releases via ${download_source}" 2
 
   if [[ -n ${EXPECTED_DIGEST:-} ]]; then
     task_start "Verifying SHA-256 digest from GitHub release metadata"
     verify_archive "$archive"
-    task_finish
+    task_finish "" "Verified SHA-256 digest from GitHub release metadata"
   elif [[ -z $CHECKSUM_NOTE ]]; then
     info "Checksum verification skipped because GitHub digest metadata is unavailable."
   fi
@@ -698,7 +704,7 @@ install_meshtalk() {
   for file in "${EXPECTED_FILES[@]}"; do
     [[ -f $extract_dir/$file && ! -L $extract_dir/$file ]] || die "The release archive is missing a regular ${file}."
   done
-  task_finish
+  task_finish "" "Extracted standalone MeshTalk binaries"
 
   task_start "Installing MeshTalk binaries to ${INSTALL_DIR}"
   mkdir -p "$INSTALL_DIR"
@@ -712,7 +718,7 @@ install_meshtalk() {
     printf 'asset=%s\n' "$ASSET_NAME"
     printf 'files=%s\n' "$(IFS=,; printf '%s' "${EXPECTED_FILES[*]}")"
   } > "$METADATA_FILE"
-  task_finish
+  task_finish "" "Installed MeshTalk binaries to ${INSTALL_DIR}"
 
   configure_path
   printf '\n'
@@ -755,7 +761,7 @@ uninstall_meshtalk() {
     rm -f -- "$INSTALL_DIR/$file"
   done
   rm -f -- "$metadata_file"
-  task_finish
+  task_finish "" "Removed MeshTalk ${version:-installation} from ${INSTALL_DIR}"
   success "MeshTalk was uninstalled from ${INSTALL_DIR}."
 }
 
