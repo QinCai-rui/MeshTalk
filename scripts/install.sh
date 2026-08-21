@@ -54,11 +54,11 @@ EOF
 }
 
 print_help() {
-  cat <<'EOF'
+  cat <<EOF
 MeshTalk installer
 
 Usage:
-  install.sh [options]
+  $0 [options]
 
 Options:
   --version VERSION       Install a specific release tag instead of prompting.
@@ -237,7 +237,7 @@ choose_action() {
     return
   fi
 
-  info "This will install a standalone MeshTalk release for the current user."
+  info "Manage a standalone MeshTalk release for the current user."
   printf '\n  %s1%s  Install or upgrade MeshTalk\n' "$BOLD$CYAN" "$RESET"
   printf '  %s2%s  Uninstall MeshTalk\n' "$BOLD$CYAN" "$RESET"
   printf '  %sq%s  Quit\n\n' "$BOLD$CYAN" "$RESET"
@@ -263,7 +263,11 @@ choose_version() {
 
 choose_install_dir() {
   if [[ -z $INSTALL_DIR ]]; then
-    info "MeshTalk will be installed without root or sudo."
+    if [[ $ACTION == uninstall ]]; then
+      info "MeshTalk will be removed without root or sudo."
+    else
+      info "MeshTalk will be installed without root or sudo."
+    fi
     read -r -p "${BOLD}Installation directory${RESET} ${DIM}[${DEFAULT_INSTALL_DIR}]${RESET}: " INSTALL_DIR || true
     INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}
   fi
