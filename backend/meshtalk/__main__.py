@@ -63,6 +63,14 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
         if not items:
             return
         for item in items:
+            if peer.is_quarantined:
+                if item["message_id"] and item.get("group_id"):
+                    await db.set_group_delivery(item["message_id"], peer_id, "unavailable")
+                elif item["message_id"]:
+                    await db.mark_message_failed(item["message_id"])
+                    await ipc.broadcast_event({"event": "message_failed", "message_id": item["message_id"]})
+                await db.remove_from_outqueue(item["id"])
+                continue
             if not await group_router.can_flush(peer, item):
                 if item["message_id"] and item.get("group_id"):
                     await db.set_group_delivery(item["message_id"], peer_id, "unavailable")

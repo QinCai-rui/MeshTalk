@@ -17,6 +17,8 @@ from meshtalk.protocol import (
     DiscoveryPacket,
     HandshakePayload,
     IncompatibleProtocolError,
+    Packet,
+    PacketType,
     intersect_capabilities,
     negotiate_protocol_version,
     validate_capabilities,
@@ -285,6 +287,11 @@ class ApplyHandshakeTest(unittest.TestCase):
                 while not mismatched:
                     await asyncio.sleep(0.01)
             self.assertEqual(mismatched, [(remote.peer_id, 4, 4)])
+            self.assertFalse(peer.supports(CAP_TEXT_CHAT))
+            peer.state = PeerState.CONNECTED
+            self.assertTrue(peer.is_quarantined)
+            with self.assertRaisesRegex(ValueError, "most features are disabled"):
+                await local.send_packet(peer, Packet(PacketType.MESSAGE, b"blocked"))
 
         asyncio.run(run())
 

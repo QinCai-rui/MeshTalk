@@ -428,7 +428,7 @@ _handle_hello verifies: peer_id == SHA-256(signing key); mutually compatible pro
 #### Protocol Version & Capability Negotiation
 During the handshake, peers exchange their maximum protocol `version`, their `min_version`, and a list of supported `capabilities`. 
 
-- **Version Resolution**: The connection operates at the highest mutually supported version: `agreed_version = min(local.version, remote.version)`. If `agreed_version` is less than `max(local.min_version, remote.min_version)`, the connection is rejected.
+- **Version Resolution**: The connection operates at the highest mutually supported version: `agreed_version = min(local.version, remote.version)`. If `agreed_version` is less than `max(local.min_version, remote.min_version)`, the authenticated transport remains connected in quarantined mode for keepalives and diagnostics, while application packets are disabled.
 - **Supported Capabilities**:
   - `text_chat`: Exchange text messaging packets.
   - `profile_sync`: Exchange display name and active status updates.

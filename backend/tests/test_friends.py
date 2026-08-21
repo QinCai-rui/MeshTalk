@@ -359,7 +359,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_respond_to_already_answered_request_raises(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        await asyncio.sleep(0.05)
+        await self._wait_for_request(request_id, self.friend_b.db)
         await self.friend_b.respond_to_friend_request(request_id, accept=True)
         with self.assertRaises(ValueError):
             await self.friend_b.respond_to_friend_request(request_id, accept=True)
@@ -367,7 +367,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_respond_when_requester_offline_is_queued(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        await asyncio.sleep(0.05)
+        await self._wait_for_request(request_id, self.friend_b.db)
         self._peer_from(self.manager_b, self.identity_a).writer.close()
         await asyncio.sleep(0.05)
         await self.friend_b.respond_to_friend_request(request_id, accept=True)
