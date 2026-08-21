@@ -206,6 +206,8 @@ class RendezvousService:
                     pass
                 continue
             try:
+                pinned_ips = self.settings.control_pinned_ips
+                connection_options = {"host": pinned_ips[self.reconnect_attempts % len(pinned_ips)]} if pinned_ips else {}
                 async with connect(
                     url,
                     ssl=CONTROL_SSL_CONTEXT if url.startswith("wss://") else None,
@@ -213,6 +215,7 @@ class RendezvousService:
                     open_timeout=CONTROL_CONNECT_TIMEOUT,
                     ping_interval=CONTROL_PING_INTERVAL,
                     ping_timeout=CONTROL_PING_TIMEOUT,
+                    **connection_options,
                 ) as websocket:
                     self.connected = True
                     self._websocket = websocket
@@ -305,11 +308,13 @@ class RendezvousService:
 
     async def _discover_endpoint(self) -> None:
         host, port = self.settings.stun_server
+        pinned_ips = self.settings.stun_pinned_ips
+        pinned_ip = pinned_ips[self.reconnect_attempts % len(pinned_ips)] if pinned_ips else None
         try:
-            self.public_endpoint = await self.udp.discover_public_endpoint(host, port)
+            self.public_endpoint = await self.udp.discover_public_endpoint(pinned_ip or host, port)
         except Exception as exc:
             self.public_endpoint = None
-            logger.warning("Public STUN discovery failed through %s:%d: %s", host, port, exc)
+            logger.warning("Public STUN discovery failed through %s:%d: %s", pinned_ip or host, port, exc)
 
     async def _stun_loop(self) -> None:
         while self._running:
