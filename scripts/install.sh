@@ -356,12 +356,12 @@ download_url() {
   local destination=$2
   curl_args
   if command_exists curl; then
-    curl "${CURL_ARGS[@]}" -o "$destination" "$url"
+    curl --progress-bar "${CURL_ARGS[@]}" -o "$destination" "$url"
   elif command_exists wget; then
     if [[ -n $AUTH_TOKEN ]]; then
-      wget -qO "$destination" --header="Authorization: Bearer ${AUTH_TOKEN}" "$url"
+      wget --show-progress -O "$destination" --header="Authorization: Bearer ${AUTH_TOKEN}" "$url"
     else
-      wget -qO "$destination" "$url"
+      wget --show-progress -O "$destination" "$url"
     fi
   else
     return 1
@@ -503,7 +503,7 @@ download_archive() {
       --repo "$REPOSITORY" \
       --pattern "$ASSET_NAME" \
       --dir "$download_dir" \
-      --clobber >/dev/null
+      --clobber
     [[ -f "$download_dir/$ASSET_NAME" ]] || die "gh did not download the expected asset."
     return
   fi
