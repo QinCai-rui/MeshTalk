@@ -74,6 +74,29 @@ class SettingsControlSetupTest(unittest.TestCase):
 
         self.assertEqual(settings.control_url, "ws://127.0.0.1:8787/v1/rendezvous")
 
+    def test_server_ip_pins_persist_and_can_be_cleared(self):
+        settings = Settings(self.path)
+        settings.set_control_pinned_ip("2001:0db8::1")
+        settings.set_stun_pinned_ip("203.0.113.10")
+
+        loaded = Settings(self.path)
+
+        self.assertEqual(loaded.control_pinned_ip, "2001:db8::1")
+        self.assertEqual(loaded.stun_pinned_ip, "203.0.113.10")
+        loaded.clear_control_pinned_ip()
+        loaded.clear_stun_pinned_ip()
+        self.assertIsNone(Settings(self.path).control_pinned_ip)
+        self.assertIsNone(Settings(self.path).stun_pinned_ip)
+
+    def test_stun_ip_pin_must_be_ipv4(self):
+        settings = Settings(self.path)
+
+        with self.assertRaisesRegex(ValueError, "STUN pinned IP must be IPv4"):
+            settings.set_stun_pinned_ip("2001:db8::1")
+
+        with self.assertRaisesRegex(ValueError, "valid IP address"):
+            settings.set_control_pinned_ip("not-an-ip")
+
 
 class RoomInvitePersistenceTest(unittest.TestCase):
     def test_room_invite_survives_settings_reload(self):

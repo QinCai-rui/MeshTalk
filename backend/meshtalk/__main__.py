@@ -376,6 +376,36 @@ async def main(debug: bool = False) -> None:
             "reconnect_attempts": rendezvous.reconnect_attempts,
         }
 
+    async def handle_advanced_config(req: dict) -> dict:
+        changed = False
+        if req.get("clear_control_pinned_ip") is True:
+            settings.clear_control_pinned_ip()
+            changed = True
+        elif "control_pinned_ip" in req:
+            control_pinned_ip = req["control_pinned_ip"]
+            if not isinstance(control_pinned_ip, str):
+                return {"error": "control_pinned_ip must be a string"}
+            settings.set_control_pinned_ip(control_pinned_ip)
+            changed = True
+        if req.get("clear_stun_pinned_ip") is True:
+            settings.clear_stun_pinned_ip()
+            changed = True
+        elif "stun_pinned_ip" in req:
+            stun_pinned_ip = req["stun_pinned_ip"]
+            if not isinstance(stun_pinned_ip, str):
+                return {"error": "stun_pinned_ip must be a string"}
+            settings.set_stun_pinned_ip(stun_pinned_ip)
+            changed = True
+        if changed:
+            rendezvous.configuration_changed()
+        stun_host, stun_port = settings.stun_server
+        return {
+            "control_pinned_ip": settings.control_pinned_ip,
+            "stun_pinned_ip": settings.stun_pinned_ip,
+            "control_url": settings.control_url or None,
+            "stun_server": f"{stun_host}:{stun_port}",
+        }
+
     async def handle_room_create(req: dict) -> dict:
         name = req.get("name")
         if name is not None and not isinstance(name, str):
@@ -542,6 +572,7 @@ async def main(debug: bool = False) -> None:
         "messages": handle_messages,
         "set_display_name": handle_set_display_name,
         "control": handle_control,
+        "advanced_config": handle_advanced_config,
         "room_create": handle_room_create,
         "room_join": handle_room_join,
         "room_leave": handle_room_leave,

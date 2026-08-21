@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import os
 import secrets
@@ -115,10 +116,12 @@ class Settings:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._control_url = ""
+        self._control_pinned_ip: str | None = None
         self._control_setup_dismissed = False
         self._identity_setup_dismissed = False
         self._stun_host = DEFAULT_STUN_HOST
         self._stun_port = DEFAULT_STUN_PORT
+        self._stun_pinned_ip: str | None = None
         self.rooms: dict[str, Room] = {}
         self.muted_peers: dict[str, float] = {}
         self._load()
@@ -141,6 +144,33 @@ class Settings:
     def set_control_url(self, url: str) -> None:
         self._control_url = self._validate_control_url(url)
         self._control_setup_dismissed = True
+        self.save()
+
+    @property
+    def control_pinned_ip(self) -> str | None:
+        return self._control_pinned_ip
+
+    def set_control_pinned_ip(self, ip: str) -> None:
+        self._control_pinned_ip = self._validate_pinned_ip(ip)
+        self.save()
+
+    def clear_control_pinned_ip(self) -> None:
+        self._control_pinned_ip = None
+        self.save()
+
+    @property
+    def stun_pinned_ip(self) -> str | None:
+        return self._stun_pinned_ip
+
+    def set_stun_pinned_ip(self, ip: str) -> None:
+        value = self._validate_pinned_ip(ip)
+        if not isinstance(ipaddress.ip_address(value), ipaddress.IPv4Address):
+            raise ValueError("STUN pinned IP must be IPv4")
+        self._stun_pinned_ip = value
+        self.save()
+
+    def clear_stun_pinned_ip(self) -> None:
+        self._stun_pinned_ip = None
         self.save()
 
     @property
@@ -168,6 +198,15 @@ class Settings:
         if parsed.scheme == "ws" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
             raise ValueError("Remote control URLs must use wss://")
         return url
+
+    @staticmethod
+    def _validate_pinned_ip(ip: str) -> str:
+        if not isinstance(ip, str):
+            raise ValueError("Pinned IP must be a string")
+        try:
+            return str(ipaddress.ip_address(ip.strip()))
+        except ValueError as exc:
+            raise ValueError("Pinned IP must be a valid IP address") from exc
 
     def create_room(self, group_name: str | None = None) -> Room:
         room = Room.create(group_name)
@@ -213,9 +252,11 @@ class Settings:
         data = {
             "version": 1,
             "control_url": self._control_url,
+            "control_pinned_ip": self._control_pinned_ip,
             "control_setup_dismissed": self._control_setup_dismissed,
             "identity_setup_dismissed": self._identity_setup_dismissed,
             "stun_server": {"host": self._stun_host, "port": self._stun_port},
+            "stun_pinned_ip": self._stun_pinned_ip,
             "rooms": [
                 {
                     "room_id": _encode(room.room_id),
@@ -239,6 +280,10 @@ class Settings:
         if data.get("version") != 1:
             raise ValueError("Unsupported settings version")
         self._control_url = data.get("control_url", "")
+        control_pinned_ip = data.get("control_pinned_ip")
+        self._control_pinned_ip = (
+            self._validate_pinned_ip(control_pinned_ip) if control_pinned_ip is not None else None
+        )
         self._control_setup_dismissed = bool(data.get("control_setup_dismissed", False))
         self._identity_setup_dismissed = bool(data.get("identity_setup_dismissed", False))
         if self._control_url:
@@ -246,6 +291,12 @@ class Settings:
         stun = data.get("stun_server", {})
         self._stun_host = stun.get("host", DEFAULT_STUN_HOST)
         self._stun_port = int(stun.get("port", DEFAULT_STUN_PORT))
+        stun_pinned_ip = data.get("stun_pinned_ip")
+        if stun_pinned_ip is not None:
+            value = self._validate_pinned_ip(stun_pinned_ip)
+            if not isinstance(ipaddress.ip_address(value), ipaddress.IPv4Address):
+                raise ValueError("STUN pinned IP must be IPv4")
+            self._stun_pinned_ip = value
         for item in data.get("rooms", []):
             group_name = item.get("group_name")
             room = Room(

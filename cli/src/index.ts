@@ -12,6 +12,11 @@ Commands:
   send <peer-id> <message>    Send an encrypted direct message
   watch                       Print incoming messages until interrupted
   control [set-url <url>]      Show or configure the control service
+  advanced                     Show server IP pins that override DNS
+  advanced set-control-ip <ip> Pin an IP address for the control server
+  advanced clear-control-ip    Clear the control server IP pin
+  advanced set-stun-ip <ip>    Pin an IPv4 address for the STUN server
+  advanced clear-stun-ip       Clear the STUN server IP pin
   room create [name]          Create a private room or named group chat
   room join <invite>          Join a private room
   room leave <room-id>        Leave a room
@@ -178,6 +183,29 @@ async function main(): Promise<void> {
       console.log(`Connection: ${response.connected ? "connected" : "disconnected"}`);
       console.log(`STUN server: ${response.stun_server}`);
       if (response.public_endpoint) console.log(`Public UDP endpoint: ${(response.public_endpoint as unknown[]).join(":")}`);
+      return;
+    }
+
+    if (command === "advanced") {
+      let response: IPCResponse;
+      if (!args.length) {
+        response = await ipc.send("advanced_config");
+      } else if (args[0] === "set-control-ip" && args[1] && args.length === 2) {
+        response = await ipc.send("advanced_config", { control_pinned_ip: args[1] });
+      } else if (args[0] === "clear-control-ip" && args.length === 1) {
+        response = await ipc.send("advanced_config", { clear_control_pinned_ip: true });
+      } else if (args[0] === "set-stun-ip" && args[1] && args.length === 2) {
+        response = await ipc.send("advanced_config", { stun_pinned_ip: args[1] });
+      } else if (args[0] === "clear-stun-ip" && args.length === 1) {
+        response = await ipc.send("advanced_config", { clear_stun_pinned_ip: true });
+      } else {
+        throw new Error(`Usage: ${PROGRAM} advanced [set-control-ip <ip>|clear-control-ip|set-stun-ip <ip>|clear-stun-ip]`);
+      }
+      if (hasError(response)) return;
+      console.log(`Control server: ${response.control_url ?? "not configured"}`);
+      console.log(`Control IP pin: ${response.control_pinned_ip ?? "not pinned (DNS)"}`);
+      console.log(`STUN server: ${response.stun_server}`);
+      console.log(`STUN IP pin: ${response.stun_pinned_ip ?? "not pinned (DNS)"}`);
       return;
     }
 

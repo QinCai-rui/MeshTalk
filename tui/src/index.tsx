@@ -112,6 +112,12 @@ type ControlStatus = {
   reconnect_attempts: number
   public_endpoint?: unknown[]
 }
+type AdvancedConfig = {
+  control_url?: string | null
+  control_pinned_ip?: string | null
+  stun_server: string
+  stun_pinned_ip?: string | null
+}
 type DebugInfo = {
   public_endpoint?: [string, number] | null
   stun_server: string
@@ -124,6 +130,9 @@ type Dialog =
   | { kind: "control"; firstRun?: boolean }
   | { kind: "control-custom"; firstRun?: boolean }
   | { kind: "control-status"; control: ControlStatus }
+  | { kind: "advanced"; config: AdvancedConfig }
+  | { kind: "advanced-control-ip" }
+  | { kind: "advanced-stun-ip" }
   | { kind: "rooms"; rooms: RoomStatus[] }
   | { kind: "room-create" }
   | { kind: "room-join" }
@@ -729,6 +738,10 @@ function ChatApp() {
       showDialog({ kind: "control", firstRun: dialog.firstRun })
     } else if (dialog.kind === "control-status") {
       showDialog({ kind: "control" })
+    } else if (dialog.kind === "advanced-control-ip" || dialog.kind === "advanced-stun-ip") {
+      void loadAdvancedConfig()
+    } else if (dialog.kind === "advanced") {
+      showDialog({ kind: "commands" })
     } else if (["room-create", "room-join", "room-created", "room-detail"].includes(dialog.kind)) {
       showDialog({ kind: "rooms", rooms: [] })
       void loadRooms()
@@ -813,6 +826,37 @@ function ChatApp() {
     } catch (error) {
       failDialogAction(action, error)
       return
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function loadAdvancedConfig() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("advanced_config")
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setDialog({ kind: "advanced", config: response as AdvancedConfig })
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function saveAdvancedConfig(params: Record<string, unknown>, message: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("advanced_config", params)
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setDialog({ kind: "advanced", config: response as AdvancedConfig })
+      showStatus(message)
+    } catch (error) {
+      failDialogAction(action, error)
     } finally {
       finishDialogAction(action)
     }
@@ -1227,6 +1271,8 @@ function ChatApp() {
       showDialog({ kind: "notifications" })
     } else if (command === "accessibility") {
       showDialog({ kind: "accessibility" })
+    } else if (command === "advanced") {
+      void loadAdvancedConfig()
     } else if (command === "rename") {
       const displayName = identity?.display_name ?? ""
       setNameDraft(displayName)
@@ -1662,6 +1708,7 @@ function ChatApp() {
           <box
             title={dialog.kind === "commands" ? "Commands"
               : dialog.kind.startsWith("control") ? "Control server"
+              : dialog.kind.startsWith("advanced") ? "Advanced Configuration"
               : dialog.kind === "rename" ? "Display name"
               : dialog.kind === "mute-timeout" ? "Mute peer"
               : dialog.kind === "unmute-confirm" ? "Unmute peer"
@@ -1695,6 +1742,7 @@ function ChatApp() {
                   { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
                   { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
                   { name: "Accessibility", description: "Reduce motion and other accessibility options", value: "accessibility" },
+                  { name: "Advanced Configuration", description: "Pin server IP addresses to bypass DNS", value: "advanced" },
                   { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
                   { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
                 ]}
@@ -1755,6 +1803,53 @@ function ChatApp() {
                   ]}
                   onSelect={(_, option) => option?.value === "change" ? showDialog({ kind: "control" }) : showDialog({ kind: "commands" })}
                 />
+              </>
+            )}
+            {dialog.kind === "advanced" && (
+              <>
+                <text wrapMode="word" fg="#888888">Pins bypass DNS. Control server pins retain the configured hostname for TLS verification. STUN pins must be IPv4.</text>
+                <MouseSelect
+                  focused
+                  height={Math.max(5, dialogHeight - 6)}
+                  options={[
+                    { name: "Pin control server IP", description: dialog.config.control_pinned_ip ?? `Current: DNS (${dialog.config.control_url ?? "no control server"})`, value: "control-pin" },
+                    ...(dialog.config.control_pinned_ip ? [{ name: "Clear control server IP pin", description: `Pinned: ${dialog.config.control_pinned_ip}`, value: "control-clear" }] : []),
+                    { name: "Pin STUN server IP", description: dialog.config.stun_pinned_ip ?? `Current: DNS (${dialog.config.stun_server})`, value: "stun-pin" },
+                    ...(dialog.config.stun_pinned_ip ? [{ name: "Clear STUN server IP pin", description: `Pinned: ${dialog.config.stun_pinned_ip}`, value: "stun-clear" }] : []),
+                    { name: "Back to commands", description: "Return to the command palette", value: "back" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "control-pin") {
+                      setDialogDraft(dialog.config.control_pinned_ip ?? "")
+                      setDialog({ kind: "advanced-control-ip" })
+                    } else if (option?.value === "control-clear") {
+                      void saveAdvancedConfig({ clear_control_pinned_ip: true }, "Control server IP pin cleared.")
+                    } else if (option?.value === "stun-pin") {
+                      setDialogDraft(dialog.config.stun_pinned_ip ?? "")
+                      setDialog({ kind: "advanced-stun-ip" })
+                    } else if (option?.value === "stun-clear") {
+                      void saveAdvancedConfig({ clear_stun_pinned_ip: true }, "STUN server IP pin cleared.")
+                    } else if (option?.value === "back") {
+                      showDialog({ kind: "commands" })
+                    }
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "advanced-control-ip" && (
+              <>
+                <text>Enter the IP address to use instead of DNS for the control server.</text>
+                <input focused value={dialogDraft} placeholder="203.0.113.10" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ control_pinned_ip: typeof value === "string" ? value : dialogDraft }, "Control server IP pinned.")} maxLength={45} />
+                <text fg="#888888">Enter saves the IP pin.</text>
+              </>
+            )}
+            {dialog.kind === "advanced-stun-ip" && (
+              <>
+                <text>Enter the IPv4 address to use instead of DNS for the STUN server.</text>
+                <input focused value={dialogDraft} placeholder="203.0.113.10" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ stun_pinned_ip: typeof value === "string" ? value : dialogDraft }, "STUN server IP pinned.")} maxLength={15} />
+                <text fg="#888888">Enter saves the IP pin.</text>
               </>
             )}
             {dialog.kind === "rooms" && (
