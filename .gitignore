@@ -38,3 +38,6 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Auto-generated skill files
+.agents/skills/
