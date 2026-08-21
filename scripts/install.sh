@@ -194,6 +194,8 @@ detect_platform() {
     EXECUTABLE_SUFFIX=""
     DEFAULT_INSTALL_DIR="${HOME}/.local/bin"
   fi
+  DATA_DIR="${HOME}/.meshtalk"
+  METADATA_FILE="${DATA_DIR}/${METADATA_NAME}"
 
   ASSET_ARCH=$ARCH
   WINDOWS_ARM64_EMULATION=0
@@ -611,9 +613,9 @@ install_mesh_talk() {
   if [[ -e $INSTALL_DIR && ! -d $INSTALL_DIR ]]; then
     die "Installation path exists but is not a directory: ${INSTALL_DIR}"
   fi
-  if [[ -d $INSTALL_DIR && -f $INSTALL_DIR/$METADATA_NAME ]]; then
+  if [[ -f $METADATA_FILE ]]; then
     local existing_version
-    existing_version=$(sed -n 's/^version=//p' "$INSTALL_DIR/$METADATA_NAME")
+    existing_version=$(sed -n 's/^version=//p' "$METADATA_FILE")
     if ! confirm "MeshTalk ${existing_version:-from this installer} is already installed in ${INSTALL_DIR}. Replace it?" n; then
       info "Installation cancelled."
       return
@@ -683,17 +685,19 @@ install_mesh_talk() {
     cp "$extract_dir/$file" "$INSTALL_DIR/$file"
     chmod u+rx "$INSTALL_DIR/$file"
   done
+  mkdir -p "$DATA_DIR"
   {
     printf 'version=%s\n' "$RELEASE_TAG"
     printf 'asset=%s\n' "$ASSET_NAME"
     printf 'files=%s\n' "$(IFS=,; printf '%s' "${EXPECTED_FILES[*]}")"
-  } > "$INSTALL_DIR/$METADATA_NAME"
+  } > "$METADATA_FILE"
   task_finish
 
   configure_path
   printf '\n'
   info "Binary: ${INSTALL_DIR}/${LAUNCHER_NAME}"
   info "MeshTalk data: ${HOME}/.meshtalk"
+  info "Installer metadata: ${METADATA_FILE}"
   success "Installation complete! Run ${LAUNCHER_NAME} to get started."
   cleanup_temp
   trap - EXIT
@@ -704,12 +708,12 @@ uninstall_mesh_talk() {
 
   if [[ $DRY_RUN -eq 1 ]]; then
     info "No network or filesystem changes will be made."
-    info "Would inspect installer metadata in: ${INSTALL_DIR}/${METADATA_NAME}"
+    info "Would inspect installer metadata in: ${METADATA_FILE}"
     return
   fi
 
-  local metadata_file=${INSTALL_DIR}/${METADATA_NAME}
-  [[ -f $metadata_file ]] || die "No MeshTalk installer metadata found in ${INSTALL_DIR}."
+  local metadata_file=$METADATA_FILE
+  [[ -f $metadata_file ]] || die "No MeshTalk installer metadata found in ${metadata_file}."
 
   local version files file
   version=$(sed -n 's/^version=//p' "$metadata_file")
@@ -730,7 +734,6 @@ uninstall_mesh_talk() {
     rm -f -- "$INSTALL_DIR/$file"
   done
   rm -f -- "$metadata_file"
-  rmdir "$INSTALL_DIR" 2>/dev/null || true
   task_finish
   success "MeshTalk was uninstalled from ${INSTALL_DIR}."
 }
