@@ -120,6 +120,7 @@ class Settings:
         self._control_setup_dismissed = False
         self._identity_setup_dismissed = False
         self._flashing_enabled = True
+        self._github_token = ""
         self._stun_host = DEFAULT_STUN_HOST
         self._stun_port = DEFAULT_STUN_PORT
         self._stun_pinned_ips: tuple[str, ...] = ()
@@ -198,6 +199,16 @@ class Settings:
         self._flashing_enabled = enabled
         self.save()
 
+    @property
+    def github_token(self) -> str:
+        return self._github_token
+
+    def set_github_token(self, token: str) -> None:
+        if not isinstance(token, str):
+            raise ValueError("GitHub token must be a string")
+        self._github_token = token.strip()
+        self.save()
+
     @staticmethod
     def _validate_control_url(url: str) -> str:
         url = url.strip().rstrip("/")
@@ -272,6 +283,7 @@ class Settings:
             "control_setup_dismissed": self._control_setup_dismissed,
             "identity_setup_dismissed": self._identity_setup_dismissed,
             "flashing_enabled": self._flashing_enabled,
+            "github_token": self._github_token,
             "stun_server": {"host": self._stun_host, "port": self._stun_port},
             "stun_pinned_ips": list(self._stun_pinned_ips),
             "rooms": [
@@ -309,6 +321,7 @@ class Settings:
         self._control_setup_dismissed = bool(data.get("control_setup_dismissed", False))
         self._identity_setup_dismissed = bool(data.get("identity_setup_dismissed", False))
         self._flashing_enabled = bool(data.get("flashing_enabled", True))
+        self._github_token = data.get("github_token", "") if isinstance(data.get("github_token", ""), str) else ""
         if self._control_url:
             self._control_url = self._validate_control_url(self._control_url)
         stun = data.get("stun_server", {})
