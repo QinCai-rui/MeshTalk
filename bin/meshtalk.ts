@@ -7,6 +7,10 @@ import { createConnection, type Socket } from "net";
 import { basename, dirname, join } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
+import { checkForUpdate, installRelease, releaseInstallDir, saveGithubToken } from "../common/updater";
+
+declare const APP_VERSION: string;
+declare const MESHTALK_RELEASE: boolean;
 
 const HOME = homedir();
 const DATA_DIR = `${HOME}/.meshtalk`;
@@ -20,6 +24,8 @@ const POLL_INTERVAL_MS = 300;
 const isWindows = process.platform === "win32";
 const EXECUTABLE_SUFFIX = isWindows ? ".exe" : "";
 const PROGRAM = basename(process.argv[1] ?? process.argv[0]);
+const IS_RELEASE_BUILD = typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE;
+const APP_RELEASE_VERSION = typeof APP_VERSION !== "undefined" ? APP_VERSION : "dev";
 
 type Component = {
   command: string[];
@@ -34,6 +40,50 @@ type Components = {
 
 function log(msg: string) {
   console.error(`[meshtalk] ${msg}`);
+}
+
+async function readConfirmation(): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  process.stdout.write("Install now? [y/N] ");
+  const answer = await new Promise<string>((resolve) => {
+    process.stdin.once("data", (data) => resolve(data.toString().trim()));
+  });
+  return /^(y|yes)$/i.test(answer);
+}
+
+async function runUpdate(args: string[]): Promise<void> {
+  if (args[0] === "token") {
+    if (args[1] === "clear" && args.length === 2) {
+      saveGithubToken(null);
+      console.log("Saved GitHub token removed from ~/.meshtalk/settings.json.");
+      return;
+    }
+    if (args.length !== 2 || !args[1]) throw new Error(`Usage: ${PROGRAM} update token <token>|clear`);
+    console.error("Warning: this GitHub token is stored unencrypted in ~/.meshtalk/settings.json.");
+    saveGithubToken(args[1]);
+    console.log("GitHub token saved.");
+    return;
+  }
+  if (!IS_RELEASE_BUILD) {
+    console.log("Update checks are available only in compiled MeshTalk releases.");
+    return;
+  }
+  if (args.length > 1 || (args[0] && args[0] !== "--install")) throw new Error(`Usage: ${PROGRAM} update [--install]`);
+  const release = await checkForUpdate(APP_RELEASE_VERSION);
+  if (!release) {
+    console.log(`MeshTalk ${APP_RELEASE_VERSION} is up to date, or release metadata is unavailable.`);
+    return;
+  }
+  console.log(`MeshTalk ${release.version} is available (installed: ${APP_RELEASE_VERSION}).`);
+  if (args[0] !== "--install" && !await readConfirmation()) {
+    console.log("Update skipped.");
+    return;
+  }
+  const installDir = releaseInstallDir();
+  if (!installDir) throw new Error("Unable to locate the standalone MeshTalk installation.");
+  console.log(`Downloading and installing MeshTalk ${release.version}...`);
+  await installRelease(release, installDir);
+  console.log("Update installed. Restart MeshTalk to use the new version.");
 }
 
 function findExecutable(name: string): string | null {
@@ -233,6 +283,11 @@ async function main() {
   mkdirSync(DATA_DIR, { recursive: true });
 
   const args = process.argv.slice(2);
+
+  if (args[0] === "update") {
+    await runUpdate(args.slice(1));
+    return;
+  }
 
   if (args.length === 1 && ["help", "--help", "-h"].includes(args[0])) {
     const cliComponent = resolveComponents().cli;

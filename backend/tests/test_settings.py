@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import time
@@ -55,6 +56,13 @@ class SettingsControlSetupTest(unittest.TestCase):
         settings.set_flashing_enabled(False)
 
         self.assertFalse(Settings(self.path).flashing_enabled)
+
+    def test_github_token_persists_as_plain_text(self):
+        settings = Settings(self.path)
+        settings.set_github_token("ghp_example")
+
+        self.assertEqual(Settings(self.path).github_token, "ghp_example")
+        self.assertEqual(json.loads(self.path.read_text())["github_token"], "ghp_example")
 
     def test_environment_control_url_does_not_mutate_persisted_settings(self):
         settings = Settings(self.path)

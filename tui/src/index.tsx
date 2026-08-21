@@ -2,14 +2,19 @@ import { createClipboard, createCliRenderer, createHostClipboard, createRenderer
 import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions, type SelectProps } from "@opentui/react"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
+import { checkForUpdate, type Release } from "../../common/updater"
+import { dirname, join } from "path"
 
 declare const APP_VERSION: string
+declare const MESHTALK_RELEASE: boolean
 
 const MIN_COMPOSER_HEIGHT = 3
 const MAX_COMPOSER_HEIGHT = 5
 const MAX_MESSAGE_BYTES = 30 * 1024
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
 const DEFAULT_STATUS = "Ctrl+P: commands  Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+C: quit"
+const IS_RELEASE_BUILD = typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE
+const APP_RELEASE_VERSION = typeof APP_VERSION !== "undefined" ? APP_VERSION : "dev"
 
 function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
@@ -158,6 +163,8 @@ type Dialog =
   | { kind: "debug" }
   | { kind: "debug-endpoints" }
   | { kind: "debug-peer"; peerId: string; displayName: string }
+  | { kind: "update"; release: Release }
+  | { kind: "about"; checking?: boolean; checked?: boolean }
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -389,6 +396,13 @@ function ChatApp() {
         setDialog({ kind: "rename", firstRun: true })
       } else if (!control.url && !control.setup_dismissed) {
         setDialog({ kind: "control", firstRun: true })
+      }
+      if (IS_RELEASE_BUILD) {
+        void checkForUpdate(APP_RELEASE_VERSION).then((release) => {
+          if (release && (response.setup_dismissed as boolean) && (control.url || control.setup_dismissed)) {
+            showDialog({ kind: "update", release })
+          }
+        })
       }
       setStatus(DEFAULT_STATUS)
     }).catch((error) => {
@@ -750,7 +764,7 @@ function ChatApp() {
   }
 
   function goBack() {
-    if (!dialog || dialog.kind === "commands" || (dialog.kind === "control" && dialog.firstRun) || (dialog.kind === "rename" && dialog.firstRun)) {
+    if (!dialog || dialog.kind === "commands" || dialog.kind === "update" || (dialog.kind === "control" && dialog.firstRun) || (dialog.kind === "rename" && dialog.firstRun)) {
       closeDialog()
     } else if (dialog.kind === "control-custom") {
       showDialog({ kind: "control", firstRun: dialog.firstRun })
@@ -760,7 +774,7 @@ function ChatApp() {
       void loadAdvancedConfig()
     } else if (dialog.kind === "advanced-control" || dialog.kind === "advanced-stun") {
       void loadAdvancedConfig()
-    } else if (dialog.kind === "advanced") {
+    } else if (dialog.kind === "advanced" || dialog.kind === "about") {
       showDialog({ kind: "commands" })
     } else if (["room-create", "room-join", "room-created", "room-detail"].includes(dialog.kind)) {
       showDialog({ kind: "rooms", rooms: [] })
@@ -799,6 +813,38 @@ function ChatApp() {
       showDialog({ kind: "commands" })
     } else {
       showDialog({ kind: "commands" })
+    }
+  }
+
+  function installUpdate(release: Release) {
+    const action = beginDialogAction()
+    if (action === null) return
+    const suffix = process.platform === "win32" ? ".exe" : ""
+    const launcher = join(dirname(process.execPath), `meshtalk${suffix}`)
+    try {
+      Bun.spawn([launcher, "update", "--install"], { stdin: "inherit", stdout: "inherit", stderr: "inherit" })
+      renderer.destroy()
+    } catch (error) {
+      failDialogAction(action, error)
+    }
+  }
+
+  async function checkForUpdatesFromAbout() {
+    if (!IS_RELEASE_BUILD) {
+      setDialog({ kind: "about", checked: true })
+      return
+    }
+    const action = beginDialogAction()
+    if (action === null) return
+    setDialog({ kind: "about", checking: true })
+    try {
+      const release = await checkForUpdate(APP_RELEASE_VERSION)
+      if (dialogAction.current !== action) return
+      setDialog(release ? { kind: "update", release } : { kind: "about", checked: true })
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
     }
   }
 
@@ -1329,6 +1375,8 @@ function ChatApp() {
     } else if (command === "debug") {
       showDialog({ kind: "debug" })
       void loadDebugInfo()
+    } else if (command === "about") {
+      showDialog({ kind: "about" })
     }
   }
 
@@ -1750,30 +1798,82 @@ function ChatApp() {
               : dialog.kind === "debug-peer" ? "Peer details"
               : dialog.kind === "debug-endpoints" ? "Endpoints"
               : dialog.kind === "debug" ? "Debug"
+              : dialog.kind === "update" ? "Update available"
+              : dialog.kind === "about" ? "About MeshTalk"
               : dialog.kind === "group-detail" ? "Group details"
               : "Private rooms"}
             bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
-            style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
+            style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: dialog.kind === "about" ? "#9b8cff" : dialog.kind === "update" ? "#e0a34a" : "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
           >
             {dialog.kind === "commands" && (
-              <MouseSelect
-                focused
-                height={Math.max(5, dialogHeight - 3)}
-                options={[
-                  { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
-                  { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
-                  ...(selectedGroup ? [{ name: "Group details", description: `View members or leave ${selectedGroup.name}`, value: "group-details" }] : []),
-                  { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
-                  { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
-                  { name: "Accessibility", description: "Reduce motion and other accessibility options", value: "accessibility" },
-                  { name: "Advanced Configuration", description: "Pin server IP addresses to bypass DNS", value: "advanced" },
-                  { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
-                  { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
-                ]}
-                onSelect={(_, option) => option && runCommand(option.value as string)}
-                wrapSelection
-                showDescription
-              />
+              <>
+                <text><span fg="#b9a7ff"><b>COMMAND CENTER</b></span> <span fg="#77718f">Choose an action</span></text>
+                <text fg="#534b70">────────────────────────────────────────</text>
+                <MouseSelect
+                  focused
+                  height={Math.max(5, dialogHeight - 5)}
+                  options={[
+                    { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
+                    { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
+                    ...(selectedGroup ? [{ name: "Group details", description: `View members or leave ${selectedGroup.name}`, value: "group-details" }] : []),
+                    { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
+                    { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
+                    { name: "Accessibility", description: "Reduce motion and other accessibility options", value: "accessibility" },
+                    { name: "Advanced Configuration", description: "Pin server IP addresses to bypass DNS", value: "advanced" },
+                    { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
+                    { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
+                    { name: "★  ABOUT & UPDATES  ★", description: "Version, credits, and check for updates", value: "about" },
+                  ]}
+                  onSelect={(_, option) => option && runCommand(option.value as string)}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "about" && (
+              <box style={{ flexDirection: "column", gap: 1, backgroundColor: "#111923", width: "100%", height: "100%" }}>
+                <text><span fg="#b9a7ff"><b>MeshTalk</b></span> <span fg="#77718f">terminal messenger</span></text>
+                <text><span fg="#8fa7ff">Version </span><span fg="#66ddaa"><b>{APP_RELEASE_VERSION}</b></span></text>
+                <text><span fg="#e0a34a">Made with love</span> <span fg="#bbbbbb">by </span><span fg="#ff8fa3">Raymont</span><span fg="#bbbbbb"> and </span><span fg="#8fa7ff">friends.</span></text>
+                {dialog.checked && <text fg={IS_RELEASE_BUILD ? "#66dd88" : "#ff5555"}>{IS_RELEASE_BUILD ? "You are up to date, or release metadata is unavailable." : "Updates are available only in compiled MeshTalk releases."}</text>}
+                {dialogError && <text fg="#ff7777">{dialogError}</text>}
+                <MouseSelect
+                  focused
+                  height={Math.max(3, dialogHeight - 7)}
+                  options={[
+                    { name: dialog.checking ? "Checking for updates..." : "Check for updates", description: IS_RELEASE_BUILD ? "Look for the latest stable MeshTalk release" : "Available in compiled MeshTalk releases", value: "check" },
+                    { name: "Back", description: "Return to Commands", value: "back" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "check" && !dialog.checking) void checkForUpdatesFromAbout()
+                    else if (option?.value === "back") goBack()
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </box>
+            )}
+            {dialog.kind === "update" && (
+              <>
+                <text><b>MeshTalk {dialog.release.version} is available.</b></text>
+                <text fg="#bbbbbb">Installed version: {APP_RELEASE_VERSION}</text>
+                <text fg="#bbbbbb">The download will be verified with GitHub's SHA-256 digest before installation.</text>
+                {dialogError && <text fg="#ff7777">{dialogError}</text>}
+                <MouseSelect
+                  focused
+                  height={Math.max(3, dialogHeight - 7)}
+                  options={[
+                    { name: "Install now", description: "Close MeshTalk and install the verified release", value: "install" },
+                    { name: "Ignore", description: "Ask again the next time MeshTalk starts", value: "ignore" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "install") installUpdate(dialog.release)
+                    else if (option?.value === "ignore") closeDialog()
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
             )}
             {dialog.kind === "control" && (
               <>
