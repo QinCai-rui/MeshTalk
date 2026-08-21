@@ -127,16 +127,22 @@ command_exists() {
 }
 
 prompt_read() {
-  # Read a line into the variable named by $1, prompting with the rest.
+  # Read a line into the named variable, using /dev/tty for curl | bash.
+  local silent=0
+  if [[ ${1:-} == --silent ]]; then
+    silent=1
+    shift
+  fi
+
   # When stdin is not a terminal (e.g. curl | bash), read from /dev/tty.
   local __var=$1
   shift
   if [[ -t 0 ]]; then
-    read -r -p "$*" "$__var"
+    if [[ $silent -eq 1 ]]; then read -r -s -p "$*" "$__var"; else read -r -p "$*" "$__var"; fi
   elif [[ -e /dev/tty ]]; then
-    read -r -p "$*" "$__var" < /dev/tty
+    if [[ $silent -eq 1 ]]; then read -r -s -p "$*" "$__var" < /dev/tty; else read -r -p "$*" "$__var" < /dev/tty; fi
   else
-    read -r -p "$*" "$__var"
+    if [[ $silent -eq 1 ]]; then read -r -s -p "$*" "$__var"; else read -r -p "$*" "$__var"; fi
   fi
 }
 
@@ -362,7 +368,7 @@ prompt_for_token() {
 
   info "Anonymous GitHub release access was unavailable."
   info "Provide a GitHub token, or press Enter to cancel and install/authenticate gh."
-  prompt_read AUTH_TOKEN "GitHub token: " || true
+  prompt_read --silent AUTH_TOKEN "GitHub token: " || true
   AUTH_TOKEN=${AUTH_TOKEN:-}
   printf '\n'
   [[ -n $AUTH_TOKEN ]]
@@ -516,7 +522,40 @@ is_path_entry() {
   esac
 }
 
+configure_windows_path() {
+  if ! command_exists cygpath || ! command_exists powershell.exe; then
+    warn "Cannot update the Windows user PATH automatically."
+    info "Add this directory to the Windows user PATH manually: ${INSTALL_DIR}"
+    return
+  fi
+
+  local windows_dir result
+  windows_dir=$(cygpath -w "$INSTALL_DIR") || die "Unable to convert the installation directory to a Windows path."
+  if ! confirm "Add ${windows_dir} to the Windows user PATH for Command Prompt and PowerShell?" y; then
+    info "Add this directory to the Windows user PATH manually if needed: ${windows_dir}"
+    return
+  fi
+
+  result=$(MESHTALK_INSTALL_DIR="$windows_dir" powershell.exe -NoProfile -NonInteractive -Command '$dir = $env:MESHTALK_INSTALL_DIR.TrimEnd([IO.Path]::DirectorySeparatorChar); $path = [Environment]::GetEnvironmentVariable("Path", "User"); $entries = @($path -split ";" | Where-Object { $_ }); if (@($entries | Where-Object { $_.TrimEnd([IO.Path]::DirectorySeparatorChar) -ieq $dir }).Count -gt 0) { "already" } else { [Environment]::SetEnvironmentVariable("Path", (($entries + $dir) -join ";"), "User"); "added" }' 2>/dev/null) || {
+    warn "Unable to update the Windows user PATH."
+    info "Add this directory to the Windows user PATH manually: ${windows_dir}"
+    return
+  }
+
+  if [[ $result == already ]]; then
+    info "${windows_dir} is already on the Windows user PATH."
+  else
+    success "Added ${windows_dir} to the Windows user PATH."
+  fi
+  info "Open a new Command Prompt or PowerShell window, then run: ${LAUNCHER_NAME}"
+}
+
 configure_path() {
+  if [[ $PLATFORM == windows ]]; then
+    configure_windows_path
+    return
+  fi
+
   if is_path_entry "$INSTALL_DIR"; then
     info "${INSTALL_DIR} is already on PATH."
     return
