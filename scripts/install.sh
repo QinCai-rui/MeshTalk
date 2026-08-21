@@ -114,16 +114,30 @@ confirm() {
   local answer
 
   if [[ $default == y ]]; then
-    read -r -p "${BOLD}${prompt}${RESET} ${DIM}[Y/n]${RESET}: " answer || true
+    prompt_read answer "${BOLD}${prompt}${RESET} ${DIM}[Y/n]${RESET}: " || true
     [[ -z $answer || $answer =~ ^[Yy]([Ee][Ss])?$ ]]
   else
-    read -r -p "${BOLD}${prompt}${RESET} ${DIM}[y/N]${RESET}: " answer || true
+    prompt_read answer "${BOLD}${prompt}${RESET} ${DIM}[y/N]${RESET}: " || true
     [[ $answer =~ ^[Yy]([Ee][Ss])?$ ]]
   fi
 }
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+prompt_read() {
+  # Read a line into the variable named by $1, prompting with the rest.
+  # When stdin is not a terminal (e.g. curl | bash), read from /dev/tty.
+  local __var=$1
+  shift
+  if [[ -t 0 ]]; then
+    read -r -p "$*" "$__var"
+  elif [[ -e /dev/tty ]]; then
+    read -r -p "$*" "$__var" < /dev/tty
+  else
+    read -r -p "$*" "$__var"
+  fi
 }
 
 require_not_root() {
@@ -242,7 +256,7 @@ choose_action() {
   printf '  %s2%s  Uninstall MeshTalk\n' "$BOLD$CYAN" "$RESET"
   printf '  %sq%s  Quit\n\n' "$BOLD$CYAN" "$RESET"
   local choice
-  read -r -p "${BOLD}Choose an action${RESET} ${DIM}[1]${RESET}: " choice || true
+  prompt_read choice "${BOLD}Choose an action${RESET} ${DIM}[1]${RESET}: " || true
   case ${choice:-1} in
     1) ACTION=install ;;
     2) ACTION=uninstall ;;
@@ -257,7 +271,7 @@ choose_version() {
   fi
 
   info "Press Enter to install the latest stable release."
-  read -r -p "${BOLD}Release tag${RESET} ${DIM}[latest stable]${RESET}: " VERSION || true
+  prompt_read VERSION "${BOLD}Release tag${RESET} ${DIM}[latest stable]${RESET}: " || true
   VERSION=${VERSION:-latest}
 }
 
@@ -268,7 +282,7 @@ choose_install_dir() {
     else
       info "MeshTalk will be installed without root or sudo."
     fi
-    read -r -p "${BOLD}Installation directory${RESET} ${DIM}[${DEFAULT_INSTALL_DIR}]${RESET}: " INSTALL_DIR || true
+    prompt_read INSTALL_DIR "${BOLD}Installation directory${RESET} ${DIM}[${DEFAULT_INSTALL_DIR}]${RESET}: " || true
     INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}
   fi
 
@@ -348,7 +362,8 @@ prompt_for_token() {
 
   info "Anonymous GitHub release access was unavailable."
   info "Provide a GitHub token, or press Enter to cancel and install/authenticate gh."
-  read -r -s -p "GitHub token: " AUTH_TOKEN || true
+  prompt_read AUTH_TOKEN "GitHub token: " || true
+  AUTH_TOKEN=${AUTH_TOKEN:-}
   printf '\n'
   [[ -n $AUTH_TOKEN ]]
 }
