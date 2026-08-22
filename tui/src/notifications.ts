@@ -10,7 +10,7 @@ export type NotificationPreferences = {
 }
 
 type TerminalRenderer = {
-  capabilities?: { notifications?: boolean }
+  capabilities?: { notifications?: boolean } | null
   triggerNotification(message: string, title: string): boolean | void
 }
 
