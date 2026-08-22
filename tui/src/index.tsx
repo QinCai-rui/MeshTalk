@@ -1,8 +1,8 @@
-import { createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, decodePasteBytes, type MouseEvent as TuiMouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
+import { CliRenderEvents, createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, decodePasteBytes, type MouseEvent as TuiMouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { createRoot, useKeyboard, usePaste, useRenderer, useSelectionHandler, useTerminalDimensions, type SelectProps } from "@opentui/react"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { existsSync, statSync, writeSync } from "fs"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
-import { existsSync, statSync } from "fs"
 import { checkForUpdate, type Release } from "../../common/updater"
 import { dirname, join, resolve } from "path"
 
@@ -376,6 +376,7 @@ function ChatApp() {
   const selectedPeerId = selection?.kind === "peer" ? selection.id : undefined
   const selectedGroupId = selection?.kind === "group" ? selection.id : undefined
   const selectionKey = selection ? `${selection.kind}:${selection.id}` : undefined
+  const [isFocused, setIsFocused] = useState(true)
 
   function showStatus(message: string) {
     if (statusReset.current) clearTimeout(statusReset.current)
@@ -387,6 +388,32 @@ function ChatApp() {
     if (copyToastReset.current) clearTimeout(copyToastReset.current)
     setCopyToast(true)
     copyToastReset.current = setTimeout(() => setCopyToast(false), 2_000)
+  }
+
+  function requestAttention(message: string, title = "MeshTalk") {
+    // 1. Desktop notification banner (OSC 9 / OSC 777 / OSC 99 via OpenTUI).
+    //    Works on Windows (Toast), macOS (Notification Center) and Linux (libnotify)
+    //    when the terminal forwards the sequence.
+    try {
+      renderer.triggerNotification(message, title)
+    } catch {}
+    // 2. Urgency / demand-attention hint: makes the taskbar flash orange on
+    //    Windows, bounces the dock icon on macOS, and sets the urgency hint
+    //    (DEMANDS_ATTENTION) on Linux/X11/Wayland. Terminals trigger this
+    //    behaviour on BEL (\x07) when the window is not focused.
+    //    Use raw fd writes to bypass OpenTUI's stdout capture (alternate-screen
+    //    buffering would otherwise swallow the BEL).
+    try {
+      const anyRenderer = renderer as unknown as { writeOut?: (data: string) => void }
+      if (typeof anyRenderer.writeOut === "function") {
+        anyRenderer.writeOut("\x07")
+      } else {
+        try { writeSync(1, "\x07") } catch {}
+        try { writeSync(2, "\x07") } catch {}
+      }
+    } catch {}
+    // Extra stderr BEL as fallback - stderr is never captured by the renderer
+    try { process.stderr.write("\x07") } catch {}
   }
 
   async function refreshPeers() {
@@ -552,6 +579,25 @@ function ChatApp() {
     }
   }
 
+  // Track terminal focus so urgency (BEL) is also emitted when the window
+  // is in the background, even for the currently selected conversation.
+  useEffect(() => {
+    const onFocus = () => setIsFocused(true)
+    const onBlur = () => setIsFocused(false)
+    // OpenTUI emits focus/blur via CliRenderEvents; subscribe for both
+    renderer.on(CliRenderEvents.FOCUS, onFocus)
+    renderer.on(CliRenderEvents.BLUR, onBlur)
+    // Initialize from renderer's current state if available
+    try {
+      const anyRenderer = renderer as unknown as { _terminalFocusState?: boolean }
+      if (typeof anyRenderer._terminalFocusState === "boolean") setIsFocused(anyRenderer._terminalFocusState)
+    } catch {}
+    return () => {
+      renderer.off(CliRenderEvents.FOCUS, onFocus)
+      renderer.off(CliRenderEvents.BLUR, onBlur)
+    }
+  }, [renderer])
+
   useEffect(() => ipc.onEvent((event: IPCEvent) => {
     if (["group_message", "group_member_joined", "group_member_left"].includes(event.event)) {
       const groupId = event.group_id as string
@@ -561,8 +607,13 @@ function ChatApp() {
         ?? peers.find((peer) => peer.peer_id === senderId)?.display_name
         ?? groupMembers[groupId]?.find((member) => (member.peer_id ?? member.member_id) === senderId)?.display_name
         ?? "a member"
-      if (event.event === "group_message" && renderer.capabilities?.notifications && groupId !== selectedGroupId) {
-        renderer.triggerNotification(`New message from ${sender} in ${group?.name ?? "a group"}`, "MeshTalk")
+      if (event.event === "group_message") {
+        // Flash taskbar (Windows) / bounce dock (macOS) / urgency hint (Linux)
+        // when the group is not currently open, or the terminal is in the
+        // background even if it is open.
+        if (groupId !== selectedGroupId || !isFocused) {
+          requestAttention(`New message from ${sender} in ${group?.name ?? "a group"}`, "MeshTalk")
+        }
       }
       if (groupId !== selectedGroupId) {
         setGroups((current) => current.map((item) => item.group_id === groupId ? { ...item, unread_count: item.unread_count + 1 } : item))
@@ -645,9 +696,7 @@ function ChatApp() {
         direction: "incoming",
         status: "pending",
       }
-      if (renderer.capabilities?.notifications) {
-        renderer.triggerNotification(`Friend request from ${request.sender_name}`, "MeshTalk")
-      }
+      requestAttention(`Friend request from ${request.sender_name}`, "MeshTalk")
       if (!dialog) setDialog({ kind: "friend-request-incoming", request })
       else showStatus(`Friend request from ${request.sender_name}. Open Commands > Friends to respond.`)
       void refreshPeers()
@@ -747,8 +796,8 @@ function ChatApp() {
     const sender = peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "a peer"
     const mutedUntil = mutedPeers[senderId]
     const isMuted = mutedUntil === undefined ? false : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil
-    if (renderer.capabilities?.notifications && !isMuted) {
-      renderer.triggerNotification(`New message from ${sender}`, "MeshTalk")
+    if (!isMuted && (senderId !== selectedPeerId || !isFocused)) {
+      requestAttention(`New message from ${sender}`, "MeshTalk")
     }
     if (senderId !== selectedPeerId) {
       setPeers((current) => current.map((peer) =>
@@ -770,7 +819,7 @@ function ChatApp() {
         void refreshPeers()
       }
     })
-  }), [ipc, mutedPeers, peers, groups, groupMembers, renderer, selectedPeerId, selectedGroupId, dialog])
+  }), [ipc, mutedPeers, peers, groups, groupMembers, renderer, selectedPeerId, selectedGroupId, dialog, isFocused])
 
   useEffect(() => {
     let cancelled = false
