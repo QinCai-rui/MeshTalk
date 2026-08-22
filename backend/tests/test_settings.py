@@ -57,6 +57,24 @@ class SettingsControlSetupTest(unittest.TestCase):
 
         self.assertFalse(Settings(self.path).flashing_enabled)
 
+    def test_notification_preferences_persist_and_merge_events(self):
+        settings = Settings(self.path)
+        self.assertEqual(settings.notification_preferences["delivery"], "terminal")
+        self.assertTrue(settings.notification_preferences["events"]["messages"])
+
+        settings.set_notification_preferences(
+            setup_dismissed=True,
+            delivery="native",
+            events={"messages": False, "file_completed": False},
+        )
+
+        loaded = Settings(self.path).notification_preferences
+        self.assertTrue(loaded["setup_dismissed"])
+        self.assertEqual(loaded["delivery"], "native")
+        self.assertFalse(loaded["events"]["messages"])
+        self.assertTrue(loaded["events"]["friend_requests"])
+        self.assertFalse(loaded["events"]["file_completed"])
+
     def test_github_token_persists_as_plain_text(self):
         settings = Settings(self.path)
         settings.set_github_token("ghp_example")
