@@ -542,6 +542,11 @@ class FileTransferManager:
             or transfer["recipient_id"] != peer.peer_id
         ):
             return
+        # Completed receivers repeat their ACK after reconnecting. Delivery is
+        # terminal, so duplicate ACKs (including stale missing requests) must
+        # not emit a second delivery event or retransmit file data.
+        if transfer["status"] == "completed":
+            return
         if ack.status == "completed":
             await self.db.update_file_transfer(ack.file_id, status="completed", completed_at=time.time())
             self._emit({"event": "file_delivered", "file_id": ack.file_id, "recipient_id": peer.peer_id})
