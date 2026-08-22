@@ -141,6 +141,7 @@ jobs:
 
   release:
     needs: build
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
