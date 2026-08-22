@@ -52,7 +52,19 @@ class GroupRouter:
                 room.id, self.identity.peer_id, self.identity.display_name, group_capable=True
             )
 
-    async def record_room_member(self, group_id: str, peer_id: str) -> None:
+    async def record_local_join(self, group_id: str) -> None:
+        room = self.settings.rooms.get(group_id)
+        if room is None or room.group_name is None:
+            return
+        await self._save_system_event(
+            group_id, self.identity.peer_id, "You joined the group", "join"
+        )
+        await self._emit({
+            "event": "group_member_joined", "group_id": group_id,
+            "peer_id": self.identity.peer_id, "display_name": self.identity.display_name,
+        })
+
+    async def record_room_member(self, group_id: str, peer_id: str, announce_join: bool) -> None:
         room = self.settings.rooms.get(group_id)
         if room is None or room.group_name is None or peer_id == self.identity.peer_id:
             return
@@ -61,6 +73,11 @@ class GroupRouter:
         display_name = peer.display_name if peer else (stored or {}).get("display_name", "Anonymous")
         capable = peer.supports(CAP_GROUP_CHAT) if peer else None
         await self.db.upsert_group_member(group_id, peer_id, display_name, group_capable=capable)
+        if not announce_join:
+            # Retained/fetched cards establish or refresh the roster. They do
+            # not mean the peer joined after this device entered the group.
+            await self.db.claim_group_join_announcement(group_id, peer_id)
+            return
         if peer is not None or (stored and display_name != "Anonymous"):
             await self._announce_join(group_id, peer_id, display_name)
 
@@ -241,6 +258,9 @@ class GroupRouter:
         leave = GroupLeavePayload(str(uuid.uuid4()), group_id, self.identity.peer_id, time.time())
         leave.signature = self.identity.signing_private_key.sign(leave.signed_bytes())
         encoded = leave.encode()
+        await self._save_system_event(
+            group_id, self.identity.peer_id, "You left the group", "leave"
+        )
         self.settings.leave_room(group_id)
         await self.db.remove_group(group_id)
         for member in recipients:

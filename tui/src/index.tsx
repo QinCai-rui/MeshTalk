@@ -3,15 +3,19 @@ import { createRoot, useKeyboard, usePaste, useRenderer, useSelectionHandler, us
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
-import { resolve } from "path"
+import { checkForUpdate, type Release } from "../../common/updater"
+import { dirname, join, resolve } from "path"
 
 declare const APP_VERSION: string
+declare const MESHTALK_RELEASE: boolean
 
 const MIN_COMPOSER_HEIGHT = 3
 const MAX_COMPOSER_HEIGHT = 5
 const MAX_MESSAGE_BYTES = 30 * 1024
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
 const DEFAULT_STATUS = "Ctrl+P: commands  Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+C: quit"
+const IS_RELEASE_BUILD = typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE
+const APP_RELEASE_VERSION = typeof APP_VERSION !== "undefined" ? APP_VERSION : "dev"
 
 function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
@@ -60,6 +64,7 @@ type Message = {
   delivered?: number
   blocked?: number
   queued?: number
+  failed?: number
   received_at?: number
 }
 type GroupDelivery = {
@@ -80,6 +85,7 @@ type GroupMember = {
   display_name: string
   is_online?: boolean
   show_in_sidebar?: boolean
+  is_incompatible?: boolean
 }
 type Conversation = { kind: "peer" | "group"; id: string }
 type FriendRequest = {
@@ -112,6 +118,12 @@ type ControlStatus = {
   reconnect_attempts: number
   public_endpoint?: unknown[]
 }
+type AdvancedConfig = {
+  control_url?: string | null
+  control_pinned_ips: string[]
+  stun_server: string
+  stun_pinned_ips: string[]
+}
 type DebugInfo = {
   public_endpoint?: [string, number] | null
   stun_server: string
@@ -143,6 +155,11 @@ type Dialog =
   | { kind: "control"; firstRun?: boolean }
   | { kind: "control-custom"; firstRun?: boolean }
   | { kind: "control-status"; control: ControlStatus }
+  | { kind: "advanced"; config: AdvancedConfig }
+  | { kind: "advanced-control"; config: AdvancedConfig }
+  | { kind: "advanced-stun"; config: AdvancedConfig }
+  | { kind: "advanced-control-ip" }
+  | { kind: "advanced-stun-ip" }
   | { kind: "rooms"; rooms: RoomStatus[] }
   | { kind: "room-create" }
   | { kind: "room-join" }
@@ -171,6 +188,8 @@ type Dialog =
   | { kind: "file-download"; fileId: string; filename: string; filePath: string }
   | { kind: "files-dir"; filesDir: string; env?: string; configured?: string; dataDir?: string }
   | { kind: "group-file-send" }
+  | { kind: "update"; release: Release }
+  | { kind: "about"; checking?: boolean; checked?: boolean }
 
 function formatTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -332,7 +351,7 @@ function ChatApp() {
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
   const [blinkOn, setBlinkOn] = useState(true)
   const [flashingEnabled, setFlashingEnabled] = useState(true)
-  const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number }>({ connected: false, reconnect_attempts: 0 })
+  const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number; control_url?: string | null }>({ connected: false, reconnect_attempts: 0 })
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
   const [fileTransfers, setFileTransfers] = useState<FileTransfer[]>([])
   const [dialog, setDialog] = useState<Dialog | null>(null)
@@ -400,6 +419,7 @@ function ChatApp() {
       if (response.error) throw new Error(response.error)
       const nextIdentity = { peer_id: response.peer_id as string, display_name: response.display_name as string }
       setIdentity(nextIdentity)
+      setFlashingEnabled(response.flashing_enabled as boolean)
       setNameDraft(nextIdentity.display_name)
       const presence = await ipc.send("tui_presence", { client_id: tuiClientId, active: true })
       if (presence.error) throw new Error(presence.error)
@@ -410,11 +430,18 @@ function ChatApp() {
       if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
       const control = await ipc.send("control")
       if (control.error) throw new Error(control.error)
-      setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number })
+      setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number, control_url: control.url as string | null | undefined })
       if (!(response.setup_dismissed as boolean)) {
         setDialog({ kind: "rename", firstRun: true })
       } else if (!control.url && !control.setup_dismissed) {
         setDialog({ kind: "control", firstRun: true })
+      }
+      if (IS_RELEASE_BUILD) {
+        void checkForUpdate(APP_RELEASE_VERSION).then((release) => {
+          if (release && (response.setup_dismissed as boolean) && (control.url || control.setup_dismissed)) {
+            showDialog({ kind: "update", release })
+          }
+        })
       }
       setStatus(DEFAULT_STATUS)
     }).catch((error) => {
@@ -483,7 +510,7 @@ function ChatApp() {
       })
       void refreshFiles()
       void ipc.send("control").then((control) => {
-        if (!control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number })
+        if (!control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number, control_url: control.url as string | null | undefined })
       }).catch(() => {})
     }, 3000)
     return () => clearInterval(interval)
@@ -494,6 +521,21 @@ function ChatApp() {
     const interval = setInterval(() => setBlinkOn((value) => !value), 600)
     return () => clearInterval(interval)
   }, [flashingEnabled])
+
+  async function setAccessibilityFlashing(enabled: boolean) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("accessibility", { flashing_enabled: enabled })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setFlashingEnabled(response.flashing_enabled as boolean)
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
 
   useEffect(() => ipc.onEvent((event: IPCEvent) => {
     if (["group_message", "group_member_joined", "group_member_left"].includes(event.event)) {
@@ -568,6 +610,14 @@ function ChatApp() {
       if (event.removed_friend) showStatus(`${name} removed you as a friend. You are no longer friends.`)
       else showStatus(`Message blocked: ${name} hasn't added you as a friend yet.`)
       void refreshPeers()
+      return
+    }
+    if (event.event === "message_failed") {
+      const messageId = event.message_id as string
+      setMessages((current) => current.map((message) =>
+        message.message_id === messageId ? { ...message, failed: 1, queued: 0 } : message
+      ))
+      showStatus("Message cancelled because the peer protocol is incompatible.")
       return
     }
     if (event.event === "friend_request") {
@@ -794,12 +844,18 @@ function ChatApp() {
   }
 
   function goBack() {
-    if (!dialog || dialog.kind === "commands" || (dialog.kind === "control" && dialog.firstRun) || (dialog.kind === "rename" && dialog.firstRun)) {
+    if (!dialog || dialog.kind === "commands" || dialog.kind === "update" || (dialog.kind === "control" && dialog.firstRun) || (dialog.kind === "rename" && dialog.firstRun)) {
       closeDialog()
     } else if (dialog.kind === "control-custom") {
       showDialog({ kind: "control", firstRun: dialog.firstRun })
     } else if (dialog.kind === "control-status") {
       showDialog({ kind: "control" })
+    } else if (dialog.kind === "advanced-control-ip" || dialog.kind === "advanced-stun-ip") {
+      void loadAdvancedConfig()
+    } else if (dialog.kind === "advanced-control" || dialog.kind === "advanced-stun") {
+      void loadAdvancedConfig()
+    } else if (dialog.kind === "advanced" || dialog.kind === "about") {
+      showDialog({ kind: "commands" })
     } else if (["room-create", "room-join", "room-created", "room-detail"].includes(dialog.kind)) {
       showDialog({ kind: "rooms", rooms: [] })
       void loadRooms()
@@ -849,6 +905,38 @@ function ChatApp() {
     }
   }
 
+  function installUpdate(release: Release) {
+    const action = beginDialogAction()
+    if (action === null) return
+    const suffix = process.platform === "win32" ? ".exe" : ""
+    const launcher = join(dirname(process.execPath), `meshtalk${suffix}`)
+    try {
+      Bun.spawn([launcher, "update", "--install"], { stdin: "inherit", stdout: "inherit", stderr: "inherit" })
+      renderer.destroy()
+    } catch (error) {
+      failDialogAction(action, error)
+    }
+  }
+
+  async function checkForUpdatesFromAbout() {
+    if (!IS_RELEASE_BUILD) {
+      setDialog({ kind: "about", checked: true })
+      return
+    }
+    const action = beginDialogAction()
+    if (action === null) return
+    setDialog({ kind: "about", checking: true })
+    try {
+      const release = await checkForUpdate(APP_RELEASE_VERSION)
+      if (dialogAction.current !== action) return
+      setDialog(release ? { kind: "update", release } : { kind: "about", checked: true })
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
   async function loadControlStatus() {
     const action = beginDialogAction()
     if (action === null) return
@@ -893,6 +981,37 @@ function ChatApp() {
     } catch (error) {
       failDialogAction(action, error)
       return
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function loadAdvancedConfig() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("advanced_config")
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setDialog({ kind: "advanced", config: response as AdvancedConfig })
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function saveAdvancedConfig(params: Record<string, unknown>, message: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("advanced_config", params)
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setDialog({ kind: "advanced", config: response as AdvancedConfig })
+      showStatus(message)
+    } catch (error) {
+      failDialogAction(action, error)
     } finally {
       finishDialogAction(action)
     }
@@ -1320,7 +1439,11 @@ function ChatApp() {
     try {
       const trimmed = filePath.trim()
       if (!trimmed) throw new Error("File path is empty")
-      const absolutePath = resolve(trimmed)
+      const home = process.env.HOME || process.env.USERPROFILE || ""
+      const expanded = home && (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\"))
+        ? home + trimmed.slice(1)
+        : trimmed
+      const absolutePath = resolve(expanded)
       // Cross-platform: expand separators — backend will normalize again, but do minimal client check
       if (selection?.kind === "peer") {
         const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: absolutePath })
@@ -1465,6 +1588,8 @@ function ChatApp() {
       showDialog({ kind: "notifications" })
     } else if (command === "accessibility") {
       showDialog({ kind: "accessibility" })
+    } else if (command === "advanced") {
+      void loadAdvancedConfig()
     } else if (command === "rename") {
       const displayName = identity?.display_name ?? ""
       setNameDraft(displayName)
@@ -1507,6 +1632,8 @@ function ChatApp() {
     } else if (command === "files") {
       showDialog({ kind: "file-list", files: [] })
       void loadFiles()
+    } else if (command === "about") {
+      showDialog({ kind: "about" })
     }
   }
 
@@ -1674,6 +1801,9 @@ function ChatApp() {
     ...messages.map((message) => ({ type: "message" as const, createdAt: message.created_at, message })),
     ...conversationFiles.map((file) => ({ type: "file" as const, createdAt: file.created_at, file })),
   ].sort((a, b) => a.createdAt - b.createdAt || (a.type === b.type ? 0 : a.type === "message" ? -1 : 1)), [messages, conversationFiles])
+  const incompatibleGroupMembers = selectedGroup
+    ? (groupMembers[selectedGroup.group_id] ?? []).filter((member) => member.is_incompatible)
+    : []
   const activeCount = peers.filter((peer) => peerPresence(peer) === "active").length
   const sidebarWidth = width < 72 ? 22 : 32
   const compact = width < 72
@@ -1723,7 +1853,7 @@ function ChatApp() {
                 style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
               >
                 <text truncate fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>
-                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.version_mismatch ? <span fg="#8a2e2e">INCOMPATIBLE</span> : presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
+                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.version_mismatch ? <span fg="#ff5555">INCOMPATIBLE</span> : presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
                 </text>
                 {peer.endpoints.length ? peer.endpoints.map((endpoint) => (
                   <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>
@@ -1773,6 +1903,13 @@ function ChatApp() {
       </box>
 
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
+        {controlStatus.control_url && !controlStatus.connected ? (
+          <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
+            <text wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"}>
+              <b>Out-of-sync with rendezvous server. Peer connectivity may degrade over time;</b> reconnecting ({controlStatus.reconnect_attempts}).
+            </text>
+          </box>
+        ) : null}
         <box
           title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
@@ -1787,17 +1924,18 @@ function ChatApp() {
                 if (kind === "not_friend") {
                   return <text key="not_friend" wrapMode="word" fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (commands {'>'} friends {'>'} add friend).</text>
                 }
-                if (kind === "rendezvous_out_of_sync") {
-                  return <text key="rendezvous_out_of_sync" wrapMode="word" fg="#ff9f43"><b>Out-of-sync with rendezvous server. Peer connectivity may degrade over time;</b> reconnecting ({controlStatus.reconnect_attempts}).</text>
-                }
                 if (kind === "incompatible" && selected.version_mismatch) {
-                  const m = selected.version_mismatch
-                  const remoteMax = m.remote_version === -1 ? 0 : m.remote_version
-                  const remoteMin = m.remote_min === -1 ? 0 : m.remote_min
-                  return <text key="incompatible" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff5555" : "#8a2e2e"}><b>{"⚠ Incompatible peer protocol version: this peer supports v"}{remoteMin}{"-v"}{remoteMax}{", local is v"}{m.local_min}{"-v"}{m.local_version}{". Features may not work correctly."}</b></text>
+                  return <text key="incompatible" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff5555" : "#8a2e2e"}><b>Incompatible peer protocol. Most features are disabled until both peers support a compatible protocol version.</b></text>
                 }
                 return null
               })}
+            </box>
+          ) : null}
+          {selectedGroup && incompatibleGroupMembers.length > 0 ? (
+            <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
+              <text wrapMode="word" fg="#ff9f43">
+                Some group peers are incompatible: {incompatibleGroupMembers.map((member) => member.display_name).join(", ")}. Most features are disabled for these peers.
+              </text>
             </box>
           ) : null}
           <scrollbox
@@ -1854,15 +1992,16 @@ function ChatApp() {
               const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
               const blocked = Boolean(message.blocked)
               const queued = Boolean(message.queued)
+              const failed = Boolean(message.failed)
               const isSystem = Boolean(selectedGroup && message.kind && message.kind !== "message" && message.kind !== "text")
               const senderName = groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === message.sender_id)?.display_name
                 ?? peers.find((peer) => peer.peer_id === message.sender_id)?.display_name
                 ?? "Unknown member"
               const renderedContent = isSystem
                 ? message.kind === "join"
-                  ? `${senderName} joined the group`
+                  ? `${isLocal ? "You" : senderName} joined the group`
                   : message.kind === "leave"
-                    ? `${senderName} left the group`
+                    ? `${isLocal ? "You" : senderName} left the group`
                     : message.content
                 : message.content
               const showReceived =
@@ -1874,8 +2013,8 @@ function ChatApp() {
                     <span fg="#888888">{formatTime(message.created_at)} </span>
                     <span fg={isSystem ? "#e0a34a" : isLocal ? "#65a9ff" : "#66dd88"}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
                     {isLocal && !isSystem && (
-                      <span fg={blocked ? "#ff7777" : queued ? "#d9b36b" : "#888888"}>
-                        {selectedGroup ? ` ${groupDeliveryLabel(message.deliveries)}` : blocked ? " blocked" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
+                      <span fg={blocked || failed ? "#ff7777" : queued ? "#d9b36b" : "#888888"}>
+                        {selectedGroup ? ` ${groupDeliveryLabel(message.deliveries)}` : blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
                       </span>
                     )}
                     {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
@@ -1937,6 +2076,7 @@ function ChatApp() {
           <box
             title={dialog.kind === "commands" ? "Commands"
               : dialog.kind.startsWith("control") ? "Control server"
+              : dialog.kind.startsWith("advanced") ? "Advanced Configuration"
               : dialog.kind === "rename" ? "Display name"
               : dialog.kind === "mute-timeout" ? "Mute peer"
               : dialog.kind === "unmute-confirm" ? "Unmute peer"
@@ -1954,31 +2094,84 @@ function ChatApp() {
               : dialog.kind === "debug-peer" ? "Peer details"
               : dialog.kind === "debug-endpoints" ? "Endpoints"
               : dialog.kind === "debug" ? "Debug"
+              : dialog.kind === "update" ? "Update available"
+              : dialog.kind === "about" ? "About MeshTalk"
               : dialog.kind === "group-detail" ? "Group details"
               : "Private rooms"}
             bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
-            style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
+            style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: dialog.kind === "about" ? "#9b8cff" : dialog.kind === "update" ? "#e0a34a" : "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
           >
             {dialog.kind === "commands" && (
-              <MouseSelect
-                focused
-                height={Math.max(5, dialogHeight - 3)}
-                options={[
-                  { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
-                  { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
-                  ...(selectedGroup ? [{ name: "Group details", description: `View members or leave ${selectedGroup.name}`, value: "group-details" }] : []),
-                  { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
-                  { name: "Send file", description: selection ? `Send a file to ${selection.kind === "peer" ? peers.find((p)=>p.peer_id===selection.id)?.display_name ?? "peer" : groups.find((g)=>g.group_id===selection.id)?.name ?? "group"}` : "Select a peer or group first", value: "send-file" },
-                  { name: "Files", description: "View file transfer history and status", value: "files" },
-                  { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
-                  { name: "Accessibility", description: "Reduce motion and other accessibility options", value: "accessibility" },
-                  { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
-                  { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
-                ]}
-                onSelect={(_, option) => option && runCommand(option.value as string)}
-                wrapSelection
-                showDescription
-              />
+              <>
+                <text><span fg="#b9a7ff"><b>COMMAND CENTER</b></span> <span fg="#77718f">Choose an action</span></text>
+                <text fg="#534b70">────────────────────────────────────────</text>
+                <MouseSelect
+                  focused
+                  height={Math.max(5, dialogHeight - 5)}
+                  options={[
+                    { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
+                    { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
+                    ...(selectedGroup ? [{ name: "Group details", description: `View members or leave ${selectedGroup.name}`, value: "group-details" }] : []),
+                    { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
+                    { name: "Send file", description: selection ? `Send a file to ${selection.kind === "peer" ? peers.find((p) => p.peer_id === selection.id)?.display_name ?? "peer" : groups.find((g) => g.group_id === selection.id)?.name ?? "group"}` : "Select a peer or group first", value: "send-file" },
+                    { name: "Files", description: "View file transfer history and status", value: "files" },
+                    { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
+                    { name: "Accessibility", description: "Reduce motion and other accessibility options", value: "accessibility" },
+                    { name: "Advanced Configuration", description: "Pin server IP addresses to bypass DNS", value: "advanced" },
+                    { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
+                    { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
+                    { name: "★  ABOUT & UPDATES  ★", description: "Version, credits, and check for updates", value: "about" },
+                  ]}
+                  onSelect={(_, option) => option && runCommand(option.value as string)}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "about" && (
+              <box style={{ flexDirection: "column", gap: 1, backgroundColor: "#111923", width: "100%", height: "100%" }}>
+                <text><span fg="#b9a7ff"><b>MeshTalk</b></span> <span fg="#77718f">terminal messenger</span></text>
+                <text><span fg="#8fa7ff">Version </span><span fg="#66ddaa"><b>{APP_RELEASE_VERSION}</b></span></text>
+                <text><span fg="#e0a34a">Made with love</span> <span fg="#bbbbbb">by </span><span fg="#ff8fa3">Raymont</span><span fg="#bbbbbb"> and </span><span fg="#8fa7ff">friends.</span></text>
+                {dialog.checked && <text fg={IS_RELEASE_BUILD ? "#66dd88" : "#ff5555"}>{IS_RELEASE_BUILD ? "You are up to date, or release metadata is unavailable." : "Updates are available only in compiled MeshTalk releases."}</text>}
+                {dialogError && <text fg="#ff7777">{dialogError}</text>}
+                <MouseSelect
+                  focused
+                  height={Math.max(3, dialogHeight - 7)}
+                  options={[
+                    { name: dialog.checking ? "Checking for updates..." : "Check for updates", description: IS_RELEASE_BUILD ? "Look for the latest stable MeshTalk release" : "Available in compiled MeshTalk releases", value: "check" },
+                    { name: "Back", description: "Return to Commands", value: "back" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "check" && !dialog.checking) void checkForUpdatesFromAbout()
+                    else if (option?.value === "back") goBack()
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </box>
+            )}
+            {dialog.kind === "update" && (
+              <>
+                <text><b>MeshTalk {dialog.release.version} is available.</b></text>
+                <text fg="#bbbbbb">Installed version: {APP_RELEASE_VERSION}</text>
+                <text fg="#bbbbbb">The download will be verified with GitHub's SHA-256 digest before installation.</text>
+                {dialogError && <text fg="#ff7777">{dialogError}</text>}
+                <MouseSelect
+                  focused
+                  height={Math.max(3, dialogHeight - 7)}
+                  options={[
+                    { name: "Install now", description: "Close MeshTalk and install the verified release", value: "install" },
+                    { name: "Ignore", description: "Ask again the next time MeshTalk starts", value: "ignore" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "install") installUpdate(dialog.release)
+                    else if (option?.value === "ignore") closeDialog()
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
             )}
             {dialog.kind === "control" && (
               <>
@@ -1987,7 +2180,7 @@ function ChatApp() {
                   focused
                   height={Math.max(6, dialogHeight - 4)}
                   options={[
-                    { name: "Use MeshTalk public server", description: PUBLIC_CONTROL_URL, value: "public" },
+                    { name: "Use MeshTalk public server", description: "wss://meshtalk-control.qincai.xyz/v1/rendezvous", value: "public" },
                     { name: "Use a custom server", description: "Enter another secure WebSocket URL", value: "custom" },
                     { name: "View connection status", description: "See the current URL, connection, STUN, and endpoint", value: "status" },
                     ...(dialog.firstRun ? [{ name: "Continue with LAN only", description: "You can configure this later with Ctrl+P", value: "skip" }] : []),
@@ -2032,6 +2225,96 @@ function ChatApp() {
                   ]}
                   onSelect={(_, option) => option?.value === "change" ? showDialog({ kind: "control" }) : showDialog({ kind: "commands" })}
                 />
+              </>
+            )}
+            {dialog.kind === "advanced" && (
+              <>
+                <MouseSelect
+                  focused
+                  height={Math.max(5, dialogHeight - 3)}
+                  options={[
+                    { name: "Control server", description: dialog.config.control_pinned_ips.length ? `Pinned: ${dialog.config.control_pinned_ips.join(", ")}` : "No IP pin", value: "control" },
+                    { name: "STUN server", description: dialog.config.stun_pinned_ips.length ? `Pinned: ${dialog.config.stun_pinned_ips.join(", ")}` : "No IP pin", value: "stun" },
+                    { name: "Back to commands", description: "Return to the command palette", value: "back" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "control") {
+                      showDialog({ kind: "advanced-control", config: dialog.config })
+                    } else if (option?.value === "stun") {
+                      showDialog({ kind: "advanced-stun", config: dialog.config })
+                    } else if (option?.value === "back") {
+                      showDialog({ kind: "commands" })
+                    }
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "advanced-control" && (
+              <MouseSelect
+                focused
+                height={Math.max(5, dialogHeight - 3)}
+                options={[
+                  { name: "Manual IP address", description: "Enter one or more comma-separated IPv4 or IPv6 addresses", value: "manual" },
+                  { name: "Auto: resolve and pin", description: "Query A and AAAA records, then save the results as pins", value: "auto" },
+                  ...(dialog.config.control_pinned_ips.length ? [{ name: "Remove IP pin", description: `Pinned: ${dialog.config.control_pinned_ips.join(", ")}`, value: "clear" }] : []),
+                  { name: "Back", description: "Return to Advanced Configuration", value: "back" },
+                ]}
+                onSelect={(_, option) => {
+                  if (option?.value === "manual") {
+                    setDialogDraft(dialog.config.control_pinned_ips.join(", "))
+                    setDialog({ kind: "advanced-control-ip" })
+                  } else if (option?.value === "auto") {
+                    void saveAdvancedConfig({ auto_control_pinned_ip: true }, "Control server addresses resolved and pinned.")
+                  } else if (option?.value === "clear") {
+                    void saveAdvancedConfig({ clear_control_pinned_ip: true }, "Control server IP pin cleared.")
+                  } else if (option?.value === "back") {
+                    showDialog({ kind: "advanced", config: dialog.config })
+                  }
+                }}
+                wrapSelection
+                showDescription
+              />
+            )}
+            {dialog.kind === "advanced-stun" && (
+              <MouseSelect
+                focused
+                height={Math.max(5, dialogHeight - 3)}
+                options={[
+                  { name: "Manual IP address", description: "Enter one or more comma-separated IPv4 addresses", value: "manual" },
+                  { name: "Auto: resolve and pin", description: "Query A records, then save the results as pins", value: "auto" },
+                  ...(dialog.config.stun_pinned_ips.length ? [{ name: "Remove IP pin", description: `Pinned: ${dialog.config.stun_pinned_ips.join(", ")}`, value: "clear" }] : []),
+                  { name: "Back", description: "Return to Advanced Configuration", value: "back" },
+                ]}
+                onSelect={(_, option) => {
+                  if (option?.value === "manual") {
+                    setDialogDraft(dialog.config.stun_pinned_ips.join(", "))
+                    setDialog({ kind: "advanced-stun-ip" })
+                  } else if (option?.value === "auto") {
+                    void saveAdvancedConfig({ auto_stun_pinned_ip: true }, "STUN server addresses resolved and pinned.")
+                  } else if (option?.value === "clear") {
+                    void saveAdvancedConfig({ clear_stun_pinned_ip: true }, "STUN server IP pin cleared.")
+                  } else if (option?.value === "back") {
+                    showDialog({ kind: "advanced", config: dialog.config })
+                  }
+                }}
+                wrapSelection
+                showDescription
+              />
+            )}
+            {dialog.kind === "advanced-control-ip" && (
+              <>
+                <text>Enter comma-separated IPv4 or IPv6 addresses for the control server.</text>
+                <input focused value={dialogDraft} placeholder="104.21.6.171, 172.67.135.15, 2606:4700:3032::6815:6ab, 2606:4700:3037::ac43:870f" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ control_pinned_ip: typeof value === "string" ? value : dialogDraft }, "Control server IPs pinned.")} maxLength={1024} />
+                <text fg="#888888">Enter saves the IP pin.</text>
+              </>
+            )}
+            {dialog.kind === "advanced-stun-ip" && (
+              <>
+                <text>Enter comma-separated IPv4 addresses for the STUN server.</text>
+                <input focused value={dialogDraft} placeholder="203.0.113.10, 203.0.113.11" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ stun_pinned_ip: typeof value === "string" ? value : dialogDraft }, "STUN server IPs pinned.")} maxLength={1024} />
+                <text fg="#888888">Enter saves the IP pin.</text>
               </>
             )}
             {dialog.kind === "rooms" && (
@@ -2376,15 +2659,15 @@ height={Math.max(5, dialogHeight - 3)}
                     {
                       name: flashingEnabled ? "Disable Flashing" : "Re-enable Flashing",
                       description: flashingEnabled
-                        ? "Stop the incompatible-version warning from blinking (flashing)"
-                        : "Allow the incompatible-version warning to blink (flashing)",
+                        ? "Stop incompatible-protocol and rendezvous warnings from blinking"
+                        : "Allow incompatible-protocol and rendezvous warnings to blink",
                       value: "toggle-flash",
                     },
                     { name: "Back to commands", description: "Return to the command palette", value: "back" },
                   ]}
                   onSelect={(_, option) => {
                     if (!option) return
-                    if (option.value === "toggle-flash") setFlashingEnabled((value) => !value)
+                    if (option.value === "toggle-flash") void setAccessibilityFlashing(!flashingEnabled)
                     else showDialog({ kind: "commands" })
                   }}
                   wrapSelection

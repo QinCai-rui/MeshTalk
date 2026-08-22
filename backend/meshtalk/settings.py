@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import os
 import secrets
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,10 +117,14 @@ class Settings:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._control_url = ""
+        self._control_pinned_ips: tuple[str, ...] = ()
         self._control_setup_dismissed = False
         self._identity_setup_dismissed = False
+        self._flashing_enabled = True
+        self._github_token = ""
         self._stun_host = DEFAULT_STUN_HOST
         self._stun_port = DEFAULT_STUN_PORT
+        self._stun_pinned_ips: tuple[str, ...] = ()
         self.rooms: dict[str, Room] = {}
         self.muted_peers: dict[str, float] = {}
         self._files_dir: str | None = None
@@ -146,10 +152,9 @@ class Settings:
         # Validate: try to create parent and check writable (cross-platform)
         try:
             p.mkdir(parents=True, exist_ok=True)
-            # Test write by creating a temp file
-            test = p / ".meshtalk_write_test"
-            test.write_text("test", encoding="utf-8")
-            test.unlink()
+            with tempfile.NamedTemporaryFile(dir=p, prefix=".meshtalk-", delete=True) as test:
+                test.write(b"test")
+                test.flush()
         except Exception as exc:
             raise ValueError(f"Cannot use files directory '{p}': {exc}") from exc
         self._files_dir = str(p.resolve() if p.exists() else p)
@@ -181,6 +186,33 @@ class Settings:
         self.save()
 
     @property
+    def control_pinned_ips(self) -> tuple[str, ...]:
+        return self._control_pinned_ips
+
+    def set_control_pinned_ips(self, ips: str) -> None:
+        self._control_pinned_ips = self._validate_pinned_ips(ips)
+        self.save()
+
+    def clear_control_pinned_ips(self) -> None:
+        self._control_pinned_ips = ()
+        self.save()
+
+    @property
+    def stun_pinned_ips(self) -> tuple[str, ...]:
+        return self._stun_pinned_ips
+
+    def set_stun_pinned_ips(self, ips: str) -> None:
+        values = self._validate_pinned_ips(ips)
+        if any(not isinstance(ipaddress.ip_address(value), ipaddress.IPv4Address) for value in values):
+            raise ValueError("STUN pinned IPs must be IPv4")
+        self._stun_pinned_ips = values
+        self.save()
+
+    def clear_stun_pinned_ips(self) -> None:
+        self._stun_pinned_ips = ()
+        self.save()
+
+    @property
     def control_setup_dismissed(self) -> bool:
         return self._control_setup_dismissed
 
@@ -196,6 +228,24 @@ class Settings:
         self._identity_setup_dismissed = True
         self.save()
 
+    @property
+    def flashing_enabled(self) -> bool:
+        return self._flashing_enabled
+
+    def set_flashing_enabled(self, enabled: bool) -> None:
+        self._flashing_enabled = enabled
+        self.save()
+
+    @property
+    def github_token(self) -> str:
+        return self._github_token
+
+    def set_github_token(self, token: str) -> None:
+        if not isinstance(token, str):
+            raise ValueError("GitHub token must be a string")
+        self._github_token = token.strip()
+        self.save()
+
     @staticmethod
     def _validate_control_url(url: str) -> str:
         url = url.strip().rstrip("/")
@@ -205,6 +255,22 @@ class Settings:
         if parsed.scheme == "ws" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
             raise ValueError("Remote control URLs must use wss://")
         return url
+
+    @staticmethod
+    def _validate_pinned_ips(ips: str) -> tuple[str, ...]:
+        if not isinstance(ips, str):
+            raise ValueError("Pinned IPs must be a comma-separated string")
+        values = []
+        for value in ips.split(","):
+            try:
+                normalized = str(ipaddress.ip_address(value.strip()))
+            except ValueError as exc:
+                raise ValueError("Each pinned value must be a valid IP address") from exc
+            if normalized not in values:
+                values.append(normalized)
+        if not values:
+            raise ValueError("At least one pinned IP is required")
+        return tuple(values)
 
     def create_room(self, group_name: str | None = None) -> Room:
         room = Room.create(group_name)
@@ -250,9 +316,13 @@ class Settings:
         data = {
             "version": 1,
             "control_url": self._control_url,
+            "control_pinned_ips": list(self._control_pinned_ips),
             "control_setup_dismissed": self._control_setup_dismissed,
             "identity_setup_dismissed": self._identity_setup_dismissed,
+            "flashing_enabled": self._flashing_enabled,
+            "github_token": self._github_token,
             "stun_server": {"host": self._stun_host, "port": self._stun_port},
+            "stun_pinned_ips": list(self._stun_pinned_ips),
             "rooms": [
                 {
                     "room_id": _encode(room.room_id),
@@ -277,13 +347,36 @@ class Settings:
         if data.get("version") != 1:
             raise ValueError("Unsupported settings version")
         self._control_url = data.get("control_url", "")
+        control_pinned_ips = data.get("control_pinned_ips", data.get("control_pinned_ip"))
+        if control_pinned_ips is not None:
+            if isinstance(control_pinned_ips, list):
+                if control_pinned_ips:
+                    control_pinned_ips = ",".join(control_pinned_ips)
+                else:
+                    control_pinned_ips = None
+            if control_pinned_ips is not None:
+                self._control_pinned_ips = self._validate_pinned_ips(control_pinned_ips)
         self._control_setup_dismissed = bool(data.get("control_setup_dismissed", False))
         self._identity_setup_dismissed = bool(data.get("identity_setup_dismissed", False))
+        self._flashing_enabled = bool(data.get("flashing_enabled", True))
+        self._github_token = data.get("github_token", "") if isinstance(data.get("github_token", ""), str) else ""
         if self._control_url:
             self._control_url = self._validate_control_url(self._control_url)
         stun = data.get("stun_server", {})
         self._stun_host = stun.get("host", DEFAULT_STUN_HOST)
         self._stun_port = int(stun.get("port", DEFAULT_STUN_PORT))
+        stun_pinned_ips = data.get("stun_pinned_ips", data.get("stun_pinned_ip"))
+        if stun_pinned_ips is not None:
+            if isinstance(stun_pinned_ips, list):
+                if stun_pinned_ips:
+                    stun_pinned_ips = ",".join(stun_pinned_ips)
+                else:
+                    stun_pinned_ips = None
+            if stun_pinned_ips is not None:
+                values = self._validate_pinned_ips(stun_pinned_ips)
+                if any(not isinstance(ipaddress.ip_address(value), ipaddress.IPv4Address) for value in values):
+                    raise ValueError("STUN pinned IPs must be IPv4")
+                self._stun_pinned_ips = values
         for item in data.get("rooms", []):
             group_name = item.get("group_name")
             room = Room(

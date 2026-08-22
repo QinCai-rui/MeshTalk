@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,9 +11,10 @@ from meshtalk.identity import Identity
 from meshtalk.friends import FriendManager
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
+from meshtalk.protocol import MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION
 from meshtalk.rendezvous import RendezvousService, decrypt_endpoint_card, encrypt_endpoint_card
 from meshtalk.settings import Room, Settings
-from meshtalk.udp_transport import Attempt, READY, UdpTransport
+from meshtalk.udp_transport import Attempt, HELLO, MAGIC, READY, UdpTransport
 
 
 class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
@@ -127,6 +129,59 @@ class PrivateRoomTest(unittest.TestCase):
 
 
 class CandidateValidationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_initial_room_signals_are_roster_snapshots_but_later_signals_are_live(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            local = Identity.generate("Local")
+            remote = Identity.generate("Remote")
+            settings = Settings(Path(temporary) / "settings.json")
+            room = settings.create_room("Group")
+            observed = []
+
+            class FakeUdp:
+                def expect_peer(self, *_):
+                    pass
+
+            async def record_candidate(*_):
+                pass
+
+            async def record_member(group_id, peer_id, announce_join):
+                observed.append((group_id, peer_id, announce_join))
+
+            class FakeWebsocket:
+                def __init__(self, messages):
+                    self.messages = messages
+
+                def __aiter__(self):
+                    return self
+
+                async def __anext__(self):
+                    if not self.messages:
+                        raise StopAsyncIteration
+                    return self.messages.pop(0)
+
+            service = RendezvousService(
+                local, settings, FakeUdp(), record_candidate, record_member
+            )
+            service._initializing_rooms.add(room.id)
+            websocket = FakeWebsocket([
+                json.dumps({
+                    "type": "signal", "room_id": room.id,
+                    "payload": encrypt_endpoint_card(remote, room, None),
+                }),
+                json.dumps({"type": "joined", "room_id": room.id, "member_count": 2}),
+                json.dumps({
+                    "type": "signal", "room_id": room.id,
+                    "payload": encrypt_endpoint_card(remote, room, None),
+                }),
+            ])
+
+            await service._receive_loop(websocket)
+
+            self.assertEqual(
+                observed,
+                [(room.id, remote.peer_id, False), (room.id, remote.peer_id, True)],
+            )
+
     async def test_private_target_is_rejected_before_punching_or_display(self):
         with tempfile.TemporaryDirectory() as temporary:
             local_identity = Identity.generate("Local")
@@ -152,6 +207,40 @@ class CandidateValidationTest(unittest.IsolatedAsyncioTestCase):
 
 
 class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_incompatible_version_still_creates_degraded_session(self):
+        local = Identity.generate("Local")
+        remote = Identity.generate("Remote")
+        mismatches = []
+
+        async def ignore(*args):
+            pass
+
+        transport = UdpTransport(local, ignore, ignore, ignore)
+        transport.on_version_mismatch = lambda peer_id, version, minimum: mismatches.append(
+            (peer_id, version, minimum)
+        )
+        endpoint = ("127.0.0.1", 45454)
+        transport._sendto = lambda *_: None
+        transport.expect_peer(remote.peer_id, endpoint)
+        remote_transport = UdpTransport(remote, ignore, ignore, ignore)
+        hello = remote_transport._make_hello(Attempt(local.peer_id, endpoint))
+        value = json.loads(hello[5:])
+        value.pop("signature")
+        value["version"] = PROTOCOL_VERSION - 1
+        value["min_version"] = PROTOCOL_VERSION - 1
+        value["signature"] = remote.signing_private_key.sign(
+            json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+        ).hex()
+
+        transport.datagram_received(MAGIC + bytes([HELLO]) + json.dumps(value).encode(), endpoint)
+
+        self.assertEqual(mismatches, [(remote.peer_id, PROTOCOL_VERSION - 1, PROTOCOL_VERSION - 1)])
+        self.assertEqual(
+            transport.get_negotiated_protocol(remote.peer_id),
+            (MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION - 1, PROTOCOL_VERSION - 1),
+        )
+        await transport.stop()
+
     async def test_reflected_ready_does_not_confirm_session(self):
         local = Identity.generate("Local")
         remote = Identity.generate("Remote")

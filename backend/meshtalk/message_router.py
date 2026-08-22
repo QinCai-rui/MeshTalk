@@ -46,6 +46,8 @@ class MessageRouter:
         if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:
             raise ValueError("Message exceeds 30 KiB limit")
         peer = self.peer_manager.get_connected_peer(recipient_id)
+        if peer is not None and peer.is_quarantined:
+            raise ValueError("Peer protocol is incompatible; most features are disabled")
         encryption_key = peer.encryption_public_key if peer is not None else None
         if encryption_key is None:
             stored = await self.db.get_peer(recipient_id)

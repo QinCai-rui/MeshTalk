@@ -14,9 +14,7 @@ from meshtalk.protocol import (
     Packet,
     PacketType,
 )
-
-
-GROUP_ID = "a" * 32
+from meshtalk.settings import Settings
 
 
 class FakePeer:
@@ -51,9 +49,15 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.recipient_peer = FakePeer(self.recipient)
         self.db = Database(self.root / "transfers.db")
         await self.db.connect()
+        self.settings = Settings(self.root / "settings.json")
+        self.group_id = self.settings.create_room("Test group").id
+        await self.db.upsert_group_member(
+            self.group_id, self.sender.peer_id, self.sender.display_name
+        )
         self.recipient_manager = FakePeerManager(self.sender_peer)
         self.receiver = FileTransferManager(
-            self.recipient, self.recipient_manager, self.db, self.root / "recipient-files"
+            self.recipient, self.recipient_manager, self.db, self.root / "recipient-files",
+            settings=self.settings,
         )
         self.file_id = "transfer-recovery-test"
         self.content = b"abcdefgh"
@@ -65,7 +69,7 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
             total_chunks=2,
             sender_id=self.sender.peer_id,
             recipient_id=self.recipient.peer_id,
-            group_id=GROUP_ID,
+            group_id=self.group_id,
             created_at=1.0,
         )
         self.offer.signature = self.sender.signing_private_key.sign(self.offer.signed_bytes())
@@ -84,7 +88,7 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
             total_chunks=2,
             sender_id=self.sender.peer_id,
             recipient_id=self.recipient.peer_id,
-            group_id=GROUP_ID,
+            group_id=self.group_id,
             encrypted_content=b"",
         )
         payload.encrypted_content = encrypt_for_recipient(
@@ -98,7 +102,8 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
     async def test_received_chunks_survive_manager_restart(self):
         await self.receiver.handle_packet(self.sender_peer, self._chunk(0))
         self.receiver = FileTransferManager(
-            self.recipient, self.recipient_manager, self.db, self.root / "recipient-files"
+            self.recipient, self.recipient_manager, self.db, self.root / "recipient-files",
+            settings=self.settings,
         )
         await self.receiver.handle_packet(self.sender_peer, self._chunk(1))
 
@@ -111,7 +116,8 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
     async def test_reconnect_requests_only_missing_ranges(self):
         await self.receiver.handle_packet(self.sender_peer, self._chunk(0))
         restarted = FileTransferManager(
-            self.recipient, self.recipient_manager, self.db, self.root / "recipient-files"
+            self.recipient, self.recipient_manager, self.db, self.root / "recipient-files",
+            settings=self.settings,
         )
         await restarted.resume_for_peer(self.sender.peer_id)
 
@@ -133,7 +139,7 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
             "total_chunks": 2,
             "sender_id": self.sender.peer_id,
             "recipient_id": self.recipient.peer_id,
-            "group_id": GROUP_ID,
+            "group_id": self.group_id,
             "direction": "outbound",
             "status": "sent",
             "file_path": str(source),

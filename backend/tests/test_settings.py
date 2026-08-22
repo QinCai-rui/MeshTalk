@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import time
@@ -50,6 +51,19 @@ class SettingsControlSetupTest(unittest.TestCase):
         self.assertTrue(loaded.identity_setup_dismissed)
         self.assertFalse(loaded.control_setup_dismissed)
 
+    def test_flashing_preference_persists(self):
+        settings = Settings(self.path)
+        settings.set_flashing_enabled(False)
+
+        self.assertFalse(Settings(self.path).flashing_enabled)
+
+    def test_github_token_persists_as_plain_text(self):
+        settings = Settings(self.path)
+        settings.set_github_token("ghp_example")
+
+        self.assertEqual(Settings(self.path).github_token, "ghp_example")
+        self.assertEqual(json.loads(self.path.read_text())["github_token"], "ghp_example")
+
     def test_environment_control_url_does_not_mutate_persisted_settings(self):
         settings = Settings(self.path)
         settings.dismiss_control_setup()
@@ -73,6 +87,29 @@ class SettingsControlSetupTest(unittest.TestCase):
         settings.set_control_url("ws://127.0.0.1:8787/v1/rendezvous")
 
         self.assertEqual(settings.control_url, "ws://127.0.0.1:8787/v1/rendezvous")
+
+    def test_server_ip_pins_persist_and_can_be_cleared(self):
+        settings = Settings(self.path)
+        settings.set_control_pinned_ips("203.0.113.10, 2001:0db8::1")
+        settings.set_stun_pinned_ips("203.0.113.10,203.0.113.11")
+
+        loaded = Settings(self.path)
+
+        self.assertEqual(loaded.control_pinned_ips, ("203.0.113.10", "2001:db8::1"))
+        self.assertEqual(loaded.stun_pinned_ips, ("203.0.113.10", "203.0.113.11"))
+        loaded.clear_control_pinned_ips()
+        loaded.clear_stun_pinned_ips()
+        self.assertEqual(Settings(self.path).control_pinned_ips, ())
+        self.assertEqual(Settings(self.path).stun_pinned_ips, ())
+
+    def test_stun_ip_pin_must_be_ipv4(self):
+        settings = Settings(self.path)
+
+        with self.assertRaisesRegex(ValueError, "STUN pinned IPs must be IPv4"):
+            settings.set_stun_pinned_ips("2001:db8::1")
+
+        with self.assertRaisesRegex(ValueError, "valid IP address"):
+            settings.set_control_pinned_ips("not-an-ip")
 
 
 class RoomInvitePersistenceTest(unittest.TestCase):

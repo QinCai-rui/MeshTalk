@@ -42,6 +42,15 @@ When both paths are authenticated, LAN TCP is active and remote UDP remains a
 fallback. The backend reports all known endpoints and marks the active endpoint
 through IPC.
 
+### Incompatible peers
+
+Peers with no overlapping protocol version retain an authenticated TCP or UDP
+connection for transport keepalives and diagnostics, but enter a quarantined
+state. Application packets, profile updates, direct messages, group messages,
+friend requests, acknowledgements, and queued traffic are disabled. The TUI
+keeps the peer visible with an incompatibility warning; group chats list affected
+members without exposing their version ranges.
+
 ## Private Rooms And Named Groups
 
 An unnamed legacy room invite is:

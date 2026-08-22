@@ -9,9 +9,11 @@ import asyncio
 import logging
 import os
 import signal
+import socket
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .identity import Identity
 from .database import Database
@@ -38,7 +40,7 @@ def _get_data_dir() -> Path:
 DATA_DIR = _get_data_dir()
 
 
-async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
+async def main(debug: bool = False) -> None:
     logging.basicConfig(
         level=logging.DEBUG if debug else logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -91,8 +93,16 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
                 logger.info("Flushed %d queued file transfer(s) to %s", flushed_files, peer_id)
             return
         for item in items:
-            # File chunks/offers are not handled via generic pending flush when file_manager already handled;
-            # skip file types here to avoid double-send
+            if peer.is_quarantined:
+                if item["message_id"] and item.get("group_id"):
+                    await db.set_group_delivery(item["message_id"], peer_id, "unavailable")
+                elif item["message_id"]:
+                    await db.mark_message_failed(item["message_id"])
+                    await ipc.broadcast_event({"event": "message_failed", "message_id": item["message_id"]})
+                await db.remove_from_outqueue(item["id"])
+                continue
+            # File transfers are flushed by file_manager to avoid sending their
+            # offer and chunks twice through the generic outbound queue.
             if item["packet_type"] in (PacketType.FILE_OFFER.value, PacketType.FILE_CHUNK.value, PacketType.FILE_ACK.value):
                 continue
             if not await group_router.can_flush(peer, item):
@@ -324,16 +334,21 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
     async def handle_tui_disconnect(client_id: str) -> None:
         await update_tui_presence(client_id, False)
 
-    async def handle_detached() -> None:
-        logger.info("IPC detachment detected; stopping backend")
-        stop_event.set()
-
     async def handle_identity(req: dict) -> dict:
         return {
             "peer_id": identity.peer_id,
             "display_name": identity.display_name,
             "setup_dismissed": settings.identity_setup_dismissed or identity.display_name != "Anonymous",
+            "flashing_enabled": settings.flashing_enabled,
         }
+
+    async def handle_accessibility(req: dict) -> dict:
+        flashing_enabled = req.get("flashing_enabled")
+        if flashing_enabled is not None:
+            if not isinstance(flashing_enabled, bool):
+                return {"error": "flashing_enabled must be boolean"}
+            settings.set_flashing_enabled(flashing_enabled)
+        return {"flashing_enabled": settings.flashing_enabled}
 
     async def handle_status(req: dict) -> dict:
         connected = peer_manager.get_connected_peers()
@@ -404,12 +419,68 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
             "reconnect_attempts": rendezvous.reconnect_attempts,
         }
 
+    async def handle_advanced_config(req: dict) -> dict:
+        changed = False
+        if req.get("clear_control_pinned_ip") is True:
+            settings.clear_control_pinned_ips()
+            changed = True
+        elif "control_pinned_ip" in req:
+            control_pinned_ip = req["control_pinned_ip"]
+            if not isinstance(control_pinned_ip, str):
+                return {"error": "control_pinned_ip must be a string"}
+            settings.set_control_pinned_ips(control_pinned_ip)
+            changed = True
+        elif req.get("auto_control_pinned_ip") is True:
+            control_url = settings.control_url
+            if not control_url:
+                return {"error": "Configure a control server before auto-pinning it"}
+            parsed = urlparse(control_url)
+            addresses = await asyncio.get_running_loop().getaddrinfo(
+                parsed.hostname, parsed.port or (443 if parsed.scheme == "wss" else 80),
+                family=socket.AF_UNSPEC, type=socket.SOCK_STREAM,
+            )
+            values = list(dict.fromkeys(item[4][0] for item in addresses))
+            if not values:
+                return {"error": "Control server did not resolve to an IP address"}
+            settings.set_control_pinned_ips(",".join(values))
+            changed = True
+        if req.get("clear_stun_pinned_ip") is True:
+            settings.clear_stun_pinned_ips()
+            changed = True
+        elif "stun_pinned_ip" in req:
+            stun_pinned_ip = req["stun_pinned_ip"]
+            if not isinstance(stun_pinned_ip, str):
+                return {"error": "stun_pinned_ip must be a string"}
+            settings.set_stun_pinned_ips(stun_pinned_ip)
+            changed = True
+        elif req.get("auto_stun_pinned_ip") is True:
+            stun_host, stun_port = settings.stun_server
+            addresses = await asyncio.get_running_loop().getaddrinfo(
+                stun_host, stun_port, family=socket.AF_INET, type=socket.SOCK_DGRAM,
+            )
+            values = list(dict.fromkeys(item[4][0] for item in addresses))
+            if not values:
+                return {"error": "STUN server did not resolve to an IPv4 address"}
+            settings.set_stun_pinned_ips(",".join(values))
+            changed = True
+        if changed:
+            rendezvous.configuration_changed()
+        stun_host, stun_port = settings.stun_server
+        return {
+            "control_pinned_ips": list(settings.control_pinned_ips),
+            "stun_pinned_ips": list(settings.stun_pinned_ips),
+            "control_url": settings.control_url or None,
+            "stun_server": f"{stun_host}:{stun_port}",
+        }
+
     async def handle_room_create(req: dict) -> dict:
         name = req.get("name")
         if name is not None and not isinstance(name, str):
             return {"error": "name must be a string"}
         room = settings.create_room(name)
         await group_router.sync_groups()
+        if room.group_name:
+            await group_router.record_local_join(room.id)
         rendezvous.configuration_changed()
         return {
             "room_id": room.id,
@@ -424,6 +495,8 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
             return {"error": "invite required"}
         room = settings.join_room(invite)
         await group_router.sync_groups()
+        if room.group_name:
+            await group_router.record_local_join(room.id)
         rendezvous.configuration_changed()
         return {"room_id": room.id, "group_id": room.id if room.group_name else None, "name": room.group_name}
 
@@ -459,6 +532,7 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
         for member in members:
             connection = peer_manager.get_connected_peer(member["peer_id"])
             member["is_online"] = member["peer_id"] == identity.peer_id or connection is not None
+            member["is_incompatible"] = bool(connection and connection.version_mismatch)
             member["show_in_sidebar"] = (
                 member["is_online"] or time.time() - member["last_seen"] <= 24 * 60 * 60
             )
@@ -655,10 +729,12 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
         "blocked_peers": handle_blocked_peers,
         "tui_presence": handle_tui_presence,
         "identity": handle_identity,
+        "accessibility": handle_accessibility,
         "status": handle_status,
         "messages": handle_messages,
         "set_display_name": handle_set_display_name,
         "control": handle_control,
+        "advanced_config": handle_advanced_config,
         "room_create": handle_room_create,
         "room_join": handle_room_join,
         "room_leave": handle_room_leave,
@@ -686,8 +762,6 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
     ipc = IPCServer(
         ipc_handlers,
         on_tui_disconnect=handle_tui_disconnect,
-        on_detached=handle_detached if exit_when_detached else None,
-        exit_when_detached=exit_when_detached,
     )
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
@@ -705,10 +779,7 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
     await rendezvous.start()
     await ipc.start()
 
-    logger.info(
-        "MeshTalk backend running%s",
-        " (exits when IPC detaches)" if exit_when_detached else "",
-    )
+    logger.info("MeshTalk backend running")
 
     def _signal_handler() -> None:
         stop_event.set()
@@ -740,8 +811,7 @@ async def main(debug: bool = False, exit_when_detached: bool = False) -> None:
 
 def run() -> None:
     debug = "--debug" in sys.argv[1:]
-    exit_when_detached = "--exit-when-detached" in sys.argv[1:]
-    asyncio.run(main(debug, exit_when_detached))
+    asyncio.run(main(debug))
 
 
 if __name__ == "__main__":

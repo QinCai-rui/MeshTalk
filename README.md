@@ -40,7 +40,9 @@ extract it, and run the launcher. The archive contains the backend, CLI, TUI, an
 their runtimes, so it does not require Python, uv, Bun, or another package manager.
 
 Release binaries are provided for macOS (Intel and Apple Silicon), Linux (x64
-and ARM64), and Windows (x64).
+and ARM64), and Windows (x64). The Linux binaries require glibc 2.38 or newer
+(Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). Older distributions
+can run MeshTalk by building from source instead.
 
 ```bash
 ./meshtalk         # macOS or Linux: launches backend + TUI
@@ -60,39 +62,28 @@ MeshTalk also sends a desktop notification for each incoming message when the
 terminal supports notification OSC sequences. Notifications show the sender,
 not message content. Set `OPENTUI_NOTIFICATIONS=0` to disable them.
 
-## Build From Source
+## Run From Source
 
-Source development requires [Bun](https://bun.sh) and
-[uv](https://docs.astral.sh/uv/):
+Running from source requires [Bun](https://bun.sh) and
+[uv](https://docs.astral.sh/uv/). This is the development workflow and does not
+produce standalone release binaries:
 
 ```bash
 git clone <repo-url> && cd meshtalk
 bun install
-bun run meshtalk              # launches backend + TUI
-bun run meshtalk -- status    # CLI commands
+bun run meshtalk                 # launch the TUI with a managed backend
+bun run meshtalk -- status       # run a CLI command
+bun run meshtalk --help          # show CLI help
+bun run meshtalk -- <command> --help
 ```
 
-The CLI is optional. Equivalent commands are available for scripting:
+The CLI is optional. Run `bun run meshtalk --help` to see available commands,
+or append `--help` to an individual command for its usage.
 
-```bash
-meshtalk status
-meshtalk peers
-meshtalk identity "Alice"
-meshtalk messages <peer-id>
-meshtalk send <peer-id> "hello"
-meshtalk watch
-meshtalk room create "Project Team"
-meshtalk group list
-meshtalk group members <group-id>
-meshtalk group messages <group-id>
-meshtalk group send <group-id> "hello team"
-meshtalk group leave <group-id>
-meshtalk backend status
-meshtalk backend stop
-```
-
-The launcher starts the backend as a detached daemon and writes its output to
-`~/.meshtalk/backend.log`. Later TUI and CLI invocations reuse that daemon.
+The TUI starts an attached backend and stops it when the TUI exits. Its output
+is written to `~/.meshtalk/backend.log`, so it does not interfere with the TUI.
+Use `bun run meshtalk -- backend start --daemonise` to run a persistent backend;
+later TUI and CLI invocations reuse any running backend.
 
 MeshTalk creates fresh state in `~/.meshtalk`.
 
@@ -203,6 +194,41 @@ MESHTALK_STUN_SERVER=stun.example.com:3478 meshtalk
 
 The control URL can similarly be supplied as `MESHTALK_CONTROL_URL`.
 
+## Compile From Source
+
+To produce local standalone binaries, install [Bun](https://bun.sh),
+[uv](https://docs.astral.sh/uv/), and a native build environment for your
+platform. From the repository root, run:
+
+```bash
+bun install
+mkdir -p dist/local
+
+# Compile the launcher, CLI, and TUI for the current platform.
+bun build ./bin/meshtalk.ts --compile --outfile dist/local/meshtalk
+bun build ./cli/src/index.ts --compile --outfile dist/local/meshtalk-cli
+bun build ./tui/src/index.tsx --compile \
+  --define 'process.env.OPENTUI_LIBC="glibc"' \
+  --outfile dist/local/meshtalk-tui
+
+# Compile the Python backend into a standalone executable.
+uv run --project backend --with pyinstaller pyinstaller \
+  --noconfirm --onefile --name meshtalk-backend \
+  --distpath dist/local --workpath build/pyinstaller \
+  --specpath build/pyinstaller backend/meshtalk_launcher.py
+```
+
+The resulting `meshtalk`, `meshtalk-cli`, `meshtalk-tui`, and
+`meshtalk-backend` files are in `dist/local`. Keep them together when running
+the launcher. To compile for another Bun-supported target, add a target such
+as `--target=bun-linux-arm64` to each `bun build` command. The PyInstaller
+backend must be compiled on the target operating system and CPU architecture.
+
+On Linux, the compiled backend uses the glibc version available on the build
+system. Building on an older Linux distribution generally provides broader
+compatibility with newer distributions; it cannot run on a system with an
+older glibc than the build system.
+
 ## Security
 
 > [!WARNING]
@@ -239,6 +265,11 @@ The control URL can similarly be supplied as `MESHTALK_CONTROL_URL`.
 UDP hole punching does not work through every symmetric NAT, firewall, carrier
 network, or UDP-blocking policy. MeshTalk does not include a TURN relay, so it
 fails closed instead of routing chat content through the control service.
+
+Peer networking and STUN are IPv4-only. Sockets bind to `0.0.0.0`/`127.0.0.1`,
+STUN resolution is forced to `AF_INET`, LAN discovery uses IPv4 broadcast, and
+endpoint candidates must be global unicast IPv4. Control-server IP pins support
+both IPv4 and IPv6.
 
 ## Features
 

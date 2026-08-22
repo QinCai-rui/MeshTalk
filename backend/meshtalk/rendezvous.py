@@ -33,7 +33,7 @@ from .udp_transport import Endpoint, UdpTransport
 logger = logging.getLogger(__name__)
 
 CandidateCallback = Callable[[str, Endpoint], Awaitable[None]]
-RoomMemberCallback = Callable[[str, str], Awaitable[None]]
+RoomMemberCallback = Callable[[str, str, bool], Awaitable[None]]
 CARD_MAX_AGE = 180
 REFRESH_INTERVAL = 30
 PEER_FETCH_INTERVAL = 120
@@ -149,6 +149,7 @@ class RendezvousService:
         self._last_candidates: dict[str, Endpoint] = {}
         self._candidate_changes: dict[str, list[float]] = {}
         self._candidate_seen: dict[str, float] = {}
+        self._initializing_rooms: set[str] = set()
         self._websocket = None
 
     async def start(self) -> None:
@@ -205,6 +206,8 @@ class RendezvousService:
                     pass
                 continue
             try:
+                pinned_ips = self.settings.control_pinned_ips
+                connection_options = {"host": pinned_ips[self.reconnect_attempts % len(pinned_ips)]} if pinned_ips else {}
                 async with connect(
                     url,
                     ssl=CONTROL_SSL_CONTEXT if url.startswith("wss://") else None,
@@ -212,11 +215,13 @@ class RendezvousService:
                     open_timeout=CONTROL_CONNECT_TIMEOUT,
                     ping_interval=CONTROL_PING_INTERVAL,
                     ping_timeout=CONTROL_PING_TIMEOUT,
+                    **connection_options,
                 ) as websocket:
                     self.connected = True
                     self._websocket = websocket
                     self.reconnect_attempts = 0
                     backoff = 1.0
+                    self._initializing_rooms = set(self.settings.rooms)
                     for room in self.settings.rooms.values():
                         await websocket.send(json.dumps({"type": "join", "room_id": room.id}))
                     await self._discover_endpoint()
@@ -243,6 +248,7 @@ class RendezvousService:
                 self.connected = False
                 self._websocket = None
                 self.member_counts.clear()
+                self._initializing_rooms.clear()
             if self._running:
                 self.reconnect_attempts += 1
                 logger.info("Control disconnected; reconnecting in %.0fs", backoff)
@@ -266,13 +272,19 @@ class RendezvousService:
                     count = message.get("member_count")
                     if isinstance(count, int):
                         self.member_counts[room_id] = count
+                    if message.get("type") == "joined":
+                        self._initializing_rooms.discard(room_id)
                 elif message.get("type") == "signal" and isinstance(message.get("payload"), str):
-                    await self._handle_card(room, message["payload"])
+                    await self._handle_card(
+                        room,
+                        message["payload"],
+                        announce_join=room_id not in self._initializing_rooms,
+                    )
                 elif message.get("type") == "peers" and isinstance(message.get("payloads"), list):
                     for payload in message["payloads"]:
                         if isinstance(payload, str):
                             try:
-                                await self._handle_card(room, payload)
+                                await self._handle_card(room, payload, announce_join=False)
                             except Exception as exc:
                                 logger.debug("Rejected fetched peer card: %s", exc)
             except Exception as exc:
@@ -296,11 +308,13 @@ class RendezvousService:
 
     async def _discover_endpoint(self) -> None:
         host, port = self.settings.stun_server
+        pinned_ips = self.settings.stun_pinned_ips
+        pinned_ip = pinned_ips[self.reconnect_attempts % len(pinned_ips)] if pinned_ips else None
         try:
-            self.public_endpoint = await self.udp.discover_public_endpoint(host, port)
+            self.public_endpoint = await self.udp.discover_public_endpoint(pinned_ip or host, port)
         except Exception as exc:
             self.public_endpoint = None
-            logger.warning("Public STUN discovery failed through %s:%d: %s", host, port, exc)
+            logger.warning("Public STUN discovery failed through %s:%d: %s", pinned_ip or host, port, exc)
 
     async def _stun_loop(self) -> None:
         while self._running:
@@ -322,7 +336,7 @@ class RendezvousService:
         payload = encrypt_endpoint_card(self.identity, room, self.public_endpoint)
         await websocket.send(json.dumps({"type": "signal", "room_id": room.id, "payload": payload}))
 
-    async def _handle_card(self, room: Room, payload: str) -> None:
+    async def _handle_card(self, room: Room, payload: str, announce_join: bool = False) -> None:
         value = decrypt_endpoint_card(room, payload)
         peer_id = value["peer_id"]
         if peer_id == self.identity.peer_id:
@@ -336,7 +350,7 @@ class RendezvousService:
             key: seen_at for key, seen_at in self._seen_cards.items() if now - seen_at < CARD_MAX_AGE
         }
         if self.on_room_member:
-            await self.on_room_member(room.id, peer_id)
+            await self.on_room_member(room.id, peer_id, announce_join)
         candidate = value["candidate"]
         if candidate is None:
             return

@@ -15,6 +15,9 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 
+logger = logging.getLogger(__name__)
+
+
 def _get_data_dir() -> Path:
     env = os.environ.get("MESHTALK_DATA_DIR")
     if env and env.strip():
@@ -34,57 +37,19 @@ def _unix_sockets_supported() -> bool:
     return True
 
 
-DETACH_GRACE_SECONDS = 3.0
-
-
 class IPCServer:
     def __init__(
         self,
         handlers: dict[str, Callable[[dict], Awaitable[dict]]],
         on_tui_disconnect: Callable[[str], Awaitable[None]] | None = None,
-        on_detached: Callable[[], Awaitable[None]] | None = None,
-        exit_when_detached: bool = False,
-        detach_grace: float = DETACH_GRACE_SECONDS,
     ) -> None:
         self.handlers = handlers
         self.on_tui_disconnect = on_tui_disconnect
-        self.on_detached = on_detached
-        self.exit_when_detached = exit_when_detached
-        self._detach_grace = detach_grace
-        self._detach_task: asyncio.Task[None] | None = None
         self._server: asyncio.Server | None = None
         self._clients: list[asyncio.StreamWriter] = []
         self._tui_client_ids: dict[asyncio.StreamWriter, str] = {}
         self._use_tcp = False
         self._auth_token = ""
-
-    def _schedule_detach_check(self) -> None:
-        """Schedule a graceful shutdown after the last IPC client disconnects.
-
-        A reconnect before the grace period elapses cancels the pending shutdown.
-        """
-        if not self.exit_when_detached:
-            return
-        if self._clients:
-            if self._detach_task is not None and not self._detach_task.done():
-                self._detach_task.cancel()
-            self._detach_task = None
-            return
-        if self._detach_task is not None and not self._detach_task.done():
-            return
-        self._detach_task = asyncio.create_task(self._detach_timer())
-
-    async def _detach_timer(self) -> None:
-        try:
-            await asyncio.sleep(self._detach_grace)
-        except asyncio.CancelledError:
-            return
-        if self._clients:
-            self._detach_task = None
-            return
-        logger.info("All MeshTalk IPC clients disconnected; shutting down backend")
-        if self.on_detached:
-            await self.on_detached()
 
     async def start(self) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -116,9 +81,6 @@ class IPCServer:
         logger.info("IPC server listening on TCP 127.0.0.1:%d", port)
 
     async def stop(self) -> None:
-        if self._detach_task is not None and not self._detach_task.done():
-            self._detach_task.cancel()
-        self._detach_task = None
         for writer in self._clients:
             writer.close()
         if self._server:
@@ -164,7 +126,6 @@ class IPCServer:
                             return
                         authenticated = True
                         self._clients.append(writer)
-                        self._schedule_detach_check()
                         logger.info("Authenticated IPC client connected")
                         writer.write(b'{"authenticated":true}\n')
                         await writer.drain()
@@ -191,7 +152,6 @@ class IPCServer:
             client_id = self._tui_client_ids.pop(writer, None)
             if client_id and self.on_tui_disconnect:
                 await self.on_tui_disconnect(client_id)
-            self._schedule_detach_check()
             writer.close()
             logger.info("IPC client disconnected")
 

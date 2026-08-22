@@ -7,9 +7,20 @@ import { createConnection, type Socket } from "net";
 import { basename, dirname, join } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
+import { checkForUpdate, installRelease, releaseInstallDir, saveGithubToken } from "../common/updater";
+
+declare const APP_VERSION: string;
+declare const MESHTALK_RELEASE: boolean;
 
 const HOME = homedir();
-const DATA_DIR = process.env.MESHTALK_DATA_DIR || `${HOME}/.meshtalk`;
+function expandHomePath(value: string): string {
+  const trimmed = value.trim();
+  return HOME && (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\"))
+    ? HOME + trimmed.slice(1)
+    : trimmed;
+}
+
+const DATA_DIR = process.env.MESHTALK_DATA_DIR ? expandHomePath(process.env.MESHTALK_DATA_DIR) : `${HOME}/.meshtalk`;
 const SOCKET_PATH = process.env.MESHTALK_IPC_SOCKET || `${DATA_DIR}/meshtalk.sock`;
 const PORT_PATH = `${DATA_DIR}/meshtalk.port`;
 const TOKEN_PATH = process.env.MESHTALK_IPC_TOKEN || `${DATA_DIR}/meshtalk.token`;
@@ -20,6 +31,8 @@ const POLL_INTERVAL_MS = 300;
 const isWindows = process.platform === "win32";
 const EXECUTABLE_SUFFIX = isWindows ? ".exe" : "";
 const PROGRAM = basename(process.argv[1] ?? process.argv[0]);
+const IS_RELEASE_BUILD = typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE;
+const APP_RELEASE_VERSION = typeof APP_VERSION !== "undefined" ? APP_VERSION : "dev";
 
 type Component = {
   command: string[];
@@ -34,6 +47,50 @@ type Components = {
 
 function log(msg: string) {
   console.error(`[meshtalk] ${msg}`);
+}
+
+async function readConfirmation(): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  process.stdout.write("Install now? [y/N] ");
+  const answer = await new Promise<string>((resolve) => {
+    process.stdin.once("data", (data) => resolve(data.toString().trim()));
+  });
+  return /^(y|yes)$/i.test(answer);
+}
+
+async function runUpdate(args: string[]): Promise<void> {
+  if (args[0] === "token") {
+    if (args[1] === "clear" && args.length === 2) {
+      saveGithubToken(null);
+      console.log("Saved GitHub token removed from ~/.meshtalk/settings.json.");
+      return;
+    }
+    if (args.length !== 2 || !args[1]) throw new Error(`Usage: ${PROGRAM} update token <token>|clear`);
+    console.error("Warning: this GitHub token is stored unencrypted in ~/.meshtalk/settings.json.");
+    saveGithubToken(args[1]);
+    console.log("GitHub token saved.");
+    return;
+  }
+  if (!IS_RELEASE_BUILD) {
+    console.log("Update checks are available only in compiled MeshTalk releases.");
+    return;
+  }
+  if (args.length > 1 || (args[0] && args[0] !== "--install")) throw new Error(`Usage: ${PROGRAM} update [--install]`);
+  const release = await checkForUpdate(APP_RELEASE_VERSION);
+  if (!release) {
+    console.log(`MeshTalk ${APP_RELEASE_VERSION} is up to date, or release metadata is unavailable.`);
+    return;
+  }
+  console.log(`MeshTalk ${release.version} is available (installed: ${APP_RELEASE_VERSION}).`);
+  if (args[0] !== "--install" && !await readConfirmation()) {
+    console.log("Update skipped.");
+    return;
+  }
+  const installDir = releaseInstallDir();
+  if (!installDir) throw new Error("Unable to locate the standalone MeshTalk installation.");
+  console.log(`Downloading and installing MeshTalk ${release.version}...`);
+  await installRelease(release, installDir);
+  console.log("Update installed. Restart MeshTalk to use the new version.");
 }
 
 function findExecutable(name: string): string | null {
@@ -183,47 +240,48 @@ async function waitForBackend(backendProcess?: ChildProcess): Promise<boolean> {
   return false;
 }
 
-async function stopBackend(pid?: number): Promise<void> {
-  if (!pid) {
+async function stopBackend(pid?: number, daemonise = true): Promise<void> {
+  if (!pid && daemonise) {
     try { pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim()); } catch {}
   }
   if (!pid || !Number.isInteger(pid)) return;
-  // On POSIX the backend is spawned detached (its own process group), so target
-  // the group to also reach the underlying interpreter/child it spawns. Windows
-  // has no process groups and the backend is a single .exe, so kill the pid directly.
-  const useGroup = process.platform !== "win32";
-  const killGroup = (signal: NodeJS.Signal) => {
-    try {
-      process.kill(useGroup ? -pid! : pid!, signal);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  if (!killGroup("SIGTERM")) return;
+  const useGroup = daemonise && process.platform !== "win32";
+  if (!signalBackend(pid, useGroup, "SIGTERM")) return;
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     await Bun.sleep(200);
     try { process.kill(pid!, 0); } catch { return; }
   }
   log("Backend did not stop gracefully; sending SIGKILL.");
-  killGroup("SIGKILL");
+  signalBackend(pid, useGroup, "SIGKILL");
 }
 
-function startBackend(backend: Component): ChildProcess {
+function signalBackend(pid: number, useGroup: boolean, signal: NodeJS.Signal): boolean {
+  try {
+    process.kill(useGroup ? -pid : pid, signal);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+function startBackend(backend: Component, daemonise = true): ChildProcess {
   const logFile = openSync(BACKEND_LOG_PATH, "a");
   try {
     const proc = spawnProcess(backend.command[0], backend.command.slice(1), {
       cwd: backend.cwd,
-      detached: true,
+      detached: daemonise,
       stdio: ["ignore", logFile, logFile],
       windowsHide: true,
     });
-    proc.unref();
-    if (proc.pid) {
-      writeFileSync(`${DATA_DIR}/meshtalk.pid`, String(proc.pid));
+    if (daemonise) {
+      proc.unref();
+      if (proc.pid) {
+        writeFileSync(`${DATA_DIR}/meshtalk.pid`, String(proc.pid));
+      }
     }
-    log(`Starting backend daemon (pid ${proc.pid}); logs: ${BACKEND_LOG_PATH}`);
+    log(`Starting backend${daemonise ? " daemon" : ""} (pid ${proc.pid}); logs: ${BACKEND_LOG_PATH}`);
     return proc;
   } finally {
     closeSync(logFile);
@@ -234,6 +292,11 @@ async function main() {
   mkdirSync(DATA_DIR, { recursive: true });
 
   const args = process.argv.slice(2);
+
+  if (args[0] === "update") {
+    await runUpdate(args.slice(1));
+    return;
+  }
 
   if (args.length === 1 && ["help", "--help", "-h"].includes(args[0])) {
     const cliComponent = resolveComponents().cli;
@@ -262,27 +325,38 @@ async function main() {
         return;
       }
       const useGroup = process.platform !== "win32";
-      const killGroup = (signal: NodeJS.Signal) => {
-        try {
-          process.kill(useGroup ? -pid! : pid!, signal);
-          return true;
-        } catch {
-          return false;
-        }
-      };
-      if (!killGroup("SIGTERM")) { console.log("Backend is not running."); return; }
+      try {
+        if (!signalBackend(pid, useGroup, "SIGTERM")) { console.log("Backend is not running."); return; }
+      } catch (error) {
+        throw new Error(`Could not stop backend: ${error instanceof Error ? error.message : String(error)}`);
+      }
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
         await Bun.sleep(200);
         try { process.kill(pid, 0); } catch { console.log("Backend stopped."); return; }
       }
       log("Backend did not stop gracefully; sending SIGKILL.");
-      killGroup("SIGKILL");
+      signalBackend(pid, useGroup, "SIGKILL");
       await Bun.sleep(1_000);
       try { process.kill(pid, 0); console.log("Backend still running."); } catch { console.log("Backend stopped."); }
       return;
     }
-    throw new Error(`Usage: ${PROGRAM} backend [status|stop]`);
+    if (command === "start" && args.length === 3 && args[2] === "--daemonise") {
+      if (await backendRunning()) {
+        console.log("Backend is already running.");
+        return;
+      }
+      const backendProcess = startBackend(resolveComponents().backend);
+      log("Waiting for backend to be ready...");
+      if (!await waitForBackend(backendProcess)) {
+        log("Backend did not start within timeout.");
+        backendProcess.kill();
+        log(`See ${BACKEND_LOG_PATH} for details.`);
+        process.exitCode = 1;
+      }
+      return;
+    }
+    throw new Error(`Usage: ${PROGRAM} backend [status|stop|start --daemonise]`);
   }
 
   const components = resolveComponents();
@@ -293,12 +367,9 @@ async function main() {
   let iStartedIt = false;
 
   if (alreadyRunning) {
-    log("Connecting to existing backend daemon...");
+    log("Connecting to existing backend...");
   } else {
-    const backendComponent = launchTui
-      ? { ...components.backend, command: [...components.backend.command, "--exit-when-detached"] }
-      : components.backend;
-    const backendProcess = startBackend(backendComponent);
+    const backendProcess = startBackend(components.backend, !launchTui);
     backendPid = backendProcess.pid ?? undefined;
     iStartedIt = true;
     log("Waiting for backend to be ready...");
@@ -316,7 +387,7 @@ async function main() {
     let cleanupPromise: Promise<void> | undefined;
     const cleanup = () => {
       if (!iStartedIt) return Promise.resolve();
-      return (cleanupPromise ??= stopBackend(backendPid));
+      return (cleanupPromise ??= stopBackend(backendPid, false));
     };
     const handleSignal = () => {
       void cleanup().finally(() => process.exit(130));

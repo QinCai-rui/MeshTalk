@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS messages (
     delivered INTEGER NOT NULL DEFAULT 0,
     stored INTEGER NOT NULL DEFAULT 0,
     queued INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
     read_at REAL,
     received_at REAL
 );
@@ -174,6 +175,8 @@ class Database:
             await self._db.execute("ALTER TABLE messages ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
         if "queued" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN queued INTEGER NOT NULL DEFAULT 0")
+        if "failed" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN failed INTEGER NOT NULL DEFAULT 0")
         if "received_at" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN received_at REAL")
         if "expires_at" in message_columns:
@@ -342,9 +345,9 @@ class Database:
     ) -> list[dict]:
         """Return the latest direct messages with one peer in chronological order."""
         async with self._db.execute(
-            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, received_at
+            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at
                FROM (
-                   SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, received_at
+                    SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at
                    FROM messages
                    WHERE (sender_id = ? AND recipient_id = ?)
                       OR (sender_id = ? AND recipient_id = ?)
@@ -365,8 +368,8 @@ class Database:
         await self._db.execute(
             """INSERT OR IGNORE INTO messages
                 (message_id, sender_id, recipient_id, content, encrypted_content,
-                 created_at, hop_count, max_hops, read_at, blocked, queued, received_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  created_at, hop_count, max_hops, read_at, blocked, queued, failed, received_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 msg["message_id"],
                 msg["sender_id"],
@@ -379,6 +382,7 @@ class Database:
                 msg.get("read_at"),
                 msg.get("blocked", 0),
                 msg.get("queued", 0),
+                msg.get("failed", 0),
                 msg.get("received_at"),
             ),
         )
@@ -478,6 +482,12 @@ class Database:
         )
         await self._db.commit()
 
+    async def mark_message_failed(self, message_id: str) -> None:
+        await self._db.execute(
+            "UPDATE messages SET failed = 1, queued = 0 WHERE message_id = ?", (message_id,)
+        )
+        await self._db.commit()
+
     async def upsert_group(self, group_id: str, name: str) -> None:
         await self._db.execute(
             """INSERT INTO groups (group_id, name, joined_at) VALUES (?, ?, ?)
@@ -485,6 +495,13 @@ class Database:
             (group_id, name, time.time()),
         )
         await self._db.commit()
+
+    async def get_group(self, group_id: str) -> dict | None:
+        async with self._db.execute(
+            "SELECT * FROM groups WHERE group_id = ?", (group_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
     async def remove_group(self, group_id: str) -> None:
         # History remains local so rejoining restores the user's previous view,

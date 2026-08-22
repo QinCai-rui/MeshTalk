@@ -89,7 +89,9 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id, "hi bob")
         await self._wait_for_request(request_id, self.friend_b.db)
         await self.friend_b.respond_to_friend_request(request_id, accept=True)
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(2):
+            while not await self.friend_a.is_friend(self.identity_b.peer_id):
+                await asyncio.sleep(0.02)
         return request_id
 
     async def _wait_for_request(self, request_id: str, db: Database):
@@ -299,8 +301,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_request_id_is_ignored(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id, "note")
-        await asyncio.sleep(0.05)
-        stored = await self.friend_b.db.get_friend_request(request_id)
+        stored = await self._wait_for_request(request_id, self.friend_b.db)
         payload = self._signed_request(request_id, self.identity_a, stored["note"] or "", self.identity_a)
         payload.created_at = stored["created_at"]
         payload.signature = self.identity_a.signing_private_key.sign(payload.signed_bytes())
@@ -331,7 +332,9 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         await self._become_friends()
         await self.friend_a.unfriend(self.identity_b.peer_id)
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(2):
+            while not await self.friend_a.is_friend(self.identity_b.peer_id):
+                await asyncio.sleep(0.02)
         self.assertTrue(await self.friend_a.is_friend(self.identity_b.peer_id))
         self.assertTrue(await self.friend_b.is_friend(self.identity_a.peer_id))
         self.assertEqual(await self.friend_b.db.get_pending_friend_requests(), [])
@@ -340,7 +343,9 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_friend_request_event_contains_expected_fields(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id, "be my friend")
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(2):
+            while not self.friend_request_events:
+                await asyncio.sleep(0.02)
         event = self.friend_request_events[0]
         self.assertEqual(event["request_id"], request_id)
         self.assertEqual(event["sender_id"], self.identity_a.peer_id)
@@ -357,7 +362,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_respond_to_already_answered_request_raises(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        await asyncio.sleep(0.05)
+        await self._wait_for_request(request_id, self.friend_b.db)
         await self.friend_b.respond_to_friend_request(request_id, accept=True)
         with self.assertRaises(ValueError):
             await self.friend_b.respond_to_friend_request(request_id, accept=True)
@@ -365,7 +370,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_respond_when_requester_offline_is_queued(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        await asyncio.sleep(0.05)
+        await self._wait_for_request(request_id, self.friend_b.db)
         self._peer_from(self.manager_b, self.identity_a).writer.close()
         await asyncio.sleep(0.05)
         await self.friend_b.respond_to_friend_request(request_id, accept=True)
@@ -431,9 +436,11 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_declined_response_does_not_add_friend(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        await asyncio.sleep(0.05)
+        await self._wait_for_request(request_id, self.friend_b.db)
         await self.friend_b.respond_to_friend_request(request_id, accept=False)
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(2):
+            while (await self.friend_a.db.get_friend_request(request_id))["status"] == "pending":
+                await asyncio.sleep(0.02)
         self.assertFalse(await self.friend_a.is_friend(self.identity_b.peer_id))
         self.assertEqual((await self.friend_a.db.get_friend_request(request_id))["status"], "declined")
 
@@ -533,13 +540,15 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_simultaneous_requests_are_both_resolved(self):
         await self._connect_peers()
         request_a = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        await asyncio.sleep(0.02)
+        await self._wait_for_request(request_a, self.friend_b.db)
         request_b = await self.friend_b.send_friend_request(self.identity_a.peer_id)
-        await asyncio.sleep(0.05)
+        await self._wait_for_request(request_b, self.friend_a.db)
         # B accepts A's request — B auto-cancels its own outgoing (request_b)
         # and sends the cancel to A. Both become friends.
         await self.friend_b.respond_to_friend_request(request_a, accept=True)
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(2):
+            while not await self.friend_a.is_friend(self.identity_b.peer_id):
+                await asyncio.sleep(0.02)
         self.assertTrue(await self.friend_a.is_friend(self.identity_b.peer_id))
         self.assertTrue(await self.friend_b.is_friend(self.identity_a.peer_id))
         self.assertEqual((await self.friend_a.db.get_friend_request(request_a))["status"], "accepted")
@@ -550,7 +559,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_pending_request_records_recipient(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        await asyncio.sleep(0.05)
+        await self._wait_for_request(request_id, self.friend_b.db)
         outgoing = await self.friend_a.db.get_friend_request(request_id)
         self.assertEqual(outgoing["recipient_id"], self.identity_b.peer_id)
         self.assertEqual(outgoing["recipient_name"], "Bob")
@@ -561,7 +570,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_pending_request_persists_across_reload(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id, "persist me")
-        await asyncio.sleep(0.05)
+        await self._wait_for_request(request_id, self.friend_b.db)
         reopened = Database(self.db_b_path)
         await reopened.connect()
         request = await reopened.get_friend_request(request_id)
@@ -573,7 +582,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_declined_request_status_persists(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        await asyncio.sleep(0.05)
+        await self._wait_for_request(request_id, self.friend_b.db)
         await self.friend_b.respond_to_friend_request(request_id, accept=False)
         reopened = Database(self.db_b_path)
         await reopened.connect()
@@ -741,11 +750,13 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_mutual_request_auto_cancelled_on_accept(self):
         await self._connect_peers()
         request_a = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        await asyncio.sleep(0.02)
+        await self._wait_for_request(request_a, self.friend_b.db)
         request_b = await self.friend_b.send_friend_request(self.identity_a.peer_id)
-        await asyncio.sleep(0.05)
+        await self._wait_for_request(request_b, self.friend_a.db)
         await self.friend_a.respond_to_friend_request(request_b, accept=True)
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(2):
+            while not await self.friend_b.is_friend(self.identity_a.peer_id):
+                await asyncio.sleep(0.02)
         self.assertTrue(await self.friend_a.is_friend(self.identity_b.peer_id))
         self.assertEqual((await self.friend_a.db.get_friend_request(request_a))["status"], "cancelled")
         self.assertEqual((await self.friend_a.db.get_friend_request(request_b))["status"], "accepted")

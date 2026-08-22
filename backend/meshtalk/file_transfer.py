@@ -51,6 +51,8 @@ logger = logging.getLogger(__name__)
 
 FILES_SUBDIR = "files"
 MAX_EARLY_CHUNKS = 64
+MAX_EARLY_CHUNKS_PER_FILE = 8
+EARLY_CHUNK_TTL = 30
 
 
 def _files_base(data_dir: Path) -> Path:
@@ -91,7 +93,7 @@ class FileTransferManager:
         self.settings = settings
         self.on_event = on_event
         self._packet_locks: dict[str, asyncio.Lock] = {}
-        self._early_chunks: dict[str, list[tuple[PeerConnection, FileChunkPayload]]] = {}
+        self._early_chunks: dict[str, tuple[float, list[tuple[PeerConnection, FileChunkPayload]]]] = {}
 
     @property
     def files_base(self) -> Path:
@@ -320,13 +322,17 @@ class FileTransferManager:
         # UDP dispatches application handlers independently. Serialize file
         # packets per peer so an offer creates its transfer before its chunks.
         lock = self._packet_locks.setdefault(peer.peer_id, asyncio.Lock())
-        async with lock:
-            if packet.type == PacketType.FILE_OFFER:
-                await self._handle_offer(peer, packet)
-            elif packet.type == PacketType.FILE_CHUNK:
-                await self._handle_chunk(peer, packet)
-            else:
-                await self._handle_ack(peer, packet)
+        try:
+            async with lock:
+                if packet.type == PacketType.FILE_OFFER:
+                    await self._handle_offer(peer, packet)
+                elif packet.type == PacketType.FILE_CHUNK:
+                    await self._handle_chunk(peer, packet)
+                else:
+                    await self._handle_ack(peer, packet)
+        finally:
+            if not lock.locked() and self._packet_locks.get(peer.peer_id) is lock:
+                self._packet_locks.pop(peer.peer_id)
         return True
 
     async def _handle_offer(self, peer: PeerConnection, packet: Packet) -> None:
@@ -360,8 +366,14 @@ class FileTransferManager:
             return
         if await self.db.is_message_seen(offer.file_id):
             return
-        # Check friend policy: require friend for direct files
-        if not offer.group_id:
+        # Direct files require friendship; group files require active membership.
+        if offer.group_id:
+            room = self.settings.rooms.get(offer.group_id) if self.settings else None
+            member = await self.db.get_group_member(offer.group_id, peer.peer_id)
+            if not room or room.group_name is None or not member or not member["active"]:
+                logger.info("Blocked file %s from unauthorized group peer %s", offer.file_id, peer.peer_id)
+                return
+        else:
             is_friend = await self.db.is_friend(peer.peer_id)
             if not is_friend:
                 logger.info("Blocked file %s from non-friend %s", offer.file_id, peer.peer_id)
@@ -413,8 +425,12 @@ class FileTransferManager:
             raise ValueError("Invalid file chunk signature") from exc
         transfer = await self.db.get_file_transfer(chunk.file_id)
         if not transfer:
-            if sum(len(chunks) for chunks in self._early_chunks.values()) < MAX_EARLY_CHUNKS:
-                self._early_chunks.setdefault(chunk.file_id, []).append((peer, chunk))
+            self._evict_stale_early_chunks()
+            total = sum(len(chunks) for _, chunks in self._early_chunks.values())
+            received_at, chunks = self._early_chunks.get(chunk.file_id, (time.monotonic(), []))
+            if total < MAX_EARLY_CHUNKS and len(chunks) < MAX_EARLY_CHUNKS_PER_FILE:
+                chunks.append((peer, chunk))
+                self._early_chunks[chunk.file_id] = (received_at, chunks)
                 logger.debug("Buffered chunk for file offer %s", chunk.file_id)
             else:
                 logger.warning("Dropped early file chunk for %s: buffer is full", chunk.file_id)
@@ -425,10 +441,17 @@ class FileTransferManager:
         await self._store_chunk(peer, chunk, transfer)
 
     async def _store_early_chunks(self, file_id: str) -> None:
-        for peer, chunk in self._early_chunks.pop(file_id, []):
+        _, chunks = self._early_chunks.pop(file_id, (0, []))
+        for peer, chunk in chunks:
             transfer = await self.db.get_file_transfer(file_id)
             if transfer:
                 await self._store_chunk(peer, chunk, transfer)
+
+    def _evict_stale_early_chunks(self) -> None:
+        cutoff = time.monotonic() - EARLY_CHUNK_TTL
+        for file_id, (received_at, _) in list(self._early_chunks.items()):
+            if received_at < cutoff:
+                self._early_chunks.pop(file_id)
 
     async def _store_chunk(self, peer: PeerConnection, chunk: FileChunkPayload, transfer: dict) -> None:
         if (
@@ -490,8 +513,8 @@ class FileTransferManager:
         ack.signature = self.identity.signing_private_key.sign(ack.signed_bytes())
         try:
             await self.peer_manager.send_packet(peer, Packet(PacketType.FILE_ACK, ack.encode()))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to send completion ack for %s to %s: %s", file_id, peer.peer_id, exc)
 
     async def _send_missing_request(self, peer: PeerConnection, file_id: str, missing_ranges: list[tuple[int, int]]) -> None:
         ack = FileAckPayload(

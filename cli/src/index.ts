@@ -17,6 +17,13 @@ Commands:
   download <file-id> <dest>   Download a received file to dest path/folder
   watch                       Print incoming messages until interrupted
   control [set-url <url>]      Show or configure the control service
+  advanced                         Show server IP pins that override DNS
+  advanced control manual <ips>     Pin comma-separated IPv4/IPv6 control IPs
+  advanced control auto             Resolve and pin control A/AAAA records
+  advanced control clear            Clear control server IP pins
+  advanced stun manual <ips>        Pin comma-separated IPv4 STUN IPs
+  advanced stun auto                Resolve and pin STUN A records
+  advanced stun clear               Clear STUN server IP pins
   room create [name]          Create a private room or named group chat
   room join <invite>          Join a private room
   room leave <room-id>        Leave a room
@@ -38,6 +45,11 @@ Commands:
   blocked                     List peers whose friend requests are ignored
   block <peer-id>             Ignore friend requests from a peer
   unblock <peer-id>           Allow friend requests from a peer again
+  backend status              Show backend status
+  backend start --daemonise   Start a persistent backend daemon
+  backend stop                Stop the backend daemon
+  update [--install]          Check for and install a compiled-release update
+  update token <token>|clear  Save or remove a GitHub token for update checks
 `;
 
 function hasError(response: IPCResponse): boolean {
@@ -243,6 +255,33 @@ async function main(): Promise<void> {
       console.log(`Connection: ${response.connected ? "connected" : "disconnected"}`);
       console.log(`STUN server: ${response.stun_server}`);
       if (response.public_endpoint) console.log(`Public UDP endpoint: ${(response.public_endpoint as unknown[]).join(":")}`);
+      return;
+    }
+
+    if (command === "advanced") {
+      let response: IPCResponse;
+      if (!args.length) {
+        response = await ipc.send("advanced_config");
+      } else if (args[0] === "control" && args[1] === "manual" && args[2] && args.length === 3) {
+        response = await ipc.send("advanced_config", { control_pinned_ip: args[2] });
+      } else if (args[0] === "control" && args[1] === "auto" && args.length === 2) {
+        response = await ipc.send("advanced_config", { auto_control_pinned_ip: true });
+      } else if (args[0] === "control" && args[1] === "clear" && args.length === 2) {
+        response = await ipc.send("advanced_config", { clear_control_pinned_ip: true });
+      } else if (args[0] === "stun" && args[1] === "manual" && args[2] && args.length === 3) {
+        response = await ipc.send("advanced_config", { stun_pinned_ip: args[2] });
+      } else if (args[0] === "stun" && args[1] === "auto" && args.length === 2) {
+        response = await ipc.send("advanced_config", { auto_stun_pinned_ip: true });
+      } else if (args[0] === "stun" && args[1] === "clear" && args.length === 2) {
+        response = await ipc.send("advanced_config", { clear_stun_pinned_ip: true });
+      } else {
+        throw new Error(`Usage: ${PROGRAM} advanced [control <manual <ips>|auto|clear>|stun <manual <ips>|auto|clear>]`);
+      }
+      if (hasError(response)) return;
+      console.log(`Control server: ${response.control_url ?? "not configured"}`);
+      console.log(`Control IP pins: ${Array.isArray(response.control_pinned_ips) && response.control_pinned_ips.length ? response.control_pinned_ips.join(", ") : "not pinned"}`);
+      console.log(`STUN server: ${response.stun_server}`);
+      console.log(`STUN IP pins: ${Array.isArray(response.stun_pinned_ips) && response.stun_pinned_ips.length ? response.stun_pinned_ips.join(", ") : "not pinned"}`);
       return;
     }
 
