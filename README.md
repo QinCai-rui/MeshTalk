@@ -35,6 +35,25 @@ Python backend ---- LAN broadcast + TCP ---- LAN peers
 
 ## Quick Start
 
+### Quick Install
+
+The quick installer downloads the latest release for your platform and places
+the binaries in `~/.local/bin` (or `%LOCALAPPDATA%\MeshTalk` on Windows):
+
+```bash
+curl -fsSL https://go.qincai.xyz/getmeshtalk | bash
+```
+
+Pass `--non-interactive` to skip prompts and accept all defaults:
+
+```bash
+curl -fsSL https://go.qincai.xyz/getmeshtalk | bash -s -- --non-interactive --yes
+```
+
+Other options: `--version TAG`, `--install-dir DIR`, `--prerelease`, `--uninstall`, `--dry-run`. Run with `--help` for the full list.
+
+### Manual Install
+
 Download the `.tar.gz` archive for your platform from the [latest release](../../releases/latest),
 extract it, and run the launcher. The archive contains the backend, CLI, TUI, and
 their runtimes, so it does not require Python, uv, Bun, or another package manager.
@@ -52,6 +71,8 @@ On Windows, run `meshtalk.exe` from the extracted archive. Keep these files
 together in the extracted directory: `meshtalk`, `meshtalk-backend`,
 `meshtalk-cli`, and `meshtalk-tui` (all end in `.exe` on Windows). Only the
 `meshtalk` launcher is invoked directly.
+
+### First Launch
 
 The first launch offers guided remote-discovery setup. Press `Ctrl+P` at any
 time to open commands for control-server status and setup, named group-chat
