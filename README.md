@@ -181,6 +181,23 @@ offline group-capable members before removing the group locally. Existing local
 history is retained and becomes visible again if the same invite is rejoined;
 messages missed while absent are not replayed.
 
+## File Transfer
+
+MeshTalk supports sending files (up to 50 MiB) directly between peers over the
+existing E2EE transport. Files are chunked, encrypted per-chunk with ephemeral
+X25519 keys, and reassembled by the receiver. In the TUI, press `Ctrl+P` or use
+the file-send shortcut while in a conversation to send a file. Incoming files
+show an image preview when the file is an image, and you can save them to any
+location via `file_download`.
+
+For group file transfers, the file is sent independently to every active cached
+group member. Offline members with a known encryption key receive queued copies
+that flush on reconnect.
+
+Files are stored in `~/.meshtalk/files/<file_id>/` by default. Override the
+storage directory with the `files_dir` IPC command or `MESHTALK_DATA_DIR`
+environment variable.
+
 Production control services must be exposed through TLS as `wss://`. Plain
 `ws://` configuration is accepted only for localhost. Set `PORT` for the
 control process if port 8787 is unavailable.
@@ -246,8 +263,8 @@ older glibc than the build system.
   key derived from the room secret. The secret never reaches the control server.
 - Remote UDP links use signed ephemeral X25519 key exchange. Transport fragments,
   acknowledgements, and keepalives are authenticated; transport data is encrypted.
-- Message content has a separate end-to-end encrypted envelope and is never sent
-  through the control service.
+- Message content and file chunks have a separate end-to-end encrypted envelope and
+  are never sent through the control service.
 - The control service can observe connection IPs, timing, opaque room IDs, and
   room sizes. It can block or delay signaling, but cannot decrypt endpoint cards
   or forge signed peer identities.
@@ -276,6 +293,7 @@ both IPv4 and IPv6.
 - Offline LAN discovery and authenticated TCP peer connections
 - Encrypted multi-peer room rendezvous through a configurable control service
 - Named room-backed group chats with pairwise per-recipient E2EE and offline queueing
+- Cross-platform file transfer with image preview and download
 - Public endpoint discovery through configurable STUN
 - Reliable, encrypted, authenticated UDP peer transport with NAT hole punching
 - End-to-end message encryption using X25519 and AES-GCM
