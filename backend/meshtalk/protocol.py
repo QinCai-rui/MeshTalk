@@ -55,8 +55,9 @@ DEFAULT_CAPABILITIES = [
     CAP_FILE_TRANSFER,
 ]
 LEGACY_CAPABILITIES = [capability for capability in DEFAULT_CAPABILITIES if capability not in (CAP_GROUP_CHAT, CAP_FILE_TRANSFER)]
-# Capabilities that have a direct counterpart in this implementation. Used to
-# validate that a peer only advertises capabilities we recognise.
+# Capabilities that have a direct counterpart in this implementation. Unknown
+# advertised capabilities remain in the signed handshake but are excluded from
+# the negotiated set by ``intersect_capabilities``.
 KNOWN_CAPABILITIES = frozenset(DEFAULT_CAPABILITIES)
 UDP_PORT = 24890
 TCP_PORT = 24891
@@ -92,18 +93,15 @@ def intersect_capabilities(local: list[str], remote: list[str]) -> list[str]:
 
 
 def validate_capabilities(capabilities: list[str]) -> list[str]:
-    """Normalise and filter a capability list received from a remote peer.
+    """Return capability strings received from a remote peer.
 
-    Drop duplicates, non-string entries and any capability we do not recognise.
-    Returns a list safe to store on a :class:`PeerConnection`.
+    Unknown capabilities must be retained until handshake signature verification;
+    removing one would change the authenticated canonical payload. Unsupported
+    capabilities are filtered later when the negotiated intersection is built.
     """
     if not isinstance(capabilities, list):
         return []
-    cleaned = []
-    for cap in capabilities:
-        if isinstance(cap, str) and cap in KNOWN_CAPABILITIES and cap not in cleaned:
-            cleaned.append(cap)
-    return cleaned
+    return [cap for cap in capabilities if isinstance(cap, str)]
 
 
 class IncompatibleProtocolError(ValueError):

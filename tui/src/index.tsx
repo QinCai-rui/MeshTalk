@@ -22,6 +22,13 @@ function getComposerHeight(composer: TextareaRenderable | null): number {
   return Math.min(MAX_COMPOSER_HEIGHT, Math.max(MIN_COMPOSER_HEIGHT, lines))
 }
 
+type VersionMismatch = {
+  remote_version: number
+  remote_min: number
+  local_version: number
+  local_min: number
+}
+
 type Peer = {
   peer_id: string
   display_name: string
@@ -41,12 +48,7 @@ type Peer = {
   // Present (and non-null) only when the backend determined this peer is
   // incompatible with the local protocol version range. Computed by the
   // backend so it survives restarts and missed handshake events.
-  version_mismatch?: {
-    remote_version: number
-    remote_min: number
-    local_version: number
-    local_min: number
-  } | null
+  version_mismatch?: VersionMismatch | null
   // Authoritative list of messaging limitations for this peer, computed by
   // the backend. Rendered directly by the UI (no client-side re-derivation).
   delivery_warnings?: ("offline" | "not_friend" | "rendezvous_out_of_sync" | "incompatible")[]
@@ -349,6 +351,7 @@ function ChatApp() {
   const [status, setStatus] = useState("Connecting to backend...")
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
+  const [versionMismatches, setVersionMismatches] = useState<Record<string, VersionMismatch>>({})
   const [blinkOn, setBlinkOn] = useState(true)
   const [flashingEnabled, setFlashingEnabled] = useState(true)
   const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number; control_url?: string | null }>({ connected: false, reconnect_attempts: 0 })
@@ -653,13 +656,16 @@ function ChatApp() {
       return
     }
     if (event.event === "peer_version_mismatch") {
-      const remoteMax = (event.remote_version as number) === -1 ? 0 : event.remote_version as number
-      const remoteMin = (event.remote_min_version as number) === -1 ? 0 : event.remote_min_version as number
-      const localMin = event.local_min_version as number
-      const localVersion = event.local_version as number
-      showStatus(`Incompatible peer protocol version: this peer supports v${remoteMin}-v${remoteMax}, local is v${localMin}-v${localVersion}. Features may not work correctly.`)
-      // The authoritative mismatch state is carried on each peer via
-      // refreshPeers()/peer_update; refresh so it shows without waiting.
+      const peerId = event.peer_id as string
+      setVersionMismatches((current) => ({
+        ...current,
+        [peerId]: {
+          remote_version: event.remote_version as number,
+          remote_min: event.remote_min_version as number,
+          local_version: event.local_version as number,
+          local_min: event.local_min_version as number,
+        },
+      }))
       void refreshPeers()
       return
     }
@@ -705,8 +711,15 @@ function ChatApp() {
     }
     if (event.event !== "message") {
       if (event.event === "peer_update") {
-        // Peer compatibility is now derived from the backend-computed
-        // `version_mismatch` field on each peer, so just reload the list.
+        const peerId = event.peer_id as string
+        const mismatch = event.version_mismatch as VersionMismatch | null | undefined
+        setVersionMismatches((current) => {
+          if (mismatch) return { ...current, [peerId]: mismatch }
+          // A peer_update without mismatch data is emitted on disconnect, so
+          // do not keep an incompatibility warning for an offline peer.
+          const { [peerId]: _, ...next } = current
+          return next
+        })
         void refreshPeers()
       }
       return
@@ -1785,6 +1798,11 @@ function ChatApp() {
   }
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId)
+  const selectedVersionMismatch = selected && (selected.version_mismatch ?? versionMismatches[selected.peer_id])
+  const selectedIsIncompatible = Boolean(selectedVersionMismatch)
+  const incompatiblePeerMessage = selectedVersionMismatch
+    ? `Incompatible peer protocol: peer supports v${selectedVersionMismatch.remote_min === -1 ? 0 : selectedVersionMismatch.remote_min}-v${selectedVersionMismatch.remote_version === -1 ? 0 : selectedVersionMismatch.remote_version}; local supports v${selectedVersionMismatch.local_min}-v${selectedVersionMismatch.local_version}. Most features are disabled.`
+    : ""
   const selectedGroup = groups.find((group) => group.group_id === selectedGroupId)
   const conversationFiles = useMemo(() => fileTransfers.filter((f) => {
     if (!f.file_path) return false
@@ -1843,6 +1861,7 @@ function ChatApp() {
             {!peers.length ? <text fg="#888888">No peers discovered</text> : null}
             {peers.map((peer) => {
               const presence = peerPresence(peer)
+              const mismatch = peer.version_mismatch ?? versionMismatches[peer.peer_id]
               const muted = peer.peer_id in mutedPeers
               return <box
                 key={peer.peer_id}
@@ -1852,8 +1871,8 @@ function ChatApp() {
                 }}
                 style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}
               >
-                <text truncate fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>
-                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {peer.version_mismatch ? <span fg="#ff5555">INCOMPATIBLE</span> : presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
+                <text truncate fg={mismatch ? "#66dd88" : presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>
+                  {peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {mismatch ? <span fg="#ff5555">INCOMPATIBLE</span> : presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}
                 </text>
                 {peer.endpoints.length ? peer.endpoints.map((endpoint) => (
                   <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>
@@ -1911,11 +1930,11 @@ function ChatApp() {
           </box>
         ) : null}
         <box
-          title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
+          title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${selectedIsIncompatible ? "incompatible" : peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"}
           bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"}
           style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}
         >
-          {(selected && (selected.delivery_warnings ?? []).length > 0) ? (
+          {(selected && ((selected.delivery_warnings ?? []).length > 0 || selectedIsIncompatible)) ? (
             <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
               {(selected.delivery_warnings ?? []).map((kind) => {
                 if (kind === "offline") {
@@ -1924,11 +1943,14 @@ function ChatApp() {
                 if (kind === "not_friend") {
                   return <text key="not_friend" wrapMode="word" fg="#e0a34a">Not friends yet. Your messages will be blocked until they accept your friend request (commands {'>'} friends {'>'} add friend).</text>
                 }
-                if (kind === "incompatible" && selected.version_mismatch) {
-                  return <text key="incompatible" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff5555" : "#8a2e2e"}><b>Incompatible peer protocol. Most features are disabled until both peers support a compatible protocol version.</b></text>
+                if (kind === "incompatible" && selectedVersionMismatch) {
+                  return <text key="incompatible" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff5555" : "#8a2e2e"}><b>{incompatiblePeerMessage}</b></text>
                 }
                 return null
               })}
+              {selectedIsIncompatible && !(selected.delivery_warnings ?? []).includes("incompatible") ? (
+                <text wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff5555" : "#8a2e2e"}><b>{incompatiblePeerMessage}</b></text>
+              ) : null}
             </box>
           ) : null}
           {selectedGroup && incompatibleGroupMembers.length > 0 ? (

@@ -74,8 +74,8 @@ class CapabilityTest(unittest.TestCase):
         remote = [CAP_TEXT_CHAT, "made_up", CAP_TEXT_CHAT]
         self.assertEqual(intersect_capabilities(DEFAULT_CAPABILITIES, remote), [CAP_TEXT_CHAT])
 
-    def test_validate_filters_unknown(self):
-        self.assertEqual(validate_capabilities(["text_chat", 123, "nope"]), [CAP_TEXT_CHAT])
+    def test_validate_retains_unknown_for_signature_verification(self):
+        self.assertEqual(validate_capabilities(["text_chat", 123, "nope"]), [CAP_TEXT_CHAT, "nope"])
 
     def test_validate_empty_enables_no_capabilities(self):
         self.assertEqual(validate_capabilities([]), [])
@@ -176,8 +176,12 @@ class HandshakePayloadTest(unittest.TestCase):
         decoded = HandshakePayload.decode(payload.encode())
         self.assertEqual(decoded.protocol_version, 2)
         self.assertEqual(decoded.min_protocol_version, 1)
-        # Unknown capabilities are dropped on decode.
-        self.assertEqual(decoded.capabilities, [CAP_TEXT_CHAT])
+        # Unknown capabilities remain until signature verification and are
+        # filtered only when the negotiated intersection is built.
+        self.assertEqual(decoded.capabilities, [CAP_TEXT_CHAT, "custom_feat"])
+        Ed25519PublicKey.from_public_bytes(identity.signing_public_key_bytes()).verify(
+            decoded.signature, decoded.signed_bytes()
+        )
 
     def test_decode_old_packet_defaults_to_v1(self):
         # A handshake from a pre-versioning peer has no version/capability fields.
@@ -253,6 +257,7 @@ class ApplyHandshakeTest(unittest.TestCase):
             payload = self._signed_payload(
                 remote, capabilities=[CAP_TEXT_CHAT, CAP_PROFILE_SYNC, "future_cap"]
             )
+            payload = HandshakePayload.decode(payload.encode())
             peer = PeerConnection(remote.peer_id, "127.0.0.1", 24891, PeerState.CONNECTING)
             local._apply_handshake(peer, payload, expected_challenge=b"")
             self.assertEqual(peer.protocol_version, PROTOCOL_VERSION)
