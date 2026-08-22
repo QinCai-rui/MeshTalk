@@ -825,6 +825,7 @@ over IPC.
 | files_dir | path? | Get or set the files storage directory (`~/.meshtalk/files` by default). |
 | mute / unmute | peer_id, timeout? | Mute state. |
 | muted_peers | - | Current mutes. |
+| notifications | setup_dismissed?, delivery?, events? | Global notification preferences. Delivery is `terminal`, `native`, or `disabled`; events controls messages, friend requests, file offers, and completed files. |
 | debug_re_stun | - | Re-run STUN + re-announce. |
 | debug_info | - | Full peer/endpoint/room diagnostic dump. |
 | shutdown | - | Stops the backend. |

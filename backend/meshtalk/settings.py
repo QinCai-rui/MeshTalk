@@ -121,6 +121,14 @@ class Settings:
         self._control_setup_dismissed = False
         self._identity_setup_dismissed = False
         self._flashing_enabled = True
+        self._notification_setup_dismissed = False
+        self._notification_delivery = "terminal"
+        self._notification_events = {
+            "messages": True,
+            "friend_requests": True,
+            "file_offers": True,
+            "file_completed": True,
+        }
         self._github_token = ""
         self._stun_host = DEFAULT_STUN_HOST
         self._stun_port = DEFAULT_STUN_PORT
@@ -311,6 +319,34 @@ class Settings:
             return False
         return True
 
+    @property
+    def notification_preferences(self) -> dict:
+        return {
+            "setup_dismissed": self._notification_setup_dismissed,
+            "delivery": self._notification_delivery,
+            "events": dict(self._notification_events),
+        }
+
+    def set_notification_preferences(
+        self,
+        *,
+        setup_dismissed: bool | None = None,
+        delivery: str | None = None,
+        events: dict[str, bool] | None = None,
+    ) -> None:
+        if setup_dismissed is not None:
+            self._notification_setup_dismissed = setup_dismissed
+        if delivery is not None:
+            if delivery not in {"terminal", "native", "disabled"}:
+                raise ValueError("notification delivery must be terminal, native, or disabled")
+            self._notification_delivery = delivery
+        if events is not None:
+            valid_events = set(self._notification_events)
+            if set(events) - valid_events or any(not isinstance(enabled, bool) for enabled in events.values()):
+                raise ValueError("notification events must contain boolean known event values")
+            self._notification_events.update(events)
+        self.save()
+
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
@@ -320,6 +356,7 @@ class Settings:
             "control_setup_dismissed": self._control_setup_dismissed,
             "identity_setup_dismissed": self._identity_setup_dismissed,
             "flashing_enabled": self._flashing_enabled,
+            "notifications": self.notification_preferences,
             "github_token": self._github_token,
             "stun_server": {"host": self._stun_host, "port": self._stun_port},
             "stun_pinned_ips": list(self._stun_pinned_ips),
@@ -359,6 +396,17 @@ class Settings:
         self._control_setup_dismissed = bool(data.get("control_setup_dismissed", False))
         self._identity_setup_dismissed = bool(data.get("identity_setup_dismissed", False))
         self._flashing_enabled = bool(data.get("flashing_enabled", True))
+        notifications = data.get("notifications", {})
+        if isinstance(notifications, dict):
+            self._notification_setup_dismissed = bool(notifications.get("setup_dismissed", False))
+            delivery = notifications.get("delivery")
+            if delivery in {"terminal", "native", "disabled"}:
+                self._notification_delivery = delivery
+            events = notifications.get("events")
+            if isinstance(events, dict):
+                for event in self._notification_events:
+                    if isinstance(events.get(event), bool):
+                        self._notification_events[event] = events[event]
         self._github_token = data.get("github_token", "") if isinstance(data.get("github_token", ""), str) else ""
         if self._control_url:
             self._control_url = self._validate_control_url(self._control_url)

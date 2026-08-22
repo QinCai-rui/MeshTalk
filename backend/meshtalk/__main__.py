@@ -590,6 +590,26 @@ async def main(debug: bool = False) -> None:
                 muted[peer_id] = until
         return {"muted_peers": muted}
 
+    async def handle_notifications(req: dict) -> dict:
+        setup_dismissed = req.get("setup_dismissed")
+        delivery = req.get("delivery")
+        events = req.get("events")
+        if setup_dismissed is not None and not isinstance(setup_dismissed, bool):
+            return {"error": "setup_dismissed must be a boolean"}
+        if delivery is not None and not isinstance(delivery, str):
+            return {"error": "delivery must be a string"}
+        if events is not None and not isinstance(events, dict):
+            return {"error": "events must be an object"}
+        try:
+            settings.set_notification_preferences(
+                setup_dismissed=setup_dismissed,
+                delivery=delivery,
+                events=events,
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return settings.notification_preferences
+
     async def handle_shutdown(req: dict) -> dict:
         stop_event.set()
         return {"stopping": True}
@@ -748,6 +768,7 @@ async def main(debug: bool = False) -> None:
         "mute": handle_mute,
         "unmute": handle_unmute,
         "muted_peers": handle_muted_peers,
+        "notifications": handle_notifications,
         "debug_re_stun": handle_debug_re_stun,
         "debug_info": handle_debug_info,
         "file_send": handle_file_send,
