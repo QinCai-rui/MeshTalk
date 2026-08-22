@@ -10,8 +10,11 @@ METADATA_NAME=".meshtalk-installer"
 ACTION="install"
 DRY_RUN=0
 AS_ROOT=0
+NON_INTERACTIVE=0
+ASSUME_YES=0
 VERSION=""
 INSTALL_DIR=""
+DOWNLOAD_METHOD=auto
 AUTH_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 
 RESET=""
@@ -26,9 +29,9 @@ TASK_LABEL=""
 CHECKSUM_NOTE=""
 
 init_colors() {
-  [[ -t 1 && -z ${NO_COLOR:-} ]] || return
-  command -v tput >/dev/null 2>&1 || return
-  [[ $(tput colors 2>/dev/null || printf 0) -ge 8 ]] || return
+  [[ -t 1 && -z ${NO_COLOR:-} ]] || return 0
+  command -v tput >/dev/null 2>&1 || return 0
+  [[ $(tput colors 2>/dev/null || printf 0) -ge 8 ]] || return 0
 
   RESET=$(tput sgr0 2>/dev/null || true)
   BOLD=$(tput bold 2>/dev/null || true)
@@ -63,6 +66,10 @@ Usage:
 
 Options:
   --version VERSION       Install a specific release tag instead of prompting.
+  --prerelease             Install the latest pre-release instead of prompting.
+  --method METHOD          Download via auto, gh, curl, or wget.
+  --non-interactive        Disable prompts; use stable release and default directory.
+  --yes                    Answer installation replacement prompts yes.
   --install-dir DIRECTORY Use a specific user-owned installation directory.
   --uninstall             Remove an installation recorded by its metadata file.
   --dry-run               Show the planned action without network or filesystem changes.
@@ -120,6 +127,9 @@ confirm() {
   local prompt=$1
   local default=${2:-n}
   local answer
+
+  [[ $ASSUME_YES -eq 1 ]] && return 0
+  [[ $NON_INTERACTIVE -eq 1 ]] && return 1
 
   if [[ $default == y ]]; then
     prompt_read answer "${BOLD}${prompt}${RESET} ${DIM}[Y/n]${RESET}: " || true
@@ -233,6 +243,12 @@ parse_arguments() {
       --dry-run)
         DRY_RUN=1
         ;;
+      --non-interactive|-n)
+        NON_INTERACTIVE=1
+        ;;
+      --yes|-y)
+        ASSUME_YES=1
+        ;;
       --i-understand-the-risks-of-running-as-root)
         AS_ROOT=1
         ;;
@@ -247,6 +263,18 @@ parse_arguments() {
       --version=*)
         VERSION=${1#*=}
         [[ -n $VERSION ]] || die "--version requires a release tag"
+        ;;
+      --prerelease)
+        VERSION=latest-prerelease
+        ;;
+      --method)
+        (($# >= 2)) || die "--method requires auto, gh, curl, or wget"
+        DOWNLOAD_METHOD=$2
+        shift
+        ;;
+      --method=*)
+        DOWNLOAD_METHOD=${1#*=}
+        [[ -n $DOWNLOAD_METHOD ]] || die "--method requires auto, gh, curl, or wget"
         ;;
       --install-dir)
         (($# >= 2)) || die "--install-dir requires a directory"
@@ -263,10 +291,15 @@ parse_arguments() {
     esac
     shift
   done
+
+  case $DOWNLOAD_METHOD in
+    auto|gh|curl|wget) ;;
+    *) die "Invalid download method: ${DOWNLOAD_METHOD}. Use auto, gh, curl, or wget." ;;
+  esac
 }
 
 choose_action() {
-  if [[ $ACTION != install || -n $VERSION || -n $INSTALL_DIR || $DRY_RUN -eq 1 ]]; then
+  if [[ $ACTION != install || -n $VERSION || -n $INSTALL_DIR || $DRY_RUN -eq 1 || $NON_INTERACTIVE -eq 1 ]]; then
     return
   fi
 
@@ -289,9 +322,27 @@ choose_version() {
     return
   fi
 
-  info "Press Enter to install the latest stable release."
-  prompt_read VERSION "${BOLD}Release tag${RESET} ${DIM}[latest stable]${RESET}: " || true
-  VERSION=${VERSION:-latest}
+  if [[ $NON_INTERACTIVE -eq 1 ]]; then
+    VERSION=latest
+    return
+  fi
+
+  info "Choose the release channel to install."
+  printf '  %s1%s  Latest stable release\n' "$BOLD$CYAN" "$RESET"
+  printf '  %s2%s  Latest pre-release\n' "$BOLD$CYAN" "$RESET"
+  printf '  %s3%s  Specific release tag\n\n' "$BOLD$CYAN" "$RESET"
+  local choice tag
+  prompt_read choice "${BOLD}Release channel${RESET} ${DIM}[1]${RESET}: " || true
+  case ${choice:-1} in
+    1) VERSION=latest ;;
+    2) VERSION=latest-prerelease ;;
+    3)
+      prompt_read tag "${BOLD}Release tag${RESET}: " || true
+      [[ -n $tag ]] || die "A release tag is required"
+      VERSION=$tag
+      ;;
+    *) die "Invalid release channel" ;;
+  esac
 }
 
 choose_install_dir() {
@@ -309,7 +360,9 @@ choose_install_dir() {
         info "MeshTalk will be installed without root or sudo."
       fi
     fi
-    prompt_read INSTALL_DIR "${BOLD}Installation directory${RESET} ${DIM}[${DEFAULT_INSTALL_DIR}]${RESET}: " || true
+    if [[ $NON_INTERACTIVE -eq 0 ]]; then
+      prompt_read INSTALL_DIR "${BOLD}Installation directory${RESET} ${DIM}[${DEFAULT_INSTALL_DIR}]${RESET}: " || true
+    fi
     INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}
   fi
 
@@ -344,7 +397,13 @@ curl_args() {
 fetch_api() {
   local url=$1
   curl_args
-  if command_exists curl; then
+  if [[ $DOWNLOAD_METHOD == wget ]]; then
+    if [[ -n $AUTH_TOKEN ]]; then
+      wget -qO- --header="Accept: application/vnd.github+json" --header="Authorization: Bearer ${AUTH_TOKEN}" "$url"
+    else
+      wget -qO- --header="Accept: application/vnd.github+json" "$url"
+    fi
+  elif command_exists curl; then
     curl "${CURL_ARGS[@]}" "$url" 2>/dev/null
   elif command_exists wget; then
     if [[ -n $AUTH_TOKEN ]]; then
@@ -361,7 +420,13 @@ download_url() {
   local url=$1
   local destination=$2
   curl_args
-  if command_exists curl; then
+  if [[ $DOWNLOAD_METHOD == wget ]]; then
+    if [[ -n $AUTH_TOKEN ]]; then
+      wget --show-progress -O "$destination" --header="Authorization: Bearer ${AUTH_TOKEN}" "$url"
+    else
+      wget --show-progress -O "$destination" "$url"
+    fi
+  elif command_exists curl; then
     curl --progress-bar "${CURL_ARGS[@]}" -o "$destination" "$url"
   elif command_exists wget; then
     if [[ -n $AUTH_TOKEN ]]; then
@@ -387,6 +452,8 @@ prompt_for_token() {
     return 0
   fi
 
+  [[ $NON_INTERACTIVE -eq 0 ]] || die "GitHub API access requires GITHUB_TOKEN or GH_TOKEN in non-interactive mode."
+
   info "Anonymous GitHub release access was unavailable."
   info "Provide a GitHub token, or press Enter to cancel and install/authenticate gh."
   prompt_read --silent AUTH_TOKEN "GitHub token: " || true
@@ -398,6 +465,8 @@ prompt_for_token() {
 release_api_endpoint() {
   if [[ $VERSION == latest ]]; then
     printf '%s/releases/latest' "$API_URL"
+  elif [[ $VERSION == latest-prerelease ]]; then
+    printf '%s/releases?per_page=100' "$API_URL"
   else
     local encoded_version=${VERSION//\//%2F}
     printf '%s/releases/tags/%s' "$API_URL" "$encoded_version"
@@ -410,26 +479,22 @@ load_release_with_gh() {
 
   if [[ $release_ref == latest ]]; then
     tag=$(run_gh release view --repo "$REPOSITORY" --json tagName --jq '.tagName' 2>/dev/null) || return 1
+  elif [[ $release_ref == latest-prerelease ]]; then
+    tag=$(run_gh release list --repo "$REPOSITORY" --exclude-drafts --limit 100 \
+      --json tagName,isPrerelease --jq 'map(select(.isPrerelease))[0].tagName' 2>/dev/null) || return 1
   else
     tag=$(run_gh release view "$release_ref" --repo "$REPOSITORY" --json tagName --jq '.tagName' 2>/dev/null) || return 1
   fi
 
   [[ -n $tag ]] || return 1
   RELEASE_TAG=$tag
+  release_ref=$tag
 
   local asset_name
-  if [[ $release_ref == latest ]]; then
-    asset_name=$(run_gh release view --repo "$REPOSITORY" --json assets --jq ".assets[] | select(.name == \"${ASSET_NAME}\") | .name" 2>/dev/null) || return 1
-  else
-    asset_name=$(run_gh release view "$release_ref" --repo "$REPOSITORY" --json assets --jq ".assets[] | select(.name == \"${ASSET_NAME}\") | .name" 2>/dev/null) || return 1
-  fi
+  asset_name=$(run_gh release view "$release_ref" --repo "$REPOSITORY" --json assets --jq ".assets[] | select(.name == \"${ASSET_NAME}\") | .name" 2>/dev/null) || return 1
   [[ $asset_name == "$ASSET_NAME" ]] || return 1
 
-  if [[ $release_ref == latest ]]; then
-    EXPECTED_DIGEST=$(run_gh release view --repo "$REPOSITORY" --json assets --jq ".assets[] | select(.name == \"${ASSET_NAME}\") | .digest" 2>/dev/null) || return 1
-  else
-    EXPECTED_DIGEST=$(run_gh release view "$release_ref" --repo "$REPOSITORY" --json assets --jq ".assets[] | select(.name == \"${ASSET_NAME}\") | .digest" 2>/dev/null) || return 1
-  fi
+  EXPECTED_DIGEST=$(run_gh release view "$release_ref" --repo "$REPOSITORY" --json assets --jq ".assets[] | select(.name == \"${ASSET_NAME}\") | .digest" 2>/dev/null) || return 1
   [[ $EXPECTED_DIGEST != null ]] || EXPECTED_DIGEST=""
   DOWNLOAD_MODE=gh
 }
@@ -459,12 +524,22 @@ load_release_with_api() {
   fetch_api "$endpoint" > "$metadata_file" || return 1
 
   if command_exists jq; then
-    RELEASE_TAG=$(jq -er '.tag_name' "$metadata_file") || return 1
+    if [[ $VERSION == latest-prerelease ]]; then
+      RELEASE_TAG=$(jq -er 'map(select(.prerelease == true and .draft == false))[0].tag_name' "$metadata_file") || return 1
+    else
+      RELEASE_TAG=$(jq -er '.tag_name' "$metadata_file") || return 1
+    fi
     local asset_name
-    asset_name=$(jq -er --arg name "$ASSET_NAME" '.assets[] | select(.name == $name) | .name' "$metadata_file") || return 1
+    if [[ $VERSION == latest-prerelease ]]; then
+      asset_name=$(jq -er --arg name "$ASSET_NAME" 'map(select(.prerelease == true and .draft == false))[0].assets[] | select(.name == $name) | .name' "$metadata_file") || return 1
+      EXPECTED_DIGEST=$(jq -r --arg name "$ASSET_NAME" 'map(select(.prerelease == true and .draft == false))[0].assets[] | select(.name == $name) | .digest // empty' "$metadata_file") || return 1
+    else
+      asset_name=$(jq -er --arg name "$ASSET_NAME" '.assets[] | select(.name == $name) | .name' "$metadata_file") || return 1
+      EXPECTED_DIGEST=$(jq -r --arg name "$ASSET_NAME" '.assets[] | select(.name == $name) | .digest // empty' "$metadata_file") || return 1
+    fi
     [[ $asset_name == "$ASSET_NAME" ]] || return 1
-    EXPECTED_DIGEST=$(jq -r --arg name "$ASSET_NAME" '.assets[] | select(.name == $name) | .digest // empty' "$metadata_file") || return 1
   else
+    [[ $VERSION != latest-prerelease ]] || die "jq is required to select the latest pre-release when gh is unavailable."
     RELEASE_TAG=$(json_value_without_jq tag_name "$metadata_file")
     [[ -n $RELEASE_TAG ]] || return 1
     json_asset_exists_without_jq "$ASSET_NAME" "$metadata_file" || return 1
@@ -478,9 +553,21 @@ load_release_with_api() {
 load_release() {
   local metadata_file=$1
 
-  if command_exists gh && load_release_with_gh; then
-    return 0
-  fi
+  case $DOWNLOAD_METHOD in
+    gh)
+      command_exists gh || die "The forced download method gh is not installed."
+      load_release_with_gh && return 0
+      die "Unable to access the GitHub release with gh."
+      ;;
+    curl|wget)
+      load_release_with_api "$metadata_file" && return 0
+      ;;
+    auto)
+      if command_exists gh && load_release_with_gh; then
+        return 0
+      fi
+      ;;
+  esac
 
   if [[ -z $AUTH_TOKEN ]] && ! fetch_api "$(release_api_endpoint)" >/dev/null 2>&1; then
     prompt_for_token || die "No GitHub token provided. Install/authenticate gh and try again."
@@ -636,6 +723,7 @@ install_meshtalk() {
     local existing_version
     existing_version=$(sed -n 's/^version=//p' "$METADATA_FILE")
     if ! confirm "MeshTalk ${existing_version:-from this installer} is already installed in ${INSTALL_DIR}. Replace it?" n; then
+      [[ $NON_INTERACTIVE -eq 0 ]] || die "MeshTalk is already installed in ${INSTALL_DIR}. Re-run with --yes to replace it."
       info "Installation cancelled."
       return
     fi
@@ -648,12 +736,18 @@ install_meshtalk() {
       fi
     done
     if [[ -n $existing_file ]] && ! confirm "${INSTALL_DIR}/${existing_file} already exists. Replace the MeshTalk installation?" n; then
+      [[ $NON_INTERACTIVE -eq 0 ]] || die "${INSTALL_DIR}/${existing_file} already exists. Re-run with --yes to replace it."
       info "Installation cancelled."
       return
     fi
   fi
 
   command_exists tar || die "tar is required to extract release archives."
+  case $DOWNLOAD_METHOD in
+    gh) command_exists gh || die "The forced download method gh is not installed." ;;
+    curl) command_exists curl || die "The forced download method curl is not installed." ;;
+    wget) command_exists wget || die "The forced download method wget is not installed." ;;
+  esac
   if ! command_exists gh && ! command_exists curl && ! command_exists wget; then
     die "gh, curl, or wget is required to download releases."
   fi
