@@ -5,6 +5,7 @@ import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
 import { checkForUpdate, type Release } from "../../common/updater"
 import { dirname, join, resolve } from "path"
+import { notify, sendTestNotification, type NotificationDelivery, type NotificationEvent, type NotificationPreferences } from "./notifications"
 
 declare const APP_VERSION: string
 declare const MESHTALK_RELEASE: boolean
@@ -181,6 +182,9 @@ type Dialog =
   | { kind: "block-peer"; peerId: string; displayName: string }
   | { kind: "cancel-friend-confirm"; requestId: string; displayName: string }
   | { kind: "notifications" }
+  | { kind: "notification-enable"; firstRun?: boolean }
+  | { kind: "notification-confirm"; delivery: Exclude<NotificationDelivery, "disabled">; firstRun?: boolean }
+  | { kind: "notification-fallback"; firstRun?: boolean }
   | { kind: "accessibility" }
   | { kind: "debug" }
   | { kind: "debug-endpoints" }
@@ -407,6 +411,8 @@ function ChatApp() {
   const [status, setStatus] = useState("Connecting to backend...")
   const [copyToast, setCopyToast] = useState(false)
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
+  const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences | null>(null)
+  const [notificationTestDelivery, setNotificationTestDelivery] = useState<Exclude<NotificationDelivery, "disabled"> | null>(null)
   const [versionMismatches, setVersionMismatches] = useState<Record<string, VersionMismatch>>({})
   const [blinkOn, setBlinkOn] = useState(true)
   const [flashingEnabled, setFlashingEnabled] = useState(true)
@@ -489,6 +495,10 @@ function ChatApp() {
       void refreshFiles()
       const mutedResp = await ipc.send("muted_peers")
       if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
+      const notificationResponse = await ipc.send("notifications")
+      if (notificationResponse.error) throw new Error(notificationResponse.error)
+      const preferences = notificationResponse as NotificationPreferences
+      setNotificationPreferences(preferences)
       const control = await ipc.send("control")
       if (control.error) throw new Error(control.error)
       setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number, control_url: control.url as string | null | undefined })
@@ -496,6 +506,8 @@ function ChatApp() {
         setDialog({ kind: "rename", firstRun: true })
       } else if (!control.url && !control.setup_dismissed) {
         setDialog({ kind: "control", firstRun: true })
+      } else if (!preferences.setup_dismissed) {
+        setDialog({ kind: "notification-enable", firstRun: true })
       }
       if (IS_RELEASE_BUILD) {
         void checkForUpdate(APP_RELEASE_VERSION).then((release) => {
@@ -606,6 +618,85 @@ function ChatApp() {
     }
   }
 
+  function notificationEventEnabled(event: NotificationEvent): boolean {
+    return Boolean(notificationPreferences?.events[event])
+  }
+
+  async function saveNotificationPreferences(changes: {
+    setup_dismissed?: boolean
+    delivery?: NotificationDelivery
+    events?: Partial<Record<NotificationEvent, boolean>>
+  }) {
+    const response = await ipc.send("notifications", changes)
+    if (response.error) throw new Error(response.error)
+    setNotificationPreferences(response as NotificationPreferences)
+    return response as NotificationPreferences
+  }
+
+  async function testNotificationDelivery(delivery: Exclude<NotificationDelivery, "disabled">, firstRun = false) {
+    const action = beginDialogAction()
+    if (action === null) return
+    setNotificationTestDelivery(delivery)
+    try {
+      const sent = await sendTestNotification(delivery, renderer)
+      if (dialogAction.current !== action) return
+      if (sent) setDialog({ kind: "notification-confirm", delivery, firstRun })
+      else if (delivery === "terminal") setDialog({ kind: "notification-fallback", firstRun })
+      else throw new Error("Could not start a native notification. Check that desktop notifications are available.")
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      setNotificationTestDelivery(null)
+      finishDialogAction(action)
+    }
+  }
+
+  async function confirmNotificationDelivery(delivery: Exclude<NotificationDelivery, "disabled">, firstRun = false) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      await saveNotificationPreferences({ setup_dismissed: true, delivery })
+      if (dialogAction.current !== action) return
+      showStatus(`Desktop notifications will use ${delivery === "terminal" ? "your terminal" : "your operating system"}.`)
+      if (firstRun) closeDialog()
+      else showDialog({ kind: "notifications" })
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function disableNotifications(firstRun = false) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      await saveNotificationPreferences({ setup_dismissed: true, delivery: "disabled" })
+      if (dialogAction.current !== action) return
+      if (firstRun) closeDialog()
+      else showDialog({ kind: "notifications" })
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function toggleNotificationEvent(event: NotificationEvent) {
+    if (!notificationPreferences) return
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      await saveNotificationPreferences({ events: { [event]: !notificationEventEnabled(event) } })
+      if (dialogAction.current !== action) return
+      showDialog({ kind: "notifications" })
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
   useEffect(() => ipc.onEvent((event: IPCEvent) => {
     if (["group_message", "group_member_joined", "group_member_left"].includes(event.event)) {
       const groupId = event.group_id as string
@@ -615,8 +706,8 @@ function ChatApp() {
         ?? peers.find((peer) => peer.peer_id === senderId)?.display_name
         ?? groupMembers[groupId]?.find((member) => (member.peer_id ?? member.member_id) === senderId)?.display_name
         ?? "a member"
-      if (event.event === "group_message" && renderer.capabilities?.notifications && groupId !== selectedGroupId) {
-        renderer.triggerNotification(`New message from ${sender} in ${group?.name ?? "a group"}`, "MeshTalk")
+      if (event.event === "group_message" && groupId !== selectedGroupId) {
+        void notify(notificationPreferences, "messages", renderer, `New message from ${sender} in ${group?.name ?? "a group"}`)
       }
       if (groupId !== selectedGroupId) {
         setGroups((current) => current.map((item) => item.group_id === groupId ? { ...item, unread_count: item.unread_count + 1 } : item))
@@ -699,9 +790,7 @@ function ChatApp() {
         direction: "incoming",
         status: "pending",
       }
-      if (renderer.capabilities?.notifications) {
-        renderer.triggerNotification(`Friend request from ${request.sender_name}`, "MeshTalk")
-      }
+      void notify(notificationPreferences, "friend_requests", renderer, `Friend request from ${request.sender_name}`)
       if (!dialog) setDialog({ kind: "friend-request-incoming", request })
       else showStatus(`Friend request from ${request.sender_name}. Open Commands > Friends to respond.`)
       void refreshPeers()
@@ -739,9 +828,7 @@ function ChatApp() {
       const filename = event.filename as string
       const sender = peers.find((p) => p.peer_id === event.sender_id)?.display_name ?? String(event.sender_id).slice(0,8)
       showStatus(`Incoming file: ${filename} (${event.file_size} bytes) from ${sender}`)
-      if (renderer.capabilities?.notifications) {
-        renderer.triggerNotification(`Incoming file ${filename} from ${sender}`, "MeshTalk")
-      }
+      void notify(notificationPreferences, "file_offers", renderer, `Incoming file ${filename} from ${sender}`)
       void ipc.send("files").then((res) => {
         if (!res.error) setFileTransfers(res.files as FileTransfer[])
       })
@@ -758,9 +845,7 @@ function ChatApp() {
       const fpath = event.file_path as string
       const fileId = event.file_id as string
       showStatus(`File received: ${filename} -> ${fpath}`)
-      if (renderer.capabilities?.notifications) {
-        renderer.triggerNotification(`File received: ${filename}`, "MeshTalk")
-      }
+      void notify(notificationPreferences, "file_completed", renderer, `File received: ${filename}`)
       // The offer has already populated this entry. Update it immediately so
       // the completed image mounts without waiting for the next IPC response.
       setFileTransfers((current) => current.map((file) => file.file_id === fileId
@@ -801,8 +886,8 @@ function ChatApp() {
     const sender = peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "a peer"
     const mutedUntil = mutedPeers[senderId]
     const isMuted = mutedUntil === undefined ? false : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil
-    if (renderer.capabilities?.notifications && !isMuted) {
-      renderer.triggerNotification(`New message from ${sender}`, "MeshTalk")
+    if (!isMuted && senderId !== selectedPeerId) {
+      void notify(notificationPreferences, "messages", renderer, `New message from ${sender}`)
     }
     if (senderId !== selectedPeerId) {
       setPeers((current) => current.map((peer) =>
@@ -960,6 +1045,9 @@ function ChatApp() {
       showDialog({ kind: "commands" })
     } else if (dialog.kind === "notifications") {
       showDialog({ kind: "commands" })
+    } else if (dialog.kind === "notification-enable" || dialog.kind === "notification-confirm" || dialog.kind === "notification-fallback") {
+      if (dialog.firstRun) closeDialog()
+      else showDialog({ kind: "notification-settings" })
     } else if (dialog.kind === "blocked") {
       showDialog({ kind: "friends" })
     } else if (dialog.kind === "block-peer-pick") {
@@ -2214,6 +2302,8 @@ function ChatApp() {
               : dialog.kind === "friend-request-incoming" ? "Friend request"
               : dialog.kind === "friends" ? "Friends"
               : dialog.kind === "notifications" ? "Notifications"
+              : dialog.kind === "notification-settings" ? "Desktop alerts"
+              : dialog.kind === "notification-peer" ? "Selected peer alerts"
               : dialog.kind === "accessibility" ? "Accessibility"
               : dialog.kind === "blocked" ? "Blocked friends"
               : dialog.kind === "block-peer-pick" ? "Block a peer"
@@ -2748,19 +2838,142 @@ height={Math.max(5, dialogHeight - 3)}
                 showDescription
               />
             )}
-            {dialog.kind === "notifications" && (() => {
+            {dialog.kind === "notification-enable" && (
+              <>
+                <text fg="#bbbbbb">{dialogBusy ? "Switch to another terminal tab now. The test will be sent in four seconds." : "Would you like MeshTalk to send desktop notifications?"}</text>
+                <MouseSelect
+                  focused
+                  height={Math.max(4, dialogHeight - 5)}
+                  options={[
+                    { name: "Enable and test", description: "Send a test through your terminal notification protocol", value: "enable" },
+                    { name: "Not now", description: "Keep desktop notifications off; configure them later in Commands", value: "disable" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "enable") void testNotificationDelivery("terminal", dialog.firstRun)
+                    else if (option?.value === "disable") void disableNotifications(dialog.firstRun)
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "notification-confirm" && (
+              <>
+                <text fg="#bbbbbb">A test notification was sent using {dialog.delivery === "terminal" ? "your terminal" : "your operating system"}.</text>
+                {dialog.delivery === "native" && process.platform === "darwin" && <text fg="#e0a34a">macOS can suppress banners in Focus mode or when terminal-notifier, Script Editor, or osascript alerts are disabled in System Settings {'>'} Notifications.</text>}
+                <MouseSelect
+                  focused
+                  height={Math.max(4, dialogHeight - 5)}
+                  options={[
+                    { name: "I received it", description: "Use this notification method", value: "confirm" },
+                    { name: "I did not receive it", description: dialog.delivery === "terminal" ? "Try your operating system's native notification method" : "Leave notifications disabled", value: "missing" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "confirm") void confirmNotificationDelivery(dialog.delivery, dialog.firstRun)
+                    else if (option?.value === "missing" && dialog.delivery === "terminal") showDialog({ kind: "notification-fallback", firstRun: dialog.firstRun })
+                    else if (option?.value === "missing") void disableNotifications(dialog.firstRun)
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "notification-fallback" && (
+              <>
+                <text fg="#e0a34a">Terminal notifications are unavailable or were not received. Try a native desktop notification instead.</text>
+                {dialogError && <text fg="#ff7777">{dialogError}</text>}
+                <MouseSelect
+                  focused
+                  height={Math.max(4, dialogHeight - 6)}
+                  options={[
+                    { name: "Test native notification", description: "Use macOS, Linux, or Windows notification support", value: "test" },
+                    { name: "Disable notifications", description: "You can configure this later in Commands", value: "disable" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "test") void testNotificationDelivery("native", dialog.firstRun)
+                    else if (option?.value === "disable") void disableNotifications(dialog.firstRun)
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "notifications" && (
+              <>
+                <text fg="#888888">Choose what you want to manage.</text>
+                <MouseSelect
+                  focused
+                  height={Math.max(4, dialogHeight - 4)}
+                  options={[
+                    { name: "Desktop alerts", description: "Delivery method, test alert, and alert types", value: "desktop" },
+                    { name: "Selected peer alerts", description: selectedPeerId ? "Mute or unmute the selected peer" : "Select a peer first to manage their alerts", value: "peer" },
+                    { name: "Back to commands", description: "Return to the command palette", value: "back" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (option?.value === "desktop") showDialog({ kind: "notification-settings" })
+                    else if (option?.value === "peer") showDialog({ kind: "notification-peer" })
+                    else if (option?.value === "back") showDialog({ kind: "commands" })
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "notification-settings" && (() => {
+              const options: { name: string; description: string; value: string }[] = []
+              const configuredDelivery = notificationPreferences?.delivery ?? "disabled"
+              options.push({
+                name: configuredDelivery === "disabled" ? "Enable desktop notifications" : "Configure delivery method",
+                description: configuredDelivery === "disabled" ? "Test terminal or native desktop notifications" : `Current method: ${configuredDelivery === "terminal" ? "terminal" : "native OS notification"}`,
+                value: "configure",
+              })
+              if (configuredDelivery !== "disabled") {
+                options.push({ name: "Test notification", description: "Send a test using the current delivery method", value: "test" })
+                const eventLabels: [NotificationEvent, string][] = [
+                  ["messages", "Messages"],
+                  ["friend_requests", "Friend requests"],
+                  ["file_offers", "Incoming files"],
+                  ["file_completed", "Completed files"],
+                ]
+                for (const [event, label] of eventLabels) {
+                  options.push({ name: `${notificationEventEnabled(event) ? "Disable" : "Enable"} ${label}`, description: `${notificationEventEnabled(event) ? "Stop" : "Allow"} desktop alerts for ${label.toLowerCase()}`, value: `event:${event}` })
+                }
+              }
+              options.push({ name: "Back to Notifications", description: "Return to notification options", value: "back" })
+              return (
+                <>
+                  {dialogBusy && notificationTestDelivery === "terminal" && <text fg="#e0a34a">Switch to another terminal tab now. The test will be sent in four seconds.</text>}
+                  {dialogBusy && notificationTestDelivery === "native" && <text fg="#bbbbbb">Sending a native desktop notification...</text>}
+                  <MouseSelect
+                    focused
+                    height={Math.max(5, dialogHeight - 4)}
+                    options={options}
+                    onSelect={(_, option) => {
+                      if (!option) return
+                      if (option.value === "back") showDialog({ kind: "notifications" })
+                      else if (option.value === "configure") showDialog({ kind: "notification-enable" })
+                      else if (option.value === "test" && configuredDelivery !== "disabled") void testNotificationDelivery(configuredDelivery)
+                      else if (option.value.startsWith("event:")) void toggleNotificationEvent(option.value.slice("event:".length) as NotificationEvent)
+                    }}
+                    wrapSelection
+                    showDescription
+                  />
+                </>
+              )
+            })()}
+            {dialog.kind === "notification-peer" && (() => {
               const peer = peers.find((p) => p.peer_id === selectedPeerId)
               const isMuted = peer ? !!mutedPeers[peer.peer_id] : false
               const isOnline = peer ? peer.is_online : false
               const isSelf = peer ? peer.peer_id === identity?.peer_id : false
-              const options = []
+              const options: { name: string; description: string; value: string }[] = []
               if (peer && !isMuted && isOnline && !isSelf) {
                 options.push({ name: "Mute", description: `Mute notifications from ${peer.display_name}`, value: "mute" })
               }
               if (peer && isMuted) {
                 options.push({ name: "Unmute", description: `Resume notifications from ${peer.display_name}`, value: "unmute" })
               }
-              options.push({ name: "Back to commands", description: "Return to the command palette", value: "back" })
+              options.push({ name: "Back to Notifications", description: "Return to notification options", value: "back" })
               return (
                 <>
                   {!peer && <text fg="#888888">Select a peer in the sidebar first.</text>}
@@ -2772,7 +2985,7 @@ height={Math.max(5, dialogHeight - 3)}
                     options={options}
                     onSelect={(_, option) => {
                       if (!option) return
-                      if (option.value === "back") showDialog({ kind: "commands" })
+                      if (option.value === "back") showDialog({ kind: "notifications" })
                       else runCommand(option.value)
                     }}
                     wrapSelection
