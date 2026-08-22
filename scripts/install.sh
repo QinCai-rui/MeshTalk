@@ -92,7 +92,7 @@ warn() {
 }
 
 info() {
-  printf '  %s[%si%s] %s\n' "$CYAN" "$BOLD" "$RESET" "$*"
+  printf '  %s[%si%s]%s %s\n' "$CYAN" "$BOLD" "$CYAN" "$RESET" "$*"
 }
 
 success() {
