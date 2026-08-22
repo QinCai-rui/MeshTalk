@@ -359,6 +359,7 @@ function ChatApp() {
   const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number; control_url?: string | null }>({ connected: false, reconnect_attempts: 0 })
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
   const [fileTransfers, setFileTransfers] = useState<FileTransfer[]>([])
+  const [imageRenderGeneration, setImageRenderGeneration] = useState(0)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [dialogDraft, setDialogDraft] = useState("")
   const [dialogError, setDialogError] = useState("")
@@ -476,6 +477,14 @@ function ChatApp() {
       clipboard.current = null
       void service.dispose()
     }
+  }, [renderer])
+
+  useEffect(() => {
+    // Terminal image protocol detection completes asynchronously in some
+    // terminals. Remount attachment images once the final capability set is known.
+    const refreshImages = () => setImageRenderGeneration((generation) => generation + 1)
+    renderer.on("capabilities", refreshImages)
+    return () => { renderer.off("capabilities", refreshImages) }
   }, [renderer])
 
   useSelectionHandler((selection) => {
@@ -2046,7 +2055,7 @@ function ChatApp() {
                     </text>
                     <text wrapMode="word"><span fg="#7aa2d6">{file.filename}</span><span fg="#888888"> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
                     {isImageFile(file.filename) && (
-                      <image key={`${file.file_id}-${file.completed_at ?? 0}`} source={toFileUrl(file.file_path!, file.completed_at)} fit="fit" protocol="auto" style={{ width: 40, height: 12 }} onError={() => {}} />
+                      <image key={`${file.file_id}-${file.completed_at ?? 0}-${imageRenderGeneration}`} source={toFileUrl(file.file_path!, file.completed_at)} fit="fit" protocol="auto" style={{ width: 40, height: 12 }} onError={() => {}} />
                     )}
                   </box>
                 )
@@ -2996,7 +3005,7 @@ height={Math.max(5, dialogHeight - 3)}
                       <text><span fg={f.direction === "inbound" ? "#66dd88" : "#65a9ff"}>{f.direction === "inbound" ? "↓" : "↑"}</span> {f.filename} ({(f.file_size/1024).toFixed(1)} KiB) <span fg="#888888">{f.status}</span></text>
                       <text fg="#888888">  {f.file_id.slice(0,8)} {f.direction === "inbound" ? `from ${f.sender_id.slice(0,8)}` : `to ${f.recipient_id.slice(0,8)}`} {f.file_path ?? ""} {isImageFile(f.filename) ? "(image)" : ""}</text>
                       {f.status === "completed" && f.file_path && isImageFile(f.filename) && (
-                      <image key={`${f.file_id}-${f.completed_at ?? 0}`} source={toFileUrl(f.file_path, f.completed_at)} fit="fit" protocol="auto" style={{ width: 20, height: 6 }} onError={() => {}} />
+                      <image key={`${f.file_id}-${f.completed_at ?? 0}-${imageRenderGeneration}`} source={toFileUrl(f.file_path, f.completed_at)} fit="fit" protocol="auto" style={{ width: 20, height: 6 }} onError={() => {}} />
                       )}
                     </box>
                   ))}
