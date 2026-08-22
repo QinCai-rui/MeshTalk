@@ -13,7 +13,7 @@ const MIN_COMPOSER_HEIGHT = 3
 const MAX_COMPOSER_HEIGHT = 5
 const MAX_MESSAGE_BYTES = 30 * 1024
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
-const DEFAULT_STATUS = "Ctrl+P: commands  Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+C: quit"
+const DEFAULT_STATUS = "Ctrl+P: commands  Ctrl+U: upload  Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+C: quit"
 const IS_RELEASE_BUILD = typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE
 const APP_RELEASE_VERSION = typeof APP_VERSION !== "undefined" ? APP_VERSION : "dev"
 
@@ -266,11 +266,13 @@ function isImageFile(filename: string): boolean {
   return ["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext)
 }
 
-function toFileUrl(p: string): string {
+function toFileUrl(p: string, version?: number | null): string {
   // cross-platform: OpenTUI accepts plain path but file:// is more robust
   let normalized = p.replace(/\\/g, "/")
   if (/^[a-zA-Z]:\//.test(normalized)) normalized = "/" + normalized
-  return "file://" + normalized
+  // A received file is preallocated before its contents arrive. Version its
+  // source once complete so the image renderer does not reuse stale bytes.
+  return "file://" + normalized + (version ? `?v=${version}` : "")
 }
 
 function MouseSelect(props: SelectProps) {
@@ -366,6 +368,7 @@ function ChatApp() {
   const clipboard = useRef<ReturnType<typeof createClipboard> | null>(null)
   const dialogAction = useRef(0)
   const dialogBusyRef = useRef(false)
+  const filePickerOpen = useRef(false)
   const selectedPeerId = selection?.kind === "peer" ? selection.id : undefined
   const selectedGroupId = selection?.kind === "group" ? selection.id : undefined
   const selectionKey = selection ? `${selection.kind}:${selection.id}` : undefined
@@ -684,10 +687,17 @@ function ChatApp() {
     if (event.event === "file_completed") {
       const filename = event.filename as string
       const fpath = event.file_path as string
+      const fileId = event.file_id as string
       showStatus(`File received: ${filename} -> ${fpath}`)
       if (renderer.capabilities?.notifications) {
         renderer.triggerNotification(`File received: ${filename}`, "MeshTalk")
       }
+      // The offer has already populated this entry. Update it immediately so
+      // the completed image mounts without waiting for the next IPC response.
+      setFileTransfers((current) => current.map((file) => file.file_id === fileId
+        ? { ...file, status: "completed", file_path: fpath, completed_at: Date.now() / 1000 }
+        : file
+      ))
       void ipc.send("files").then((res) => {
         if (!res.error) setFileTransfers(res.files as FileTransfer[])
       })
@@ -1465,6 +1475,35 @@ function ChatApp() {
     }
   }
 
+  async function openFilePicker() {
+    if (filePickerOpen.current) return
+    if (!selection) {
+      showStatus("Select a peer or group before sending a file.")
+      return
+    }
+    if (process.platform === "linux" && !Bun.which("zenity")) {
+      showStatus("No native file picker found. Enter a path in the upload screen.")
+      showDialog({ kind: "file-send" })
+      return
+    }
+    filePickerOpen.current = true
+    try {
+      const command = process.platform === "darwin"
+        ? ["osascript", "-e", 'POSIX path of (choose file with prompt "Select a file to send")']
+        : process.platform === "win32"
+          ? ["powershell.exe", "-NoProfile", "-Command", "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Write($dialog.FileName) }"]
+          : ["zenity", "--file-selection", "--title=Select a file to send"]
+      const pickerProcess = Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "ignore" })
+      const [exitCode, output] = await Promise.all([pickerProcess.exited, new Response(pickerProcess.stdout).text()])
+      const filePath = output.trim()
+      if (exitCode === 0 && filePath) await sendFile(filePath)
+    } catch (error) {
+      showStatus(`Could not open file picker: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      filePickerOpen.current = false
+    }
+  }
+
   function defaultDownloadPath(filename: string): string {
     const home = process.env.HOME || process.env.USERPROFILE || ""
     const dl = home ? `${home}/Downloads/${filename}` : filename
@@ -1659,6 +1698,10 @@ function ChatApp() {
     if (key.ctrl && key.name === "n") {
       setNameDraft(identity?.display_name ?? "")
       setEditingName(true)
+      return
+    }
+    if (key.ctrl && key.name === "u") {
+      void openFilePicker()
       return
     }
     if (key.ctrl && key.name === "d") {
@@ -1981,7 +2024,7 @@ function ChatApp() {
                     </text>
                     <text wrapMode="word"><span fg="#7aa2d6">{file.filename}</span><span fg="#888888"> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
                     {isImageFile(file.filename) && (
-                      <image source={toFileUrl(file.file_path!)} fit="fit" protocol="auto" style={{ width: 40, height: 12 }} onError={() => {}} />
+                      <image key={`${file.file_id}-${file.completed_at ?? 0}`} source={toFileUrl(file.file_path!, file.completed_at)} fit="fit" protocol="auto" style={{ width: 40, height: 12 }} onError={() => {}} />
                     )}
                   </box>
                 )
@@ -2097,6 +2140,10 @@ function ChatApp() {
               : dialog.kind === "update" ? "Update available"
               : dialog.kind === "about" ? "About MeshTalk"
               : dialog.kind === "group-detail" ? "Group details"
+              : dialog.kind === "file-send" ? "Upload file"
+              : dialog.kind === "file-list" ? "Files"
+              : dialog.kind === "file-download" ? "Save file"
+              : dialog.kind === "files-dir" ? "File storage"
               : "Private rooms"}
             bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
             style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: dialog.kind === "about" ? "#9b8cff" : dialog.kind === "update" ? "#e0a34a" : "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
@@ -2927,7 +2974,7 @@ height={Math.max(5, dialogHeight - 3)}
                       <text><span fg={f.direction === "inbound" ? "#66dd88" : "#65a9ff"}>{f.direction === "inbound" ? "↓" : "↑"}</span> {f.filename} ({(f.file_size/1024).toFixed(1)} KiB) <span fg="#888888">{f.status}</span></text>
                       <text fg="#888888">  {f.file_id.slice(0,8)} {f.direction === "inbound" ? `from ${f.sender_id.slice(0,8)}` : `to ${f.recipient_id.slice(0,8)}`} {f.file_path ?? ""} {isImageFile(f.filename) ? "(image)" : ""}</text>
                       {f.status === "completed" && f.file_path && isImageFile(f.filename) && (
-                        <image source={toFileUrl(f.file_path)} fit="fit" protocol="auto" style={{ width: 20, height: 6 }} onError={() => {}} />
+                      <image key={`${f.file_id}-${f.completed_at ?? 0}`} source={toFileUrl(f.file_path, f.completed_at)} fit="fit" protocol="auto" style={{ width: 20, height: 6 }} onError={() => {}} />
                       )}
                     </box>
                   ))}
@@ -2937,7 +2984,7 @@ height={Math.max(5, dialogHeight - 3)}
                   height={Math.min(8, dialogHeight - 4)}
                   options={[
                     ...dialog.files.filter((f) => f.status === "completed" || f.status === "sent").map((f) => ({
-                      name: `Download ${f.filename}`,
+                      name: `Save ${f.filename} to...`,
                       description: `${f.file_id.slice(0,8)} -> choose destination`,
                       value: `dl:${f.file_id}`,
                     })),
@@ -2991,7 +3038,7 @@ height={Math.max(5, dialogHeight - 3)}
             )}
             {dialog.kind === "file-download" && (
               <>
-                <text>Download <span fg="#66dd88">{dialog.filename}</span> to:</text>
+                <text>Save <span fg="#66dd88">{dialog.filename}</span> to:</text>
                 <text fg="#888888">{dialog.filePath}</text>
                 <input
                   focused
