@@ -98,8 +98,9 @@ Fresh state lives in ~/.meshtalk:
 | File | Mode | Contents |
 |------|------|----------|
 | identity.json | 0600 | Signing + encryption private keys, peer ID, display name. |
-| settings.json | 0600 | Control URL, STUN server, room secrets and group names, muted peers. |
-| meshtalk.db | - | SQLite: peers, direct/group messages, cached group rosters and deliveries, outgoing queue, seen IDs, friend relationships, config. |
+| settings.json | 0600 | Control URL, STUN server, room secrets and group names, muted peers, files directory. |
+| meshtalk.db | - | SQLite: peers, direct/group messages, cached group rosters and deliveries, outgoing queue, seen IDs, friend relationships, file transfers, config. |
+| files/ | - | Received files stored in `<file_id>/` subdirectories (cross-platform file transfer storage). |
 | meshtalk.sock | 0600 | Owner-only Unix-domain IPC socket while the backend runs (TCP fallback on Windows). |
 | meshtalk.port | 0600 | Loopback TCP port when the Unix socket is unavailable. |
 | meshtalk.token | 0600 | Random per-backend IPC auth token. |
@@ -188,8 +189,8 @@ if agreed_version < min_required → reject with IncompatibleProtocolError
 handshake is treated as version 0 with `min_protocol_version` 0. This is
 detected by `HandshakePayload.decode()` checking for the presence of the
 `protocol_version` key in the raw JSON. The minimum supported protocol version
-is now `2` (`MIN_SUPPORTED_PROTOCOL_VERSION`), so a peer advertising a version
-below `2` (including legacy peers that omit the field, treated as v0) is
+is now `4` (`MIN_SUPPORTED_PROTOCOL_VERSION`), so a peer advertising a version
+below `4` (including legacy peers that omit the field, treated as v0) is
 incompatible. Rather than dropping the connection, the handshake is allowed to
 complete and a `peer_version_mismatch` IPC event is broadcast; the connection is
 kept but feature behaviour may be degraded. The mismatch is recomputed from each
@@ -197,16 +198,18 @@ handshake, so the warning naturally reappears after a restart once the peer
 reconnects.
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
-`friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`). The
-agreed capability set is the **intersection** of both peers' advertised sets
-(unknown capabilities are ignored), and higher-level code gates behaviour on
-it: `delivery_receipts`
-enables `MESSAGE_ACK`, `block_reports` enables `MESSAGE_BLOCKED`, `profile_sync`
-enables presence/display-name updates, `friend_requests` enables the
-friend-request packet family, and `group_chat` enables the group packet family.
+`friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
+`file_transfer`). The agreed capability set is the **intersection** of both
+peers' advertised sets (unknown capabilities are ignored), and higher-level code
+gates behaviour on it: `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
+enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
+`friend_requests` enables the friend-request packet family, `group_chat` enables
+the group packet family, and `file_transfer` enables file offer/chunk/ack
+packets (section 7.6).
 A peer that does not advertise a capability will not be sent the corresponding
 packets. Handshakes that omit capabilities receive the legacy set, which excludes
-`group_chat`, preventing new group packets from being sent to older clients.
+`group_chat` and `file_transfer`, preventing new group and file packets from
+being sent to older clients.
 
 TRANSPORT-SECURITY CAVEAT (important). On the LAN TCP path, the link itself is
 NOT encrypted by a separate transport layer. The handshake and every
@@ -412,7 +415,7 @@ JSON hello (canonical, then Ed25519-signed):
 {
   "version": 1,
   "min_version": 1,
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -437,6 +440,8 @@ During the handshake, peers exchange their maximum protocol `version`, their `mi
   - `block_reports`: Report message blocking status (`MESSAGE_BLOCKED`).
   - `group_chat`: Exchange `GROUP_MESSAGE`, `GROUP_MESSAGE_ACK`, and
     `GROUP_LEAVE` packets for mutually joined named rooms.
+  - `file_transfer`: Exchange `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
+    packets for cross-platform file transfer with image preview and download.
 
 ### 6.3 Session Key Derivation
 
@@ -667,6 +672,48 @@ There is no group-history protocol. `group_messages` reads at most the newest
 200 locally persisted rows; neither joining nor reconnecting requests old group
 messages from peers or the control service.
 
+### 7.6 File Transfer Protocol
+
+File transfer sends binary files between peers using the same E2EE envelope as
+messages. Files are chunked into encrypted pieces, sent as `FILE_CHUNK` packets,
+and reassembled by the receiver. The `file_transfer` capability is required on
+both peers.
+
+#### Protocol Constants
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| MAX_FILE_SIZE | 50 MiB | Maximum transferable file size. |
+| MAX_FILE_CHUNK_SIZE | 28 KiB | Maximum plaintext per chunk (before encryption overhead). |
+| MAX_FILENAME_LENGTH | 255 | Maximum filename length (sanitized on both sender and receiver). |
+| EARLY_CHUNK_TTL | 30 s | TTL for out-of-order chunks received before the offer. |
+| MAX_EARLY_CHUNKS_PER_FILE | 8 | Maximum early chunks buffered per file before the offer arrives. |
+
+#### Flow
+
+1. **Sender** reads the local file, computes `total_chunks = ceil(file_size / chunk_size)`, and sends a signed `FILE_OFFER` to the recipient (or to every active cached member for group files).
+2. **Receiver** emits a `file_offer` IPC event so the TUI can show an incoming file notification. Acceptance is implicit (auto-download on receipt of chunks).
+3. **Sender** sends `FILE_CHUNK` packets in order, each containing an AES-256-GCM encrypted slice of the file. Each chunk is individually E2EE using the same one-time ephemeral X25519/AES-GCM construction as messages (section 7.1), with the AAD containing the chunk routing metadata.
+4. **Receiver** decrypts, reassembles chunks by `(file_id, chunk_index)`, and writes to `~/.meshtalk/files/<file_id>/<sanitized_filename>`. Completed files emit a `file_completed` IPC event with the local path.
+5. **Receiver** sends a signed `FILE_ACK` with status `completed` (or `partial` with `missing_ranges` for retransmission). The sender marks the transfer `delivered` on receipt.
+6. **Offline queueing**: `FILE_OFFER` and `FILE_CHUNK` packets are queued in the outgoing queue when the recipient is offline, identical to message queueing. On reconnect, queued transfers are flushed via `flush_for_peer`.
+7. **Resume**: `resume_for_peer` detects partially received transfers and sends `FILE_ACK` with `missing_ranges` so the sender retransmits only the missing chunks.
+
+#### Security Properties
+
+- Each chunk is individually E2EE with a fresh ephemeral key (forward secrecy per chunk).
+- The `FILE_OFFER` signature authenticates the file metadata (filename, size, chunk count).
+- Filenames are sanitized on both sender and receiver to prevent path traversal.
+- File storage is scoped to `~/.meshtalk/files/<file_id>/` — files never escape this directory.
+- The `file_transfer` capability is excluded from the legacy set, so older peers never receive file packets.
+- Incoming file offers from non-friends (for direct transfers) or non-members (for group transfers) are rejected.
+- Early-chunk buffer has a TTL (30 s) and per-file cap (8 chunks) to bound memory usage from out-of-order arrivals.
+- Packet locks are cleaned up after unlock to prevent resource leaks.
+
+#### Group File Transfer
+
+Group file transfers use the same protocol but with `group_id` set in all packets. The offer is fanned out to every active cached group member. Each recipient independently decrypts and stores the file. The sender queues the transfer for offline group members with cached encryption keys.
+
 ## 8. Application Packet Types
 
 TCP and UDP carry the same Packet type byte (backend/meshtalk/protocol.py):
@@ -689,6 +736,9 @@ TCP and UDP carry the same Packet type byte (backend/meshtalk/protocol.py):
 | GROUP_MESSAGE | 0x0E | Group Message | Signed pairwise-encrypted copy for one group recipient. |
 | GROUP_MESSAGE_ACK | 0x0F | Group Message ACK | Signed per-recipient delivery acknowledgement. |
 | GROUP_LEAVE | 0x10 | Group Leave | Signed durable member-leave event. |
+| FILE_OFFER | 0x11 | File Offer | Signed file metadata (filename, size, chunk count) for a direct or group transfer. |
+| FILE_CHUNK | 0x12 | File Chunk | E2EE encrypted file data chunk with per-chunk signature. |
+| FILE_ACK | 0x13 | File Ack | Delivery acknowledgement with optional `missing_ranges` for retransmission. |
 
 UDP transport-level frame types (udp_transport.py): HELLO=1, DATA=2, ACK=3,
 PING=4, PONG=5, READY=6, GOODBYE=7 (distinct from the application types above;
@@ -767,6 +817,12 @@ over IPC.
 | group_messages | group_id | Last 200 local messages/system events and per-recipient deliveries; marks read. |
 | group_send | group_id, content | message_id and per-recipient `sent`, `delivered`, `queued`, or `unavailable` status. |
 | group_leave | group_id | Sends/queues signed leave events, removes local room/group state, returns group_id. |
+| file_send | recipient_id, file_path | file_id — send a file to a direct peer. |
+| group_file_send | group_id, file_path | Per-recipient results — send a file to all active group members. |
+| files | - | List all file transfers (inbound and outbound) with status and metadata. |
+| file_info | file_id | Detailed metadata for one transfer. |
+| file_download | file_id, dest_path? | dest_path — save a received file to a user-chosen location. |
+| files_dir | path? | Get or set the files storage directory (`~/.meshtalk/files` by default). |
 | mute / unmute | peer_id, timeout? | Mute state. |
 | muted_peers | - | Current mutes. |
 | debug_re_stun | - | Re-run STUN + re-announce. |
@@ -777,9 +833,13 @@ over IPC.
 
 `peer_update`, `message`, `delivered`, `friend_request`, `friend_response`,
 `friend_cancelled`, `message_blocked`, `group_message`, `group_member_joined`,
-`group_member_left`, `group_sent`, and `group_delivered`. Group events identify
-the group and affected message/member; `group_sent` reports an offline queued
-copy being flushed, and `group_delivered` reports its recipient ACK.
+`group_member_left`, `group_sent`, `group_delivered`, and file transfer events:
+`file_offer` (incoming file metadata), `file_progress` (chunk received/sent),
+`file_completed` (all chunks received, file written to disk), `file_sent`
+(outbound transfer finished), `file_delivered` (recipient ACK received), and
+`file_queued` (transfer queued for offline peer). Group events identify the
+group and affected message/member; `group_sent` reports an offline queued copy
+being flushed, and `group_delivered` reports its recipient ACK.
 
 The CLI exposes `room create <name>`, `room join`, `groups` / `group list`, and
 `group members|messages|send|leave`. `watch` prints incoming group messages and
@@ -859,10 +919,13 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Protocol version | 2 | protocol.PROTOCOL_VERSION |
-| Min supported protocol version | 2 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
+| Protocol version | 4 | protocol.PROTOCOL_VERSION |
+| Min supported protocol version | 4 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
 | Legacy peer version | 0 | Default for peers omitting `protocol_version` in handshake |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer | protocol.DEFAULT_CAPABILITIES |
+| Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
+| Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
+| Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |
 | Max packet size | 64 KiB | protocol.MAX_PACKET_SIZE |
 | Discovery interval | 3 s | discovery.BROADCAST_INTERVAL |
 | Handshake timeout | 10 s | peer_manager.HANDSHAKE_TIMEOUT |

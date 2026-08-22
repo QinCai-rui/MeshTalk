@@ -211,6 +211,48 @@ lists the current blocks and `unblock_peer` removes one. Blocking is independent
 of the friend list: a former friend can be blocked, and a block can be lifted
 without re-friending.
 
+## File Transfer
+
+File transfer sends binary files (up to 50 MiB) directly between peers using
+the same E2EE envelope as messages. Files are chunked into encrypted pieces
+(MAX_FILE_CHUNK_SIZE = 28 KiB plaintext), sent as `FILE_CHUNK` packets, and
+reassembled by the receiver. The `file_transfer` capability is required on both
+peers and is excluded from the legacy capability set.
+
+The flow is:
+
+1. Sender reads the local file, computes chunk parameters, and sends a signed
+   `FILE_OFFER` containing file metadata (filename, size, chunk count).
+2. Receiver auto-accepts and emits a `file_offer` IPC event for TUI display.
+   Incoming files are stored in `~/.meshtalk/files/<file_id>/`.
+3. Sender sends `FILE_CHUNK` packets in order, each individually E2EE with a
+   fresh ephemeral X25519 key (forward secrecy per chunk).
+4. Receiver decrypts, reassembles by `(file_id, chunk_index)`, and writes to
+   disk. Completion emits `file_completed` with the local path.
+5. Receiver sends a signed `FILE_ACK` (status `completed` or `partial` with
+   `missing_ranges`). Sender marks `delivered` on receipt.
+
+Offline transfers are queued in the outgoing queue (identical to message
+queueing) and flushed on reconnect via `flush_for_peer`. Partial transfers
+support resume: `resume_for_peer` detects incomplete transfers and sends
+`FILE_ACK` with `missing_ranges` so the sender retransmits only missing chunks.
+
+Group file transfers use the same protocol with `group_id` set. The offer is
+fanned out to every active cached group member. Each recipient independently
+decrypts and stores the file. Offline group members with cached encryption keys
+receive durable queue entries.
+
+Security properties:
+
+- Each chunk is individually E2EE with a fresh ephemeral key (forward secrecy).
+- Filenames are sanitized on both sender and receiver (path traversal prevention).
+- File storage is scoped to `~/.meshtalk/files/<file_id>/`.
+- Early-chunk buffer has a TTL (30 s) and per-file cap (8 chunks) to bound
+  memory from out-of-order arrivals.
+- Incoming file offers from non-friends (direct) or non-members (group) are
+  rejected.
+- Packet locks are cleaned up after unlock to prevent resource leaks.
+
 ## Presence And Notifications
 
 Each connected TUI client reports its focus through `tui_presence` (`active`
@@ -306,6 +348,10 @@ and return JSON; responses are correlated by request id, and asynchronous events
 - `groups` / `group_members` / `group_messages` — list local groups, cached
   active rosters, and local history.
 - `group_send` / `group_leave` — send to or leave a named group.
+- `file_send` / `group_file_send` — send a file to a direct peer or to all active group members.
+- `files` / `file_info` — list all file transfers or query one transfer's metadata.
+- `file_download` — save a received file to a user-chosen location.
+- `files_dir` / `set_files_dir` — get or set the files storage directory.
 - `debug_re_stun` / `debug_info` — connectivity diagnostics.
 - `shutdown` — stop the backend daemon.
 
@@ -330,6 +376,7 @@ and return JSON; responses are correlated by request id, and asynchronous events
 Fresh MeshTalk state is stored in `~/.meshtalk`:
 
 - `identity.json`: private identity and message-encryption keys, mode 0600
-- `settings.json`: control URL and room secrets, mode 0600
-- `meshtalk.db`: peer and conversation state
+- `settings.json`: control URL, room secrets, and files directory, mode 0600
+- `meshtalk.db`: peer and conversation state, file transfer records
 - `meshtalk.sock`: owner-only local IPC socket while the backend runs
+- `files/`: received files stored in `<file_id>/` subdirectories
