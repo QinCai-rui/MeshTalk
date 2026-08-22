@@ -10,6 +10,11 @@ Commands:
   peers                       List peers, transports, and endpoints
   messages <peer-id>          Show conversation history
   send <peer-id> <message>    Send an encrypted direct message
+  send-file <peer-id> <path>   Send a file to a peer (cross-platform path)
+  files                       List file transfers
+  files dir                   Show current files storage directory
+  files set-dir <path>        Set files storage directory (e.g., E:\\MeshTalkFiles)
+  download <file-id> <dest>   Download a received file to dest path/folder
   watch                       Print incoming messages until interrupted
   control [set-url <url>]      Show or configure the control service
   advanced                         Show server IP pins that override DNS
@@ -28,6 +33,7 @@ Commands:
   group members <group-id>    List group members
   group messages <group-id>   Show group message history
   group send <group-id> <message>  Send a group message
+  group send-file <group-id> <path> Send a file to a group
   group leave <group-id>      Leave a group chat
   friends                     List your friends
   friend-requests             List pending friend requests
@@ -156,6 +162,61 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (command === "send-file") {
+      const [peerId, filePath] = args;
+      if (!peerId || !filePath) throw new Error(`Usage: ${PROGRAM} send-file <peer-id> <path>`);
+      // Cross-platform: normalize path separators before sending to backend
+      const { resolve } = await import("path");
+      const normalized = resolve(filePath);
+      const response = await ipc.send("file_send", { recipient_id: peerId, file_path: normalized });
+      if (hasError(response)) return;
+      console.log(`File transfer ${response.file_id} started`);
+      return;
+    }
+
+    if (command === "files") {
+      if (args[0] === "dir") {
+        const response = await ipc.send("files_dir");
+        if (hasError(response)) return;
+        console.log(`Files dir: ${response.files_dir}`);
+        if (response.env) console.log(`(overridden by MESHTALK_FILES_DIR=${response.env})`);
+        else if (response.configured) console.log(`(custom)`);
+        else console.log(`(default: <data_dir>/files)`);
+        console.log(`Data dir: ${response.data_dir}`);
+        return;
+      }
+      if (args[0] === "set-dir" && args[1]) {
+        const { resolve } = await import("path");
+        const p = resolve(args.slice(1).join(" "));
+        const response = await ipc.send("files_dir", { path: p });
+        if (hasError(response)) return;
+        console.log(`Files dir set to: ${response.files_dir}`);
+        console.log(`Restart backend to apply to new transfers (existing files stay in old location).`);
+        return;
+      }
+      const response = await ipc.send("files");
+      if (hasError(response)) return;
+      const files = asRecords(response.files);
+      if (!files.length) console.log("No file transfers.");
+      for (const f of files) {
+        const status = f.status as string;
+        const dir = f.direction as string;
+        const size = Number(f.file_size);
+        console.log(`${(f.file_id as string).slice(0, 8)} ${f.filename} ${size} bytes ${dir} ${status} ${f.sender_id ? `from ${(f.sender_id as string).slice(0,8)}` : ""} ${f.file_path ?? ""}`);
+      }
+      return;
+    }
+
+    if (command === "download") {
+      const [fileId, dest] = args;
+      if (!fileId || !dest) throw new Error(`Usage: ${PROGRAM} download <file-id> <dest>`);
+      const { resolve } = await import("path");
+      const response = await ipc.send("file_download", { file_id: fileId, dest_path: resolve(dest) });
+      if (hasError(response)) return;
+      console.log(`Downloaded ${fileId} -> ${response.dest_path}`);
+      return;
+    }
+
     if (command === "watch") {
       console.log("Watching for incoming messages. Press Ctrl+C to stop.");
       ipc.onEvent((event) => {
@@ -167,6 +228,13 @@ async function main(): Promise<void> {
           console.log(`[Group ${String(event.group_id).slice(0, 12)}] ${event.display_name ?? String(event.peer_id).slice(0, 12)} joined.`);
         } else if (event.event === "group_member_left") {
           console.log(`[Group ${String(event.group_id).slice(0, 12)}] ${event.display_name ?? String(event.peer_id).slice(0, 12)} left.`);
+        } else if (event.event === "file_offer") {
+          console.log(`[File] Offer ${String(event.file_id).slice(0, 8)} ${event.filename} ${event.file_size} bytes from ${String(event.sender_id).slice(0,8)}`);
+        } else if (event.event === "file_completed") {
+          console.log(`[File] Completed ${event.filename} -> ${event.file_path}`);
+        } else if (event.event === "file_progress") {
+          const rec = event.received ?? event.chunk_index;
+          console.log(`[File] Progress ${String(event.file_id).slice(0,8)} ${rec}/${event.total_chunks}`);
         }
       });
       await new Promise<void>((resolve) => process.once("SIGINT", resolve));
@@ -303,6 +371,17 @@ async function main(): Promise<void> {
         const response = await ipc.send("group_send", { group_id: groupId, content });
         if (hasError(response)) return;
         console.log(`Sent group message ${response.message_id}`);
+        return;
+      }
+
+      if (subcommand === "send-file") {
+        const filePath = words.join(" ");
+        if (!filePath) throw new Error(`Usage: ${PROGRAM} group send-file <group-id> <path>`);
+        const { resolve } = await import("path");
+        const normalized = resolve(filePath);
+        const response = await ipc.send("group_file_send", { group_id: groupId, file_path: normalized });
+        if (hasError(response)) return;
+        console.log(`Group file transfer started: ${JSON.stringify(response.results)}`);
         return;
       }
 

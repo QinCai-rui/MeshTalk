@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import socket
 import sys
@@ -21,6 +22,7 @@ from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
 from .group_router import GroupRouter
 from .message_router import MessageRouter
+from .file_transfer import FileTransferManager
 from .ipc import IPCServer
 from .protocol import PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, Packet, PacketType
 from .rendezvous import RendezvousService
@@ -28,7 +30,14 @@ from .settings import Settings
 
 logger = logging.getLogger("meshtalk")
 
-DATA_DIR = Path.home() / ".meshtalk"
+def _get_data_dir() -> Path:
+    import os
+    env = os.environ.get("MESHTALK_DATA_DIR")
+    if env and env.strip():
+        return Path(env.strip()).expanduser()
+    return Path.home() / ".meshtalk"
+
+DATA_DIR = _get_data_dir()
 
 
 async def main(debug: bool = False) -> None:
@@ -53,16 +62,35 @@ async def main(debug: bool = False) -> None:
     router = MessageRouter(
         identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router
     )
+    file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings)
     tui_clients: set[str] = set()
 
-    peer_manager.on_packet = router.handle_packet
+    async def _combined_packet_handler(peer: PeerConnection, packet: Packet) -> None:
+        # File transfers take precedence; they handle their own packet types
+        if await file_manager.handle_packet(peer, packet):
+            return
+        await router.handle_packet(peer, packet)
+
+    peer_manager.on_packet = _combined_packet_handler
 
     async def flush_outgoing(peer_id: str) -> None:
         peer = peer_manager.get_connected_peer(peer_id)
         if peer is None:
             return
+        try:
+            await file_manager.resume_for_peer(peer_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to resume inbound files for %s: %s", peer_id, exc)
+        # First flush queued file transfers via file manager (re-reads file)
+        try:
+            flushed_files = await file_manager.flush_for_peer(peer_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to flush queued files for %s: %s", peer_id, exc)
+            flushed_files = 0
         items = await db.get_pending_outgoing(peer_id)
         if not items:
+            if flushed_files:
+                logger.info("Flushed %d queued file transfer(s) to %s", flushed_files, peer_id)
             return
         for item in items:
             if peer.is_quarantined:
@@ -72,6 +100,10 @@ async def main(debug: bool = False) -> None:
                     await db.mark_message_failed(item["message_id"])
                     await ipc.broadcast_event({"event": "message_failed", "message_id": item["message_id"]})
                 await db.remove_from_outqueue(item["id"])
+                continue
+            # File transfers are flushed by file_manager to avoid sending their
+            # offer and chunks twice through the generic outbound queue.
+            if item["packet_type"] in (PacketType.FILE_OFFER.value, PacketType.FILE_CHUNK.value, PacketType.FILE_ACK.value):
                 continue
             if not await group_router.can_flush(peer, item):
                 if item["message_id"] and item.get("group_id"):
@@ -588,6 +620,100 @@ async def main(debug: bool = False) -> None:
             "peers": peers_info,
         }
 
+    async def handle_file_send(req: dict) -> dict:
+        recipient_id = req.get("recipient_id")
+        file_path = req.get("file_path")
+        if not isinstance(recipient_id, str) or not recipient_id:
+            return {"error": "recipient_id required"}
+        if not isinstance(file_path, str) or not file_path:
+            return {"error": "file_path required"}
+        try:
+            file_id = await file_manager.send_file(recipient_id, file_path)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            logger.exception("file_send failed")
+            return {"error": str(exc)}
+        return {"file_id": file_id}
+
+    async def handle_group_file_send(req: dict) -> dict:
+        group_id = req.get("group_id")
+        file_path = req.get("file_path")
+        if not isinstance(group_id, str) or not group_id:
+            return {"error": "group_id required"}
+        if not isinstance(file_path, str) or not file_path:
+            return {"error": "file_path required"}
+        if group_id not in settings.rooms or settings.rooms[group_id].group_name is None:
+            return {"error": "Unknown group"}
+        members = await db.get_group_members(group_id)
+        results = []
+        errors = []
+        for member in members:
+            recipient_id = member["peer_id"]
+            if recipient_id == identity.peer_id:
+                continue
+            if await db.is_peer_blocked(recipient_id):
+                continue
+            try:
+                fid = await file_manager.send_file(recipient_id, file_path, group_id=group_id)
+                results.append({"recipient_id": recipient_id, "file_id": fid})
+            except Exception as exc:
+                errors.append(f"{recipient_id[:8]}: {exc}")
+        if not results and errors:
+            return {"error": "; ".join(errors)}
+        return {"results": results, "errors": errors}
+
+    async def handle_files(req: dict) -> dict:
+        transfers = await file_manager.list_transfers()
+        # Normalize file_path for display: convert to string if Path
+        for t in transfers:
+            if t.get("file_path"):
+                # Make path cross-platform display; use as-is
+                t["file_path"] = str(t["file_path"])
+        return {"files": transfers}
+
+    async def handle_file_info(req: dict) -> dict:
+        file_id = req.get("file_id")
+        if not isinstance(file_id, str) or not file_id:
+            return {"error": "file_id required"}
+        transfer = await file_manager.get_transfer(file_id)
+        if not transfer:
+            return {"error": "Unknown file_id"}
+        return {"file": transfer}
+
+    async def handle_file_download(req: dict) -> dict:
+        file_id = req.get("file_id")
+        dest_path = req.get("dest_path") or req.get("file_path") or req.get("dest")
+        if not isinstance(file_id, str) or not file_id:
+            return {"error": "file_id required"}
+        if not isinstance(dest_path, str) or not dest_path:
+            return {"error": "dest_path required"}
+        try:
+            final = await file_manager.download_file(file_id, dest_path)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            logger.exception("file_download failed")
+            return {"error": str(exc)}
+        return {"file_id": file_id, "dest_path": final}
+
+    async def handle_files_dir(req: dict) -> dict:
+        # Get or set files storage directory (cross-platform: supports E:\, /mnt/e, etc.)
+        new_path = req.get("path") or req.get("files_dir") or req.get("dir")
+        if new_path is not None:
+            if not isinstance(new_path, str) or not new_path.strip():
+                return {"error": "path must be a non-empty string"}
+            # Allow clearing to default via empty or "default"
+            if new_path.strip().lower() in ("default", "clear", "reset"):
+                settings.clear_files_dir()
+                return {"files_dir": str(settings.files_dir), "configured": None, "env": os.environ.get("MESHTALK_FILES_DIR")}
+            try:
+                final = settings.set_files_dir(new_path)
+            except ValueError as exc:
+                return {"error": str(exc)}
+            return {"files_dir": str(final), "configured": settings._files_dir, "env": os.environ.get("MESHTALK_FILES_DIR")}
+        return {"files_dir": str(settings.files_dir), "configured": settings._files_dir, "env": os.environ.get("MESHTALK_FILES_DIR"), "data_dir": str(DATA_DIR)}
+
     ipc_handlers = {
         "send": handle_send,
         "peers": handle_peers,
@@ -624,6 +750,13 @@ async def main(debug: bool = False) -> None:
         "muted_peers": handle_muted_peers,
         "debug_re_stun": handle_debug_re_stun,
         "debug_info": handle_debug_info,
+        "file_send": handle_file_send,
+        "group_file_send": handle_group_file_send,
+        "files": handle_files,
+        "file_info": handle_file_info,
+        "file_download": handle_file_download,
+        "files_dir": handle_files_dir,
+        "set_files_dir": handle_files_dir,
         "shutdown": handle_shutdown,
     }
     ipc = IPCServer(
@@ -637,6 +770,7 @@ async def main(debug: bool = False) -> None:
     friend_manager.on_friend_response = lambda event: ipc.broadcast_event({"event": "friend_response", **event})
     friend_manager.on_friend_cancelled = lambda event: ipc.broadcast_event({"event": "friend_cancelled", **event})
     friend_manager.on_message_blocked = lambda event: ipc.broadcast_event({"event": "message_blocked", **event})
+    file_manager.on_event = ipc.broadcast_event
 
     await peer_manager.start()
     await peer_manager.load_endpoints()

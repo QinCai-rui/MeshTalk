@@ -11,6 +11,7 @@ from meshtalk.identity import Identity
 from meshtalk.friends import FriendManager
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
+from meshtalk.protocol import MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION
 from meshtalk.rendezvous import RendezvousService, decrypt_endpoint_card, encrypt_endpoint_card
 from meshtalk.settings import Room, Settings
 from meshtalk.udp_transport import Attempt, HELLO, MAGIC, READY, UdpTransport
@@ -225,18 +226,18 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         hello = remote_transport._make_hello(Attempt(local.peer_id, endpoint))
         value = json.loads(hello[5:])
         value.pop("signature")
-        value["version"] = 4
-        value["min_version"] = 4
+        value["version"] = PROTOCOL_VERSION - 1
+        value["min_version"] = PROTOCOL_VERSION - 1
         value["signature"] = remote.signing_private_key.sign(
             json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
         ).hex()
 
         transport.datagram_received(MAGIC + bytes([HELLO]) + json.dumps(value).encode(), endpoint)
 
-        self.assertEqual(mismatches, [(remote.peer_id, 4, 4)])
+        self.assertEqual(mismatches, [(remote.peer_id, PROTOCOL_VERSION - 1, PROTOCOL_VERSION - 1)])
         self.assertEqual(
             transport.get_negotiated_protocol(remote.peer_id),
-            (2, 4, 4),
+            (MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION - 1, PROTOCOL_VERSION - 1),
         )
         await transport.stop()
 

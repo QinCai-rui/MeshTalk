@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import secrets
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,7 +127,43 @@ class Settings:
         self._stun_pinned_ips: tuple[str, ...] = ()
         self.rooms: dict[str, Room] = {}
         self.muted_peers: dict[str, float] = {}
+        self._files_dir: str | None = None
         self._load()
+
+    @property
+    def files_dir(self) -> Path:
+        # Env var takes precedence (cross-platform: C:\, E:\, /mnt/e, ~/ )
+        env = os.environ.get("MESHTALK_FILES_DIR")
+        if env and env.strip():
+            return Path(env.strip()).expanduser()
+        if self._files_dir:
+            return Path(self._files_dir).expanduser()
+        # Default: alongside settings.json (DATA_DIR/files) - respects MESHTALK_DATA_DIR if used
+        return self.path.parent / "files"
+
+    def set_files_dir(self, path_str: str) -> Path:
+        if not isinstance(path_str, str) or not path_str.strip():
+            raise ValueError("files_dir must be a non-empty path")
+        raw = path_str.strip().strip('"').strip("'")
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            # Resolve relative against parent of settings (DATA_DIR) or cwd for consistency
+            p = (self.path.parent / p).resolve() if self.path.parent.exists() else (Path.cwd() / p).resolve()
+        # Validate: try to create parent and check writable (cross-platform)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=p, prefix=".meshtalk-", delete=True) as test:
+                test.write(b"test")
+                test.flush()
+        except Exception as exc:
+            raise ValueError(f"Cannot use files directory '{p}': {exc}") from exc
+        self._files_dir = str(p.resolve() if p.exists() else p)
+        self.save()
+        return Path(self._files_dir)
+
+    def clear_files_dir(self) -> None:
+        self._files_dir = None
+        self.save()
 
     @property
     def control_url(self) -> str:
@@ -295,6 +332,7 @@ class Settings:
                 for room in self.rooms.values()
             ],
             "muted_peers": self.muted_peers,
+            "files_dir": self._files_dir,
         }
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, indent=2))
@@ -356,3 +394,7 @@ class Settings:
                 continue
             if until <= 0 or now < until:
                 self.muted_peers[peer_id] = float(until)
+        files_dir = data.get("files_dir")
+        if isinstance(files_dir, str) and files_dir.strip():
+            # Validate but don't fail load if old path no longer exists - keep stored value
+            self._files_dir = files_dir.strip()

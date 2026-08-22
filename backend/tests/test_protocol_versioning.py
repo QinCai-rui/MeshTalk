@@ -19,6 +19,8 @@ from meshtalk.protocol import (
     IncompatibleProtocolError,
     Packet,
     PacketType,
+    PROTOCOL_VERSION,
+    MIN_SUPPORTED_PROTOCOL_VERSION,
     ProfilePayload,
     intersect_capabilities,
     negotiate_protocol_version,
@@ -234,8 +236,8 @@ class ApplyHandshakeTest(unittest.TestCase):
             nonce=b"4" * 32,
             challenge=b"",
             signature=b"",
-            protocol_version=2,
-            min_protocol_version=2,
+            protocol_version=PROTOCOL_VERSION,
+            min_protocol_version=MIN_SUPPORTED_PROTOCOL_VERSION,
             capabilities=list(DEFAULT_CAPABILITIES),
         )
         fields.update(overrides)
@@ -253,17 +255,17 @@ class ApplyHandshakeTest(unittest.TestCase):
             )
             peer = PeerConnection(remote.peer_id, "127.0.0.1", 24891, PeerState.CONNECTING)
             local._apply_handshake(peer, payload, expected_challenge=b"")
-            self.assertEqual(peer.protocol_version, 2)
+            self.assertEqual(peer.protocol_version, PROTOCOL_VERSION)
             self.assertEqual(peer.capabilities, sorted([CAP_TEXT_CHAT, CAP_PROFILE_SYNC]))
             self.assertTrue(peer.supports(CAP_TEXT_CHAT))
             self.assertFalse(peer.supports(CAP_FRIEND_REQUESTS))
             self.assertEqual(
                 peer.negotiated(),
                 {
-                    "protocol_version": 2,
-                    "remote_protocol_version": 2,
-                    "remote_min_protocol_version": 2,
-                    "min_protocol_version": 2,
+                    "protocol_version": PROTOCOL_VERSION,
+                    "remote_protocol_version": PROTOCOL_VERSION,
+                    "remote_min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
+                    "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
                     "version_mismatch": None,
                     "capabilities": sorted([CAP_TEXT_CHAT, CAP_PROFILE_SYNC]),
                 },
@@ -281,13 +283,13 @@ class ApplyHandshakeTest(unittest.TestCase):
                 mismatched.append((peer_id, rv, rmin))
 
             local.on_version_mismatch = on_mismatch
-            payload = self._signed_payload(remote, protocol_version=4, min_protocol_version=4)
+            payload = self._signed_payload(remote, protocol_version=PROTOCOL_VERSION - 1, min_protocol_version=PROTOCOL_VERSION - 1)
             peer = PeerConnection(remote.peer_id, "127.0.0.1", 24891, PeerState.CONNECTING)
             local._apply_handshake(peer, payload, expected_challenge=b"")
             async with asyncio.timeout(1):
                 while not mismatched:
                     await asyncio.sleep(0.01)
-            self.assertEqual(mismatched, [(remote.peer_id, 4, 4)])
+            self.assertEqual(mismatched, [(remote.peer_id, PROTOCOL_VERSION - 1, PROTOCOL_VERSION - 1)])
             self.assertFalse(peer.supports(CAP_TEXT_CHAT))
             peer.state = PeerState.CONNECTED
             self.assertTrue(peer.is_quarantined)
@@ -300,7 +302,7 @@ class ApplyHandshakeTest(unittest.TestCase):
         async def run():
             local = self._manager()
             remote = Identity.generate("Remote")
-            payload = self._signed_payload(remote, protocol_version=4, min_protocol_version=4)
+            payload = self._signed_payload(remote, protocol_version=PROTOCOL_VERSION - 1, min_protocol_version=PROTOCOL_VERSION - 1)
             peer = PeerConnection(remote.peer_id, "127.0.0.1", 24891, PeerState.CONNECTING)
             local._apply_handshake(peer, payload, expected_challenge=b"")
             peer.state = PeerState.CONNECTED

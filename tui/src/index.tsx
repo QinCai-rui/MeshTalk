@@ -1,9 +1,10 @@
-import { createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, type MouseEvent as TuiMouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
-import { createRoot, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions, type SelectProps } from "@opentui/react"
+import { createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, decodePasteBytes, type MouseEvent as TuiMouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
+import { createRoot, useKeyboard, usePaste, useRenderer, useSelectionHandler, useTerminalDimensions, type SelectProps } from "@opentui/react"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
+import { existsSync, statSync } from "fs"
 import { checkForUpdate, type Release } from "../../common/updater"
-import { dirname, join } from "path"
+import { dirname, join, resolve } from "path"
 
 declare const APP_VERSION: string
 declare const MESHTALK_RELEASE: boolean
@@ -130,6 +131,25 @@ type DebugInfo = {
   rooms: RoomStatus[]
   peers: Peer[]
 }
+type FileTransfer = {
+  file_id: string
+  filename: string
+  file_size: number
+  sender_id: string
+  recipient_id: string
+  group_id?: string | null
+  direction: string
+  status: string
+  file_path?: string | null
+  created_at: number
+  completed_at?: number | null
+  received_chunks?: number
+  total_chunks?: number
+}
+type ConversationItem =
+  | { type: "message"; createdAt: number; message: Message }
+  | { type: "file"; createdAt: number; file: FileTransfer }
+
 type Dialog =
   | { kind: "commands" }
   | { kind: "control"; firstRun?: boolean }
@@ -163,6 +183,11 @@ type Dialog =
   | { kind: "debug" }
   | { kind: "debug-endpoints" }
   | { kind: "debug-peer"; peerId: string; displayName: string }
+  | { kind: "file-send" }
+  | { kind: "file-list"; files: FileTransfer[] }
+  | { kind: "file-download"; fileId: string; filename: string; filePath: string }
+  | { kind: "files-dir"; filesDir: string; env?: string; configured?: string; dataDir?: string }
+  | { kind: "group-file-send" }
   | { kind: "update"; release: Release }
   | { kind: "about"; checking?: boolean; checked?: boolean }
 
@@ -234,6 +259,18 @@ function groupFromResponse(response: Record<string, unknown>): Group | undefined
   if (response.group && typeof response.group === "object") return response.group as Group
   if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined
   return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 }
+}
+
+function isImageFile(filename: string): boolean {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? ""
+  return ["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext)
+}
+
+function toFileUrl(p: string): string {
+  // cross-platform: OpenTUI accepts plain path but file:// is more robust
+  let normalized = p.replace(/\\/g, "/")
+  if (/^[a-zA-Z]:\//.test(normalized)) normalized = "/" + normalized
+  return "file://" + normalized
 }
 
 function MouseSelect(props: SelectProps) {
@@ -316,6 +353,7 @@ function ChatApp() {
   const [flashingEnabled, setFlashingEnabled] = useState(true)
   const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number; control_url?: string | null }>({ connected: false, reconnect_attempts: 0 })
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null)
+  const [fileTransfers, setFileTransfers] = useState<FileTransfer[]>([])
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [dialogDraft, setDialogDraft] = useState("")
   const [dialogError, setDialogError] = useState("")
@@ -387,6 +425,7 @@ function ChatApp() {
       if (presence.error) throw new Error(presence.error)
       await refreshPeers()
       await refreshGroups()
+      void refreshFiles()
       const mutedResp = await ipc.send("muted_peers")
       if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
       const control = await ipc.send("control")
@@ -469,6 +508,7 @@ function ChatApp() {
       void refreshGroupMembers().catch((error) => {
         if (!backendDisconnected.current && selectedGroupId) setStatus(`Group member refresh error: ${String(error)}`)
       })
+      void refreshFiles()
       void ipc.send("control").then((control) => {
         if (!control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number, control_url: control.url as string | null | undefined })
       }).catch(() => {})
@@ -621,6 +661,46 @@ function ChatApp() {
       // The authoritative mismatch state is carried on each peer via
       // refreshPeers()/peer_update; refresh so it shows without waiting.
       void refreshPeers()
+      return
+    }
+    if (event.event === "file_offer") {
+      const filename = event.filename as string
+      const sender = peers.find((p) => p.peer_id === event.sender_id)?.display_name ?? String(event.sender_id).slice(0,8)
+      showStatus(`Incoming file: ${filename} (${event.file_size} bytes) from ${sender}`)
+      if (renderer.capabilities?.notifications) {
+        renderer.triggerNotification(`Incoming file ${filename} from ${sender}`, "MeshTalk")
+      }
+      void ipc.send("files").then((res) => {
+        if (!res.error) setFileTransfers(res.files as FileTransfer[])
+      })
+      return
+    }
+    if (event.event === "file_progress") {
+      const fileId = event.file_id as string
+      // Update fileTransfers if list open
+      setFileTransfers((cur) => cur.map((f) => f.file_id === fileId ? { ...f, received_chunks: (event.received as number) ?? f.received_chunks } : f))
+      return
+    }
+    if (event.event === "file_completed") {
+      const filename = event.filename as string
+      const fpath = event.file_path as string
+      showStatus(`File received: ${filename} -> ${fpath}`)
+      if (renderer.capabilities?.notifications) {
+        renderer.triggerNotification(`File received: ${filename}`, "MeshTalk")
+      }
+      void ipc.send("files").then((res) => {
+        if (!res.error) setFileTransfers(res.files as FileTransfer[])
+      })
+      return
+    }
+    if (event.event === "file_sent" || event.event === "file_delivered" || event.event === "file_queued") {
+      const name = (event.file_id as string)?.slice(0, 8) ?? "file"
+      if (event.event === "file_sent") showStatus(`File ${name} sent.`)
+      else if (event.event === "file_delivered") showStatus(`File ${name} delivered.`)
+      else showStatus(`File ${name} queued for offline peer.`)
+      void ipc.send("files").then((res) => {
+        if (!res.error) setFileTransfers(res.files as FileTransfer[])
+      })
       return
     }
     if (event.event !== "message") {
@@ -811,6 +891,15 @@ function ChatApp() {
       showDialog({ kind: "debug" })
     } else if (dialog.kind === "debug") {
       showDialog({ kind: "commands" })
+    } else if (dialog.kind === "file-send" || dialog.kind === "group-file-send") {
+      if (selection?.kind === "group") showDialog({ kind: "commands" })
+      else showDialog({ kind: "commands" })
+    } else if (dialog.kind === "file-list") {
+      showDialog({ kind: "commands" })
+    } else if (dialog.kind === "file-download") {
+      showDialog({ kind: "file-list", files: fileTransfers })
+    } else if (dialog.kind === "files-dir") {
+      showDialog({ kind: "file-list", files: fileTransfers })
     } else {
       showDialog({ kind: "commands" })
     }
@@ -1320,6 +1409,168 @@ function ChatApp() {
     }
   }
 
+  async function loadFiles() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("files")
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      const files = response.files as FileTransfer[]
+      setFileTransfers(files)
+      setDialog({ kind: "file-list", files })
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function refreshFiles() {
+    try {
+      const response = await ipc.send("files")
+      if (!response.error) setFileTransfers(response.files as FileTransfer[])
+    } catch {}
+  }
+
+  async function sendFile(filePath: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const trimmed = filePath.trim()
+      if (!trimmed) throw new Error("File path is empty")
+      const home = process.env.HOME || process.env.USERPROFILE || ""
+      const expanded = home && (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\"))
+        ? home + trimmed.slice(1)
+        : trimmed
+      const absolutePath = resolve(expanded)
+      // Cross-platform: expand separators — backend will normalize again, but do minimal client check
+      if (selection?.kind === "peer") {
+        const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: absolutePath })
+        if (response.error) throw new Error(response.error)
+        showStatus(`File transfer started: ${absolutePath} -> ${selection.id.slice(0, 8)}`)
+      } else if (selection?.kind === "group") {
+        const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: absolutePath })
+        if (response.error) throw new Error(response.error)
+        showStatus(`Group file transfer started: ${absolutePath}`)
+      } else {
+        throw new Error("Select a peer or group first")
+      }
+      if (dialogAction.current !== action) return
+      closeDialog()
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  function defaultDownloadPath(filename: string): string {
+    const home = process.env.HOME || process.env.USERPROFILE || ""
+    const dl = home ? `${home}/Downloads/${filename}` : filename
+    // Use forward slashes for display; backend normalizes
+    return dl.replace(/\\/g, "/")
+  }
+
+  async function downloadFile(fileId: string, destPath: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const trimmed = destPath.trim()
+      if (!trimmed) throw new Error("Destination path required")
+      const response = await ipc.send("file_download", { file_id: fileId, dest_path: trimmed })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      showStatus(`Saved ${response.dest_path as string}`)
+      closeDialog()
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function loadFilesDir() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("files_dir")
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      setDialog({ kind: "files-dir", filesDir: response.files_dir as string, env: response.env as string | undefined, configured: response.configured as string | undefined, dataDir: response.data_dir as string | undefined })
+      setDialogDraft(response.files_dir as string)
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  async function setFilesDir(path: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const trimmed = path.trim()
+      if (!trimmed) throw new Error("Path required")
+      const response = await ipc.send("files_dir", { path: trimmed })
+      if (response.error) throw new Error(response.error)
+      if (dialogAction.current !== action) return
+      showStatus(`Files storage set to ${response.files_dir as string}. New files will go there.`)
+      setDialog({ kind: "files-dir", filesDir: response.files_dir as string, env: response.env as string | undefined, configured: response.configured as string | undefined, dataDir: response.data_dir as string | undefined })
+      setDialogDraft(response.files_dir as string)
+    } catch (error) {
+      failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
+    }
+  }
+
+  // Drag-and-drop / paste file path into composer (cross-platform)
+  // Terminals paste dropped file as bracketed paste with path text.
+  usePaste((event) => {
+    if (dialog || editingName) return
+    try {
+      const raw = decodePasteBytes(event.bytes).trim()
+      if (!raw) return
+      let candidate = raw.split("\n")[0].trim()
+      if (candidate.startsWith("file://")) {
+        candidate = decodeURIComponent(candidate.replace(/^file:\/\//, ""))
+        if (/^\/[a-zA-Z]:\//.test(candidate)) candidate = candidate.slice(1)
+      }
+      candidate = candidate.replace(/^["']|["']$/g, "").trim()
+      const candidates = [candidate]
+      if (candidate.includes(" ") && !existsSync(candidate)) {
+        const m = raw.match(/"[^"]+"|'[^']+'|\S+/g)
+        if (m && m[0]) candidates.unshift(m[0].replace(/^["']|["']$/g, ""))
+      }
+      for (const p of candidates) {
+        try {
+          if (p && existsSync(p) && statSync(p).isFile()) {
+            if (!selection) {
+              showStatus("Select a peer or group before dropping files.")
+              return
+            }
+            setTimeout(() => {
+              const c = composerRef.current
+              if (c) {
+                const cur = c.plainText
+                if (cur.includes(p) || cur.includes(raw.slice(0, 50))) {
+                  c.selectAll()
+                  c.deleteSelection()
+                  setDraftLength(0)
+                  if (selectionKey) setDrafts((d) => ({ ...d, [selectionKey]: "" }))
+                  setComposerHeight(MIN_COMPOSER_HEIGHT)
+                }
+              }
+            }, 30)
+            void sendFile(p)
+            return
+          }
+        } catch {}
+      }
+    } catch {}
+  })
+
   function runCommand(command: string) {
     if (command === "control") {
       showDialog({ kind: "control" })
@@ -1375,6 +1626,12 @@ function ChatApp() {
     } else if (command === "debug") {
       showDialog({ kind: "debug" })
       void loadDebugInfo()
+    } else if (command === "send-file") {
+      if (!selection) { showStatus("Select a peer or group before sending a file."); return }
+      showDialog({ kind: "file-send" })
+    } else if (command === "files") {
+      showDialog({ kind: "file-list", files: [] })
+      void loadFiles()
     } else if (command === "about") {
       showDialog({ kind: "about" })
     }
@@ -1529,6 +1786,21 @@ function ChatApp() {
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId)
   const selectedGroup = groups.find((group) => group.group_id === selectedGroupId)
+  const conversationFiles = useMemo(() => fileTransfers.filter((f) => {
+    if (!f.file_path) return false
+    if (f.status !== "completed" && f.status !== "sent") return false
+    if (selection?.kind === "peer") {
+      return !f.group_id && (f.sender_id === selection.id || f.recipient_id === selection.id)
+    }
+    if (selection?.kind === "group") {
+      return f.group_id === selection.id
+    }
+    return false
+  }).sort((a, b) => a.created_at - b.created_at), [fileTransfers, selection])
+  const conversationItems = useMemo<ConversationItem[]>(() => [
+    ...messages.map((message) => ({ type: "message" as const, createdAt: message.created_at, message })),
+    ...conversationFiles.map((file) => ({ type: "file" as const, createdAt: file.created_at, file })),
+  ].sort((a, b) => a.createdAt - b.createdAt || (a.type === b.type ? 0 : a.type === "message" ? -1 : 1)), [messages, conversationFiles])
   const incompatibleGroupMembers = selectedGroup
     ? (groupMembers[selectedGroup.group_id] ?? []).filter((member) => member.is_incompatible)
     : []
@@ -1682,9 +1954,40 @@ function ChatApp() {
             }}
           >
             {!selected && !selectedGroup ? <text fg="#888888">Select a peer or group.</text> : null}
-            {selected && !messages.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
-            {selectedGroup && !messages.length ? <text fg="#888888">No messages yet. Say hello to the group.</text> : null}
-            {messages.map((message, index) => {
+            {selected && !conversationItems.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
+            {selectedGroup && !conversationItems.length ? <text fg="#888888">No messages yet. Say hello to the group.</text> : null}
+            {conversationItems.map((item, index) => {
+              const rows: ReactNode[] = []
+              const prev = conversationItems[index - 1]
+              if (!prev || dayKey(prev.createdAt) !== dayKey(item.createdAt)) {
+                rows.push(
+                  <box key={`sep-${dayKey(item.createdAt)}`} style={{ alignItems: "center", marginTop: 1, marginBottom: 1 }}>
+                    <text fg="#5b6b82">───── {formatDateSeparator(item.createdAt)} ─────</text>
+                  </box>
+                )
+              }
+              if (item.type === "file") {
+                const file = item.file
+                const isLocal = file.sender_id === identity?.peer_id
+                const senderName = peers.find((peer) => peer.peer_id === file.sender_id)?.display_name
+                  ?? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === file.sender_id)?.display_name
+                  ?? "Unknown member"
+                rows.push(
+                  <box key={`file-${file.file_id}`} style={{ flexDirection: "column", marginBottom: 1 }}>
+                    <text>
+                      <span fg="#888888">{formatTime(file.created_at)} </span>
+                      <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
+                      <span fg="#888888"> shared an attachment</span>
+                    </text>
+                    <text wrapMode="word"><span fg="#7aa2d6">{file.filename}</span><span fg="#888888"> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
+                    {isImageFile(file.filename) && (
+                      <image source={toFileUrl(file.file_path!)} fit="fit" protocol="auto" style={{ width: 40, height: 12 }} onError={() => {}} />
+                    )}
+                  </box>
+                )
+                return rows
+              }
+              const message = item.message
               const isLocal = message.sender_id === identity?.peer_id
               const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
               const blocked = Boolean(message.blocked)
@@ -1701,15 +2004,6 @@ function ChatApp() {
                     ? `${isLocal ? "You" : senderName} left the group`
                     : message.content
                 : message.content
-              const rows: ReactNode[] = []
-              const prev = messages[index - 1]
-              if (!prev || dayKey(prev.created_at) !== dayKey(message.created_at)) {
-                rows.push(
-                  <box key={`sep-${dayKey(message.created_at)}`} style={{ alignItems: "center", marginTop: 1, marginBottom: 1 }}>
-                    <text fg="#5b6b82">───── {formatDateSeparator(message.created_at)} ─────</text>
-                  </box>
-                )
-              }
               const showReceived =
                 typeof message.received_at === "number" &&
                 formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
@@ -1730,8 +2024,8 @@ function ChatApp() {
               )
               return rows
             })}
-          </scrollbox>
-        </box>
+           </scrollbox>
+         </box>
 
         <box
           title={selectedGroup || selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: queued until peer is online"}
@@ -1743,12 +2037,14 @@ function ChatApp() {
             key={selectionKey ?? "no-conversation"}
             ref={composerRef}
             initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""}
-            placeholder={selectedGroup ? `Message ${selectedGroup.name}` : selected ? "Write a message" : "Select a peer or group"}
+            placeholder={selectedGroup ? `Message ${selectedGroup.name} — drop file/image here` : selected ? "Write a message — drop file/image to send" : "Select a peer or group"}
             focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !isSending && !dialog}
             onMouseDown={() => setScrollFocused(false)}
             onContentChange={() => {
               const composer = composerRef.current
               const content = composer?.plainText ?? ""
+              // If user typed/pasted a raw file path that exists, hint but let usePaste handle drop;
+              // also support manual path entry: if draft is single line file path, allow Enter to send as file via Ctrl+P flow
               setDraftLength(new TextEncoder().encode(content).length)
               setComposerHeight(getComposerHeight(composer))
               if (selectionKey) setDrafts((current) => ({ ...current, [selectionKey]: content }))
@@ -1817,6 +2113,8 @@ function ChatApp() {
                     { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
                     ...(selectedGroup ? [{ name: "Group details", description: `View members or leave ${selectedGroup.name}`, value: "group-details" }] : []),
                     { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
+                    { name: "Send file", description: selection ? `Send a file to ${selection.kind === "peer" ? peers.find((p) => p.peer_id === selection.id)?.display_name ?? "peer" : groups.find((g) => g.group_id === selection.id)?.name ?? "group"}` : "Select a peer or group first", value: "send-file" },
+                    { name: "Files", description: "View file transfer history and status", value: "files" },
                     { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
                     { name: "Accessibility", description: "Reduce motion and other accessibility options", value: "accessibility" },
                     { name: "Advanced Configuration", description: "Pin server IP addresses to bypass DNS", value: "advanced" },
@@ -2601,6 +2899,111 @@ height={Math.max(5, dialogHeight - 3)}
                 </>
               )
             })()}
+            {dialog.kind === "file-send" && (
+              <>
+                <text>Enter full file path to send to <span fg="#66dd88">{selection?.kind === "peer" ? peers.find((p)=>p.peer_id===selection.id)?.display_name ?? selection.id.slice(0,8) : groups.find((g)=>g.group_id===selection?.id)?.name ?? "group"}</span></text>
+                <text fg="#888888">Works cross-platform. Windows: C:\path\to\file  macOS/Linux: /path/to/file</text>
+                <input
+                  focused
+                  value={dialogDraft}
+                  placeholder={process.platform === "win32" ? "C:\\Users\\you\\Documents\\file.txt" : "/home/you/file.txt"}
+                  onInput={setDialogDraft}
+                  onSubmit={(value) => void sendFile(typeof value === "string" ? value : dialogDraft)}
+                  maxLength={4096}
+                />
+                <text fg="#888888">Enter sends. Path must be readable by the MeshTalk backend. Files up to 50 MiB.</text>
+              </>
+            )}
+            {dialog.kind === "file-list" && (
+              <>
+                <scrollbox
+                  style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+                  contentOptions={{ flexDirection: "column" }}
+                  verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}
+                >
+                  {!dialog.files.length && <text fg="#888888">No file transfers yet.</text>}
+                  {dialog.files.map((f) => (
+                    <box key={f.file_id} style={{ flexDirection: "column", paddingBottom: 1 }}>
+                      <text><span fg={f.direction === "inbound" ? "#66dd88" : "#65a9ff"}>{f.direction === "inbound" ? "↓" : "↑"}</span> {f.filename} ({(f.file_size/1024).toFixed(1)} KiB) <span fg="#888888">{f.status}</span></text>
+                      <text fg="#888888">  {f.file_id.slice(0,8)} {f.direction === "inbound" ? `from ${f.sender_id.slice(0,8)}` : `to ${f.recipient_id.slice(0,8)}`} {f.file_path ?? ""} {isImageFile(f.filename) ? "(image)" : ""}</text>
+                      {f.status === "completed" && f.file_path && isImageFile(f.filename) && (
+                        <image source={toFileUrl(f.file_path)} fit="fit" protocol="auto" style={{ width: 20, height: 6 }} onError={() => {}} />
+                      )}
+                    </box>
+                  ))}
+                </scrollbox>
+                <MouseSelect
+                  focused
+                  height={Math.min(8, dialogHeight - 4)}
+                  options={[
+                    ...dialog.files.filter((f) => f.status === "completed" || f.status === "sent").map((f) => ({
+                      name: `Download ${f.filename}`,
+                      description: `${f.file_id.slice(0,8)} -> choose destination`,
+                      value: `dl:${f.file_id}`,
+                    })),
+                    { name: "Storage location", description: "View/change where received files are saved (e.g., E:\\ drive)", value: "storage" },
+                    { name: "Refresh", description: "Reload file list", value: "refresh" },
+                    { name: "Back", description: "Return to commands", value: "back" },
+                  ]}
+                  onSelect={(_, option) => {
+                    if (!option) return
+                    if (option.value === "refresh") void loadFiles()
+                    else if (option.value === "back") showDialog({ kind: "commands" })
+                    else if (option.value === "storage") void loadFilesDir()
+                    else if (option.value.startsWith("dl:")) {
+                      const fid = option.value.slice(3)
+                      const f = dialog.files.find((x) => x.file_id === fid)
+                      if (f) {
+                        setDialogDraft(defaultDownloadPath(f.filename))
+                        showDialog({ kind: "file-download", fileId: f.file_id, filename: f.filename, filePath: f.file_path ?? "" })
+                      }
+                    }
+                  }}
+                  wrapSelection
+                  showDescription
+                />
+              </>
+            )}
+            {dialog.kind === "files-dir" && (
+              <>
+                <text>Files storage directory (cross-platform):</text>
+                <text fg="#66dd88" wrapMode="word">{dialog.filesDir}</text>
+                {dialog.env && <text fg="#e0a34a">Overridden by MESHTALK_FILES_DIR={dialog.env} (env var takes precedence)</text>}
+                {dialog.configured && !dialog.env && <text fg="#888888">Custom (from settings.json)</text>}
+                {!dialog.configured && !dialog.env && <text fg="#888888">Default: {dialog.dataDir}/files</text>}
+                <text fg="#888888">Examples: Windows E:\MeshTalkFiles  Linux /mnt/e/MeshTalkFiles  macOS /Volumes/E/MeshTalkFiles</text>
+                <input
+                  focused
+                  value={dialogDraft}
+                  placeholder="E:\MeshTalkFiles"
+                  onInput={setDialogDraft}
+                  onSubmit={(v) => void setFilesDir(typeof v === "string" ? v : dialogDraft)}
+                  maxLength={4096}
+                />
+                <text fg="#888888">Enter saves. New files go there; existing files stay in old location.</text>
+                <MouseSelect
+                  focused={false}
+                  height={3}
+                  options={[{ name: "Back to files", description: "Return to file list", value: "back" }]}
+                  onSelect={() => void loadFiles()}
+                />
+              </>
+            )}
+            {dialog.kind === "file-download" && (
+              <>
+                <text>Download <span fg="#66dd88">{dialog.filename}</span> to:</text>
+                <text fg="#888888">{dialog.filePath}</text>
+                <input
+                  focused
+                  value={dialogDraft}
+                  placeholder={defaultDownloadPath(dialog.filename)}
+                  onInput={setDialogDraft}
+                  onSubmit={(v) => void downloadFile(dialog.fileId, typeof v === "string" ? v : dialogDraft)}
+                  maxLength={4096}
+                />
+                <text fg="#888888">Enter saves. Works on Linux/macOS/Windows. Path may be folder or file.</text>
+              </>
+            )}
             {dialogError && <text fg="#ff7777">{dialogError}</text>}
           </box>
         </box>

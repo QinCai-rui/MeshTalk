@@ -31,8 +31,8 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-PROTOCOL_VERSION = 3
-MIN_SUPPORTED_PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 4
+MIN_SUPPORTED_PROTOCOL_VERSION = 4
 
 # Feature capability identifiers exchanged during the handshake. A connection
 # only enables a capability when both peers advertise it (see
@@ -44,6 +44,7 @@ CAP_FRIEND_REQUESTS = "friend_requests"
 CAP_DELIVERY_RECEIPTS = "delivery_receipts"
 CAP_BLOCK_REPORTS = "block_reports"
 CAP_GROUP_CHAT = "group_chat"
+CAP_FILE_TRANSFER = "file_transfer"
 DEFAULT_CAPABILITIES = [
     CAP_TEXT_CHAT,
     CAP_PROFILE_SYNC,
@@ -51,8 +52,9 @@ DEFAULT_CAPABILITIES = [
     CAP_DELIVERY_RECEIPTS,
     CAP_BLOCK_REPORTS,
     CAP_GROUP_CHAT,
+    CAP_FILE_TRANSFER,
 ]
-LEGACY_CAPABILITIES = [capability for capability in DEFAULT_CAPABILITIES if capability != CAP_GROUP_CHAT]
+LEGACY_CAPABILITIES = [capability for capability in DEFAULT_CAPABILITIES if capability not in (CAP_GROUP_CHAT, CAP_FILE_TRANSFER)]
 # Capabilities that have a direct counterpart in this implementation. Used to
 # validate that a peer only advertises capabilities we recognise.
 KNOWN_CAPABILITIES = frozenset(DEFAULT_CAPABILITIES)
@@ -141,6 +143,9 @@ class PacketType(enum.IntEnum):
     GROUP_MESSAGE = 0x0E
     GROUP_MESSAGE_ACK = 0x0F
     GROUP_LEAVE = 0x10
+    FILE_OFFER = 0x11
+    FILE_CHUNK = 0x12
+    FILE_ACK = 0x13
 
 
 @dataclass
@@ -702,4 +707,273 @@ class FriendRequestCancelledPayload:
             or len(payload.signature) != 64
         ):
             raise ValueError("Invalid friend request cancelled payload")
+        return payload
+
+
+# File transfer constants and payloads — cross-platform considerations:
+# - Filename is sanitized on both sender and receiver to avoid path traversal
+#   and illegal characters on Windows (\ / : * ? " < > |) and POSIX (/).
+# - File content is treated as binary (no encoding conversion) so line endings
+#   remain intact across OSes.
+# - Chunk size is chosen to fit within MAX_PACKET_SIZE after encryption and
+#   hex encoding, ensuring reliable delivery over both LAN TCP and fragmented
+#   remote UDP transports.
+
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MiB
+MAX_FILE_CHUNK_SIZE = 28 * 1024
+MAX_FILENAME_LENGTH = 255
+
+
+def sanitize_filename(name: str) -> str:
+    """Return a cross-platform safe filename derived from ``name``.
+
+    Handles Windows, macOS, and Linux illegal characters and reserved names.
+    """
+    import pathlib
+    # Extract basename in a cross-platform way: split on both / and \ and :.
+    # pathlib alone is OS-specific, so handle manually.
+    if not isinstance(name, str):
+        name = str(name)
+    # Take last segment after any separator
+    parts = re.split(r"[\\/]", name)
+    base = parts[-1] if parts else name
+    base = base.strip()
+    # Replace illegal chars and control chars
+    base = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", base)
+    # Strip trailing dots/spaces (Windows restriction)
+    base = base.strip(" .")
+    # Truncate to max length
+    if len(base) > MAX_FILENAME_LENGTH:
+        # Preserve extension if present
+        stem, dot, ext = base[:MAX_FILENAME_LENGTH].rpartition(".")
+        if dot and len(ext) <= 10:
+            base = base[:MAX_FILENAME_LENGTH - len(ext) - 1].rstrip(" .") + "." + ext
+        else:
+            base = base[:MAX_FILENAME_LENGTH]
+    # Handle reserved Windows names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+    reserved = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
+    stem_upper = base.split(".")[0].upper() if base else ""
+    if stem_upper in reserved:
+        base = "_" + base
+    if not base:
+        base = "file"
+    return base
+
+
+@dataclass
+class FileOfferPayload:
+    file_id: str
+    filename: str
+    file_size: int
+    chunk_size: int
+    total_chunks: int
+    sender_id: str
+    recipient_id: str
+    created_at: float
+    signature: bytes = b""
+    group_id: str | None = None
+
+    def signed_bytes(self) -> bytes:
+        data: dict[str, object] = {
+            "file_id": self.file_id,
+            "filename": self.filename,
+            "file_size": self.file_size,
+            "chunk_size": self.chunk_size,
+            "total_chunks": self.total_chunks,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+        }
+        if self.group_id:
+            data["group_id"] = self.group_id
+        return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
+
+    def encode(self) -> bytes:
+        payload: dict[str, object] = {
+            "file_id": self.file_id,
+            "filename": self.filename,
+            "file_size": self.file_size,
+            "chunk_size": self.chunk_size,
+            "total_chunks": self.total_chunks,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+            "signature": self.signature.hex(),
+        }
+        if self.group_id:
+            payload["group_id"] = self.group_id
+        return json.dumps(payload).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> FileOfferPayload:
+        obj = json.loads(data)
+        payload = cls(
+            file_id=obj["file_id"],
+            filename=sanitize_filename(obj["filename"]),
+            file_size=obj["file_size"],
+            chunk_size=obj["chunk_size"],
+            total_chunks=obj["total_chunks"],
+            sender_id=obj["sender_id"],
+            recipient_id=obj["recipient_id"],
+            created_at=obj["created_at"],
+            signature=bytes.fromhex(obj.get("signature", "")),
+            group_id=obj.get("group_id"),
+        )
+        if (
+            not _valid_request_id(payload.file_id)
+            or not isinstance(payload.filename, str)
+            or not 0 < payload.file_size <= MAX_FILE_SIZE
+            or payload.chunk_size <= 0
+            or payload.chunk_size > MAX_FILE_CHUNK_SIZE
+            or payload.total_chunks <= 0
+            or payload.total_chunks > 10000
+            or payload.file_size > payload.chunk_size * payload.total_chunks
+            or payload.file_size <= (payload.total_chunks - 1) * payload.chunk_size
+            or not _valid_peer_id(payload.sender_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or not isinstance(payload.created_at, (int, float))
+            or isinstance(payload.created_at, bool)
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid file offer payload")
+        if payload.group_id is not None and not re.fullmatch(r"[a-f0-9]{32}", payload.group_id):
+            raise ValueError("Invalid group_id in file offer")
+        return payload
+
+
+@dataclass
+class FileChunkPayload:
+    file_id: str
+    chunk_index: int
+    total_chunks: int
+    sender_id: str
+    recipient_id: str
+    encrypted_content: bytes
+    signature: bytes = b""
+    group_id: str | None = None
+
+    def associated_data(self) -> bytes:
+        data: dict[str, object] = {
+            "file_id": self.file_id,
+            "chunk_index": self.chunk_index,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+        }
+        if self.group_id:
+            data["group_id"] = self.group_id
+        return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
+
+    def signed_bytes(self) -> bytes:
+        return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
+
+    def encode(self) -> bytes:
+        payload: dict[str, object] = {
+            "file_id": self.file_id,
+            "chunk_index": self.chunk_index,
+            "total_chunks": self.total_chunks,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "encrypted_content": self.encrypted_content.hex(),
+            "signature": self.signature.hex(),
+        }
+        if self.group_id:
+            payload["group_id"] = self.group_id
+        return json.dumps(payload).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> FileChunkPayload:
+        obj = json.loads(data)
+        payload = cls(
+            file_id=obj["file_id"],
+            chunk_index=obj["chunk_index"],
+            total_chunks=obj["total_chunks"],
+            sender_id=obj["sender_id"],
+            recipient_id=obj["recipient_id"],
+            encrypted_content=bytes.fromhex(obj["encrypted_content"]),
+            signature=bytes.fromhex(obj.get("signature", "")),
+            group_id=obj.get("group_id"),
+        )
+        if (
+            not _valid_request_id(payload.file_id)
+            or not isinstance(payload.chunk_index, int)
+            or isinstance(payload.chunk_index, bool)
+            or payload.chunk_index < 0
+            or payload.chunk_index >= payload.total_chunks
+            or payload.total_chunks <= 0
+            or not _valid_peer_id(payload.sender_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or len(payload.encrypted_content) < 32 + 12 + 16
+            or len(payload.encrypted_content) > MAX_PACKET_SIZE
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid file chunk payload")
+        if payload.group_id is not None and not re.fullmatch(r"[a-f0-9]{32}", payload.group_id):
+            raise ValueError("Invalid group_id in file chunk")
+        return payload
+
+
+@dataclass
+class FileAckPayload:
+    file_id: str
+    recipient_id: str
+    status: str
+    signature: bytes = b""
+    missing_ranges: list[tuple[int, int]] = field(default_factory=list)
+
+    def signed_bytes(self) -> bytes:
+        data: dict[str, object] = {
+            "file_id": self.file_id,
+            "recipient_id": self.recipient_id,
+            "status": self.status,
+        }
+        if self.missing_ranges:
+            data["missing_ranges"] = self.missing_ranges
+        return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
+
+    def encode(self) -> bytes:
+        payload: dict[str, object] = {
+            "file_id": self.file_id,
+            "recipient_id": self.recipient_id,
+            "status": self.status,
+            "signature": self.signature.hex(),
+        }
+        if self.missing_ranges:
+            payload["missing_ranges"] = self.missing_ranges
+        return json.dumps(payload, separators=(",", ":")).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> FileAckPayload:
+        obj = json.loads(data)
+        raw_ranges = obj.get("missing_ranges", [])
+        if not isinstance(raw_ranges, list):
+            raise ValueError("Invalid file ack payload")
+        missing_ranges: list[tuple[int, int]] = []
+        previous_end = -1
+        for value in raw_ranges:
+            if (
+                not isinstance(value, list)
+                or len(value) != 2
+                or not all(isinstance(index, int) and not isinstance(index, bool) for index in value)
+            ):
+                raise ValueError("Invalid file ack payload")
+            start, end = value
+            if start < 0 or end < start or end >= 10000 or start <= previous_end:
+                raise ValueError("Invalid file ack payload")
+            missing_ranges.append((start, end))
+            previous_end = end
+        payload = cls(
+            file_id=obj["file_id"],
+            recipient_id=obj["recipient_id"],
+            status=obj["status"],
+            signature=bytes.fromhex(obj.get("signature", "")),
+            missing_ranges=missing_ranges,
+        )
+        if (
+            not _valid_request_id(payload.file_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or payload.status not in ("completed", "ack", "missing")
+            or (payload.status == "missing") != bool(payload.missing_ranges)
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid file ack payload")
         return payload

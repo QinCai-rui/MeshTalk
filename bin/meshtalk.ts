@@ -13,10 +13,17 @@ declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
 
 const HOME = homedir();
-const DATA_DIR = `${HOME}/.meshtalk`;
-const SOCKET_PATH = `${DATA_DIR}/meshtalk.sock`;
+function expandHomePath(value: string): string {
+  const trimmed = value.trim();
+  return HOME && (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\"))
+    ? HOME + trimmed.slice(1)
+    : trimmed;
+}
+
+const DATA_DIR = process.env.MESHTALK_DATA_DIR ? expandHomePath(process.env.MESHTALK_DATA_DIR) : `${HOME}/.meshtalk`;
+const SOCKET_PATH = process.env.MESHTALK_IPC_SOCKET || `${DATA_DIR}/meshtalk.sock`;
 const PORT_PATH = `${DATA_DIR}/meshtalk.port`;
-const TOKEN_PATH = `${DATA_DIR}/meshtalk.token`;
+const TOKEN_PATH = process.env.MESHTALK_IPC_TOKEN || `${DATA_DIR}/meshtalk.token`;
 const BACKEND_LOG_PATH = `${DATA_DIR}/backend.log`;
 const BACKEND_START_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 300;
@@ -239,22 +246,24 @@ async function stopBackend(pid?: number, daemonise = true): Promise<void> {
   }
   if (!pid || !Number.isInteger(pid)) return;
   const useGroup = daemonise && process.platform !== "win32";
-  const killGroup = (signal: NodeJS.Signal) => {
-    try {
-      process.kill(useGroup ? -pid! : pid!, signal);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  if (!killGroup("SIGTERM")) return;
+  if (!signalBackend(pid, useGroup, "SIGTERM")) return;
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     await Bun.sleep(200);
     try { process.kill(pid!, 0); } catch { return; }
   }
   log("Backend did not stop gracefully; sending SIGKILL.");
-  killGroup("SIGKILL");
+  signalBackend(pid, useGroup, "SIGKILL");
+}
+
+function signalBackend(pid: number, useGroup: boolean, signal: NodeJS.Signal): boolean {
+  try {
+    process.kill(useGroup ? -pid : pid, signal);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
 }
 
 function startBackend(backend: Component, daemonise = true): ChildProcess {
@@ -316,22 +325,18 @@ async function main() {
         return;
       }
       const useGroup = process.platform !== "win32";
-      const killGroup = (signal: NodeJS.Signal) => {
-        try {
-          process.kill(useGroup ? -pid! : pid!, signal);
-          return true;
-        } catch {
-          return false;
-        }
-      };
-      if (!killGroup("SIGTERM")) { console.log("Backend is not running."); return; }
+      try {
+        if (!signalBackend(pid, useGroup, "SIGTERM")) { console.log("Backend is not running."); return; }
+      } catch (error) {
+        throw new Error(`Could not stop backend: ${error instanceof Error ? error.message : String(error)}`);
+      }
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
         await Bun.sleep(200);
         try { process.kill(pid, 0); } catch { console.log("Backend stopped."); return; }
       }
       log("Backend did not stop gracefully; sending SIGKILL.");
-      killGroup("SIGKILL");
+      signalBackend(pid, useGroup, "SIGKILL");
       await Bun.sleep(1_000);
       try { process.kill(pid, 0); console.log("Backend still running."); } catch { console.log("Backend stopped."); }
       return;
