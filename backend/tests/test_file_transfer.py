@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -161,4 +162,78 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sender_manager.sent), 1)
         resent = FileChunkPayload.decode(sender_manager.sent[0].payload)
         self.assertEqual(resent.chunk_index, 1)
+        await sender_db.close()
+
+    async def test_duplicate_completed_ack_is_ignored(self):
+        sender_db = Database(self.root / "sender.db")
+        await sender_db.connect()
+        await sender_db.save_file_transfer({
+            "file_id": self.file_id,
+            "filename": "document.bin",
+            "file_size": len(self.content),
+            "chunk_size": 4,
+            "total_chunks": 2,
+            "sender_id": self.sender.peer_id,
+            "recipient_id": self.recipient.peer_id,
+            "group_id": self.group_id,
+            "direction": "outbound",
+            "status": "sent",
+            "file_path": str(self.root / "source.bin"),
+            "created_at": 1.0,
+        })
+        events: list[dict] = []
+
+        async def on_event(event: dict) -> None:
+            events.append(event)
+
+        sender_manager = FakePeerManager(self.recipient_peer)
+        sender_transfer = FileTransferManager(
+            self.sender, sender_manager, sender_db, self.root / "sender-files", on_event=on_event
+        )
+        ack = FileAckPayload(
+            file_id=self.file_id, recipient_id=self.recipient.peer_id, status="completed"
+        )
+        ack.signature = self.recipient.signing_private_key.sign(ack.signed_bytes())
+        packet = Packet(PacketType.FILE_ACK, ack.encode())
+
+        await sender_transfer.handle_packet(self.recipient_peer, packet)
+        await sender_transfer.handle_packet(self.recipient_peer, packet)
+        await asyncio.sleep(0)
+
+        self.assertEqual((await sender_db.get_file_transfer(self.file_id))["status"], "completed")
+        self.assertEqual(events, [{"event": "file_delivered", "file_id": self.file_id, "recipient_id": self.recipient.peer_id}])
+        await sender_db.close()
+
+    async def test_missing_ack_after_completion_does_not_resend_file(self):
+        sender_db = Database(self.root / "sender.db")
+        await sender_db.connect()
+        source = self.root / "source.bin"
+        source.write_bytes(self.content)
+        await sender_db.save_file_transfer({
+            "file_id": self.file_id,
+            "filename": "document.bin",
+            "file_size": len(self.content),
+            "chunk_size": 4,
+            "total_chunks": 2,
+            "sender_id": self.sender.peer_id,
+            "recipient_id": self.recipient.peer_id,
+            "group_id": self.group_id,
+            "direction": "outbound",
+            "status": "completed",
+            "file_path": str(source),
+            "created_at": 1.0,
+        })
+        sender_manager = FakePeerManager(self.recipient_peer)
+        sender_transfer = FileTransferManager(self.sender, sender_manager, sender_db, self.root / "sender-files")
+        ack = FileAckPayload(
+            file_id=self.file_id,
+            recipient_id=self.recipient.peer_id,
+            status="missing",
+            missing_ranges=[(1, 1)],
+        )
+        ack.signature = self.recipient.signing_private_key.sign(ack.signed_bytes())
+
+        await sender_transfer.handle_packet(self.recipient_peer, Packet(PacketType.FILE_ACK, ack.encode()))
+
+        self.assertEqual(sender_manager.sent, [])
         await sender_db.close()
