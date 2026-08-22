@@ -139,6 +139,7 @@ function scheduleWindowsReplacement(extracted: string, installDir: string): void
 
 export async function installRelease(release: Release, installDir: string): Promise<void> {
   const temporary = mkdtempSync(join(tmpdir(), "meshtalk-update-"))
+  let staging: string | undefined
   try {
     const response = await fetch(release.downloadUrl, { signal: AbortSignal.timeout(120_000) })
     if (!response.ok) throw new Error(`Download failed (${response.status})`)
@@ -164,12 +165,20 @@ export async function installRelease(release: Release, installDir: string): Prom
       scheduleWindowsReplacement(extracted, installDir)
       return
     }
+    // A running Unix executable cannot be copied over, but its pathname can be
+    // atomically replaced. Stage on the installation filesystem so rename does
+    // not fail when the system temporary directory is on another filesystem.
+    staging = mkdtempSync(join(installDir, ".meshtalk-update-"))
     for (const name of expectedFiles()) {
-      const destination = join(installDir, name)
-      copyFileSync(join(extracted, name), destination)
-      if (process.platform !== "win32") chmodSync(destination, 0o755)
+      const staged = join(staging, name)
+      copyFileSync(join(extracted, name), staged)
+      chmodSync(staged, 0o755)
+    }
+    for (const name of expectedFiles()) {
+      renameSync(join(staging, name), join(installDir, name))
     }
   } finally {
+    if (staging) rmSync(staging, { recursive: true, force: true })
     rmSync(temporary, { recursive: true, force: true })
   }
 }
