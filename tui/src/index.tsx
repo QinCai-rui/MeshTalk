@@ -1,4 +1,4 @@
-import { createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, decodePasteBytes, type MouseEvent as TuiMouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
+import { createClipboard, createCliRenderer, createHostClipboard, createRendererClipboardAdapter, decodePasteBytes, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { createRoot, useKeyboard, usePaste, useRenderer, useSelectionHandler, useTerminalDimensions, type SelectProps } from "@opentui/react"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
@@ -277,58 +277,112 @@ function toFileUrl(p: string, version?: number | null): string {
   return "file://" + normalized + (version ? `?v=${version}` : "")
 }
 
+function terminalWidth(text: string): number {
+  return Array.from(text).reduce((width, character) => width + (character.codePointAt(0)! > 0xff ? 2 : 1), 0)
+}
+
 function MouseSelect(props: SelectProps) {
-  const computeIndex = (
-    sel: {
-      screenX: number
-      screenY: number
-      width: number
-      linesPerItem: number
-      scrollOffset: number
-      maxVisibleItems: number
-      options: { length: number }
-      getSelectedIndex: () => number
-      setSelectedIndex: (index: number) => void
-      selectCurrent: () => void
-    },
-    event: TuiMouseEvent,
-  ): number => {
-    const row = event.y - sel.screenY
-    if (row < 0 || event.x < sel.screenX || event.x >= sel.screenX + sel.width) return -1
-    const localIndex = Math.floor(row / sel.linesPerItem)
-    const visibleCount = Math.min(sel.options.length - sel.scrollOffset, sel.maxVisibleItems)
-    if (localIndex < 0 || localIndex >= visibleCount) return -1
-    return sel.scrollOffset + localIndex
-  }
-  const handleMouseDown = (event: TuiMouseEvent) => {
-    if (event.button === 0) {
-      const sel = event.target as unknown as Parameters<typeof computeIndex>[0] | null
-      if (sel) {
-        const index = computeIndex(sel, event)
-        if (index >= 0) {
-          sel.setSelectedIndex(index)
-          sel.selectCurrent()
-          event.stopPropagation()
-        }
+  const options = props.options ?? []
+  const [selectedIndex, setSelectedIndex] = useState(() => Math.min(props.selectedIndex ?? 0, Math.max(0, options.length - 1)))
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+  const [descriptionOffset, setDescriptionOffset] = useState(0)
+  const scrollboxRef = useRef<ScrollBoxRenderable>(null)
+  const menuId = useRef(crypto.randomUUID()).current
+  const showDescription = props.showDescription ?? true
+  const showSelectionIndicator = props.showSelectionIndicator ?? true
+  const selectedBackgroundColor = props.selectedBackgroundColor ?? "#334455"
+  const selectedTextColor = props.selectedTextColor ?? "#FFFF00"
+  const textColor = props.textColor ?? "#FFFFFF"
+  const descriptionColor = props.descriptionColor ?? "#888888"
+  const selectedDescriptionColor = props.selectedDescriptionColor ?? "#CCCCCC"
+  const activeIndex = hoveredIndex ?? selectedIndex
+  const activeDescription = options[activeIndex]?.description ?? ""
+
+  useEffect(() => {
+    if (!showDescription || !activeDescription) return
+
+    let offset = 0
+    let pauseTicks = 10
+    setDescriptionOffset(0)
+    const timer = setInterval(() => {
+      const viewportWidth = scrollboxRef.current?.viewport.width ?? 0
+      const text = `${showSelectionIndicator ? "  " : ""}${activeDescription}`
+      const maxOffset = Math.max(0, terminalWidth(text) - viewportWidth)
+      if (!maxOffset) return
+
+      if (pauseTicks > 0) pauseTicks--
+      else if (offset < maxOffset) offset++
+      else {
+        offset = 0
+        pauseTicks = 10
       }
-    }
-    const existing = props.onMouseDown as ((event: TuiMouseEvent) => void) | undefined
-    existing?.(event)
+      setDescriptionOffset(offset)
+    }, 125)
+    return () => clearInterval(timer)
+  }, [activeDescription, showDescription, showSelectionIndicator])
+
+  function changeSelection(index: number) {
+    if (!options.length) return
+    const nextIndex = props.wrapSelection
+      ? (index + options.length) % options.length
+      : Math.max(0, Math.min(index, options.length - 1))
+    setSelectedIndex(nextIndex)
+    props.onChange?.(nextIndex, options[nextIndex])
+    scrollboxRef.current?.scrollChildIntoView(`${menuId}-${nextIndex}`)
   }
-  const handleMouseMove = (event: TuiMouseEvent) => {
-    if (event.type === "move" && event.button === 0) {
-      const sel = event.target as unknown as Parameters<typeof computeIndex>[0] | null
-      if (sel) {
-        const index = computeIndex(sel, event)
-        if (index >= 0 && index !== sel.getSelectedIndex()) {
-          sel.setSelectedIndex(index)
+
+  function selectOption(index: number) {
+    changeSelection(index)
+    props.onSelect?.(index, options[index] ?? null)
+  }
+
+  return (
+    <scrollbox
+      ref={scrollboxRef}
+      focused={props.focused}
+      width={props.width}
+      height={props.height}
+      style={props.style}
+      onKeyDown={(key) => {
+        if (key.name === "up" || key.name === "k") {
+          key.preventDefault()
+          changeSelection(selectedIndex - 1)
+        } else if (key.name === "down" || key.name === "j") {
+          key.preventDefault()
+          changeSelection(selectedIndex + 1)
+        } else if (key.name === "return" || key.name === "linefeed") {
+          key.preventDefault()
+          selectOption(selectedIndex)
         }
-      }
-    }
-    const existing = props.onMouseMove as ((event: TuiMouseEvent) => void) | undefined
-    existing?.(event)
-  }
-  return <select {...props} onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} />
+      }}
+    >
+      {options.map((option, index) => {
+        const highlighted = index === activeIndex
+        return (
+          <box
+            id={`${menuId}-${index}`}
+            key={index}
+            width="100%"
+            height={showDescription ? 2 : 1}
+            flexShrink={0}
+            overflow="hidden"
+            backgroundColor={highlighted ? selectedBackgroundColor : undefined}
+            onMouseMove={() => setHoveredIndex(index)}
+            onMouseOut={() => setHoveredIndex(null)}
+            onMouseDown={(event) => {
+              if (event.button === 0) {
+                selectOption(index)
+                event.stopPropagation()
+              }
+            }}
+          >
+            <text fg={highlighted ? selectedTextColor : textColor}>{showSelectionIndicator ? highlighted ? "▶ " : "  " : ""}{option.name}</text>
+            {showDescription && <text wrapMode="none" fg={highlighted ? selectedDescriptionColor : descriptionColor}>{showSelectionIndicator ? "  " : ""}{highlighted ? Array.from(option.description).slice(descriptionOffset).join("") : option.description}</text>}
+          </box>
+        )
+      })}
+    </scrollbox>
+  )
 }
 
 function ChatApp() {
