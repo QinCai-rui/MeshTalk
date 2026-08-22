@@ -202,23 +202,6 @@ offline group-capable members before removing the group locally. Existing local
 history is retained and becomes visible again if the same invite is rejoined;
 messages missed while absent are not replayed.
 
-## File Transfer
-
-MeshTalk supports sending files (up to 50 MiB) directly between peers over the
-existing E2EE transport. Files are chunked, encrypted per-chunk with ephemeral
-X25519 keys, and reassembled by the receiver. In the TUI, press `Ctrl+P` or use
-the file-send shortcut while in a conversation to send a file. Incoming files
-show an image preview when the file is an image, and you can save them to any
-location via `file_download`.
-
-For group file transfers, the file is sent independently to every active cached
-group member. Offline members with a known encryption key receive queued copies
-that flush on reconnect.
-
-Files are stored in `~/.meshtalk/files/<file_id>/` by default. Override the
-storage directory with the `files_dir` IPC command or `MESHTALK_DATA_DIR`
-environment variable.
-
 Production control services must be exposed through TLS as `wss://`. Plain
 `ws://` configuration is accepted only for localhost. Set `PORT` for the
 control process if port 8787 is unavailable.
@@ -231,6 +214,23 @@ MESHTALK_STUN_SERVER=stun.example.com:3478 meshtalk
 ```
 
 The control URL can similarly be supplied as `MESHTALK_CONTROL_URL`.
+
+## File Transfer
+
+MeshTalk supports sending files (up to 50 MiB) directly between peers over the
+existing E2EE transport. Files are chunked, encrypted per-chunk with ephemeral
+X25519 keys, and reassembled by the receiver. In the TUI, press `Ctrl+P` or use
+the file-send shortcut (`Ctrl+U`) while in a conversation to send a file. Incoming files
+show an image preview when the file is an image, and you can save them to any
+location via `file_download`.
+
+For group file transfers, the file is sent independently to every active cached
+group member. Offline members with a known encryption key receive queued copies
+that flush on reconnect.
+
+Files are stored in `~/.meshtalk/files/<file_id>/` by default. Override the
+storage directory with the `files_dir` IPC command or `MESHTALK_DATA_DIR`
+environment variable.
 
 ## Compile From Source
 
@@ -301,7 +301,7 @@ older glibc than the build system.
   necessarily learn each other's public IP and UDP port.
 
 UDP hole punching does not work through every symmetric NAT, firewall, carrier
-network, or UDP-blocking policy. MeshTalk does not include a TURN relay, so it
+network, or UDP-blocking policy. MeshTalk does not (yet) include a TURN relay, so it
 fails closed instead of routing chat content through the control service.
 
 Peer networking and STUN are IPv4-only. Sockets bind to `0.0.0.0`/`127.0.0.1`,
