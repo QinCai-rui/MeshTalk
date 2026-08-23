@@ -22,6 +22,7 @@ from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
 from .group_router import GroupRouter
 from .message_router import MessageRouter
+from .typing_router import TypingRouter
 from .file_transfer import FileTransferManager
 from .ipc import IPCServer
 from .protocol import PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, Packet, PacketType
@@ -62,12 +63,16 @@ async def main(debug: bool = False) -> None:
     router = MessageRouter(
         identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router
     )
+    typing_router = TypingRouter(identity, peer_manager, db, settings, friend_manager)
     file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings)
     tui_clients: set[str] = set()
+    typing_clients: dict[tuple[str, str], set[str]] = {}
 
     async def _combined_packet_handler(peer: PeerConnection, packet: Packet) -> None:
         # File transfers take precedence; they handle their own packet types
         if await file_manager.handle_packet(peer, packet):
+            return
+        if await typing_router.handle_packet(peer, packet):
             return
         await router.handle_packet(peer, packet)
 
@@ -328,11 +333,62 @@ async def main(debug: bool = False) -> None:
             return {"error": "valid client_id required"}
         if not isinstance(active, bool):
             return {"error": "active must be boolean"}
+        if not active:
+            await clear_client_typing(client_id)
         await update_tui_presence(client_id, active)
         return {"active": bool(tui_clients)}
 
+    async def clear_client_typing(client_id: str) -> None:
+        for (kind, conversation_id), clients in list(typing_clients.items()):
+            if client_id not in clients:
+                continue
+            clients.discard(client_id)
+            if clients:
+                continue
+            del typing_clients[(kind, conversation_id)]
+            if kind == "peer":
+                await typing_router.send_direct(conversation_id, False)
+            else:
+                await typing_router.send_group(conversation_id, False)
+
     async def handle_tui_disconnect(client_id: str) -> None:
+        await clear_client_typing(client_id)
         await update_tui_presence(client_id, False)
+
+    async def handle_typing(req: dict) -> dict:
+        client_id = req.get("client_id")
+        recipient_id = req.get("recipient_id")
+        group_id = req.get("group_id")
+        is_typing = req.get("is_typing")
+        if not isinstance(client_id, str) or client_id not in tui_clients:
+            return {"error": "active client_id required"}
+        if not isinstance(is_typing, bool):
+            return {"error": "is_typing must be boolean"}
+        if (recipient_id is None) == (group_id is None):
+            return {"error": "exactly one of recipient_id or group_id required"}
+        if recipient_id is not None and (not isinstance(recipient_id, str) or not recipient_id):
+            return {"error": "valid recipient_id required"}
+        if group_id is not None and (not isinstance(group_id, str) or not group_id):
+            return {"error": "valid group_id required"}
+        kind, conversation_id = ("peer", recipient_id) if recipient_id is not None else ("group", group_id)
+        key = (kind, conversation_id)
+        clients = typing_clients.setdefault(key, set())
+        if is_typing:
+            clients.add(client_id)
+            if kind == "peer":
+                await typing_router.send_direct(conversation_id, True)
+            else:
+                await typing_router.send_group(conversation_id, True)
+            return {"is_typing": True}
+        clients.discard(client_id)
+        if clients:
+            return {"is_typing": True}
+        typing_clients.pop(key, None)
+        if kind == "peer":
+            await typing_router.send_direct(conversation_id, False)
+        else:
+            await typing_router.send_group(conversation_id, False)
+        return {"is_typing": False}
 
     async def handle_identity(req: dict) -> dict:
         return {
@@ -748,6 +804,7 @@ async def main(debug: bool = False) -> None:
         "unblock_peer": handle_unblock_peer,
         "blocked_peers": handle_blocked_peers,
         "tui_presence": handle_tui_presence,
+        "typing": handle_typing,
         "identity": handle_identity,
         "accessibility": handle_accessibility,
         "status": handle_status,
@@ -787,6 +844,7 @@ async def main(debug: bool = False) -> None:
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
     group_router.on_event = ipc.broadcast_event
+    typing_router.on_event = ipc.broadcast_event
     friend_manager.on_friend_request = lambda event: ipc.broadcast_event({"event": "friend_request", **event})
     friend_manager.on_friend_response = lambda event: ipc.broadcast_event({"event": "friend_response", **event})
     friend_manager.on_friend_cancelled = lambda event: ipc.broadcast_event({"event": "friend_cancelled", **event})

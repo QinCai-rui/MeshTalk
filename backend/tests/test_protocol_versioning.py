@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import unittest
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -12,6 +13,7 @@ from meshtalk.protocol import (
     CAP_GROUP_CHAT,
     CAP_PROFILE_SYNC,
     CAP_TEXT_CHAT,
+    CAP_TYPING_INDICATORS,
     DEFAULT_CAPABILITIES,
     LEGACY_CAPABILITIES,
     DiscoveryPacket,
@@ -22,10 +24,12 @@ from meshtalk.protocol import (
     PROTOCOL_VERSION,
     MIN_SUPPORTED_PROTOCOL_VERSION,
     ProfilePayload,
+    TypingPayload,
     intersect_capabilities,
     negotiate_protocol_version,
     validate_capabilities,
 )
+from meshtalk.encryption import decrypt_as_recipient, encrypt_for_recipient
 from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
 from meshtalk.udp_transport import UdpTransport
 
@@ -80,6 +84,41 @@ class CapabilityTest(unittest.TestCase):
     def test_validate_empty_enables_no_capabilities(self):
         self.assertEqual(validate_capabilities([]), [])
         self.assertEqual(validate_capabilities("not-a-list"), [])
+
+    def test_typing_is_new_capability_not_available_to_legacy_peers(self):
+        self.assertIn(CAP_TYPING_INDICATORS, DEFAULT_CAPABILITIES)
+        self.assertNotIn(CAP_TYPING_INDICATORS, LEGACY_CAPABILITIES)
+
+
+class TypingPayloadTest(unittest.TestCase):
+    def test_roundtrip_encrypts_context_and_verifies_signature(self):
+        sender = Identity.generate("Alice")
+        recipient = Identity.generate("Bob")
+        payload = TypingPayload(sender.peer_id, recipient.peer_id, time.time(), b"")
+        plaintext = b'{"group_id":null,"is_typing":true}'
+        payload.encrypted_content = encrypt_for_recipient(
+            recipient.encryption_public_key_bytes(), plaintext, payload.associated_data()
+        )
+        payload.signature = sender.signing_private_key.sign(payload.signed_bytes())
+
+        decoded = TypingPayload.decode(payload.encode())
+        Ed25519PublicKey.from_public_bytes(sender.signing_public_key_bytes()).verify(
+            decoded.signature, decoded.signed_bytes()
+        )
+        self.assertEqual(
+            decrypt_as_recipient(
+                recipient.encryption_private_key, decoded.encrypted_content, decoded.associated_data()
+            ),
+            plaintext,
+        )
+
+    def test_rejects_invalid_signature_length(self):
+        raw = json.dumps({
+            "sender_id": "alice", "recipient_id": "bob", "created_at": 1,
+            "encrypted_content": "00", "signature": "00",
+        }).encode()
+        with self.assertRaises(ValueError):
+            TypingPayload.decode(raw)
 
 
 class HandshakeSignatureCompatTest(unittest.TestCase):

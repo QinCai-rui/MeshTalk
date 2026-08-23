@@ -19,6 +19,7 @@ Packet types:
   GROUP_MESSAGE          0x0E
   GROUP_MESSAGE_ACK      0x0F
   GROUP_LEAVE            0x10
+  TYPING                 0x14
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from __future__ import annotations
 import enum
 import hashlib
 import json
+import math
 import re
 import struct
 from dataclasses import dataclass, field
@@ -45,6 +47,7 @@ CAP_DELIVERY_RECEIPTS = "delivery_receipts"
 CAP_BLOCK_REPORTS = "block_reports"
 CAP_GROUP_CHAT = "group_chat"
 CAP_FILE_TRANSFER = "file_transfer"
+CAP_TYPING_INDICATORS = "typing_indicators"
 DEFAULT_CAPABILITIES = [
     CAP_TEXT_CHAT,
     CAP_PROFILE_SYNC,
@@ -53,8 +56,12 @@ DEFAULT_CAPABILITIES = [
     CAP_BLOCK_REPORTS,
     CAP_GROUP_CHAT,
     CAP_FILE_TRANSFER,
+    CAP_TYPING_INDICATORS,
 ]
-LEGACY_CAPABILITIES = [capability for capability in DEFAULT_CAPABILITIES if capability not in (CAP_GROUP_CHAT, CAP_FILE_TRANSFER)]
+LEGACY_CAPABILITIES = [
+    capability for capability in DEFAULT_CAPABILITIES
+    if capability not in (CAP_GROUP_CHAT, CAP_FILE_TRANSFER, CAP_TYPING_INDICATORS)
+]
 # Capabilities that have a direct counterpart in this implementation. Unknown
 # advertised capabilities remain in the signed handshake but are excluded from
 # the negotiated set by ``intersect_capabilities``.
@@ -144,6 +151,7 @@ class PacketType(enum.IntEnum):
     FILE_OFFER = 0x11
     FILE_CHUNK = 0x12
     FILE_ACK = 0x13
+    TYPING = 0x14
 
 
 @dataclass
@@ -432,9 +440,61 @@ class GroupMessagePayload:
             or not _valid_peer_id(payload.recipient_id)
             or not isinstance(payload.created_at, (int, float))
             or isinstance(payload.created_at, bool)
+            or not math.isfinite(payload.created_at)
+            or payload.created_at <= 0
             or len(payload.signature) != 64
         ):
             raise ValueError("Invalid group message payload")
+        return payload
+
+
+@dataclass
+class TypingPayload:
+    """A signed envelope whose conversation context is encrypted per recipient."""
+
+    sender_id: str
+    recipient_id: str
+    created_at: float
+    encrypted_content: bytes
+    signature: bytes = b""
+
+    def associated_data(self) -> bytes:
+        return json.dumps({
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+        }, separators=(",", ":"), sort_keys=True).encode()
+
+    def signed_bytes(self) -> bytes:
+        return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
+
+    def encode(self) -> bytes:
+        return json.dumps({
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+            "encrypted_content": self.encrypted_content.hex(),
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> TypingPayload:
+        obj = json.loads(data)
+        payload = cls(
+            sender_id=obj["sender_id"],
+            recipient_id=obj["recipient_id"],
+            created_at=obj["created_at"],
+            encrypted_content=bytes.fromhex(obj["encrypted_content"]),
+            signature=bytes.fromhex(obj.get("signature", "")),
+        )
+        if (
+            not _valid_peer_id(payload.sender_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or not isinstance(payload.created_at, (int, float))
+            or isinstance(payload.created_at, bool)
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid typing payload")
         return payload
 
 
