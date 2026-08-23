@@ -9,7 +9,7 @@ import { composerLimitColor, DEFAULT_STATUS, getComposerHeight, MIN_COMPOSER_HEI
 import { Sidebar } from "./components/Sidebar"
 import { ConversationPanel } from "./components/ConversationPanel"
 import { DialogPanel } from "./components/DialogPanel"
-import { notify, type NotificationDelivery, type NotificationPreferences } from "./notifications"
+import { notify, truncatePreview, type NotificationDelivery, type NotificationPreferences } from "./notifications"
 import { useChatActions } from "./useChatActions"
 
 declare const APP_VERSION: string
@@ -201,7 +201,12 @@ export function ChatApp() {
         ?? peers.find((peer) => peer.peer_id === senderId)?.display_name
         ?? groupMembers[groupId]?.find((member) => (member.peer_id ?? member.member_id) === senderId)?.display_name
         ?? "a member"
-      if (event.event === "group_message" && groupId !== selectedGroupId) void notify(notificationPreferences, "messages", renderer, `New message from ${sender} in ${group?.name ?? "a group"}`)
+      if (event.event === "group_message" && groupId !== selectedGroupId) {
+        const preview = truncatePreview(String(event.content ?? ""))
+        const title = group?.name ? `${sender} in ${group.name}` : sender
+        const body = preview ? `${preview}` : `New message in ${group?.name ?? "a group"}`
+        void notify(notificationPreferences, "messages", renderer, body, title)
+      }
       if (groupId !== selectedGroupId) {
         setGroups((current) => current.map((item) => item.group_id === groupId ? { ...item, unread_count: item.unread_count + 1 } : item))
       } else {
@@ -271,7 +276,11 @@ export function ChatApp() {
         sender_name: (event.sender_name as string) ?? "a peer", note: (event.note as string | null | undefined) ?? null,
         created_at: event.created_at as number, direction: "incoming", status: "pending",
       }
-      void notify(notificationPreferences, "friend_requests", renderer, `Friend request from ${request.sender_name}`)
+      {
+        const notePreview = request.note ? truncatePreview(request.note) : ""
+        const body = notePreview ? `Friend request: ${notePreview}` : "Sent you a friend request"
+        void notify(notificationPreferences, "friend_requests", renderer, body, request.sender_name)
+      }
       if (!dialog) setDialog({ kind: "friend-request-incoming", request })
       else actions.showStatus(`Friend request from ${request.sender_name}. Open Commands > Friends to respond.`)
       void actions.refreshPeers()
@@ -299,7 +308,7 @@ export function ChatApp() {
       const filename = event.filename as string
       const sender = peers.find((p) => p.peer_id === event.sender_id)?.display_name ?? String(event.sender_id).slice(0, 8)
       actions.showStatus(`Incoming file: ${filename} (${event.file_size} bytes) from ${sender}`)
-      void notify(notificationPreferences, "file_offers", renderer, `Incoming file ${filename} from ${sender}`)
+      void notify(notificationPreferences, "file_offers", renderer, `Incoming file: ${filename} (${event.file_size} bytes)`, sender)
       void ipc.send("files").then((res) => { if (!res.error) setFileTransfers(res.files as FileTransfer[]) }).catch(() => {})
       return
     }
@@ -312,7 +321,7 @@ export function ChatApp() {
       const fpath = event.file_path as string
       const fileId = event.file_id as string
       actions.showStatus(`File received: ${filename} -> ${fpath}`)
-      void notify(notificationPreferences, "file_completed", renderer, `File received: ${filename}`)
+      void notify(notificationPreferences, "file_completed", renderer, `Saved to ${fpath}`, `File received: ${filename}`)
       setFileTransfers((current) => current.map((file) => file.file_id === fileId ? { ...file, status: "completed", file_path: fpath, completed_at: Date.now() / 1000 } : file))
       void ipc.send("files").then((res) => { if (!res.error) setFileTransfers(res.files as FileTransfer[]) }).catch(() => {})
       return
@@ -338,7 +347,11 @@ export function ChatApp() {
     const sender = peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "a peer"
     const mutedUntil = mutedPeers[senderId]
     const isMuted = mutedUntil === undefined ? false : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil
-    if (!isMuted && senderId !== selectedPeerId) void notify(notificationPreferences, "messages", renderer, `New message from ${sender}`)
+    if (!isMuted && senderId !== selectedPeerId) {
+      const preview = truncatePreview(String(event.content ?? ""))
+      const body = preview || "New message"
+      void notify(notificationPreferences, "messages", renderer, body, sender)
+    }
     if (senderId !== selectedPeerId) {
       setPeers((current) => current.map((peer) => peer.peer_id === senderId ? { ...peer, unread_count: peer.unread_count + 1 } : peer))
       return
