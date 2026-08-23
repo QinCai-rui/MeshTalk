@@ -546,9 +546,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       if (dialogActionRef.current !== action) return
       showStatus(`Unblocked ${displayName}. They can send friend requests again.`)
       await refreshPeers()
+      finishDialogAction(action)
       void loadBlockedPeers()
     } catch (error) { failDialogAction(action, error) }
-    finally { finishDialogAction(action) }
   }
 
   async function blockSenderFromRequest(request: FriendRequest) {

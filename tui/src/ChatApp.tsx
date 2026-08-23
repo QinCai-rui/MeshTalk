@@ -116,7 +116,7 @@ export function ChatApp() {
           if (release && (response.setup_dismissed as boolean) && (control.url || control.setup_dismissed)) {
             actions.showDialog({ kind: "update", release })
           }
-        })
+        }).catch(() => {})
       }
       setStatus(DEFAULT_STATUS)
     }).catch((error) => {
@@ -125,8 +125,9 @@ export function ChatApp() {
       }
     })
     return () => {
-      void ipc.send("tui_presence", { client_id: tuiClientId, active: false })
-      ipc.close()
+      void ipc.send("tui_presence", { client_id: tuiClientId, active: false }).finally(() => {
+        ipc.close()
+      })
     }
   }, [tuiClientId])
 
@@ -206,13 +207,13 @@ export function ChatApp() {
       } else {
         void ipc.send("group_messages", { group_id: groupId }).then((response) => {
           if (!response.error) setMessages(response.messages as Message[])
-        })
+        }).catch(() => {})
       }
       void actions.refreshGroups()
       if (event.event !== "group_message") {
         void ipc.send("group_members", { group_id: groupId }).then((response) => {
           if (!response.error) setGroupMembers((current) => ({ ...current, [groupId]: response.members as GroupMember[] }))
-        })
+        }).catch(() => {})
       }
       return
     }
@@ -233,7 +234,7 @@ export function ChatApp() {
       if (selectedGroupId && selectedGroupId === event.group_id) {
         void ipc.send("group_messages", { group_id: selectedGroupId }).then((response) => {
           if (!response.error) setMessages(response.messages as Message[])
-        })
+        }).catch(() => {})
       }
       return
     }
@@ -299,7 +300,7 @@ export function ChatApp() {
       const sender = peers.find((p) => p.peer_id === event.sender_id)?.display_name ?? String(event.sender_id).slice(0, 8)
       actions.showStatus(`Incoming file: ${filename} (${event.file_size} bytes) from ${sender}`)
       void notify(notificationPreferences, "file_offers", renderer, `Incoming file ${filename} from ${sender}`)
-      void ipc.send("files").then((res) => { if (!res.error) setFileTransfers(res.files as FileTransfer[]) })
+      void ipc.send("files").then((res) => { if (!res.error) setFileTransfers(res.files as FileTransfer[]) }).catch(() => {})
       return
     }
     if (event.event === "file_progress") {
@@ -313,7 +314,7 @@ export function ChatApp() {
       actions.showStatus(`File received: ${filename} -> ${fpath}`)
       void notify(notificationPreferences, "file_completed", renderer, `File received: ${filename}`)
       setFileTransfers((current) => current.map((file) => file.file_id === fileId ? { ...file, status: "completed", file_path: fpath, completed_at: Date.now() / 1000 } : file))
-      void ipc.send("files").then((res) => { if (!res.error) setFileTransfers(res.files as FileTransfer[]) })
+      void ipc.send("files").then((res) => { if (!res.error) setFileTransfers(res.files as FileTransfer[]) }).catch(() => {})
       return
     }
     if (event.event === "file_sent" || event.event === "file_delivered" || event.event === "file_queued") {
@@ -321,7 +322,7 @@ export function ChatApp() {
       if (event.event === "file_sent") actions.showStatus(`File ${name} sent.`)
       else if (event.event === "file_delivered") actions.showStatus(`File ${name} delivered.`)
       else actions.showStatus(`File ${name} queued for offline peer.`)
-      void ipc.send("files").then((res) => { if (!res.error) setFileTransfers(res.files as FileTransfer[]) })
+      void ipc.send("files").then((res) => { if (!res.error) setFileTransfers(res.files as FileTransfer[]) }).catch(() => {})
       return
     }
     if (event.event !== "message") {
@@ -348,7 +349,7 @@ export function ChatApp() {
     }])
     void ipc.send("messages", { peer_id: senderId }).then((response) => {
       if (!response.error) { setMessages(response.messages as Message[]); void actions.refreshPeers() }
-    })
+    }).catch(() => {})
   }), [ipc, mutedPeers, peers, groups, groupMembers, renderer, selectedPeerId, selectedGroupId, dialog])
 
   useEffect(() => {
@@ -363,7 +364,7 @@ export function ChatApp() {
       setGroups((current) => current.map((group) => group.group_id === selection.id ? { ...group, unread_count: 0 } : group))
       void ipc.send("group_members", { group_id: selection.id }).then((response) => {
         if (!cancelled && !response.error) setGroupMembers((current) => ({ ...current, [selection.id]: response.members as GroupMember[] }))
-      })
+      }).catch(() => {})
     }
     const request = selection.kind === "peer" ? ipc.send("messages", { peer_id: selection.id }) : ipc.send("group_messages", { group_id: selection.id })
     request.then((response) => {
@@ -423,8 +424,12 @@ export function ChatApp() {
     if ((key.name === "up" || key.name === "down") && key.ctrl && (peers.length || groups.length)) {
       const conversations: Conversation[] = [...peers.map((peer) => ({ kind: "peer" as const, id: peer.peer_id })), ...groups.map((group) => ({ kind: "group" as const, id: group.group_id }))]
       const index = conversations.findIndex((item) => item.kind === selection?.kind && item.id === selection.id)
-      const direction = key.name === "up" ? -1 : 1
-      setSelection(conversations[(index + direction + conversations.length) % conversations.length])
+      if (index === -1) {
+        setSelection(key.name === "up" ? conversations[conversations.length - 1] : conversations[0])
+      } else {
+        const direction = key.name === "up" ? -1 : 1
+        setSelection(conversations[(index + direction + conversations.length) % conversations.length])
+      }
     }
     if (key.name === "pageup") { setScrollFocused(true); scrollboxRef.current?.scrollBy(-1, "viewport") }
     if (key.name === "pagedown") { setScrollFocused(true); scrollboxRef.current?.scrollBy(1, "viewport") }

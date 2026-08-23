@@ -8,9 +8,6 @@ import { NotificationDialogs } from "./dialogs/NotificationDialogs"
 import { AboutDialog, CommandsDialog, UpdateDialog } from "./dialogs/CommandDialogs"
 import { isImageFile, toFileUrl } from "../utils"
 
-declare const APP_VERSION: string
-declare const MESHTALK_RELEASE: boolean
-
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
 
 type DialogPanelProps = {
@@ -176,92 +173,11 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidth} imageRenderGeneration={imageRenderGeneration} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} defaultDownloadPath={defaultDownloadPath} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} />}
-      {dialogError && <text fg="#ff7777">{dialogError}</text>}
     </box>
     <box style={{ position: "absolute", right: 1, bottom: 0 }}>
       <text><span fg="#66dd88">● </span><span fg="#bbbbbb">MeshTalk </span><span fg="#888888">{appReleaseVersion}</span></text>
     </box>
   </box>
-}
-
-function CommandsDialogContent({ dialogHeight, groups, peers, selection, runCommand }: { dialogHeight: number; groups: Group[]; peers: Peer[]; selection: { kind: "peer" | "group"; id: string } | undefined; runCommand: (command: string) => void }) {
-  return (
-    <>
-      <text><span fg="#b9a7ff"><b>COMMAND CENTER</b></span> <span fg="#77718f">Choose an action</span></text>
-      <text fg="#534b70">────────────────────────────────────────</text>
-      <MouseSelect
-        focused
-        height={Math.max(5, dialogHeight - 5)}
-        options={[
-          { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
-          { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
-          ...(selection?.kind === "group" ? [{ name: "Group details", description: "View members or leave this group", value: "group-details" }] : []),
-          { name: "Notifications", description: "Configure desktop alert delivery", value: "notifications" },
-          { name: "Accessibility", description: "Reduce motion and other options", value: "accessibility" },
-          { name: "Friends", description: "Friend requests, blocking, and more", value: "friends" },
-          { name: "Upload file", description: "Send a file to the selected peer or group", value: "file-send" },
-          { name: "Files", description: "View and save received files", value: "files" },
-          { name: "Advanced Configuration", description: "Pin server IP addresses to bypass DNS", value: "advanced" },
-          { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
-          { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
-          { name: "★  ABOUT & UPDATES  ★", description: "Version, credits, and check for updates", value: "about" },
-        ]}
-        onSelect={(_, option) => option && runCommand(option.value as string)}
-        wrapSelection
-        showDescription
-      />
-    </>
-  )
-}
-
-function AboutDialogContent({ dialog, dialogError, dialogHeight, dialogWidth, checkForUpdates, goBack }: { dialog: Extract<Dialog, { kind: "about" }>; dialogError: string; dialogHeight: number; dialogWidth: number; checkForUpdates: () => void; goBack: () => void }) {
-  return (
-    <box style={{ flexDirection: "column", gap: 1, backgroundColor: "#111923", width: "100%", height: "100%" }}>
-      <text><span fg="#b9a7ff"><b>MeshTalk</b></span> <span fg="#77718f">terminal messenger</span></text>
-      <text><span fg="#8fa7ff">Version </span><span fg="#66ddaa"><b>{typeof APP_VERSION !== "undefined" ? APP_VERSION : "dev"}</b></span></text>
-      <text><span fg="#e0a34a">Made with love</span> <span fg="#bbbbbb">by </span><span fg="#ff8fa3">Raymont</span><span fg="#bbbbbb"> and </span><span fg="#8fa7ff">friends.</span></text>
-      {dialog.checked && <text fg={typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE ? "#66dd88" : "#ff5555"}>{typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE ? "You are up to date, or release metadata is unavailable." : "Updates are available only in compiled MeshTalk releases."}</text>}
-      {dialogError && <text fg="#ff7777">{dialogError}</text>}
-      <MouseSelect
-        focused
-        height={Math.max(3, dialogHeight - 7)}
-        options={[
-          { name: dialog.checking ? "Checking for updates..." : "Check for updates", description: typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE ? "Look for the latest stable MeshTalk release" : "Available in compiled MeshTalk releases", value: "check" },
-          { name: "Back", description: "Return to Commands", value: "back" },
-        ]}
-        onSelect={(_, option) => {
-          if (option?.value === "check") checkForUpdates()
-          else goBack()
-        }}
-        wrapSelection
-        showDescription
-      />
-    </box>
-  )
-}
-
-function UpdateDialogContent({ dialog, dialogError, dialogHeight, dialogWidth, closeDialog, installUpdate }: { dialog: Extract<Dialog, { kind: "update" }>; dialogError: string; dialogHeight: number; dialogWidth: number; closeDialog: () => void; installUpdate: () => void }) {
-  return (
-    <>
-      <text><span fg="#b9a7ff"><b>New version available</b></span></text>
-      <text><span fg="#8fa7ff">Version </span><span fg="#66ddaa"><b>{dialog.release.version}</b></span></text>
-      {dialogError && <text fg="#ff7777">{dialogError}</text>}
-      <MouseSelect
-        focused
-        height={Math.max(4, dialogHeight - 6)}
-        options={[
-          { name: "Install update", description: `Download and install v${dialog.release.version}`, value: "install" },
-          { name: "Skip this version", description: "Dismiss this update notification", value: "skip" },
-        ]}
-        onSelect={(_, option) => {
-          if (option?.value === "install") installUpdate()
-          else closeDialog()
-        }}
-        wrapSelection
-        showDescription
-      />
-    </>
-  )
 }
 
 function ControlDialogContent({ dialog, dialogHeight, configureControl, dismissControlSetup, loadControlStatus, showDialog }: { dialog: Extract<Dialog, { kind: "control" }>; dialogHeight: number; configureControl: (url: string) => void; dismissControlSetup: () => void; loadControlStatus: () => void; showDialog: (d: Dialog) => void }) {
@@ -805,7 +721,7 @@ function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageRenderG
           </box>
         ))}
       </scrollbox>
-      <MouseSelect focused height={Math.min(8, dialogHeight - 4)} options={[
+      <MouseSelect focused height={Math.max(0, Math.min(8, dialogHeight - 4))} options={[
         ...dialog.files.filter((f) => f.status === "completed" || f.status === "sent").map((f) => ({
           name: `Save ${f.filename} to...`, description: `${f.file_id.slice(0, 8)} -> choose destination`, value: `dl:${f.file_id}`,
         })),
