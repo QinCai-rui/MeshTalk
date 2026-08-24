@@ -7,7 +7,7 @@ import { createConnection, type Socket } from "net";
 import { basename, dirname, join, resolve } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { checkForUpdate, installRelease, isReleaseInstallDir, releaseInstallDir, saveGithubToken, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
+import { checkForUpdate, githubRepository, installRelease, isReleaseInstallDir, releaseInstallDir, saveGithubRepository, saveGithubToken, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -59,6 +59,21 @@ async function readConfirmation(): Promise<boolean> {
 }
 
 async function runUpdate(args: string[]): Promise<void> {
+  if (args[0] === "repo") {
+    if (args[1] === "clear" && args.length === 2) {
+      saveGithubRepository(null, null);
+      console.log(`GitHub repository reset to ${githubRepository()}.`);
+      return;
+    }
+    if (args.length === 1) {
+      console.log(`GitHub repository: ${githubRepository()}`);
+      return;
+    }
+    if (args.length !== 3) throw new Error(`Usage: ${PROGRAM} update repo <user> <repository>|clear`);
+    saveGithubRepository(args[1], args[2]);
+    console.log(`GitHub repository saved: ${githubRepository()}.`);
+    return;
+  }
   if (args[0] === "token") {
     if (args[1] === "clear" && args.length === 2) {
       saveGithubToken(null);

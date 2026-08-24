@@ -2,8 +2,8 @@ import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSy
 import { tmpdir } from "os"
 import { basename, dirname, join } from "path"
 
-const REPOSITORY = "QinCai-rui/MeshTalk"
-const API_URL = `https://api.github.com/repos/${REPOSITORY}`
+const DEFAULT_GITHUB_USER = "QinCai-rui"
+const DEFAULT_GITHUB_REPO = "MeshTalk"
 const DATA_DIR = join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".meshtalk")
 const SETTINGS_PATH = join(DATA_DIR, "settings.json")
 const RESTART_PATH = join(DATA_DIR, "update-restart-path")
@@ -64,30 +64,67 @@ export function isNewerVersion(latest: string, current: string): boolean {
   return next.revision > installed.revision
 }
 
-function githubToken(): string | undefined {
+type GitHubSettings = { github_token?: unknown; github_user?: unknown; github_repo?: unknown }
+
+function githubSettings(): GitHubSettings {
   try {
-    const token = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8")).github_token
-    return typeof token === "string" && token.trim() ? token.trim() : undefined
+    return JSON.parse(readFileSync(SETTINGS_PATH, "utf-8")) as GitHubSettings
   } catch {
-    return undefined
+    return {}
   }
 }
 
-export function saveGithubToken(token: string | null): void {
+function saveGithubSettings(update: (settings: Record<string, unknown>) => void): void {
   mkdirSync(DATA_DIR, { recursive: true })
   let settings: Record<string, unknown> = { version: 1 }
   try { settings = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8")) } catch {}
-  if (token) settings.github_token = token
-  else delete settings.github_token
+  update(settings)
   const temporary = `${SETTINGS_PATH}.tmp`
   writeFileSync(temporary, JSON.stringify(settings, null, 2))
   chmodSync(temporary, 0o600)
   renameSync(temporary, SETTINGS_PATH)
 }
 
+export function githubRepository(): string {
+  const settings = githubSettings()
+  const user = process.env.MESHTALK_GITHUB_USER?.trim() || (typeof settings.github_user === "string" ? settings.github_user.trim() : "") || DEFAULT_GITHUB_USER
+  const repo = process.env.MESHTALK_GITHUB_REPO?.trim() || (typeof settings.github_repo === "string" ? settings.github_repo.trim() : "") || DEFAULT_GITHUB_REPO
+  if (!isGitHubName(user) || !isGitHubName(repo)) throw new Error("GitHub user and repository names may contain only letters, numbers, dots, underscores, and hyphens.")
+  return `${user}/${repo}`
+}
+
+function isGitHubName(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value)
+}
+
+function githubToken(): string | undefined {
+  const token = githubSettings().github_token
+  return typeof token === "string" && token.trim() ? token.trim() : undefined
+}
+
+export function saveGithubToken(token: string | null): void {
+  saveGithubSettings((settings) => {
+    if (token) settings.github_token = token
+    else delete settings.github_token
+  })
+}
+
+export function saveGithubRepository(user: string | null, repo: string | null): void {
+  if (user && repo && (!isGitHubName(user) || !isGitHubName(repo))) throw new Error("GitHub user and repository names may contain only letters, numbers, dots, underscores, and hyphens.")
+  saveGithubSettings((settings) => {
+    if (user && repo) {
+      settings.github_user = user
+      settings.github_repo = repo
+    } else {
+      delete settings.github_user
+      delete settings.github_repo
+    }
+  })
+}
+
 async function fetchRelease(token?: string): Promise<{ release: ReleaseResponse | null; accessDenied: boolean }> {
   try {
-    const response = await fetch(`${API_URL}/releases/latest`, {
+    const response = await fetch(`https://api.github.com/repos/${githubRepository()}/releases/latest`, {
       headers: {
         Accept: "application/vnd.github+json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -103,7 +140,7 @@ async function fetchRelease(token?: string): Promise<{ release: ReleaseResponse 
 
 function ghRelease(): ReleaseResponse | null {
   try {
-    const result = Bun.spawnSync(["gh", "api", `repos/${REPOSITORY}/releases/latest`])
+    const result = Bun.spawnSync(["gh", "api", `repos/${githubRepository()}/releases/latest`])
     if (result.exitCode !== 0) return null
     return JSON.parse(new TextDecoder().decode(result.stdout)) as ReleaseResponse
   } catch {
