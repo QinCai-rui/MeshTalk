@@ -1,5 +1,5 @@
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
-import type { Dispatch, ReactNode, RefObject, SetStateAction } from "react"
+import type { ReactNode, RefObject } from "react"
 import type { ConversationItem, Group, GroupMember, Peer, VersionMismatch } from "../types"
 import { MarqueeText } from "./MarqueeText"
 import { dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, toFileUrl, transportName } from "../utils"
@@ -31,6 +31,7 @@ type ConversationPanelProps = {
   selectedIsIncompatible: boolean
   selectedVersionMismatch: VersionMismatch | null | undefined
   selectionKey: string | undefined
+  typingNames: string[]
   editingName: boolean
   scrollFocused: boolean
   scrollboxRef: RefObject<ScrollBoxRenderable | null>
@@ -38,13 +39,16 @@ type ConversationPanelProps = {
   width: number
   setComposerHeight: (height: number) => void
   setDraftLength: (length: number) => void
-  setDrafts: Dispatch<SetStateAction<Record<string, string>>>
   setScrollFocused: (focused: boolean) => void
+  onComposerChange: (content: string) => void
   send: () => void
 }
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageRenderGeneration, incompatibleGroupMembers, incompatiblePeerMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedIsIncompatible, selectedVersionMismatch, selectionKey, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setDrafts, setScrollFocused, send } = props
+  const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageRenderGeneration, incompatibleGroupMembers, incompatiblePeerMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedIsIncompatible, selectedVersionMismatch, selectionKey, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, onComposerChange, send } = props
+  const typingText = typingNames.length === 1 ? `${typingNames[0]} is typing` : typingNames.length === 2 ? `${typingNames[0]} and ${typingNames[1]} are typing...` : typingNames.length > 2 ? "Multiple people are typing..." : undefined
+  const composerTitle = selectedGroup || selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: queued until peer is online"
+  const byteCount = `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`
   return <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
     {controlStatus.control_url && !controlStatus.connected ? <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}><MarqueeText width={width - 4} fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"} text={`Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting (${controlStatus.reconnect_attempts}).`} /></box> : null}
     <box title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${selectedIsIncompatible ? "incompatible" : peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`})${selected.protocol_version != null ? ` protocol: v${selected.protocol_version}${selected.remote_protocol_version != null ? ` (max: v${selected.remote_protocol_version === -1 ? 0 : selected.remote_protocol_version})` : ""}` : ""}` : "Chat"} bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"} style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
@@ -127,14 +131,15 @@ export function ConversationPanel(props: ConversationPanelProps) {
         })}
       </scrollbox>
     </box>
-    <box title={selectedGroup || selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: queued until peer is online"} bottomTitle={isSending ? "Sending..." : `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`} titleColor={limitColor ?? "#888888"} style={{ border: true, borderColor: limitColor ?? (!scrollFocused && !editingName && (selected?.is_online || selectedGroup) ? "#6ea8fe" : undefined), flexShrink: 0, overflow: "hidden", padding: 1 }}>
+    <box title={composerTitle} bottomTitle={isSending ? "Sending..." : byteCount} titleColor={limitColor ?? "#888888"} style={{ border: true, borderColor: limitColor ?? (!scrollFocused && !editingName && (selected?.is_online || selectedGroup) ? "#6ea8fe" : undefined), flexShrink: 0, overflow: "hidden", padding: 1 }}>
       <textarea key={selectionKey ?? "no-conversation"} ref={composerRef} initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""} placeholder={selectedGroup ? `Message ${selectedGroup.name} — drop file/image here` : selected ? "Write a message — drop file/image to send" : "Select a peer or group"} focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !isSending && !dialogOpen} onMouseDown={() => setScrollFocused(false)} onContentChange={() => {
         const composer = composerRef.current
         const content = composer?.plainText ?? ""
         setDraftLength(new TextEncoder().encode(content).length)
         setComposerHeight(getComposerHeight(composer))
-        if (selectionKey) setDrafts((current) => ({ ...current, [selectionKey]: content }))
+        onComposerChange(content)
       }} onSubmit={() => void send()} keyBindings={[{ name: "return", action: "submit" }, { name: "return", meta: true, action: "newline" }]} height={composerHeight} wrapMode="word" overflow="hidden" scrollMargin={1} selectionBg="#365b85" />
+      {typingText && <box style={{ position: "absolute", right: 1, bottom: 0, flexDirection: "row", gap: 1 }}><text fg="#7aa2d6">{typingText}</text><spinner name="simpleDotsScrolling" color="#7aa2d6" /></box>}
     </box>
     <MarqueeText width={width - 2} fg={status.includes("error") || status.includes("lost") || status.includes("exceeds") ? "#ff7777" : "#888888"} text={status} />
   </box>

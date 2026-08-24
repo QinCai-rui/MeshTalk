@@ -199,7 +199,7 @@ reconnects.
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
-`file_transfer`). The agreed capability set is the **intersection** of both
+`file_transfer`, `typing_indicators`). The agreed capability set is the **intersection** of both
 peers' advertised sets (unknown capabilities are ignored), and higher-level code
 gates behaviour on it: `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
 enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
@@ -440,8 +440,9 @@ During the handshake, peers exchange their maximum protocol `version`, their `mi
   - `block_reports`: Report message blocking status (`MESSAGE_BLOCKED`).
   - `group_chat`: Exchange `GROUP_MESSAGE`, `GROUP_MESSAGE_ACK`, and
     `GROUP_LEAVE` packets for mutually joined named rooms.
-  - `file_transfer`: Exchange `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
-    packets for cross-platform file transfer with image preview and download.
+   - `file_transfer`: Exchange `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
+     packets for cross-platform file transfer with image preview and download.
+   - `typing_indicators`: Exchange encrypted, transient `TYPING` packets.
 
 ### 6.3 Session Key Derivation
 
@@ -739,6 +740,7 @@ TCP and UDP carry the same Packet type byte (backend/meshtalk/protocol.py):
 | FILE_OFFER | 0x11 | File Offer | Signed file metadata (filename, size, chunk count) for a direct or group transfer. |
 | FILE_CHUNK | 0x12 | File Chunk | E2EE encrypted file data chunk with per-chunk signature. |
 | FILE_ACK | 0x13 | File Ack | Delivery acknowledgement with optional `missing_ranges` for retransmission. |
+| TYPING | 0x14 | Typing | Signed, pairwise-encrypted transient typing state. |
 
 UDP transport-level frame types (udp_transport.py): HELLO=1, DATA=2, ACK=3,
 PING=4, PONG=5, READY=6, GOODBYE=7 (distinct from the application types above;
@@ -766,7 +768,13 @@ authenticated peer's signing key; mismatched sender_id/responder_id is rejected.
 - Profiles (PROFILE): {peer_id, display_name, tui_active, signature}. Broadcast
   to every active peer on name change (broadcast_profile_update); tui_active
   reflects whether any TUI client is connected (drives "active/away/offline"
-  presence in peers).
+   presence in peers).
+- Typing (TYPING): a signed envelope `{sender_id, recipient_id, created_at,
+  encrypted_content, signature}`. The encrypted body is `{group_id|null,
+  is_typing}`. Direct events are friend-only; group events require an active
+  named-room membership. They are sent only to connected peers that negotiated
+  `typing_indicators`, are never persisted, acknowledged, retried, or queued,
+  and recipients discard events older than 30 seconds.
 
 ## 10. Local IPC API (backend/meshtalk/ipc.py, common/ipc-client.ts)
 
@@ -802,6 +810,7 @@ over IPC.
 | block_peer / unblock_peer | peer_id | peer_id |
 | blocked_peers | - | Blocked list. |
 | tui_presence | client_id, active | Toggles TUI-active presence. |
+| typing | client_id, recipient_id or group_id, is_typing | Transient typing update; exactly one conversation target is required. |
 | identity | - | peer_id, display_name, setup state. |
 | status | - | peer_id, connected peers + network info, control URL/connected, public endpoint, rooms. |
 | messages | peer_id | Conversation history (marks read). |
@@ -834,13 +843,16 @@ over IPC.
 
 `peer_update`, `message`, `delivered`, `friend_request`, `friend_response`,
 `friend_cancelled`, `message_blocked`, `group_message`, `group_member_joined`,
-`group_member_left`, `group_sent`, `group_delivered`, and file transfer events:
+`group_member_left`, `group_sent`, `group_delivered`, `typing`, and file transfer events:
 `file_offer` (incoming file metadata), `file_progress` (chunk received/sent),
 `file_completed` (all chunks received, file written to disk), `file_sent`
 (outbound transfer finished), `file_delivered` (recipient ACK received), and
 `file_queued` (transfer queued for offline peer). Group events identify the
 group and affected message/member; `group_sent` reports an offline queued copy
 being flushed, and `group_delivered` reports its recipient ACK.
+`typing` contains `sender_id`, `display_name`, `group_id` (or null),
+`is_typing`, and `created_at`; clients must order updates by `created_at` and
+expire active state locally if no refresh or stop arrives.
 
 The CLI exposes `room create <name>`, `room join`, `groups` / `group list`, and
 `group members|messages|send|leave`. `watch` prints incoming group messages and

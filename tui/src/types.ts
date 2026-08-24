@@ -34,6 +34,7 @@ export type Message = {
 export type Group = { group_id: string; name: string; member_count: number; unread_count: number }
 export type GroupMember = { peer_id?: string; member_id?: string; display_name: string; is_online?: boolean; show_in_sidebar?: boolean; is_incompatible?: boolean }
 export type Conversation = { kind: "peer" | "group"; id: string }
+export type TypingPeer = { displayName: string; createdAt: number; expiresAt: number; isTyping: boolean }
 export type FriendRequest = { request_id: string; sender_id: string; sender_name: string; recipient_id?: string; recipient_name?: string; note?: string | null; created_at: number; direction: "incoming" | "outgoing"; status?: string }
 export type BlockedPeer = { peer_id: string; display_name: string; created_at: number }
 export type RoomStatus = { room_id: string; members: number; group_id?: string | null; name?: string | null }

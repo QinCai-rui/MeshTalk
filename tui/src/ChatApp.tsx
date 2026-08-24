@@ -1,10 +1,11 @@
 import { createClipboard, createHostClipboard, createRendererClipboardAdapter, decodePasteBytes, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useKeyboard, usePaste, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/react"
 import { useEffect, useMemo, useRef, useState } from "react"
+import "opentui-spinner/react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
 import { checkForUpdate } from "../../common/updater"
-import type { Conversation, ConversationItem, Dialog, FileTransfer, Group, GroupMember, Message, Peer, VersionMismatch } from "./types"
+import type { Conversation, ConversationItem, Dialog, FileTransfer, Group, GroupMember, Message, Peer, TypingPeer, VersionMismatch } from "./types"
 import { composerLimitColor, DEFAULT_STATUS, getComposerHeight, MIN_COMPOSER_HEIGHT, peerPresence } from "./utils"
 import { Sidebar } from "./components/Sidebar"
 import { ConversationPanel } from "./components/ConversationPanel"
@@ -49,6 +50,7 @@ export function ChatApp() {
   const [debugInfo, setDebugInfo] = useState<import("./types").DebugInfo | null>(null)
   const [fileTransfers, setFileTransfers] = useState<FileTransfer[]>([])
   const [imageRenderGeneration, setImageRenderGeneration] = useState(0)
+  const [typingPeers, setTypingPeers] = useState<Record<string, Record<string, TypingPeer>>>({})
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [dialogDraft, setDialogDraft] = useState("")
   const [dialogError, setDialogError] = useState("")
@@ -62,9 +64,59 @@ export function ChatApp() {
   const dialogAction = useRef(0)
   const dialogBusyRef = useRef(false)
   const filePickerOpen = useRef(false)
+  const typingStartTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const typingHeartbeat = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+  const pendingTypingConversation = useRef<Conversation | undefined>(undefined)
+  const outgoingTypingConversation = useRef<Conversation | undefined>(undefined)
   const selectedPeerId = selection?.kind === "peer" ? selection.id : undefined
   const selectedGroupId = selection?.kind === "group" ? selection.id : undefined
   const selectionKey = selection ? `${selection.kind}:${selection.id}` : undefined
+
+  function sendTyping(conversation: Conversation, isTyping: boolean) {
+    const target = conversation.kind === "peer" ? { recipient_id: conversation.id } : { group_id: conversation.id }
+    void ipc.send("typing", { client_id: tuiClientId, ...target, is_typing: isTyping }).catch(() => {})
+  }
+
+  function stopOutgoingTyping() {
+    if (typingStartTimer.current) clearTimeout(typingStartTimer.current)
+    if (typingIdleTimer.current) clearTimeout(typingIdleTimer.current)
+    if (typingHeartbeat.current) clearInterval(typingHeartbeat.current)
+    typingStartTimer.current = undefined
+    typingIdleTimer.current = undefined
+    typingHeartbeat.current = undefined
+    pendingTypingConversation.current = undefined
+    const conversation = outgoingTypingConversation.current
+    outgoingTypingConversation.current = undefined
+    if (conversation) sendTyping(conversation, false)
+  }
+
+  function handleComposerChange(content: string) {
+    if (selectionKey) setDrafts((current) => ({ ...current, [selectionKey]: content }))
+    if (!selection || !content) {
+      stopOutgoingTyping()
+      return
+    }
+    const conversation = selection
+    const active = outgoingTypingConversation.current
+    if (active && (active.kind !== conversation.kind || active.id !== conversation.id)) stopOutgoingTyping()
+    pendingTypingConversation.current = conversation
+    if (!outgoingTypingConversation.current && !typingStartTimer.current) {
+      typingStartTimer.current = setTimeout(() => {
+        typingStartTimer.current = undefined
+        const pending = pendingTypingConversation.current
+        if (!pending) return
+        outgoingTypingConversation.current = pending
+        sendTyping(pending, true)
+        typingHeartbeat.current = setInterval(() => {
+          const current = outgoingTypingConversation.current
+          if (current) sendTyping(current, true)
+        }, 2500)
+      }, 300)
+    }
+    if (typingIdleTimer.current) clearTimeout(typingIdleTimer.current)
+    typingIdleTimer.current = setTimeout(stopOutgoingTyping, 3000)
+  }
 
   const actions = useChatActions({
     ipc, clipboardRef: clipboard, renderer, backendDisconnectedRef: backendDisconnected,
@@ -137,6 +189,29 @@ export function ChatApp() {
   }, [])
 
   useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now()
+      setTypingPeers((current) => {
+        let changed = false
+        const next: Record<string, Record<string, TypingPeer>> = {}
+        for (const [conversation, peers] of Object.entries(current)) {
+          const active = Object.fromEntries(Object.entries(peers).filter(([, peer]) => peer.expiresAt > now))
+          if (Object.keys(active).length) next[conversation] = active
+          if (Object.keys(active).length !== Object.keys(peers).length) changed = true
+        }
+        return changed ? next : current
+      })
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [])
+
+  useEffect(() => () => stopOutgoingTyping(), [selectionKey])
+
+  useEffect(() => {
+    if (dialog || editingName || scrollFocused || isSending) stopOutgoingTyping()
+  }, [dialog, editingName, scrollFocused, isSending])
+
+  useEffect(() => {
     const service = createClipboard({ host: createHostClipboard(), terminal: createRendererClipboardAdapter(renderer) })
     clipboard.current = service
     return () => { clipboard.current = null; void service.dispose() }
@@ -193,10 +268,48 @@ export function ChatApp() {
   }, [flashingEnabled])
 
   useEffect(() => ipc.onEvent((event: IPCEvent) => {
+    if (event.event === "typing") {
+      const senderId = event.sender_id as string
+      if (senderId === identity?.peer_id) return
+      const groupId = event.group_id as string | null | undefined
+      const conversation = groupId ? `group:${groupId}` : `peer:${senderId}`
+      const createdAt = event.created_at as number
+      if (!Number.isFinite(createdAt)) return
+      const isTyping = Boolean(event.is_typing)
+      const displayName = (event.display_name as string | undefined) ?? peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "Someone"
+      setTypingPeers((current) => {
+        const previous = current[conversation]?.[senderId]
+        if (previous && previous.createdAt >= createdAt) return current
+        return {
+          ...current,
+          [conversation]: {
+            ...current[conversation],
+            [senderId]: {
+              displayName, createdAt, isTyping,
+              // Retain a stopped event long enough to reject an older UDP start.
+              expiresAt: Date.now() + (isTyping ? 6000 : 30000),
+            },
+          },
+        }
+      })
+      return
+    }
     if (["group_message", "group_member_joined", "group_member_left"].includes(event.event)) {
       const groupId = event.group_id as string
       const group = groups.find((item) => item.group_id === groupId)
       const senderId = event.sender_id as string | undefined
+      if (senderId) setTypingPeers((current) => {
+        const conversation = `group:${groupId}`
+        const { [senderId]: _, ...remaining } = current[conversation] ?? {}
+        const { [conversation]: __, ...other } = current
+        return Object.keys(remaining).length ? { ...other, [conversation]: remaining } : other
+      })
+      if (event.event === "group_member_left" && event.peer_id) setTypingPeers((current) => {
+        const conversation = `group:${groupId}`
+        const { [event.peer_id as string]: _, ...remaining } = current[conversation] ?? {}
+        const { [conversation]: __, ...other } = current
+        return Object.keys(remaining).length ? { ...other, [conversation]: remaining } : other
+      })
       const sender = (event.display_name as string | undefined)
         ?? peers.find((peer) => peer.peer_id === senderId)?.display_name
         ?? groupMembers[groupId]?.find((member) => (member.peer_id ?? member.member_id) === senderId)?.display_name
@@ -335,6 +448,12 @@ export function ChatApp() {
       return
     }
     const senderId = event.sender_id as string
+    setTypingPeers((current) => {
+      const conversation = `peer:${senderId}`
+      const { [senderId]: _, ...remaining } = current[conversation] ?? {}
+      const { [conversation]: __, ...other } = current
+      return Object.keys(remaining).length ? { ...other, [conversation]: remaining } : other
+    })
     const sender = peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "a peer"
     const mutedUntil = mutedPeers[senderId]
     const isMuted = mutedUntil === undefined ? false : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil
@@ -444,6 +563,8 @@ export function ChatApp() {
     ? `Incompatible peer protocol: peer supports v${selectedVersionMismatch.remote_min === -1 ? 0 : selectedVersionMismatch.remote_min}-v${selectedVersionMismatch.remote_version === -1 ? 0 : selectedVersionMismatch.remote_version}; local supports v${selectedVersionMismatch.local_min}-v${selectedVersionMismatch.local_version}. Most features are disabled.`
     : ""
   const selectedGroup = groups.find((group) => group.group_id === selectedGroupId)
+  const selectedTypingNames = Object.values(typingPeers[selectionKey ?? ""] ?? {}).filter((peer) => peer.isTyping).map((peer) => peer.displayName)
+  const typingConversationKeys = new Set(Object.entries(typingPeers).filter(([, peers]) => Object.values(peers).some((peer) => peer.isTyping)).map(([conversation]) => conversation))
   const conversationFiles = useMemo(() => fileTransfers.filter((f) => {
     if (!f.file_path) return false
     if (f.status !== "completed" && f.status !== "sent") return false
@@ -469,8 +590,8 @@ export function ChatApp() {
 
   return (
     <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
-      <Sidebar activeCount={activeCount} compact={compact} dialogOpen={Boolean(dialog)} editingName={editingName} groups={groups} groupMembers={groupMembers} identity={identity} mutedPeers={mutedPeers} nameDraft={nameDraft} peers={peers} selectedGroupId={selectedGroupId} selectedPeerId={selectedPeerId} sidebarWidth={sidebarWidth} versionMismatches={versionMismatches} setEditingName={setEditingName} setNameDraft={setNameDraft} setSelection={setSelection} setScrollFocused={setScrollFocused} saveDisplayName={() => void actions.saveDisplayName()} />
-      <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} imageRenderGeneration={imageRenderGeneration} incompatibleGroupMembers={incompatibleGroupMembers} incompatiblePeerMessage={incompatiblePeerMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedIsIncompatible={selectedIsIncompatible} selectedVersionMismatch={selectedVersionMismatch} selectionKey={selectionKey} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setDrafts={setDrafts} setScrollFocused={setScrollFocused} send={() => void actions.send()} />
+      <Sidebar activeCount={activeCount} compact={compact} dialogOpen={Boolean(dialog)} editingName={editingName} groups={groups} groupMembers={groupMembers} identity={identity} mutedPeers={mutedPeers} nameDraft={nameDraft} peers={peers} selectedGroupId={selectedGroupId} selectedPeerId={selectedPeerId} sidebarWidth={sidebarWidth} versionMismatches={versionMismatches} typingConversationKeys={typingConversationKeys} setEditingName={setEditingName} setNameDraft={setNameDraft} setSelection={setSelection} setScrollFocused={setScrollFocused} saveDisplayName={() => void actions.saveDisplayName()} />
+      <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} imageRenderGeneration={imageRenderGeneration} incompatibleGroupMembers={incompatibleGroupMembers} incompatiblePeerMessage={incompatiblePeerMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedIsIncompatible={selectedIsIncompatible} selectedVersionMismatch={selectedVersionMismatch} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send() }} />
       {copyToast && (
         <box style={{ position: "absolute", right: 2, top: 1, border: true, borderColor: "#66dd88", backgroundColor: "#18251d", paddingLeft: 1, paddingRight: 1 }}>
           <text fg="#66dd88">Copied to clipboard</text>
