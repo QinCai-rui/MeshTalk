@@ -79,9 +79,11 @@ time to open commands for control-server status and setup, named group-chat
 room management, and changing your display name. Group invites can be pasted
 when joining and are copied to the clipboard when creating a group.
 
-MeshTalk also sends a desktop notification for each incoming message when the
-terminal supports notification OSC sequences. Notifications show the sender,
-not message content. Set `OPENTUI_NOTIFICATIONS=0` to disable them.
+MeshTalk sends a native desktop notification for each incoming message, friend request,
+and file transfer — automatically enabled on Windows, macOS, and Linux. Notifications show the
+sender and a preview of the message; clicking the notification brings the MeshTalk window to
+the front. Configure delivery in `Ctrl+P` → `Notifications`, or set `OPENTUI_NOTIFICATIONS=0` to
+disable terminal-protocol fallback.
 
 ## Run From Source
 
