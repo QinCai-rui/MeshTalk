@@ -7,7 +7,7 @@ import { createConnection, type Socket } from "net";
 import { basename, dirname, join, resolve } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { checkForUpdate, installRelease, isReleaseInstallDir, releaseInstallDir, saveGithubToken } from "../common/updater";
+import { checkForUpdate, installRelease, isReleaseInstallDir, releaseInstallDir, saveGithubToken, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -411,7 +411,17 @@ async function main() {
     code = tuiExit.code ?? 0;
     process.removeListener("SIGINT", handleSignal);
     process.removeListener("SIGTERM", handleSignal);
-    await cleanup();
+    if (code === UPDATE_RESTART_EXIT_CODE) {
+      await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt);
+      if (!isWindows) {
+        const restartPath = takeUpdateRestartPath();
+        if (!restartPath) throw new Error("Update restart target was not provided.");
+        spawn([restartPath], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+      }
+      code = 0;
+    } else {
+      await cleanup();
+    }
   } else {
     const cli = spawn([...components.cli.command, ...args], {
       cwd: components.cli.cwd,

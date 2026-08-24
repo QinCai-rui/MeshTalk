@@ -5,7 +5,7 @@ import type { Release } from "../../../common/updater"
 import { MouseSelect } from "./MouseSelect"
 import { MarqueeText } from "./MarqueeText"
 import { NotificationDialogs } from "./dialogs/NotificationDialogs"
-import { AboutDialog, CommandsDialog, UpdateDestinationDialog, UpdateDialog } from "./dialogs/CommandDialogs"
+import { AboutDialog, CommandsDialog, UpdateDestinationDialog, UpdateDialog, UpdateTokenDialog } from "./dialogs/CommandDialogs"
 import { isImageFile, toFileUrl } from "../utils"
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
@@ -86,6 +86,8 @@ type DialogPanelProps = {
   saveDisplayName: (value?: string) => void
   checkForUpdatesFromAbout: () => void
   installUpdate: (release: Release, destination?: string) => void
+  saveUpdateToken: (release: Release | undefined, destination: string | undefined, token: string) => void
+  restartUpdate: (installDir: string) => void
 }
 
 export function DialogPanel(props: DialogPanelProps) {
@@ -96,7 +98,7 @@ export function DialogPanel(props: DialogPanelProps) {
   const { mutePeer, unmutePeer, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
   const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, downloadFile, defaultDownloadPath } = props
   const { testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent } = props
-  const { saveDisplayName, checkForUpdatesFromAbout, installUpdate } = props
+  const { saveDisplayName, checkForUpdatesFromAbout, installUpdate, saveUpdateToken, restartUpdate } = props
 
   if (!dialog) return null
 
@@ -126,6 +128,7 @@ export function DialogPanel(props: DialogPanelProps) {
         : dialog.kind === "debug" ? "Debug"
         : dialog.kind === "update" ? "Update available"
         : dialog.kind === "update-directory" ? "Update destination"
+        : dialog.kind === "update-token" ? "GitHub access required"
         : dialog.kind === "about" ? "About MeshTalk"
         : dialog.kind === "group-detail" ? "Group details"
         : dialog.kind === "file-send" ? "Upload file"
@@ -138,8 +141,9 @@ export function DialogPanel(props: DialogPanelProps) {
     >
       {dialog.kind === "commands" && <CommandsDialog dialogHeight={dialogHeight} groups={groups} peers={peers} selectedGroup={groups.find((group) => group.group_id === selectedGroupId)} selection={selection} runCommand={runCommand} />}
       {dialog.kind === "about" && <AboutDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} isReleaseBuild={isReleaseBuild} checkForUpdates={checkForUpdatesFromAbout} goBack={goBack} />}
-      {dialog.kind === "update" && <UpdateDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} closeDialog={closeDialog} installing={dialogBusy} installUpdate={installUpdate} chooseUpdateDestination={(release) => { setDialogError(""); setDialogDraft(""); showDialog({ kind: "update-directory", release }) }} />}
+      {dialog.kind === "update" && <UpdateDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} closeDialog={closeDialog} installing={dialogBusy} installUpdate={installUpdate} restartUpdate={restartUpdate} chooseUpdateDestination={(release) => { setDialogError(""); setDialogDraft(""); showDialog({ kind: "update-directory", release }) }} />}
       {dialog.kind === "update-directory" && <UpdateDestinationDialog dialog={dialog} dialogError={dialogError} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} installUpdate={installUpdate} />}
+      {dialog.kind === "update-token" && <UpdateTokenDialog dialog={dialog} dialogError={dialogError} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} saveUpdateToken={saveUpdateToken} />}
       {dialog.kind === "control" && <ControlDialogContent dialog={dialog} dialogHeight={dialogHeight} configureControl={configureControl} dismissControlSetup={dismissControlSetup} loadControlStatus={loadControlStatus} showDialog={showDialog} />}
       {dialog.kind === "control-custom" && <ControlCustomDialogContent dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} configureControl={configureControl} />}
       {dialog.kind === "control-status" && <ControlStatusDialogContent dialog={dialog} showDialog={showDialog} />}

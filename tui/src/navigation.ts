@@ -23,6 +23,9 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
     void loadAdvancedConfig()
   } else if (dialog.kind === "update-directory") {
     showDialog({ kind: "update", release: dialog.release })
+  } else if (dialog.kind === "update-token") {
+    if (dialog.release) showDialog({ kind: "update", release: dialog.release })
+    else closeDialog()
   } else if (dialog.kind === "advanced" || dialog.kind === "about") {
     showDialog({ kind: "commands" })
   } else if (["room-create", "room-join", "room-created", "room-detail"].includes(dialog.kind)) {

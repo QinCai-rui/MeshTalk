@@ -69,17 +69,26 @@ type UpdateDialogProps = {
   closeDialog: () => void
   installing: boolean
   installUpdate: (release: Extract<Dialog, { kind: "update" }>["release"], destination?: string) => void
+  restartUpdate: (installDir: string) => void
   chooseUpdateDestination: (release: Extract<Dialog, { kind: "update" }>["release"]) => void
 }
 
-export function UpdateDialog({ appReleaseVersion, dialog, dialogError, dialogHeight, dialogWidth, closeDialog, installing, installUpdate, chooseUpdateDestination }: UpdateDialogProps) {
+function progressLabel(progress: NonNullable<Extract<Dialog, { kind: "update" }>["progress"]>): string {
+  if (progress.receivedBytes === undefined) return progress.step
+  const received = (progress.receivedBytes / 1024 / 1024).toFixed(1)
+  if (!progress.totalBytes) return `${progress.step}: ${received} MiB`
+  return `${progress.step}: ${Math.floor(progress.receivedBytes / progress.totalBytes * 100)}% (${received} MiB / ${(progress.totalBytes / 1024 / 1024).toFixed(1)} MiB)`
+}
+
+export function UpdateDialog({ appReleaseVersion, dialog, dialogError, dialogHeight, dialogWidth, closeDialog, installing, installUpdate, restartUpdate, chooseUpdateDestination }: UpdateDialogProps) {
   return <>
     <text><b>{dialog.installed ? `MeshTalk ${dialog.release.version} is ready.` : `MeshTalk ${dialog.release.version} is available.`}</b></text>
     {!dialog.installed && <text fg="#bbbbbb">Installed version: {appReleaseVersion}</text>}
-    {installing ? <box style={{ flexDirection: "row", alignItems: "center", gap: 1 }}><spinner name="material" color="#e0a34a" /><text fg="#e0a34a">Downloading, verifying, and installing update...</text></box> : dialog.installed ? <MarqueeText width={dialogWidth - 4} fg="#66dd88" text="Update installed. MeshTalk remains open; restart it when you are ready to use the new version." /> : <MarqueeText width={dialogWidth - 4} fg="#bbbbbb" text="The download will be verified with GitHub's SHA-256 digest before installation." />}
+    {installing ? <><box style={{ flexDirection: "row", alignItems: "center", gap: 1 }}><spinner name="material" color="#e0a34a" /><text fg="#e0a34a">{progressLabel(dialog.progress ?? { step: "Preparing update" })}</text></box>{dialog.progress?.method && <text fg="#888888">{dialog.progress.method}</text>}</> : dialog.installed ? <MarqueeText width={dialogWidth - 4} fg="#66dd88" text="Update installed. Restart now to use the new version, or dismiss to keep this session running." /> : <MarqueeText width={dialogWidth - 4} fg="#bbbbbb" text="The download will be verified with GitHub's SHA-256 digest before installation." />}
     {dialogError && <text fg="#ff7777">{dialogError}</text>}
     {!installing && <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={dialog.installed ? [
-      { name: "Close", description: "Continue using the current MeshTalk session", value: "close" },
+      { name: "Restart now", description: "Close MeshTalk, stop the backend, and launch the updated installation", value: "restart" },
+      { name: "Dismiss", description: "Continue using the current MeshTalk session", value: "dismiss" },
     ] : [
       { name: "Install now", description: "Download and install while MeshTalk remains open", value: "install" },
       { name: "Install to another folder", description: "Choose another existing MeshTalk installation", value: "destination" },
@@ -87,9 +96,19 @@ export function UpdateDialog({ appReleaseVersion, dialog, dialogError, dialogHei
     ]} onSelect={(_, option) => {
       if (option?.value === "install") installUpdate(dialog.release)
       else if (option?.value === "destination") chooseUpdateDestination(dialog.release)
-      else if (option?.value === "ignore" || option?.value === "close") closeDialog()
+      else if (option?.value === "restart" && dialog.installDir) restartUpdate(dialog.installDir)
+      else if (option?.value === "ignore" || option?.value === "dismiss") closeDialog()
     }} wrapSelection showDescription />}
   </>
+}
+
+export function UpdateTokenDialog({ dialog, dialogError, dialogDraft, setDialogDraft, saveUpdateToken }: { dialog: Extract<Dialog, { kind: "update-token" }>; dialogError: string; dialogDraft: string; setDialogDraft: (value: string) => void; saveUpdateToken: (release: Extract<Dialog, { kind: "update" }>["release"] | undefined, destination: string | undefined, token: string) => void }) {
+  return <box style={{ flexDirection: "column", gap: 1 }}>
+    <text>GitHub denied access to MeshTalk{dialog.release ? ` ${dialog.release.version}` : " releases"}.</text>
+    <text fg="#bbbbbb">Enter a token with repository access. It is stored unencrypted in ~/.meshtalk/settings.json.</text>
+    {dialogError && <text fg="#ff7777">{dialogError}</text>}
+    <input focused value={dialogDraft} placeholder="GitHub token" onInput={setDialogDraft} onSubmit={(value) => saveUpdateToken(dialog.release, dialog.destination, typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
+  </box>
 }
 
 export function UpdateDestinationDialog({ dialog, dialogError, dialogWidth, dialogDraft, setDialogDraft, installUpdate }: { dialog: Extract<Dialog, { kind: "update-directory" }>; dialogError: string; dialogWidth: number; dialogDraft: string; setDialogDraft: (value: string) => void; installUpdate: (release: Extract<Dialog, { kind: "update" }>["release"], destination?: string) => void }) {
