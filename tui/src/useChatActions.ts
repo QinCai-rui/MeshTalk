@@ -1,7 +1,7 @@
 import type { IPCClient } from "../../common/ipc-client"
 import type { Release } from "../../common/updater"
 import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, UPDATE_RESTART_EXIT_CODE } from "../../common/updater"
-import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, Message, Peer, RoomStatus, VersionMismatch } from "./types"
+import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, Message, Peer, RoomStatus } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
 import { resolve } from "path"
 import { existsSync, statSync } from "fs"
@@ -62,8 +62,6 @@ type ChatActionsDeps = {
   setNotificationPreferences: React.Dispatch<React.SetStateAction<NotificationPreferences | null>>
   notificationTestDelivery: Exclude<NotificationDelivery, "disabled"> | null
   setNotificationTestDelivery: React.Dispatch<React.SetStateAction<Exclude<NotificationDelivery, "disabled"> | null>>
-  versionMismatches: Record<string, VersionMismatch>
-  setVersionMismatches: React.Dispatch<React.SetStateAction<Record<string, VersionMismatch>>>
   flashingEnabled: boolean
   setFlashingEnabled: (b: boolean) => void
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
@@ -95,7 +93,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { nameDraft, setNameDraft, editingName, setEditingName, scrollFocused, setScrollFocused } = deps
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
   const { mutedPeers, setMutedPeers, notificationPreferences, setNotificationPreferences } = deps
-  const { notificationTestDelivery, setNotificationTestDelivery, versionMismatches, setVersionMismatches } = deps
+  const { notificationTestDelivery, setNotificationTestDelivery } = deps
   const { flashingEnabled, setFlashingEnabled, controlStatus, setControlStatus } = deps
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps

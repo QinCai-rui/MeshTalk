@@ -42,14 +42,13 @@ When both paths are authenticated, LAN TCP is active and remote UDP remains a
 fallback. The backend reports all known endpoints and marks the active endpoint
 through IPC.
 
-### Incompatible peers
+### Capability differences
 
-Peers with no overlapping protocol version retain an authenticated TCP or UDP
-connection for transport keepalives and diagnostics, but enter a quarantined
-state. Application packets, profile updates, direct messages, group messages,
-friend requests, acknowledgements, and queued traffic are disabled. The TUI
-keeps the peer visible with an incompatibility warning; group chats list affected
-members without exposing their version ranges.
+Peers exchange authenticated capability lists. Each optional packet family is
+enabled only when both peers advertise its capability. A missing or unknown
+capability disables only that feature; every shared capability continues to
+work. Both peers retain the directional difference and show a flashing limited-
+capabilities warning without changing connectivity or presence state.
 
 ## Private Rooms And Named Groups
 
@@ -77,7 +76,6 @@ Only the room ID is sent to the control service. The room secret derives an
 AES-256-GCM key with HKDF-SHA256. Endpoint cards contain:
 
 ```text
-protocol version
 peer ID
 Ed25519 public key
 optional public UDP address and port
@@ -217,7 +215,7 @@ File transfer sends binary files (up to 50 MiB) directly between peers using
 the same E2EE envelope as messages. Files are chunked into encrypted pieces
 (MAX_FILE_CHUNK_SIZE = 28 KiB plaintext), sent as `FILE_CHUNK` packets, and
 reassembled by the receiver. The `file_transfer` capability is required on both
-peers and is excluded from the legacy capability set.
+peers.
 
 The flow is:
 
