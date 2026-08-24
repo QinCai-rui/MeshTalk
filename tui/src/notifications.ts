@@ -181,8 +181,14 @@ export async function notify(
   const header = title.trim() || "MeshTalk"
   if (!body) return
   if (preferences.delivery === "native") {
-    // Backend daemon is the single source for native notifications (works when minimized/background).
-    // TUI skips native to avoid duplicate — desktop_notified flag also guards the IPC path.
+    const ok = await sendNativeNotification(body, header)
+    if (ok) return
+    // Fallback to terminal notification if native failed and terminal supports it
+    if (renderer.capabilities?.notifications) {
+      try {
+        renderer.triggerNotification(body, header)
+      } catch {}
+    }
     return
   }
   // terminal delivery
