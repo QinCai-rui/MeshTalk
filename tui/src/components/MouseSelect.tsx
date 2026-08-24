@@ -1,7 +1,7 @@
 import { type ScrollBoxRenderable } from "@opentui/core"
 import { type SelectProps } from "@opentui/react"
 import { useEffect, useRef, useState } from "react"
-import { terminalWidth, clipTextToWidth } from "../utils"
+import { terminalWidth } from "../utils"
 
 export function MouseSelect(props: SelectProps) {
   const options = props.options ?? []
@@ -12,6 +12,7 @@ export function MouseSelect(props: SelectProps) {
   const menuId = useRef(crypto.randomUUID()).current
   const showDescription = props.showDescription ?? true
   const showSelectionIndicator = props.showSelectionIndicator ?? true
+  const descriptionPrefix = showSelectionIndicator ? "   " : " "
   const activeIndex = hoveredIndex ?? selectedIndex
   const activeDescription = options[activeIndex]?.description ?? ""
 
@@ -23,8 +24,8 @@ export function MouseSelect(props: SelectProps) {
     setDescriptionOffset(0)
     const timer = setInterval(() => {
       const viewportWidth = scrollboxRef.current?.viewport.width ?? 0
-      const text = `${showSelectionIndicator ? "  " : ""}${activeDescription}`
-      const maxOffset = Math.max(0, terminalWidth(text) - viewportWidth)
+      const descriptionWidth = Math.max(0, viewportWidth - terminalWidth(descriptionPrefix))
+      const maxOffset = Math.max(0, terminalWidth(activeDescription) - descriptionWidth)
       if (!maxOffset) return
       if (pauseTicks > 0) pauseTicks--
       else if (offset < maxOffset) offset++
@@ -53,7 +54,7 @@ export function MouseSelect(props: SelectProps) {
       const highlighted = index === activeIndex
       let descriptionText = option.description
       if (highlighted && showDescription && descriptionOffset > 0) {
-        const fullText = `${showSelectionIndicator ? "  " : ""}${option.description}`
+        const fullText = option.description
         let currentWidth = 0
         let startIndex = 0
         for (let i = 0; i < fullText.length && currentWidth < descriptionOffset; i++) {
@@ -70,7 +71,7 @@ export function MouseSelect(props: SelectProps) {
       }
       return <box id={`${menuId}-${index}`} key={index} width="100%" height={showDescription ? 2 : 1} flexShrink={0} overflow="hidden" backgroundColor={highlighted ? props.selectedBackgroundColor ?? "#334455" : undefined} onMouseMove={() => setHoveredIndex(index)} onMouseOut={() => setHoveredIndex(null)} onMouseDown={(event) => { if (event.button === 0) { selectOption(index); event.stopPropagation() } }}>
         <text fg={highlighted ? props.selectedTextColor ?? "#FFFF00" : props.textColor ?? "#FFFFFF"}>{showSelectionIndicator ? highlighted ? " ▶ " : "   " : " "}{option.name}</text>
-        {showDescription && <text wrapMode="none" fg={highlighted ? props.selectedDescriptionColor ?? "#CCCCCC" : props.descriptionColor ?? "#888888"}>{showSelectionIndicator ? "   " : " "}{descriptionText}</text>}
+        {showDescription && <text wrapMode="none" fg={highlighted ? props.selectedDescriptionColor ?? "#CCCCCC" : props.descriptionColor ?? "#888888"}>{descriptionPrefix}{descriptionText}</text>}
       </box>
     })}
   </scrollbox></box>
