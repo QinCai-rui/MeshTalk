@@ -113,15 +113,14 @@ Fresh state lives in ~/.meshtalk:
 - Every 3 seconds it broadcasts a JSON discovery packet to 255.255.255.255:24890:
 
   ```json
-  { "protocol": 1, "discovery_id": "<32 hex chars>", "tcp_port": 24891 }
+  { "discovery_id": "<32 hex chars>", "tcp_port": 24891 }
   ```
 
 - discovery_id is secrets.token_hex(16) generated per backend run. It is
   intentionally NOT derived from the signing key, so LAN broadcasts cannot be
   used to track a peer across restarts.
-- On receipt, a peer ignores its own discovery_id, ignores mismatched protocol
-  versions, and records (source_ip, tcp_port). It then triggers a connection
-  attempt.
+- On receipt, a peer ignores its own discovery_id and records
+  (source_ip, tcp_port). It then triggers a connection attempt.
 - Hardening: bounded known-address table (MAX_KNOWN_ADDRESSES = 512), bounded
   pending queue (128), and DISCOVERY_WORKERS = 4 worker tasks parse packets off
   the I/O path.
@@ -156,60 +155,33 @@ HANDSHAKE_CONFIRM (challenge=ack.nonce)    -->
 
 - Each HandshakePayload carries: peer_id, signing_public_key (32 B),
   encryption_public_key (32 B), display_name, nonce (32 B), challenge,
-  protocol_version, min_protocol_version, capabilities (string list), and an
-  Ed25519 signature over the canonical (sorted, compact) JSON of the
-  non-signature fields. For protocol version 1 the signature canonical covers
-  only the six base fields (peer_id, signing_public_key, encryption_public_key,
-  display_name, nonce, challenge) so that v1 stays byte-compatible with prior
-  releases; `protocol_version`, `min_protocol_version` and `capabilities` are
-  only folded into the signed canonical once a connection negotiates a version
-  above 1.
+  capabilities (string list), and an Ed25519 signature over the canonical
+  (sorted, compact) JSON of every non-signature field.
 - _apply_handshake verifies:
   1. peer_id == SHA-256(signing_public_key) (binds ID to key),
   2. challenge matches the expected value from the prior step (prevents a
      reflected/relay handshake from confirming a session),
-  3. protocol versions are mutually compatible via range negotiation (see §4.3.1),
+  3. the capability list is well formed,
   4. the Ed25519 signature is valid.
 - Timeouts: HANDSHAKE_TIMEOUT = 10 s, MAX_PENDING_HANDSHAKES = 64,
   MAX_CONNECTED_PEERS = 256.
 
-#### 4.3.1 Version & Capability Negotiation (LAN TCP)
-
-The same algorithm used in the UDP transport (§6.2) applies here. Each
-HandshakePayload includes a `protocol_version` and `min_protocol_version`.
-
-```
-agreed_version = min(local.protocol_version, remote.protocol_version)
-min_required   = max(local.min_protocol_version, remote.min_protocol_version)
-if agreed_version < min_required → reject with IncompatibleProtocolError
-                                   + broadcast peer_version_mismatch IPC event
-```
-
-**Legacy (v0) compatibility.** A peer that omits `protocol_version` from its
-handshake is treated as version 0 with `min_protocol_version` 0. This is
-detected by `HandshakePayload.decode()` checking for the presence of the
-`protocol_version` key in the raw JSON. The minimum supported protocol version
-is now `4` (`MIN_SUPPORTED_PROTOCOL_VERSION`), so a peer advertising a version
-below `4` (including legacy peers that omit the field, treated as v0) is
-incompatible. Rather than dropping the connection, the handshake is allowed to
-complete and a `peer_version_mismatch` IPC event is broadcast; the connection is
-kept but feature behaviour may be degraded. The mismatch is recomputed from each
-handshake, so the warning naturally reappears after a restart once the peer
-reconnects.
+#### 4.3.1 Capability Negotiation (LAN TCP)
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
 `file_transfer`, `typing_indicators`). The agreed capability set is the **intersection** of both
-peers' advertised sets (unknown capabilities are ignored), and higher-level code
-gates behaviour on it: `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
+peers' advertised sets, and higher-level code gates behaviour on it:
+`text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
 enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
 `friend_requests` enables the friend-request packet family, `group_chat` enables
 the group packet family, and `file_transfer` enables file offer/chunk/ack
 packets (section 7.6).
 A peer that does not advertise a capability will not be sent the corresponding
-packets. Handshakes that omit capabilities receive the legacy set, which excludes
-`group_chat` and `file_transfer`, preventing new group and file packets from
-being sent to older clients.
+packets. Missing capability lists are rejected. Unknown remote capabilities are
+retained for diagnostics but remain disabled locally. Each side reports both
+directions of a capability gap, flashes a warning, and continues using every
+shared capability.
 
 TRANSPORT-SECURITY CAVEAT (important). On the LAN TCP path, the link itself is
 NOT encrypted by a separate transport layer. The handshake and every
@@ -413,9 +385,7 @@ JSON hello (canonical, then Ed25519-signed):
 
 ```json
 {
-  "version": 1,
-  "min_version": 1,
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "typing_indicators"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -426,12 +396,14 @@ JSON hello (canonical, then Ed25519-signed):
 }
 ```
 
-_handle_hello verifies: peer_id == SHA-256(signing key); mutually compatible protocol version (negotiated version = min(local.version, remote.version) >= max(local.min_version, remote.min_version)); all keys + nonce are 32 B and signature is 64 B; the source IP matches the expected/introduced endpoint (or is a fresh, un-introduced attempt that is later accepted); and the Ed25519 signature is valid. Incompatible protocol versions trigger a `peer_version_mismatch` IPC notification.
+_handle_hello verifies: peer_id == SHA-256(signing key); the capability list is
+well formed; all keys + nonce are 32 B and the signature is 64 B; the source IP
+matches the expected/introduced endpoint (or is a fresh, un-introduced attempt
+that is later accepted); and the Ed25519 signature is valid.
 
-#### Protocol Version & Capability Negotiation
-During the handshake, peers exchange their maximum protocol `version`, their `min_version`, and a list of supported `capabilities`. 
+#### Capability Negotiation
+During the handshake, peers exchange signed lists of supported capabilities.
 
-- **Version Resolution**: The connection operates at the highest mutually supported version: `agreed_version = min(local.version, remote.version)`. If `agreed_version` is less than `max(local.min_version, remote.min_version)`, the authenticated transport remains connected in quarantined mode for keepalives and diagnostics, while application packets are disabled.
 - **Supported Capabilities**:
   - `text_chat`: Exchange text messaging packets.
   - `profile_sync`: Exchange display name and active status updates.
@@ -706,7 +678,7 @@ both peers.
 - The `FILE_OFFER` signature authenticates the file metadata (filename, size, chunk count).
 - Filenames are sanitized on both sender and receiver to prevent path traversal.
 - File storage is scoped to `~/.meshtalk/files/<file_id>/` — files never escape this directory.
-- The `file_transfer` capability is excluded from the legacy set, so older peers never receive file packets.
+- Peers that do not negotiate `file_transfer` never receive file packets.
 - Incoming file offers from non-friends (for direct transfers) or non-members (for group transfers) are rejected.
 - Early-chunk buffer has a TTL (30 s) and per-file cap (8 chunks) to bound memory usage from out-of-order arrivals.
 - Packet locks are cleaned up after unlock to prevent resource leaks.
@@ -932,10 +904,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Protocol version | 4 | protocol.PROTOCOL_VERSION |
-| Min supported protocol version | 4 | protocol.MIN_SUPPORTED_PROTOCOL_VERSION |
-| Legacy peer version | 0 | Default for peers omitting `protocol_version` in handshake |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |

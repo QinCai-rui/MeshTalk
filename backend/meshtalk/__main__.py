@@ -25,7 +25,7 @@ from .message_router import MessageRouter
 from .typing_router import TypingRouter
 from .file_transfer import FileTransferManager
 from .ipc import IPCServer
-from .protocol import PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, Packet, PacketType
+from .protocol import Packet, PacketType, capability_for_packet
 from .rendezvous import RendezvousService
 from .settings import Settings
 
@@ -98,7 +98,9 @@ async def main(debug: bool = False) -> None:
                 logger.info("Flushed %d queued file transfer(s) to %s", flushed_files, peer_id)
             return
         for item in items:
-            if peer.is_quarantined:
+            packet_type = PacketType(item["packet_type"])
+            required = capability_for_packet(packet_type)
+            if required is not None and not peer.supports(required):
                 if item["message_id"] and item.get("group_id"):
                     await db.set_group_delivery(item["message_id"], peer_id, "unavailable")
                 elif item["message_id"]:
@@ -116,7 +118,7 @@ async def main(debug: bool = False) -> None:
                 await db.remove_from_outqueue(item["id"])
                 continue
             try:
-                packet = Packet(PacketType(item["packet_type"]), item["encrypted_payload"])
+                packet = Packet(packet_type, item["encrypted_payload"])
                 if item["message_id"] and item.get("group_id"):
                     await db.set_group_delivery(item["message_id"], peer_id, "sent")
                 await peer_manager.send_packet(peer, packet)
@@ -147,24 +149,17 @@ async def main(debug: bool = False) -> None:
         if peer is not None:
             event.update(peer.negotiated())
         await ipc.broadcast_event(event)
+        if peer is not None and peer.has_capability_gap:
+            await ipc.broadcast_event({
+                "event": "peer_capability_gap",
+                "peer_id": peer_id,
+                **peer.negotiated(),
+            })
         if peer is not None:
             await group_router.peer_connected(peer_id)
             await flush_outgoing(peer_id)
 
     peer_manager.on_peer_changed = handle_peer_changed
-
-    async def handle_version_mismatch(peer_id: str, remote_version: int, remote_min: int) -> None:
-        await ipc.broadcast_event({
-            "event": "peer_version_mismatch",
-            "peer_id": peer_id,
-            "remote_version": remote_version,
-            "remote_min_version": remote_min,
-            "local_version": PROTOCOL_VERSION,
-            "local_min_version": MIN_SUPPORTED_PROTOCOL_VERSION,
-            "error": f"Incompatible protocol version for peer {peer_id}: remote (v{remote_version}, min v{remote_min}) vs local (v{PROTOCOL_VERSION}, min v{MIN_SUPPORTED_PROTOCOL_VERSION})",
-        })
-
-    peer_manager.on_version_mismatch = handle_version_mismatch
 
     async def on_peer_found(address: str, tcp_port: int) -> None:
         await peer_manager.connect_to_peer(None, address, tcp_port)
@@ -205,8 +200,8 @@ async def main(debug: bool = False) -> None:
             warnings.append("not_friend")
         if active_transport == "remote_udp" and not control_connected:
             warnings.append("rendezvous_out_of_sync")
-        if getattr(connection, "version_mismatch", None):
-            warnings.append("incompatible")
+        if getattr(connection, "has_capability_gap", False):
+            warnings.append("limited")
         return warnings
 
     async def handle_peers(req: dict) -> dict:
@@ -236,9 +231,6 @@ async def main(debug: bool = False) -> None:
                 "is_friend": peer["peer_id"] in friends,
                 "is_blocked": peer["peer_id"] in blocked,
                 "friend_request": friend_requests.get(peer["peer_id"]),
-                "protocol_version": connection.protocol_version if connection else None,
-                "remote_protocol_version": connection.remote_protocol_version if connection else None,
-                "version_mismatch": connection.version_mismatch if connection else None,
                 "delivery_warnings": _peer_delivery_warnings(
                     connection,
                     peer["peer_id"] in friends,
@@ -246,6 +238,10 @@ async def main(debug: bool = False) -> None:
                     rendezvous.connected,
                 ),
                 "capabilities": list(connection.capabilities) if connection else [],
+                "remote_capabilities": list(connection.remote_capabilities) if connection else [],
+                "peer_missing_capabilities": list(connection.peer_missing_capabilities) if connection else [],
+                "local_missing_capabilities": list(connection.local_missing_capabilities) if connection else [],
+                "capability_gap": connection.has_capability_gap if connection else False,
                 **network_info,
             }
             for peer in peers
@@ -417,9 +413,6 @@ async def main(debug: bool = False) -> None:
                     "peer_id": peer.peer_id,
                     "display_name": peer.display_name,
                     "is_online": 1,
-                    "protocol_version": peer.protocol_version,
-                    "remote_protocol_version": peer.remote_protocol_version,
-                    "version_mismatch": peer.version_mismatch,
                     "delivery_warnings": _peer_delivery_warnings(
                         peer,
                         peer.peer_id in friends,
@@ -427,6 +420,10 @@ async def main(debug: bool = False) -> None:
                         rendezvous.connected,
                     ),
                     "capabilities": list(peer.capabilities),
+                    "remote_capabilities": list(peer.remote_capabilities),
+                    "peer_missing_capabilities": list(peer.peer_missing_capabilities),
+                    "local_missing_capabilities": list(peer.local_missing_capabilities),
+                    "capability_gap": peer.has_capability_gap,
                     **network_info,
                 }
                 for peer in connected
@@ -588,7 +585,7 @@ async def main(debug: bool = False) -> None:
         for member in members:
             connection = peer_manager.get_connected_peer(member["peer_id"])
             member["is_online"] = member["peer_id"] == identity.peer_id or connection is not None
-            member["is_incompatible"] = bool(connection and connection.version_mismatch)
+            member["is_limited"] = bool(connection and connection.has_capability_gap)
             member["show_in_sidebar"] = (
                 member["is_online"] or time.time() - member["last_seen"] <= 24 * 60 * 60
             )
@@ -683,9 +680,10 @@ async def main(debug: bool = False) -> None:
                 "peer_id": peer["peer_id"],
                 "display_name": peer["display_name"],
                 "is_online": connection is not None,
-                "protocol_version": connection.protocol_version if connection else None,
-                "remote_protocol_version": connection.remote_protocol_version if connection else None,
                 "capabilities": list(connection.capabilities) if connection else [],
+                "remote_capabilities": list(connection.remote_capabilities) if connection else [],
+                "peer_missing_capabilities": list(connection.peer_missing_capabilities) if connection else [],
+                "local_missing_capabilities": list(connection.local_missing_capabilities) if connection else [],
                 **info,
             })
         return {

@@ -1,4 +1,4 @@
-import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, FriendRequest, Group, RoomStatus, VersionMismatch } from "../types"
+import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, FriendRequest, Group, RoomStatus } from "../types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "../notifications"
 import type { GroupMember, Peer } from "../types"
 import type { Release } from "../../../common/updater"
@@ -529,7 +529,7 @@ function AccessibilityDialogContent({ dialogHeight, flashingEnabled, setAccessib
     <>
       <text fg="#888888">Reduce motion and other accessibility options.</text>
       <MouseSelect focused height={Math.max(4, dialogHeight - 4)} options={[
-        { name: flashingEnabled ? "Disable Flashing" : "Re-enable Flashing", description: flashingEnabled ? "Stop incompatible-protocol and rendezvous warnings from blinking" : "Allow incompatible-protocol and rendezvous warnings to blink", value: "toggle-flash" },
+        { name: flashingEnabled ? "Disable Flashing" : "Re-enable Flashing", description: flashingEnabled ? "Stop capability and rendezvous warnings from blinking" : "Allow capability and rendezvous warnings to blink", value: "toggle-flash" },
         { name: "Back to commands", description: "Return to the command palette", value: "back" },
       ]} onSelect={(_, option) => {
         if (!option) return
@@ -688,8 +688,9 @@ function DebugPeerDialogContent({ dialog, debugInfo, showDialog }: { dialog: Ext
         <text><span fg="#888888">Online: </span>{peer.is_online ? "Yes" : "No"}</text>
         <text><span fg="#888888">Active transport: </span>{peer.active_transport ?? "None"}</text>
         <text><span fg="#888888">Active endpoint: </span>{peer.active_endpoint ?? "None"}</text>
-        {peer.protocol_version != null && <text><span fg="#888888">Protocol version: </span>v{peer.protocol_version}{peer.remote_protocol_version != null ? ` (max: v${peer.remote_protocol_version === -1 ? 0 : peer.remote_protocol_version})` : ""}</text>}
         {peer.capabilities?.length ? <text><span fg="#888888">Capabilities: </span>{peer.capabilities.join(", ")}</text> : null}
+        {peer.peer_missing_capabilities?.length ? <text><span fg="#888888">Peer missing: </span>{peer.peer_missing_capabilities.join(", ")}</text> : null}
+        {peer.local_missing_capabilities?.length ? <text><span fg="#888888">Unavailable locally: </span>{peer.local_missing_capabilities.join(", ")}</text> : null}
         <text><span fg="#888888">Endpoints:</span></text>
         {peer.endpoints.map((e) => (
           <text key={`${e.transport}-${e.endpoint}`}>  {e.transport} {e.endpoint}{e.active ? " *" : ""}</text>

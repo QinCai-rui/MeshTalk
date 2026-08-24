@@ -5,7 +5,7 @@ import "opentui-spinner/react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
 import { checkForUpdate, GitHubAuthenticationError } from "../../common/updater"
-import type { Conversation, ConversationItem, Dialog, FileTransfer, Group, GroupMember, Message, Peer, TypingPeer, VersionMismatch } from "./types"
+import type { Conversation, ConversationItem, Dialog, FileTransfer, Group, GroupMember, Message, Peer, TypingPeer } from "./types"
 import { composerLimitColor, DEFAULT_STATUS, getComposerHeight, MIN_COMPOSER_HEIGHT, peerPresence } from "./utils"
 import { Sidebar } from "./components/Sidebar"
 import { ConversationPanel } from "./components/ConversationPanel"
@@ -43,7 +43,6 @@ export function ChatApp() {
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({})
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences | null>(null)
   const [notificationTestDelivery, setNotificationTestDelivery] = useState<Exclude<NotificationDelivery, "disabled"> | null>(null)
-  const [versionMismatches, setVersionMismatches] = useState<Record<string, VersionMismatch>>({})
   const [blinkOn, setBlinkOn] = useState(true)
   const [flashingEnabled, setFlashingEnabled] = useState(true)
   const [controlStatus, setControlStatus] = useState<{ connected: boolean; reconnect_attempts: number; control_url?: string | null }>({ connected: false, reconnect_attempts: 0 })
@@ -127,7 +126,7 @@ export function ChatApp() {
     scrollFocused, setScrollFocused, deliveredMessageIds, setDeliveredMessageIds,
     status, setStatus, copyToast, setCopyToast, mutedPeers, setMutedPeers,
     notificationPreferences, setNotificationPreferences, notificationTestDelivery, setNotificationTestDelivery,
-    versionMismatches, setVersionMismatches, flashingEnabled, setFlashingEnabled,
+    flashingEnabled, setFlashingEnabled,
     controlStatus, setControlStatus, debugInfo, setDebugInfo, fileTransfers, setFileTransfers,
     dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy,
     statusResetRef: statusReset, copyToastResetRef: copyToastReset, dialogActionRef: dialogAction,
@@ -377,7 +376,7 @@ export function ChatApp() {
     if (event.event === "message_failed") {
       const messageId = event.message_id as string
       setMessages((current) => current.map((message) => message.message_id === messageId ? { ...message, failed: 1, queued: 0 } : message))
-      actions.showStatus("Message cancelled because the peer protocol is incompatible.")
+      actions.showStatus("Message cancelled because the peer does not support text chat.")
       return
     }
     if (event.event === "friend_request") {
@@ -404,9 +403,7 @@ export function ChatApp() {
       void actions.refreshPeers()
       return
     }
-    if (event.event === "peer_version_mismatch") {
-      const peerId = event.peer_id as string
-      setVersionMismatches((c) => ({ ...c, [peerId]: { remote_version: event.remote_version as number, remote_min: event.remote_min_version as number, local_version: event.local_version as number, local_min: event.local_min_version as number } }))
+    if (event.event === "peer_capability_gap") {
       void actions.refreshPeers()
       return
     }
@@ -442,9 +439,6 @@ export function ChatApp() {
     }
     if (event.event !== "message") {
       if (event.event === "peer_update") {
-        const peerId = event.peer_id as string
-        const mismatch = event.version_mismatch as VersionMismatch | null | undefined
-        setVersionMismatches((c) => { if (mismatch) return { ...c, [peerId]: mismatch }; const { [peerId]: _, ...next } = c; return next })
         void actions.refreshPeers()
       }
       return
@@ -559,10 +553,13 @@ export function ChatApp() {
   })
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId)
-  const selectedVersionMismatch = selected && (selected.version_mismatch ?? versionMismatches[selected.peer_id])
-  const selectedIsIncompatible = Boolean(selectedVersionMismatch)
-  const incompatiblePeerMessage = selectedVersionMismatch
-    ? `Incompatible peer protocol: peer supports v${selectedVersionMismatch.remote_min === -1 ? 0 : selectedVersionMismatch.remote_min}-v${selectedVersionMismatch.remote_version === -1 ? 0 : selectedVersionMismatch.remote_version}; local supports v${selectedVersionMismatch.local_min}-v${selectedVersionMismatch.local_version}. Most features are disabled.`
+  const selectedHasCapabilityGap = Boolean(selected?.capability_gap)
+  const capabilityGapParts = selected ? [
+    selected.peer_missing_capabilities?.length ? `Peer does not support: ${selected.peer_missing_capabilities.join(", ")}.` : "",
+    selected.local_missing_capabilities?.length ? `Peer supports features unavailable locally: ${selected.local_missing_capabilities.join(", ")}.` : "",
+  ].filter(Boolean) : []
+  const capabilityGapMessage = capabilityGapParts.length
+    ? `Limited capabilities. ${capabilityGapParts.join(" ")} Shared features remain available.`
     : ""
   const selectedGroup = groups.find((group) => group.group_id === selectedGroupId)
   const selectedTypingNames = Object.values(typingPeers[selectionKey ?? ""] ?? {}).filter((peer) => peer.isTyping).map((peer) => peer.displayName)
@@ -578,7 +575,7 @@ export function ChatApp() {
     ...messages.map((message) => ({ type: "message" as const, createdAt: message.created_at, message })),
     ...conversationFiles.map((file) => ({ type: "file" as const, createdAt: file.created_at, file })),
   ].sort((a, b) => a.createdAt - b.createdAt || (a.type === b.type ? 0 : a.type === "message" ? -1 : 1)), [messages, conversationFiles])
-  const incompatibleGroupMembers = selectedGroup ? (groupMembers[selectedGroup.group_id] ?? []).filter((member) => member.is_incompatible) : []
+  const limitedGroupMembers = selectedGroup ? (groupMembers[selectedGroup.group_id] ?? []).filter((member) => member.is_limited) : []
   const activeCount = peers.filter((peer) => peerPresence(peer) === "active").length
   const sidebarWidth = width < 72 ? 22 : 32
   const compact = width < 72
@@ -592,8 +589,8 @@ export function ChatApp() {
 
   return (
     <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
-      <Sidebar activeCount={activeCount} compact={compact} dialogOpen={Boolean(dialog)} editingName={editingName} groups={groups} groupMembers={groupMembers} identity={identity} mutedPeers={mutedPeers} nameDraft={nameDraft} peers={peers} selectedGroupId={selectedGroupId} selectedPeerId={selectedPeerId} sidebarWidth={sidebarWidth} versionMismatches={versionMismatches} typingConversationKeys={typingConversationKeys} setEditingName={setEditingName} setNameDraft={setNameDraft} setSelection={setSelection} setScrollFocused={setScrollFocused} saveDisplayName={() => void actions.saveDisplayName()} />
-      <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} imageRenderGeneration={imageRenderGeneration} incompatibleGroupMembers={incompatibleGroupMembers} incompatiblePeerMessage={incompatiblePeerMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedIsIncompatible={selectedIsIncompatible} selectedVersionMismatch={selectedVersionMismatch} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send() }} />
+      <Sidebar activeCount={activeCount} compact={compact} dialogOpen={Boolean(dialog)} editingName={editingName} groups={groups} groupMembers={groupMembers} identity={identity} mutedPeers={mutedPeers} nameDraft={nameDraft} peers={peers} selectedGroupId={selectedGroupId} selectedPeerId={selectedPeerId} sidebarWidth={sidebarWidth} typingConversationKeys={typingConversationKeys} setEditingName={setEditingName} setNameDraft={setNameDraft} setSelection={setSelection} setScrollFocused={setScrollFocused} saveDisplayName={() => void actions.saveDisplayName()} />
+      <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} imageRenderGeneration={imageRenderGeneration} limitedGroupMembers={limitedGroupMembers} capabilityGapMessage={capabilityGapMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedHasCapabilityGap={selectedHasCapabilityGap} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send() }} />
       {copyToast && (
         <box style={{ position: "absolute", right: 2, top: 1, border: true, borderColor: "#66dd88", backgroundColor: "#18251d", paddingLeft: 1, paddingRight: 1 }}>
           <text fg="#66dd88">Copied to clipboard</text>
