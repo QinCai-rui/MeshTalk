@@ -27,7 +27,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: main
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -38,22 +39,12 @@ jobs:
           VERSION="${{ inputs.version }}"
           echo "Bumping version to ${VERSION}"
 
-          # package.json files (root, tui, cli, control)
           for f in package.json tui/package.json cli/package.json control/package.json; do
             sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" "$f"
           done
-
-          # backend pyproject.toml
           sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" backend/pyproject.toml
-
-          # backend __init__.py
           sed -i "s/__version__ = \"[^\"]*\"/__version__ = \"${VERSION}\"/" backend/meshtalk/__init__.py
-
-          # update uv's lockfile
           uv lock --directory backend
-
-          echo "Updated version strings to ${VERSION}"
-          git diff --stat
 
       - name: Commit version bump
         run: |
@@ -62,7 +53,7 @@ jobs:
           git add -A
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "[ci skip] chore: bump version to ${{ inputs.version }}"
-          git push
+          git push origin HEAD:main
 
   build:
     needs: bump-version
