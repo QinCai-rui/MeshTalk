@@ -3,6 +3,7 @@ import json
 import time
 import unittest
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from meshtalk.encryption import decrypt_as_recipient, encrypt_for_recipient
@@ -126,7 +127,7 @@ class HandshakePayloadTest(unittest.TestCase):
         )
         payload.signature = identity.signing_private_key.sign(payload.signed_bytes())
         payload.capabilities.append(FUTURE_CAPABILITY)
-        with self.assertRaises(Exception):
+        with self.assertRaises(InvalidSignature):
             Ed25519PublicKey.from_public_bytes(identity.signing_public_key_bytes()).verify(
                 payload.signature, payload.signed_bytes()
             )
@@ -237,6 +238,19 @@ class CapabilityGapTest(unittest.TestCase):
         self.assertTrue(manager._accept_packet(peer, Packet(PacketType.MESSAGE)))
         self.assertFalse(manager._accept_packet(peer, Packet(PacketType.FILE_OFFER)))
         self.assertEqual(peer.state, PeerState.CONNECTED)
+
+    def test_tcp_handshake_advertises_configured_capabilities(self):
+        """Regression: _handshake_payload must pass self.capabilities to ensure
+        TCP handshakes advertise the manager's configured capability list rather
+        than defaults."""
+        reduced_caps = [CAP_TEXT_CHAT, CAP_PROFILE_SYNC]
+        manager = self._manager("TestPeer", reduced_caps)
+        handshake = manager._handshake_payload()
+        self.assertEqual(sorted(handshake.capabilities), sorted(reduced_caps))
+        # Verify the handshake is correctly signed with these capabilities
+        Ed25519PublicKey.from_public_bytes(manager.identity.signing_public_key_bytes()).verify(
+            handshake.signature, handshake.signed_bytes()
+        )
 
 
 if __name__ == "__main__":

@@ -329,6 +329,7 @@ class PeerManager:
             nonce=__import__("secrets").token_bytes(32),
             challenge=challenge,
             signature=b"",
+            capabilities=list(self.capabilities),
         )
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
         return payload
