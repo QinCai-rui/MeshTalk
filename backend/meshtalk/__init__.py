@@ -1,3 +1,3 @@
 """MeshTalk peer-to-peer messaging."""
 
-__version__ = "0.9.3-1"
+__version__ = "0.9.4"
