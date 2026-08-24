@@ -1,4 +1,5 @@
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs"
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs"
+import { chmod, copyFile, mkdir, open, rename, rm, stat } from "fs/promises"
 import { tmpdir } from "os"
 import { basename, dirname, join } from "path"
 
@@ -175,18 +176,14 @@ export async function checkForUpdate(currentVersion: string): Promise<Release | 
   return release && isNewerVersion(release.version, currentVersion) ? release : null
 }
 
-function sha256(data: Uint8Array): string {
-  return new Bun.CryptoHasher("sha256").update(data).digest("hex")
-}
-
 function expectedFiles(): string[] {
   const suffix = process.platform === "win32" ? ".exe" : ""
   return ["meshtalk", "meshtalk-backend", "meshtalk-cli", "meshtalk-tui"].map((name) => `${name}${suffix}`)
 }
 
-function scheduleWindowsReplacement(extracted: string, installDir: string): void {
+async function scheduleWindowsReplacement(extracted: string, installDir: string): Promise<void> {
   const staging = mkdtempSync(join(tmpdir(), "meshtalk-update-ready-"))
-  for (const name of expectedFiles()) copyFileSync(join(extracted, name), join(staging, name))
+  await Promise.all(expectedFiles().map((name) => copyFile(join(extracted, name), join(staging, name))))
   const lines = ["@echo off", "setlocal", "set /a attempts=0", ":retry", "timeout /t 1 /nobreak >nul"]
   for (const name of expectedFiles()) lines.push(`copy /y "${join(staging, name)}" "${join(installDir, name)}" >nul || goto failed`)
   lines.push(`rmdir /s /q "${staging}"`, `if not exist "${RESTART_PATH}" exit /b 0`, `set /p restartPath=<"${RESTART_PATH}"`, `del "${RESTART_PATH}"`, "start \"\" /b \"%restartPath%\"", "exit /b 0", ":failed", "set /a attempts+=1", "if %attempts% LSS 60 goto retry", "echo MeshTalk update could not replace running files.", "exit /b 1")
@@ -213,59 +210,70 @@ export async function installRelease(release: Release, installDir: string, onPro
     const totalBytes = Number(response.headers.get("content-length")) || undefined
     const reader = response.body?.getReader()
     if (!reader) throw new Error("Download response did not include a body")
-    const chunks: Uint8Array[] = []
+    const archivePath = join(temporary, release.assetName)
+    const archiveFile = await open(archivePath, "w")
+    const hasher = new Bun.CryptoHasher("sha256")
     let receivedBytes = 0
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      chunks.push(value)
-      receivedBytes += value.length
-      onProgress?.({ step: "Downloading release", method, receivedBytes, totalBytes })
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        await archiveFile.write(value)
+        hasher.update(value)
+        receivedBytes += value.length
+        onProgress?.({ step: "Downloading release", method, receivedBytes, totalBytes })
+      }
+    } finally {
+      await archiveFile.close()
     }
-    const archive = new Uint8Array(receivedBytes)
-    let offset = 0
-    for (const chunk of chunks) { archive.set(chunk, offset); offset += chunk.length }
     onProgress?.({ step: "Verifying SHA-256 digest", method })
+    await Bun.sleep(16)
     const expectedDigest = release.digest?.replace(/^sha256:/, "").toLowerCase()
     if (!expectedDigest) throw new Error("GitHub did not provide a SHA-256 digest for this release")
-    if (sha256(archive) !== expectedDigest) throw new Error("SHA-256 verification failed")
-    const archivePath = join(temporary, release.assetName)
-    writeFileSync(archivePath, archive)
+    if (hasher.digest("hex") !== expectedDigest) throw new Error("SHA-256 verification failed")
     onProgress?.({ step: "Inspecting release archive", method })
-    const listing = Bun.spawnSync(["tar", "-tzf", archivePath])
-    if (listing.exitCode !== 0) throw new Error("Unable to inspect the release archive")
-    const entries = new TextDecoder().decode(listing.stdout).split("\n").filter(Boolean)
+    const listing = Bun.spawn(["tar", "-tzf", archivePath], { stdout: "pipe", stderr: "ignore" })
+    const listingOutput = new Response(listing.stdout).text()
+    if (await listing.exited !== 0) throw new Error("Unable to inspect the release archive")
+    const entries = (await listingOutput).split("\n").filter(Boolean)
     if (entries.some((entry) => entry.startsWith("/") || entry === ".." || entry.includes("../"))) throw new Error("Release archive contains an unsafe path")
     const extracted = join(temporary, "extracted")
-    mkdirSync(extracted)
+    await mkdir(extracted)
     onProgress?.({ step: "Extracting release archive", method })
-    const extract = Bun.spawnSync(["tar", "-xzf", archivePath, "-C", extracted])
-    if (extract.exitCode !== 0) throw new Error("Unable to extract the release archive")
+    const extract = Bun.spawn(["tar", "-xzf", archivePath, "-C", extracted], { stdout: "ignore", stderr: "ignore" })
+    if (await extract.exited !== 0) throw new Error("Unable to extract the release archive")
     for (const name of expectedFiles()) {
       const source = join(extracted, name)
-      if (!existsSync(source) || !statSync(source).isFile()) throw new Error(`Release archive is missing ${name}`)
+      try {
+        if (!(await stat(source)).isFile()) throw new Error()
+      } catch {
+        throw new Error(`Release archive is missing ${name}`)
+      }
     }
     if (process.platform === "win32") {
       onProgress?.({ step: "Staging files for replacement after restart", method })
-      scheduleWindowsReplacement(extracted, installDir)
+      await Bun.sleep(16)
+      await scheduleWindowsReplacement(extracted, installDir)
       return
     }
     // A running Unix executable cannot be copied over, but its pathname can be
     // atomically replaced. Stage on the installation filesystem so rename does
     // not fail when the system temporary directory is on another filesystem.
     onProgress?.({ step: "Replacing installed binaries", method })
+    await Bun.sleep(16)
     staging = mkdtempSync(join(installDir, ".meshtalk-update-"))
+    const installStaging = staging
+    await Promise.all(expectedFiles().map(async (name) => {
+      const staged = join(installStaging, name)
+      await copyFile(join(extracted, name), staged)
+      await chmod(staged, 0o755)
+    }))
     for (const name of expectedFiles()) {
-      const staged = join(staging, name)
-      copyFileSync(join(extracted, name), staged)
-      chmodSync(staged, 0o755)
-    }
-    for (const name of expectedFiles()) {
-      renameSync(join(staging, name), join(installDir, name))
+      await rename(join(installStaging, name), join(installDir, name))
     }
   } finally {
-    if (staging) rmSync(staging, { recursive: true, force: true })
-    rmSync(temporary, { recursive: true, force: true })
+    if (staging) await rm(staging, { recursive: true, force: true })
+    await rm(temporary, { recursive: true, force: true })
   }
 }
 
@@ -278,9 +286,14 @@ export function requestUpdateRestart(installDir: string): void {
 }
 
 export function takeUpdateRestartPath(): string | null {
+  const path = updateRestartPath()
+  if (path) rmSync(RESTART_PATH, { force: true })
+  return path
+}
+
+export function updateRestartPath(): string | null {
   try {
     const path = readFileSync(RESTART_PATH, "utf-8").trim()
-    rmSync(RESTART_PATH, { force: true })
     return path || null
   } catch {
     return null

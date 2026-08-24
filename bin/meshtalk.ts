@@ -7,7 +7,7 @@ import { createConnection, type Socket } from "net";
 import { basename, dirname, join, resolve } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { checkForUpdate, githubRepository, installRelease, isReleaseInstallDir, releaseInstallDir, saveGithubRepository, saveGithubToken, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
+import { checkForUpdate, githubRepository, installRelease, isReleaseInstallDir, releaseInstallDir, saveGithubRepository, saveGithubToken, takeUpdateRestartPath, updateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -251,6 +251,16 @@ async function backendRunning(): Promise<boolean> {
   return Boolean(await backendRequest("identity"));
 }
 
+async function requestBackendShutdown(): Promise<boolean> {
+  if (!await backendRequest("shutdown")) return false;
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (!await backendRunning()) return true;
+    await Bun.sleep(200);
+  }
+  return false;
+}
+
 async function waitForBackend(backendProcess?: ChildProcess): Promise<boolean> {
   if (await backendRunning()) return true;
   const deadline = Date.now() + BACKEND_START_TIMEOUT_MS;
@@ -329,7 +339,7 @@ async function main() {
       stdout: "inherit",
       stderr: "inherit",
     });
-    process.exit(await cli.exited.then((result) => result.code ?? 0));
+    process.exit(await cli.exited);
   }
 
   if (args[0] === "backend") {
@@ -423,17 +433,20 @@ async function main() {
       stderr: "inherit",
     });
     const tuiExit = await tui.exited;
-    code = tuiExit.code ?? 0;
+    code = tuiExit;
     process.removeListener("SIGINT", handleSignal);
     process.removeListener("SIGTERM", handleSignal);
     if (code === UPDATE_RESTART_EXIT_CODE) {
-      await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt);
-      if (!isWindows) {
-        const restartPath = takeUpdateRestartPath();
-        if (!restartPath) throw new Error("Update restart target was not provided.");
-        spawn([restartPath], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-      }
-      code = 0;
+      if (!await requestBackendShutdown()) await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt);
+      const restartPath = isWindows ? updateRestartPath() : takeUpdateRestartPath();
+      if (!restartPath) throw new Error("Update restart target was not provided.");
+      const launchDirectly = !isWindows;
+      if (launchDirectly) {
+        if (isWindows) takeUpdateRestartPath();
+        if (!existsSync(restartPath)) throw new Error(`Updated launcher does not exist: ${restartPath}`);
+        const restarted = spawn([restartPath], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+        code = await restarted.exited;
+      } else code = 0;
     } else {
       await cleanup();
     }
@@ -446,7 +459,7 @@ async function main() {
       stderr: "inherit",
     });
     const cliExit = await cli.exited;
-    code = cliExit.code ?? 0;
+    code = cliExit;
   }
 
   process.exit(code);
