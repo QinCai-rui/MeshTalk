@@ -81,6 +81,18 @@ To update a different existing MeshTalk installation, use its directory:
 
 The target directory must contain the complete MeshTalk release binaries.
 
+Updates use `QinCai-rui/MeshTalk` by default. To use releases from another
+GitHub repository, configure its user and repository name:
+
+```bash
+./meshtalk update repo example-user example-repository
+```
+
+Run `./meshtalk update repo` to view the active repository, or
+`./meshtalk update repo clear` to restore the default. The environment
+variables `MESHTALK_GITHUB_USER` and `MESHTALK_GITHUB_REPO` override the
+saved values for a single launch.
+
 On Windows, run `meshtalk.exe` from the extracted archive. Keep these files
 together in the extracted directory: `meshtalk`, `meshtalk-backend`,
 `meshtalk-cli`, and `meshtalk-tui` (all end in `.exe` on Windows). Only the

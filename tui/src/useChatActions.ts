@@ -1,6 +1,6 @@
 import type { IPCClient } from "../../common/ipc-client"
 import type { Release } from "../../common/updater"
-import { checkForUpdate, installRelease, isReleaseInstallDir, releaseInstallDir } from "../../common/updater"
+import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, UPDATE_RESTART_EXIT_CODE } from "../../common/updater"
 import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, Message, Peer, RoomStatus, VersionMismatch } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
 import { resolve } from "path"
@@ -209,15 +209,38 @@ export function useChatActions(deps: ChatActionsDeps) {
       const installDir = destination?.trim() ? resolve(destination.trim()) : releaseInstallDir()
       if (!installDir) throw new Error("Unable to locate the standalone MeshTalk installation.")
       if (!isReleaseInstallDir(installDir)) throw new Error("Update directory must contain the current MeshTalk release binaries.")
-      await installRelease(release, installDir)
+      await installRelease(release, installDir, (progress) => {
+        if (dialogActionRef.current === action) setDialog((current) => current?.kind === "update" ? { ...current, progress } : current)
+      })
       if (dialogActionRef.current !== action) return
-      setDialog({ kind: "update", release, installed: true })
+      setDialog({ kind: "update", release, installed: true, installDir })
       showStatus(`MeshTalk ${release.version} is ready. Restart to use the update.`)
     } catch (error) {
-      failDialogAction(action, error)
+      if (error instanceof GitHubAuthenticationError && dialogActionRef.current === action) {
+        setDialog({ kind: "update-token", release, destination })
+        setDialogError("")
+      } else failDialogAction(action, error)
     } finally {
       finishDialogAction(action)
     }
+  }
+
+  function saveUpdateToken(release: Release | undefined, destination: string | undefined, token: string) {
+    if (!token.trim()) {
+      setDialogError("Enter a GitHub token to continue.")
+      return
+    }
+    saveGithubToken(token.trim())
+    if (release) {
+      setDialog({ kind: "update", release, progress: { step: "Retrying authenticated download" } })
+      void installUpdate(release, destination)
+    } else void checkForUpdatesFromAbout()
+  }
+
+  function restartUpdate(installDir: string) {
+    requestUpdateRestart(installDir)
+    renderer.destroy()
+    process.exit(UPDATE_RESTART_EXIT_CODE)
   }
 
   async function checkForUpdatesFromAbout() {
@@ -231,7 +254,12 @@ export function useChatActions(deps: ChatActionsDeps) {
       const release = await checkForUpdate(APP_RELEASE_VERSION)
       if (dialogActionRef.current !== action) return
       setDialog(release ? { kind: "update", release } : { kind: "about", checked: true })
-    } catch (error) { failDialogAction(action, error) }
+    } catch (error) {
+      if (error instanceof GitHubAuthenticationError && dialogActionRef.current === action) {
+        setDialog({ kind: "update-token" })
+        setDialogError("")
+      } else failDialogAction(action, error)
+    }
     finally { finishDialogAction(action) }
   }
 
@@ -865,7 +893,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     showStatus, showCopyToast,
     refreshPeers, refreshGroups, refreshGroupMembers, refreshFiles,
     closeDialog, showDialog, goBack,
-    installUpdate, checkForUpdatesFromAbout,
+    installUpdate, saveUpdateToken, restartUpdate, checkForUpdatesFromAbout,
     loadControlStatus, configureControl, dismissControlSetup,
     loadAdvancedConfig, saveAdvancedConfig,
     loadRooms, createRoom, joinRoom, leaveRoom, loadRoomInvite,

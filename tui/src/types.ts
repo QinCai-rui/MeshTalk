@@ -64,4 +64,7 @@ export type Dialog =
   | { kind: "debug" } | { kind: "debug-endpoints" } | { kind: "debug-peer"; peerId: string; displayName: string }
   | { kind: "file-send" } | { kind: "file-list"; files: FileTransfer[] } | { kind: "file-download"; fileId: string; filename: string; filePath: string }
   | { kind: "files-dir"; filesDir: string; env?: string; configured?: string; dataDir?: string } | { kind: "group-file-send" }
-  | { kind: "update"; release: import("../../common/updater").Release; installed?: boolean } | { kind: "update-directory"; release: import("../../common/updater").Release } | { kind: "about"; checking?: boolean; checked?: boolean }
+  | { kind: "update"; release: import("../../common/updater").Release; installed?: boolean; installDir?: string; progress?: import("../../common/updater").UpdateProgress }
+  | { kind: "update-directory"; release: import("../../common/updater").Release }
+  | { kind: "update-token"; release?: import("../../common/updater").Release; destination?: string }
+  | { kind: "about"; checking?: boolean; checked?: boolean }
