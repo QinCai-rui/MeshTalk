@@ -121,8 +121,8 @@ class Settings:
         self._control_setup_dismissed = False
         self._identity_setup_dismissed = False
         self._flashing_enabled = True
-        self._notification_setup_dismissed = True
-        self._notification_delivery = "native"
+        self._notification_setup_dismissed = False
+        self._notification_delivery = "terminal"
         self._notification_events = {
             "messages": True,
             "friend_requests": True,
@@ -397,7 +397,6 @@ class Settings:
         self._identity_setup_dismissed = bool(data.get("identity_setup_dismissed", False))
         self._flashing_enabled = bool(data.get("flashing_enabled", True))
         notifications = data.get("notifications", {})
-        had_notifications_key = "notifications" in data and isinstance(notifications, dict)
         if isinstance(notifications, dict):
             self._notification_setup_dismissed = bool(notifications.get("setup_dismissed", False))
             delivery = notifications.get("delivery")
@@ -408,14 +407,6 @@ class Settings:
                 for event in self._notification_events:
                     if isinstance(events.get(event), bool):
                         self._notification_events[event] = events[event]
-        # Migration: legacy default was terminal + setup_dismissed=False requiring manual opt-in.
-        # New default is native + auto-enabled so notifications are "automatically on" without prompt.
-        # Migrate configs that still have the untouched legacy defaults.
-        if had_notifications_key and not self._notification_setup_dismissed and self._notification_delivery == "terminal":
-            # Only auto-migrate if user hasn't customized events (still all True)
-            if all(self._notification_events.values()):
-                self._notification_setup_dismissed = True
-                self._notification_delivery = "native"
         self._github_token = data.get("github_token", "") if isinstance(data.get("github_token", ""), str) else ""
         if self._control_url:
             self._control_url = self._validate_control_url(self._control_url)

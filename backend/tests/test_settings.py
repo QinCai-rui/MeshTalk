@@ -59,9 +59,8 @@ class SettingsControlSetupTest(unittest.TestCase):
 
     def test_notification_preferences_persist_and_merge_events(self):
         settings = Settings(self.path)
-        self.assertEqual(settings.notification_preferences["delivery"], "native")
+        self.assertEqual(settings.notification_preferences["delivery"], "terminal")
         self.assertTrue(settings.notification_preferences["events"]["messages"])
-        self.assertTrue(settings.notification_preferences["setup_dismissed"])
 
         settings.set_notification_preferences(
             setup_dismissed=True,
