@@ -49,6 +49,13 @@ export function MouseSelect(props: SelectProps) {
     if (key.name === "up" || key.name === "k") { key.preventDefault(); setHoveredIndex(null); changeSelection(selectedIndex - 1) }
     else if (key.name === "down" || key.name === "j") { key.preventDefault(); setHoveredIndex(null); changeSelection(selectedIndex + 1) }
     else if (key.name === "return" || key.name === "linefeed") { key.preventDefault(); setHoveredIndex(null); selectOption(selectedIndex) }
+  }} onMouseScroll={(event) => {
+    const pointerY = event.y
+    // Native ScrollBox handling updates child coordinates before this timer runs.
+    setTimeout(() => {
+      const index = scrollboxRef.current?.getChildren().findIndex((child) => pointerY >= child.y && pointerY < child.y + child.height) ?? -1
+      setHoveredIndex(index >= 0 ? index : null)
+    }, 0)
   }}>
     {options.map((option, index) => {
       const highlighted = index === activeIndex
