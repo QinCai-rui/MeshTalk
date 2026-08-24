@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from .identity import Identity
 from .database import Database
+from .desktop_notify import send_notification, truncate_preview
 from .discovery import DiscoveryService
 from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
@@ -64,6 +65,104 @@ async def main(debug: bool = False) -> None:
     )
     file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings)
     tui_clients: set[str] = set()
+
+    # ---- Desktop notifications (backend daemon, works even when TUI is minimized/closed) ----
+    def _should_notify(event: str, peer_id: str | None = None) -> bool:
+        prefs = settings.notification_preferences
+        if prefs.get("delivery") == "disabled":
+            return False
+        if prefs.get("delivery") != "native":
+            return False
+        events = prefs.get("events", {})
+        if not events.get(event):
+            return False
+        if peer_id and settings.is_peer_muted(peer_id):
+            return False
+        return True
+
+    async def _display_name_for(peer_id: str) -> str:
+        peer = peer_manager.get_connected_peer(peer_id)
+        if peer and getattr(peer, "display_name", None):
+            return peer.display_name
+        try:
+            stored = await db.get_peer(peer_id)
+            if stored and stored.get("display_name"):
+                return stored["display_name"]
+        except Exception:
+            pass
+        return peer_id[:8]
+
+    async def _group_name_for(group_id: str) -> str | None:
+        room = settings.rooms.get(group_id)
+        if room and room.group_name:
+            return room.group_name
+        try:
+            groups = await db.get_groups(identity.peer_id)
+            for g in groups:
+                if g.get("group_id") == group_id:
+                    return g.get("name")
+        except Exception:
+            pass
+        return None
+
+    async def _desktop_notify(title: str, body: str) -> None:
+        # Run blocking OS call in thread so we don't stall the event loop
+        try:
+            await asyncio.to_thread(send_notification, title, body)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("desktop notification failed: %s", exc)
+
+    async def _maybe_notify_message(sender_id: str, content: str) -> None:
+        if not _should_notify("messages", sender_id):
+            return
+        name = await _display_name_for(sender_id)
+        preview = truncate_preview(content)
+        body = preview if preview else "New message"
+        asyncio.create_task(_desktop_notify(name, body))
+
+    async def _maybe_notify_group(group_id: str, sender_id: str, content: str) -> None:
+        if not _should_notify("messages", sender_id):
+            return
+        # Don't notify if sender is blocked
+        try:
+            if await db.is_peer_blocked(sender_id):
+                return
+        except Exception:
+            pass
+        sender = await _display_name_for(sender_id)
+        gname = await _group_name_for(group_id)
+        title = f"{sender} in {gname}" if gname else sender
+        preview = truncate_preview(content)
+        body = preview if preview else f"New message in {gname or 'a group'}"
+        asyncio.create_task(_desktop_notify(title, body))
+
+    async def _maybe_notify_friend_request(sender_id: str, sender_name: str, note: str | None) -> None:
+        if not _should_notify("friend_requests", sender_id):
+            return
+        try:
+            if await db.is_peer_blocked(sender_id):
+                return
+        except Exception:
+            pass
+        title = sender_name or await _display_name_for(sender_id)
+        body = truncate_preview(note) if note else ""
+        body = f"Friend request: {body}" if body else "Sent you a friend request"
+        asyncio.create_task(_desktop_notify(title, body))
+
+    async def _maybe_notify_file(sender_id: str, filename: str, file_size: int | None = None, completed: bool = False) -> None:
+        event = "file_completed" if completed else "file_offers"
+        if not _should_notify(event, sender_id):
+            return
+        sender = await _display_name_for(sender_id)
+        if completed:
+            body = f"Saved {filename}"
+            title = f"File received: {filename}"
+            # For completed, title includes filename, body is location hint; keep sender in body if needed
+            asyncio.create_task(_desktop_notify(title, body))
+        else:
+            size = f" ({file_size} bytes)" if file_size else ""
+            body = f"Incoming file: {filename}{size}"
+            asyncio.create_task(_desktop_notify(sender, body))
 
     async def _combined_packet_handler(peer: PeerConnection, packet: Packet) -> None:
         # File transfers take precedence; they handle their own packet types
@@ -784,14 +883,97 @@ async def main(debug: bool = False) -> None:
         ipc_handlers,
         on_tui_disconnect=handle_tui_disconnect,
     )
-    router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
+
+    # Wrap callbacks to also fire desktop notifications (works when TUI is minimized/background)
+    async def _router_on_received(message: dict) -> None:
+        sender = message.get("sender_id", "")
+        content = message.get("content", "")
+        notified = _should_notify("messages", sender)
+        if notified:
+            # fire-and-forget, don't block broadcast
+            asyncio.create_task(_maybe_notify_message(sender, content))
+        await ipc.broadcast_event({"event": "message", **message, "desktop_notified": notified})
+
+    async def _group_on_event(event: dict) -> None:
+        notified = False
+        try:
+            if event.get("event") == "group_message":
+                gid = event.get("group_id", "")
+                sid = event.get("sender_id", "")
+                content = event.get("content", "")
+                notified = _should_notify("messages", sid)
+                # also check blocked
+                if notified:
+                    try:
+                        if await db.is_peer_blocked(sid):
+                            notified = False
+                        else:
+                            asyncio.create_task(_maybe_notify_group(gid, sid, content))
+                    except Exception:
+                        asyncio.create_task(_maybe_notify_group(gid, sid, content))
+                # mark for TUI dedup
+                event = {**event, "desktop_notified": notified}
+        except Exception:
+            pass
+        await ipc.broadcast_event(event)
+
+    async def _friend_req_on(event: dict) -> None:
+        sid = event.get("sender_id", "")
+        sname = event.get("sender_name", "")
+        note = event.get("note")
+        notified = _should_notify("friend_requests", sid)
+        if notified:
+            try:
+                if not await db.is_peer_blocked(sid):
+                    asyncio.create_task(_maybe_notify_friend_request(sid, sname, note))
+                else:
+                    notified = False
+            except Exception:
+                asyncio.create_task(_maybe_notify_friend_request(sid, sname, note))
+        await ipc.broadcast_event({"event": "friend_request", **event, "desktop_notified": notified})
+
+    async def _file_on_event(event: dict) -> None:
+        notified = False
+        try:
+            ev = event.get("event")
+            if ev == "file_offer":
+                sid = event.get("sender_id", "")
+                fname = event.get("filename", "file")
+                fsize = event.get("file_size")
+                notified = _should_notify("file_offers", sid)
+                if notified:
+                    asyncio.create_task(_maybe_notify_file(sid, fname, fsize, completed=False))
+            elif ev == "file_completed":
+                # sender for completed is original sender? file_completed has filename/file_path/file_id
+                # try to find sender from transfer record, else use generic
+                fname = event.get("filename", "file")
+                # file_completed events currently have sender info via file_manager? use event sender if present
+                sid = event.get("sender_id", "")
+                if not sid:
+                    # fallback: try to lookup via db if not in event (best effort)
+                    try:
+                        tr = await file_manager.get_transfer(event.get("file_id", ""))
+                        if tr:
+                            sid = tr.get("sender_id", "")
+                    except Exception:
+                        pass
+                notified = _should_notify("file_completed", sid) if sid else _should_notify("file_completed", None)
+                if notified:
+                    asyncio.create_task(_maybe_notify_file(sid or "unknown", fname, completed=True))
+            if notified:
+                event = {**event, "desktop_notified": True}
+        except Exception:
+            pass
+        await ipc.broadcast_event(event)
+
+    router.on_received = _router_on_received
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
-    group_router.on_event = ipc.broadcast_event
-    friend_manager.on_friend_request = lambda event: ipc.broadcast_event({"event": "friend_request", **event})
+    group_router.on_event = _group_on_event
+    friend_manager.on_friend_request = _friend_req_on
     friend_manager.on_friend_response = lambda event: ipc.broadcast_event({"event": "friend_response", **event})
     friend_manager.on_friend_cancelled = lambda event: ipc.broadcast_event({"event": "friend_cancelled", **event})
     friend_manager.on_message_blocked = lambda event: ipc.broadcast_event({"event": "message_blocked", **event})
-    file_manager.on_event = ipc.broadcast_event
+    file_manager.on_event = _file_on_event
 
     await peer_manager.start()
     await peer_manager.load_endpoints()
