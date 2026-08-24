@@ -9,7 +9,7 @@ const spinnerNames = [
   "balloon", "balloon2", "noise", "bounce", "boxBounce", "boxBounce2", "triangle", "binary", "arc", "circle", "squareCorners", "circleQuarters", "circleHalves", "squish",
   "toggle", "toggle2", "toggle3", "toggle4", "toggle5", "toggle6", "toggle7", "toggle8", "toggle9", "toggle10", "toggle11", "toggle12", "toggle13",
   "arrow", "arrow2", "arrow3", "bouncingBar", "bouncingBall", "smiley", "monkey", "hearts", "clock", "earth", "material", "moon", "runner", "pong", "shark", "dqpb",
-  "weather", "christmas", "grenade", "point", "layer", "betaWave", "fingerDance", "fistBump", "soccerHeader", "mindblown", "speaker", "orangePulse", "bluePulse", "orangeBluePulse", "timeTravel", "aesthetic", "dwarfFortress", "fish",
+  "weather", "christmas", "grenade", "point", "layer", "betaWave", "fingerDance", "fistBump", "soccerHeader", "mindblown", "speaker", "orangePulse", "bluePulse", "orangeBluePulse", "timeTravel", "aesthetic", "dwarfFortress",
 ] as const
 
 function SpinnerPreview() {

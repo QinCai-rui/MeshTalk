@@ -492,6 +492,8 @@ class TypingPayload:
             or not _valid_peer_id(payload.recipient_id)
             or not isinstance(payload.created_at, (int, float))
             or isinstance(payload.created_at, bool)
+            or not math.isfinite(payload.created_at)
+            or payload.created_at <= 0
             or len(payload.signature) != 64
         ):
             raise ValueError("Invalid typing payload")
