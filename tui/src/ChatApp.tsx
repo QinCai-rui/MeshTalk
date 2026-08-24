@@ -1,6 +1,7 @@
 import { createClipboard, createHostClipboard, createRendererClipboardAdapter, decodePasteBytes, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useKeyboard, usePaste, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/react"
 import { useEffect, useMemo, useRef, useState } from "react"
+import "opentui-spinner/react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
 import { checkForUpdate } from "../../common/updater"
@@ -50,7 +51,6 @@ export function ChatApp() {
   const [fileTransfers, setFileTransfers] = useState<FileTransfer[]>([])
   const [imageRenderGeneration, setImageRenderGeneration] = useState(0)
   const [typingPeers, setTypingPeers] = useState<Record<string, Record<string, TypingPeer>>>({})
-  const [typingDotFrame, setTypingDotFrame] = useState(0)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [dialogDraft, setDialogDraft] = useState("")
   const [dialogError, setDialogError] = useState("")
@@ -204,15 +204,6 @@ export function ChatApp() {
     }, 1000)
     return () => clearInterval(interval)
   }, [])
-
-  useEffect(() => {
-    if (!Object.values(typingPeers).some((peers) => Object.values(peers).some((peer) => peer.isTyping))) {
-      setTypingDotFrame(0)
-      return
-    }
-    const interval = setInterval(() => setTypingDotFrame((frame) => (frame + 1) % 3), 350)
-    return () => clearInterval(interval)
-  }, [typingPeers])
 
   useEffect(() => () => stopOutgoingTyping(), [selectionKey])
 
@@ -574,7 +565,6 @@ export function ChatApp() {
   const selectedGroup = groups.find((group) => group.group_id === selectedGroupId)
   const selectedTypingNames = Object.values(typingPeers[selectionKey ?? ""] ?? {}).filter((peer) => peer.isTyping).map((peer) => peer.displayName)
   const typingConversationKeys = new Set(Object.entries(typingPeers).filter(([, peers]) => Object.values(peers).some((peer) => peer.isTyping)).map(([conversation]) => conversation))
-  const typingDots = [".  ", ".. ", "..."][typingDotFrame]
   const conversationFiles = useMemo(() => fileTransfers.filter((f) => {
     if (!f.file_path) return false
     if (f.status !== "completed" && f.status !== "sent") return false
@@ -600,7 +590,7 @@ export function ChatApp() {
 
   return (
     <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
-      <Sidebar activeCount={activeCount} compact={compact} dialogOpen={Boolean(dialog)} editingName={editingName} groups={groups} groupMembers={groupMembers} identity={identity} mutedPeers={mutedPeers} nameDraft={nameDraft} peers={peers} selectedGroupId={selectedGroupId} selectedPeerId={selectedPeerId} sidebarWidth={sidebarWidth} versionMismatches={versionMismatches} typingConversationKeys={typingConversationKeys} typingDots={typingDots} setEditingName={setEditingName} setNameDraft={setNameDraft} setSelection={setSelection} setScrollFocused={setScrollFocused} saveDisplayName={() => void actions.saveDisplayName()} />
+      <Sidebar activeCount={activeCount} compact={compact} dialogOpen={Boolean(dialog)} editingName={editingName} groups={groups} groupMembers={groupMembers} identity={identity} mutedPeers={mutedPeers} nameDraft={nameDraft} peers={peers} selectedGroupId={selectedGroupId} selectedPeerId={selectedPeerId} sidebarWidth={sidebarWidth} versionMismatches={versionMismatches} typingConversationKeys={typingConversationKeys} setEditingName={setEditingName} setNameDraft={setNameDraft} setSelection={setSelection} setScrollFocused={setScrollFocused} saveDisplayName={() => void actions.saveDisplayName()} />
       <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} imageRenderGeneration={imageRenderGeneration} incompatibleGroupMembers={incompatibleGroupMembers} incompatiblePeerMessage={incompatiblePeerMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedIsIncompatible={selectedIsIncompatible} selectedVersionMismatch={selectedVersionMismatch} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send() }} />
       {copyToast && (
         <box style={{ position: "absolute", right: 2, top: 1, border: true, borderColor: "#66dd88", backgroundColor: "#18251d", paddingLeft: 1, paddingRight: 1 }}>
