@@ -69,7 +69,7 @@ jobs:
             target: bun-linux-arm64
             artifact: meshtalk-linux-arm64
             suffix: ""
-          - os: macos-15-intel
+          - os: macos-26-intel
             target: bun-darwin-x64
             artifact: meshtalk-macos-x64
             suffix: ""
