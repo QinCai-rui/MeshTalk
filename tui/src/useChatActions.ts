@@ -232,7 +232,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     }
     saveGithubToken(token.trim())
     if (release) {
-      setDialog({ kind: "update", release, progress: { step: "Retrying authenticated download" } })
+      setDialog({ kind: "update", release, progress: { current: 1, total: 6, step: "Retrying authenticated download" } })
       void installUpdate(release, destination)
     } else void checkForUpdatesFromAbout()
   }

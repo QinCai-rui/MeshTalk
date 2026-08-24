@@ -74,17 +74,18 @@ type UpdateDialogProps = {
 }
 
 function progressLabel(progress: NonNullable<Extract<Dialog, { kind: "update" }>["progress"]>): string {
-  if (progress.receivedBytes === undefined) return progress.step
+  const phase = `[${progress.current}/${progress.total}] ${progress.step}`
+  if (progress.receivedBytes === undefined) return phase
   const received = (progress.receivedBytes / 1024 / 1024).toFixed(1)
-  if (!progress.totalBytes) return `${progress.step}: ${received} MiB`
-  return `${progress.step}: ${Math.floor(progress.receivedBytes / progress.totalBytes * 100)}% (${received} MiB / ${(progress.totalBytes / 1024 / 1024).toFixed(1)} MiB)`
+  if (!progress.totalBytes) return `${phase}: ${received} MiB`
+  return `${phase}: ${Math.floor(progress.receivedBytes / progress.totalBytes * 100)}% (${received} MiB / ${(progress.totalBytes / 1024 / 1024).toFixed(1)} MiB)`
 }
 
 export function UpdateDialog({ appReleaseVersion, dialog, dialogError, dialogHeight, dialogWidth, closeDialog, installing, installUpdate, restartUpdate, chooseUpdateDestination }: UpdateDialogProps) {
   return <>
     <text><b>{dialog.installed ? `MeshTalk ${dialog.release.version} is ready.` : `MeshTalk ${dialog.release.version} is available.`}</b></text>
     {!dialog.installed && <text fg="#bbbbbb">Installed version: {appReleaseVersion}</text>}
-    {installing ? <><box style={{ flexDirection: "row", alignItems: "center", gap: 1 }}><spinner name="material" color="#e0a34a" /><text fg="#e0a34a">{progressLabel(dialog.progress ?? { step: "Preparing update" })}</text></box>{dialog.progress?.method && <text fg="#888888">{dialog.progress.method}</text>}</> : dialog.installed ? <MarqueeText width={dialogWidth - 4} fg="#66dd88" text="Update installed. Restart now to use the new version, or dismiss to keep this session running." /> : <MarqueeText width={dialogWidth - 4} fg="#bbbbbb" text="The download will be verified with GitHub's SHA-256 digest before installation." />}
+    {installing ? <box style={{ flexDirection: "row", alignItems: "center", gap: 1 }}><spinner name="material" color="#e0a34a" /><text fg="#e0a34a">{progressLabel(dialog.progress ?? { current: 1, total: 6, step: "Preparing update" })}</text></box> : dialog.installed ? <MarqueeText width={dialogWidth - 4} fg="#66dd88" text="Update installed. Restart now to use the new version, or dismiss to keep this session running." /> : <MarqueeText width={dialogWidth - 4} fg="#bbbbbb" text="The download will be verified with GitHub's SHA-256 digest before installation." />}
     {dialogError && <text fg="#ff7777">{dialogError}</text>}
     {!installing && <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={dialog.installed ? [
       { name: "Restart now", description: "Close MeshTalk, stop the backend, and launch the updated installation", value: "restart" },
