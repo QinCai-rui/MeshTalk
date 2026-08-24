@@ -53,10 +53,11 @@ test("installRelease streams the archive and reports each install phase", async 
       digest: `sha256:${digest}`,
     }, installDir, (event) => progress.push(event))
     for (const name of files) expect(readFileSync(join(installDir, name), "utf-8")).toBe(`new ${name}`)
-    expect(progress.some((event) => event.step === "Downloading release" && event.receivedBytes === archiveBytes.length && event.totalBytes === archiveBytes.length)).toBe(true)
+    expect(progress.some((event) => event.current === 1 && event.total === 6 && event.receivedBytes === archiveBytes.length && event.totalBytes === archiveBytes.length)).toBe(true)
     expect(progress.map((event) => event.step)).toContain("Verifying SHA-256 digest")
     expect(progress.map((event) => event.step)).toContain("Inspecting release archive")
     expect(progress.map((event) => event.step)).toContain("Extracting release archive")
+    expect(progress.map((event) => event.step)).toContain("Validating extracted binaries")
     if (process.platform !== "win32") expect(progress.map((event) => event.step)).toContain("Replacing installed binaries")
   } finally {
     server.stop(true)

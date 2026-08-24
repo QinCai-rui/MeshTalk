@@ -19,8 +19,9 @@ export type Release = {
 }
 
 export type UpdateProgress = {
+  current: number
+  total: number
   step: string
-  method?: string
   receivedBytes?: number
   totalBytes?: number
 }
@@ -197,8 +198,8 @@ export async function installRelease(release: Release, installDir: string, onPro
   let staging: string | undefined
   try {
     const token = githubToken()
-    const method = token ? "GitHub release via Bun fetch with saved token" : "GitHub release via Bun fetch"
-    onProgress?.({ step: "Downloading release", method, receivedBytes: 0 })
+    const downloadStep = token ? "Downloading GitHub release with Bun fetch (saved token)" : "Downloading GitHub release with Bun fetch"
+    onProgress?.({ current: 1, total: 6, step: downloadStep, receivedBytes: 0 })
     const response = await fetch(release.downloadUrl, {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       signal: AbortSignal.timeout(120_000),
@@ -221,17 +222,17 @@ export async function installRelease(release: Release, installDir: string, onPro
         await archiveFile.write(value)
         hasher.update(value)
         receivedBytes += value.length
-        onProgress?.({ step: "Downloading release", method, receivedBytes, totalBytes })
+        onProgress?.({ current: 1, total: 6, step: downloadStep, receivedBytes, totalBytes })
       }
     } finally {
       await archiveFile.close()
     }
-    onProgress?.({ step: "Verifying SHA-256 digest", method })
+    onProgress?.({ current: 2, total: 6, step: "Verifying SHA-256 digest" })
     await Bun.sleep(16)
     const expectedDigest = release.digest?.replace(/^sha256:/, "").toLowerCase()
     if (!expectedDigest) throw new Error("GitHub did not provide a SHA-256 digest for this release")
     if (hasher.digest("hex") !== expectedDigest) throw new Error("SHA-256 verification failed")
-    onProgress?.({ step: "Inspecting release archive", method })
+    onProgress?.({ current: 3, total: 6, step: "Inspecting release archive" })
     const listing = Bun.spawn(["tar", "-tzf", archivePath], { stdout: "pipe", stderr: "ignore" })
     const listingOutput = new Response(listing.stdout).text()
     if (await listing.exited !== 0) throw new Error("Unable to inspect the release archive")
@@ -239,9 +240,11 @@ export async function installRelease(release: Release, installDir: string, onPro
     if (entries.some((entry) => entry.startsWith("/") || entry === ".." || entry.includes("../"))) throw new Error("Release archive contains an unsafe path")
     const extracted = join(temporary, "extracted")
     await mkdir(extracted)
-    onProgress?.({ step: "Extracting release archive", method })
+    onProgress?.({ current: 4, total: 6, step: "Extracting release archive" })
     const extract = Bun.spawn(["tar", "-xzf", archivePath, "-C", extracted], { stdout: "ignore", stderr: "ignore" })
     if (await extract.exited !== 0) throw new Error("Unable to extract the release archive")
+    onProgress?.({ current: 5, total: 6, step: "Validating extracted binaries" })
+    await Bun.sleep(16)
     for (const name of expectedFiles()) {
       const source = join(extracted, name)
       try {
@@ -251,7 +254,7 @@ export async function installRelease(release: Release, installDir: string, onPro
       }
     }
     if (process.platform === "win32") {
-      onProgress?.({ step: "Staging files for replacement after restart", method })
+      onProgress?.({ current: 6, total: 6, step: "Staging files for replacement after restart" })
       await Bun.sleep(16)
       await scheduleWindowsReplacement(extracted, installDir)
       return
@@ -259,7 +262,7 @@ export async function installRelease(release: Release, installDir: string, onPro
     // A running Unix executable cannot be copied over, but its pathname can be
     // atomically replaced. Stage on the installation filesystem so rename does
     // not fail when the system temporary directory is on another filesystem.
-    onProgress?.({ step: "Replacing installed binaries", method })
+    onProgress?.({ current: 6, total: 6, step: "Replacing installed binaries" })
     await Bun.sleep(16)
     staging = mkdtempSync(join(installDir, ".meshtalk-update-"))
     const installStaging = staging
