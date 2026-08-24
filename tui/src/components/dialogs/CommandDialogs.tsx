@@ -47,7 +47,7 @@ export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeig
   return <box style={{ flexDirection: "column", gap: 1, backgroundColor: "#111923", width: "100%", height: "100%" }}>
     <text><span fg="#b9a7ff"><b>MeshTalk</b></span> <span fg="#77718f">terminal messenger</span></text>
     <text><span fg="#8fa7ff">Version </span><span fg="#66ddaa"><b>{appReleaseVersion}</b></span></text>
-    <text><span fg="#e0a34a">Made with love</span> <span fg="#bbbbbb">by </span><span fg="#ff8fa3">Raymont</span><span fg="#bbbbbb"> and </span><span fg="#8fa7ff">friends.</span></text>
+    <text><span fg="#e0a34a">Made with love</span> <span fg="#bbbbbb">by </span><span fg="#ff8fa3">Raymont</span><span fg="#bbbbbb">, </span><span fg="#8fa7ff">Kaesar, </span>and contributors.</text>
     {dialog.checked && <MarqueeText width={dialogWidth - 4} fg={isReleaseBuild ? "#66dd88" : "#ff5555"} text={isReleaseBuild ? "You are up to date, or release metadata is unavailable." : "Updates are available only in compiled MeshTalk releases."} />}
     {dialogError && <text fg="#ff7777">{dialogError}</text>}
     <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={[
