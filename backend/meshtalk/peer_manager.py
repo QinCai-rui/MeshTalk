@@ -17,18 +17,15 @@ from .identity import Identity
 from .protocol import (
     HEADER_SIZE,
     CAP_PROFILE_SYNC,
-    CAP_GROUP_CHAT,
     HandshakePayload,
     Packet,
     PacketType,
     ProfilePayload,
     TCP_PORT,
-    PROTOCOL_VERSION,
-    MIN_SUPPORTED_PROTOCOL_VERSION,
     DEFAULT_CAPABILITIES,
-    IncompatibleProtocolError,
+    capability_for_packet,
     intersect_capabilities,
-    negotiate_protocol_version,
+    validate_capabilities,
 )
 from .udp_transport import Endpoint, UdpTransport
 
@@ -74,10 +71,10 @@ class PeerConnection:
         self.tui_active = False
         self.signing_public_key: bytes | None = None
         self.encryption_public_key: bytes | None = None
-        self.protocol_version: int = PROTOCOL_VERSION
-        self.remote_protocol_version: int = PROTOCOL_VERSION
-        self.remote_min_protocol_version: int = MIN_SUPPORTED_PROTOCOL_VERSION
-        self.capabilities: list[str] = list(DEFAULT_CAPABILITIES)
+        self.capabilities: list[str] = []
+        self.remote_capabilities: list[str] = []
+        self.peer_missing_capabilities: list[str] = []
+        self.local_missing_capabilities: list[str] = []
         self.last_seen = time.time()
 
     @property
@@ -86,47 +83,20 @@ class PeerConnection:
 
     def supports(self, capability: str) -> bool:
         """Whether the negotiated connection with this peer enables ``capability``."""
-        return self.version_mismatch is None and capability in self.capabilities
+        return capability in self.capabilities
 
     @property
-    def is_quarantined(self) -> bool:
-        """Whether application traffic is disabled for an incompatible peer."""
-        return self.state == PeerState.CONNECTED and self.version_mismatch is not None
-
-    @property
-    def version_mismatch(self) -> dict | None:
-        """Return incompatibility info for this peer, or ``None`` if compatible.
-
-        Legacy peers (``remote_protocol_version == -1``) have no version
-        information, so their compatibility cannot be determined and is treated
-        as unknown (not a mismatch).
-        """
-        if self.remote_protocol_version == -1:
-            return None
-        agreed = negotiate_protocol_version(
-            PROTOCOL_VERSION,
-            MIN_SUPPORTED_PROTOCOL_VERSION,
-            self.remote_protocol_version,
-            self.remote_min_protocol_version,
-        )
-        if agreed is not None:
-            return None
-        return {
-            "remote_version": self.remote_protocol_version,
-            "remote_min": self.remote_min_protocol_version,
-            "local_version": PROTOCOL_VERSION,
-            "local_min": MIN_SUPPORTED_PROTOCOL_VERSION,
-        }
+    def has_capability_gap(self) -> bool:
+        return bool(self.peer_missing_capabilities or self.local_missing_capabilities)
 
     def negotiated(self) -> dict:
         """Snapshot of the negotiated protocol state for IPC/debug consumers."""
         return {
-            "protocol_version": self.protocol_version,
-            "remote_protocol_version": self.remote_protocol_version,
-            "remote_min_protocol_version": self.remote_min_protocol_version,
-            "min_protocol_version": MIN_SUPPORTED_PROTOCOL_VERSION,
-            "version_mismatch": self.version_mismatch,
             "capabilities": list(self.capabilities),
+            "remote_capabilities": list(self.remote_capabilities),
+            "peer_missing_capabilities": list(self.peer_missing_capabilities),
+            "local_missing_capabilities": list(self.local_missing_capabilities),
+            "capability_gap": self.has_capability_gap,
         }
 
 
@@ -137,6 +107,7 @@ class PeerManager:
         db: Database,
         on_packet: Callable[[PeerConnection, Packet], Awaitable[None]],
         tcp_port: int = TCP_PORT,
+        capabilities: list[str] | None = None,
     ) -> None:
         self.identity, self.db, self.on_packet, self.tcp_port = identity, db, on_packet, tcp_port
         self.peers: dict[str, PeerConnection] = {}
@@ -146,22 +117,16 @@ class PeerManager:
         self._server: asyncio.Server | None = None
         self._running = False
         self.tui_active = False
+        self.capabilities = validate_capabilities(
+            list(DEFAULT_CAPABILITIES if capabilities is None else capabilities)
+        )
         self._receive_tasks: set[asyncio.Task] = set()
         self._incoming_handshakes = 0
         self.on_peer_changed: Callable[[str], Awaitable[None]] | None = None
-        self.on_version_mismatch: Callable[[str, int, int], Awaitable[None]] | None = None
         self.udp = UdpTransport(
-            identity, self._on_udp_connected, self._on_udp_packet, self._on_udp_disconnected
+            identity, self._on_udp_connected, self._on_udp_packet, self._on_udp_disconnected,
+            capabilities=self.capabilities,
         )
-        self.udp.on_version_mismatch = self._handle_udp_version_mismatch
-
-    def _handle_udp_version_mismatch(self, peer_id: str, remote_version: int, remote_min: int) -> None:
-        if self.on_version_mismatch is not None:
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self.on_version_mismatch(peer_id, remote_version, remote_min))
-            except RuntimeError:
-                pass
 
     async def start(self) -> None:
         self._running = True
@@ -313,9 +278,9 @@ class PeerManager:
         peer.encryption_public_key = encryption_public_key
         peer.signing_public_key = signing_public_key
         peer.capabilities = self.udp.get_capabilities(peer_id)
-        negotiated = self.udp.get_negotiated_protocol(peer_id)
-        if negotiated is not None:
-            peer.protocol_version, peer.remote_protocol_version, peer.remote_min_protocol_version = negotiated
+        gaps = self.udp.get_capability_gaps(peer_id)
+        if gaps is not None:
+            peer.remote_capabilities, peer.peer_missing_capabilities, peer.local_missing_capabilities = gaps
         self._udp_peers[peer_id] = peer
         self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = peer.endpoint
         active = self.peers.get(peer_id)
@@ -334,14 +299,14 @@ class PeerManager:
         if not peer or peer.state != PeerState.CONNECTED:
             return
         peer.last_seen = time.time()
+        if not self._accept_packet(peer, packet):
+            return
         if packet.type == PacketType.PING:
             await self._send_packet(peer, Packet(PacketType.PONG))
         elif packet.type == PacketType.GOODBYE:
             await self._on_udp_disconnected(peer_id)
         elif packet.type == PacketType.PROFILE:
             await self._apply_profile_update(peer, packet)
-        elif peer.is_quarantined:
-            logger.debug("Discarded application packet from incompatible UDP peer %s", peer_id)
         else:
             await self.on_packet(peer, packet)
 
@@ -364,6 +329,7 @@ class PeerManager:
             nonce=__import__("secrets").token_bytes(32),
             challenge=challenge,
             signature=b"",
+            capabilities=list(self.capabilities),
         )
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
         return payload
@@ -380,10 +346,7 @@ class PeerManager:
         await self.broadcast_profile_update()
 
     async def _send_profile_update(self, peer: PeerConnection) -> None:
-        # Incompatible peers may still exchange signed presence updates when
-        # both sides advertised profile sync; all other application traffic
-        # remains quarantined.
-        if CAP_PROFILE_SYNC not in peer.capabilities:
+        if not peer.supports(CAP_PROFILE_SYNC):
             return
         await self._send_packet(peer, Packet(PacketType.PROFILE, self._profile_payload().encode()))
 
@@ -448,49 +411,23 @@ class PeerManager:
             raise ValueError("Handshake peer ID does not match signing key")
         if expected_challenge is not None and payload.challenge != expected_challenge:
             raise ValueError("Handshake challenge mismatch")
-        agreed_version = negotiate_protocol_version(
-            PROTOCOL_VERSION,
-            MIN_SUPPORTED_PROTOCOL_VERSION,
-            payload.protocol_version,
-            payload.min_protocol_version,
-        )
-        if agreed_version is None:
-            logger.warning("Incompatible protocol version with peer %s (remote v%d, min v%d); features may not work properly", peer_id, payload.protocol_version, payload.min_protocol_version)
-            if self.on_version_mismatch is not None:
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(self.on_version_mismatch(peer_id, payload.protocol_version, payload.min_protocol_version))
-                except RuntimeError:
-                    pass
-            agreed_version = MIN_SUPPORTED_PROTOCOL_VERSION
         try:
             Ed25519PublicKey.from_public_bytes(payload.signing_public_key).verify(payload.signature, payload.signed_bytes())
-        except InvalidSignature:
-            if not payload.legacy:
-                raise ValueError("Invalid handshake signature")
-            try:
-                Ed25519PublicKey.from_public_bytes(payload.signing_public_key).verify(payload.signature, payload.signed_bytes(legacy=True))
-            except InvalidSignature as exc:
-                raise ValueError("Invalid handshake signature") from exc
+        except InvalidSignature as exc:
+            raise ValueError("Invalid handshake signature") from exc
         peer.peer_id = peer_id
         peer.display_name = Identity.normalize_display_name(payload.display_name)
         peer.signing_public_key = payload.signing_public_key
         peer.encryption_public_key = payload.encryption_public_key
-        peer.protocol_version = agreed_version
-        # Legacy peers (no version fields in handshake) are represented as -1
-        # internally but displayed as v0 in the TUI.
-        peer.remote_protocol_version = -1 if payload.legacy else payload.protocol_version
-        peer.remote_min_protocol_version = payload.min_protocol_version
-        # The connection only enables capabilities advertised by *both* peers.
-        peer.capabilities = intersect_capabilities(DEFAULT_CAPABILITIES, payload.capabilities)
-        if payload.protocol_version < 2:
-            peer.capabilities = [capability for capability in peer.capabilities if capability != CAP_GROUP_CHAT]
+        peer.remote_capabilities = sorted(payload.capabilities)
+        peer.capabilities = intersect_capabilities(self.capabilities, payload.capabilities)
+        peer.peer_missing_capabilities = sorted(set(self.capabilities) - set(payload.capabilities))
+        peer.local_missing_capabilities = sorted(set(payload.capabilities) - set(self.capabilities))
         logger.debug(
-            "Authenticated key exchange with %s: signing=%s encryption=%s version=v%d caps=%s",
+            "Authenticated key exchange with %s: signing=%s encryption=%s caps=%s",
             peer.peer_id,
             _key_fingerprint(peer.signing_public_key),
             _key_fingerprint(peer.encryption_public_key),
-            peer.protocol_version,
             ",".join(peer.capabilities),
         )
 
@@ -506,14 +443,14 @@ class PeerManager:
                 if packet is None:
                     break
                 peer.last_seen = time.time()
+                if not self._accept_packet(peer, packet):
+                    continue
                 if packet.type == PacketType.PING:
                     await self._send_packet(peer, Packet(PacketType.PONG))
                 elif packet.type == PacketType.GOODBYE:
                     break
                 elif packet.type == PacketType.PROFILE:
                     await self._apply_profile_update(peer, packet)
-                elif peer.is_quarantined:
-                    logger.debug("Discarded application packet from incompatible TCP peer %s", peer.peer_id)
                 else:
                     await self.on_packet(peer, packet)
         finally:
@@ -528,6 +465,18 @@ class PeerManager:
                 await self._notify_peer_changed(peer.peer_id)
             if peer.writer:
                 peer.writer.close()
+
+    def _accept_packet(self, peer: PeerConnection, packet: Packet) -> bool:
+        required = capability_for_packet(packet.type)
+        if required is None or peer.supports(required):
+            return True
+        logger.warning(
+            "Ignored %s from %s because capability %s was not negotiated",
+            packet.type.name,
+            peer.peer_id,
+            required,
+        )
+        return False
 
     async def _apply_profile_update(self, peer: PeerConnection, packet: Packet) -> None:
         if peer.signing_public_key is None or peer.encryption_public_key is None:
@@ -553,8 +502,6 @@ class PeerManager:
         await self._notify_peer_changed(peer.peer_id)
 
     async def send_packet(self, peer: PeerConnection, packet: Packet) -> None:
-        if peer.is_quarantined and packet.type not in (PacketType.PING, PacketType.PONG, PacketType.GOODBYE, PacketType.PROFILE):
-            raise ValueError("Peer protocol is incompatible; most features are disabled")
         try:
             await self._send_packet(peer, packet)
         except ConnectionError:
@@ -563,6 +510,9 @@ class PeerManager:
             raise
 
     async def _send_packet(self, peer: PeerConnection, packet: Packet) -> None:
+        required = capability_for_packet(packet.type)
+        if required is not None and not peer.supports(required):
+            raise ValueError(f"Peer does not support capability: {required}")
         if peer.transport == "remote_udp":
             await self.udp.send_packet(peer.peer_id, packet)
             return

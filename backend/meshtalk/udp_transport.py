@@ -28,13 +28,10 @@ from .identity import Identity
 from .protocol import (
     HEADER_SIZE,
     MAX_PACKET_SIZE,
-    PROTOCOL_VERSION,
-    MIN_SUPPORTED_PROTOCOL_VERSION,
     DEFAULT_CAPABILITIES,
-    LEGACY_CAPABILITIES,
     Packet,
     intersect_capabilities,
-    negotiate_protocol_version,
+    validate_capabilities,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,10 +140,10 @@ class Session:
     local_hello: bytes
     remote_nonce: bytes
     remote_session_public_key: bytes
-    protocol_version: int
-    remote_protocol_version: int
-    remote_min_protocol_version: int
     capabilities: list[str] = field(default_factory=list)
+    remote_capabilities: list[str] = field(default_factory=list)
+    peer_missing_capabilities: list[str] = field(default_factory=list)
+    local_missing_capabilities: list[str] = field(default_factory=list)
     confirmed: bool = False
     connected_notified: bool = False
     created_at: float = field(default_factory=time.monotonic)
@@ -162,12 +159,15 @@ class UdpTransport:
         on_connected: ConnectedCallback,
         on_packet: PacketCallback,
         on_disconnected: DisconnectedCallback,
+        capabilities: list[str] | None = None,
     ) -> None:
         self.identity = identity
         self.on_connected = on_connected
         self.on_packet = on_packet
         self.on_disconnected = on_disconnected
-        self.on_version_mismatch: Callable[[str, int, int], None] | None = None
+        self.capabilities = validate_capabilities(
+            list(DEFAULT_CAPABILITIES if capabilities is None else capabilities)
+        )
         self._transport: asyncio.DatagramTransport | None = None
         self._attempts: dict[str, Attempt] = {}
         self._expected_endpoints: dict[str, tuple[Endpoint, float]] = {}
@@ -319,9 +319,7 @@ class UdpTransport:
 
     def _make_hello(self, attempt: Attempt) -> bytes:
         value = {
-            "version": PROTOCOL_VERSION,
-            "min_version": MIN_SUPPORTED_PROTOCOL_VERSION,
-            "capabilities": DEFAULT_CAPABILITIES,
+            "capabilities": self.capabilities,
             "peer_id": self.identity.peer_id,
             "display_name": self.identity.display_name,
             "signing_public_key": self.identity.signing_public_key_bytes().hex(),
@@ -361,22 +359,7 @@ class UdpTransport:
         peer_id = hashlib.sha256(signing_key).hexdigest()
         if value.get("peer_id") != peer_id:
             raise ValueError("UDP handshake identity mismatch")
-        remote_version = value.get("version", 0)
-        remote_min = value.get("min_version", 0)
-        remote_capabilities = value.get("capabilities", LEGACY_CAPABILITIES)
-        agreed_version = negotiate_protocol_version(
-            PROTOCOL_VERSION,
-            MIN_SUPPORTED_PROTOCOL_VERSION,
-            remote_version,
-            remote_min,
-        )
-        if agreed_version is None:
-            logger.warning("Incompatible UDP protocol version with peer %s (remote v%d, min v%d); features may not work properly", peer_id, remote_version, remote_min)
-            if self.on_version_mismatch is not None:
-                self.on_version_mismatch(peer_id, remote_version, remote_min)
-            # Retain the encrypted UDP session in degraded mode, matching the
-            # LAN TCP path. Higher layers surface the incompatibility warning.
-            agreed_version = MIN_SUPPORTED_PROTOCOL_VERSION
+        remote_capabilities = validate_capabilities(value.get("capabilities"))
         if any(len(item) != 32 for item in (signing_key, encryption_key, session_key, nonce)) or len(signature) != 64:
             raise ValueError("Invalid UDP handshake key length")
         expected = self._expected_endpoints.get(peer_id)
@@ -426,8 +409,11 @@ class UdpTransport:
         session = Session(
             peer_id, addr, session_id, transmit[0], receive[0], transmit[1], receive[1],
             Identity.normalize_display_name(value["display_name"]), encryption_key, signing_key,
-            attempt.hello, nonce, session_key, agreed_version, remote_version, remote_min,
-            intersect_capabilities(DEFAULT_CAPABILITIES, remote_capabilities),
+            attempt.hello, nonce, session_key,
+            intersect_capabilities(self.capabilities, remote_capabilities),
+            sorted(remote_capabilities),
+            sorted(set(self.capabilities) - set(remote_capabilities)),
+            sorted(set(remote_capabilities) - set(self.capabilities)),
         )
         self._sessions[peer_id] = session
         self._sessions_by_id[session_id] = session
@@ -543,11 +529,15 @@ class UdpTransport:
         session = self._sessions.get(peer_id)
         return list(session.capabilities) if session else []
 
-    def get_negotiated_protocol(self, peer_id: str) -> tuple[int, int, int] | None:
+    def get_capability_gaps(self, peer_id: str) -> tuple[list[str], list[str], list[str]] | None:
         session = self._sessions.get(peer_id)
         if session is None:
             return None
-        return session.protocol_version, session.remote_protocol_version, session.remote_min_protocol_version
+        return (
+            list(session.remote_capabilities),
+            list(session.peer_missing_capabilities),
+            list(session.local_missing_capabilities),
+        )
 
     def _session_for(
         self, session_id: bytes, addr: Endpoint, require_confirmation: bool = False

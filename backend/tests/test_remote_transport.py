@@ -11,7 +11,7 @@ from meshtalk.identity import Identity
 from meshtalk.friends import FriendManager
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
-from meshtalk.protocol import MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION
+from meshtalk.protocol import CAP_TEXT_CHAT
 from meshtalk.rendezvous import RendezvousService, decrypt_endpoint_card, encrypt_endpoint_card
 from meshtalk.settings import Room, Settings
 from meshtalk.udp_transport import Attempt, HELLO, MAGIC, READY, UdpTransport
@@ -207,37 +207,28 @@ class CandidateValidationTest(unittest.IsolatedAsyncioTestCase):
 
 
 class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
-    async def test_incompatible_version_still_creates_degraded_session(self):
+    async def test_capability_gap_keeps_shared_udp_capabilities_enabled(self):
         local = Identity.generate("Local")
         remote = Identity.generate("Remote")
-        mismatches = []
 
         async def ignore(*args):
             pass
 
-        transport = UdpTransport(local, ignore, ignore, ignore)
-        transport.on_version_mismatch = lambda peer_id, version, minimum: mismatches.append(
-            (peer_id, version, minimum)
-        )
+        transport = UdpTransport(local, ignore, ignore, ignore, capabilities=[CAP_TEXT_CHAT])
         endpoint = ("127.0.0.1", 45454)
         transport._sendto = lambda *_: None
         transport.expect_peer(remote.peer_id, endpoint)
-        remote_transport = UdpTransport(remote, ignore, ignore, ignore)
+        remote_transport = UdpTransport(
+            remote, ignore, ignore, ignore,
+            capabilities=[CAP_TEXT_CHAT, "CAP_ADASDASD_NEW_TEST"],
+        )
         hello = remote_transport._make_hello(Attempt(local.peer_id, endpoint))
-        value = json.loads(hello[5:])
-        value.pop("signature")
-        value["version"] = PROTOCOL_VERSION - 1
-        value["min_version"] = PROTOCOL_VERSION - 1
-        value["signature"] = remote.signing_private_key.sign(
-            json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
-        ).hex()
+        transport.datagram_received(hello, endpoint)
 
-        transport.datagram_received(MAGIC + bytes([HELLO]) + json.dumps(value).encode(), endpoint)
-
-        self.assertEqual(mismatches, [(remote.peer_id, PROTOCOL_VERSION - 1, PROTOCOL_VERSION - 1)])
+        self.assertEqual(transport.get_capabilities(remote.peer_id), [CAP_TEXT_CHAT])
         self.assertEqual(
-            transport.get_negotiated_protocol(remote.peer_id),
-            (MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION - 1, PROTOCOL_VERSION - 1),
+            transport.get_capability_gaps(remote.peer_id),
+            (["CAP_ADASDASD_NEW_TEST", CAP_TEXT_CHAT], [], ["CAP_ADASDASD_NEW_TEST"]),
         )
         await transport.stop()
 

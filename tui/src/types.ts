@@ -1,10 +1,3 @@
-export type VersionMismatch = {
-  remote_version: number
-  remote_min: number
-  local_version: number
-  local_min: number
-}
-
 export type Peer = {
   peer_id: string
   display_name: string
@@ -18,11 +11,12 @@ export type Peer = {
   active_transport?: "lan_tcp" | "remote_udp"
   active_endpoint?: string
   endpoints: { transport: "lan_tcp" | "remote_udp"; endpoint: string; active: boolean }[]
-  protocol_version?: number
-  remote_protocol_version?: number
-  version_mismatch?: VersionMismatch | null
-  delivery_warnings?: ("offline" | "not_friend" | "rendezvous_out_of_sync" | "incompatible")[]
+  delivery_warnings?: ("offline" | "not_friend" | "rendezvous_out_of_sync" | "limited")[]
   capabilities?: string[]
+  remote_capabilities?: string[]
+  peer_missing_capabilities?: string[]
+  local_missing_capabilities?: string[]
+  capability_gap?: boolean
 }
 
 export type GroupDelivery = { recipient_id: string; display_name: string; status: string; updated_at: number }
@@ -32,7 +26,7 @@ export type Message = {
   queued?: number; failed?: number; received_at?: number
 }
 export type Group = { group_id: string; name: string; member_count: number; unread_count: number }
-export type GroupMember = { peer_id?: string; member_id?: string; display_name: string; is_online?: boolean; show_in_sidebar?: boolean; is_incompatible?: boolean }
+export type GroupMember = { peer_id?: string; member_id?: string; display_name: string; is_online?: boolean; show_in_sidebar?: boolean; is_limited?: boolean }
 export type Conversation = { kind: "peer" | "group"; id: string }
 export type TypingPeer = { displayName: string; createdAt: number; expiresAt: number; isTyping: boolean }
 export type FriendRequest = { request_id: string; sender_id: string; sender_name: string; recipient_id?: string; recipient_name?: string; note?: string | null; created_at: number; direction: "incoming" | "outgoing"; status?: string }

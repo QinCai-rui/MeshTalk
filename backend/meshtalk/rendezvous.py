@@ -22,11 +22,6 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from websockets.asyncio.client import connect
 
 from .identity import Identity
-from .protocol import (
-    PROTOCOL_VERSION,
-    MIN_SUPPORTED_PROTOCOL_VERSION,
-    negotiate_protocol_version,
-)
 from .settings import Room, Settings
 from .udp_transport import Endpoint, UdpTransport
 
@@ -67,8 +62,6 @@ def _room_key(room: Room) -> bytes:
 
 def encrypt_endpoint_card(identity: Identity, room: Room, endpoint: Endpoint | None) -> str:
     value = {
-        "version": PROTOCOL_VERSION,
-        "min_version": MIN_SUPPORTED_PROTOCOL_VERSION,
         "kind": "endpoint",
         "peer_id": identity.peer_id,
         "signing_public_key": identity.signing_public_key_bytes().hex(),
@@ -94,12 +87,8 @@ def decrypt_endpoint_card(room: Room, payload: str, now: float | None = None) ->
     signing_key = bytes.fromhex(value["signing_public_key"])
     peer_id = hashlib.sha256(signing_key).hexdigest()
     current_time = time.time() if now is None else now
-    remote_version = value.get("version", 0)
-    remote_min = value.get("min_version", 0)
-    if value.get("kind") != "endpoint" or negotiate_protocol_version(
-        PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, remote_version, remote_min
-    ) is None:
-        raise ValueError("Unsupported endpoint card protocol version")
+    if value.get("kind") != "endpoint":
+        raise ValueError("Invalid endpoint card kind")
     if value.get("peer_id") != peer_id or len(signing_key) != 32 or len(signature) != 64:
         raise ValueError("Endpoint card identity mismatch")
     created_at = value.get("created_at")

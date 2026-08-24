@@ -1,4 +1,4 @@
-import type { Conversation, Group, GroupMember, Peer, VersionMismatch } from "../types"
+import type { Conversation, Group, GroupMember, Peer } from "../types"
 import { friendMarkers, peerPresence, transportName } from "../utils"
 
 type SidebarProps = {
@@ -15,7 +15,6 @@ type SidebarProps = {
   selectedGroupId: string | undefined
   selectedPeerId: string | undefined
   sidebarWidth: number
-  versionMismatches: Record<string, VersionMismatch>
   typingConversationKeys: Set<string>
   setEditingName: (value: boolean) => void
   setNameDraft: (value: string) => void
@@ -24,7 +23,7 @@ type SidebarProps = {
   saveDisplayName: () => void
 }
 
-export function Sidebar({ activeCount, compact, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, versionMismatches, typingConversationKeys, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
+export function Sidebar({ activeCount, compact, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
   return <box title={`You: ${identity?.display_name ?? "..."}`} style={{ border: true, width: sidebarWidth, flexShrink: 0, flexDirection: "column", padding: 1, gap: 1 }}>
     <box onMouseDown={() => setEditingName(true)}>
       {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <><text fg="#888888">Click to rename</text><text fg="#888888">{identity?.peer_id.slice(0, 12)}</text></>}
@@ -34,10 +33,10 @@ export function Sidebar({ activeCount, compact, dialogOpen, editingName, groups,
         {!peers.length ? <text fg="#888888">No peers discovered</text> : null}
         {peers.map((peer) => {
           const presence = peerPresence(peer)
-          const mismatch = peer.version_mismatch ?? versionMismatches[peer.peer_id]
+          const limited = Boolean(peer.capability_gap)
           const muted = peer.peer_id in mutedPeers
           return <box key={peer.peer_id} onMouseDown={() => { setSelection({ kind: "peer", id: peer.peer_id }); setScrollFocused(false); setEditingName(false) }} style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}>
-            <box style={{ width: "100%", flexDirection: "row" }}><text truncate style={{ flexGrow: 1 }} fg={mismatch ? "#66dd88" : presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>{peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {mismatch ? <span fg="#ff5555">INCOMPATIBLE</span> : presence}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}</text>{typingConversationKeys.has(`peer:${peer.peer_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
+            <box style={{ width: "100%", flexDirection: "row" }}><text truncate style={{ flexGrow: 1 }} fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>{peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {presence}{limited ? <span fg="#ff9f43"> LIMITED</span> : null}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}</text>{typingConversationKeys.has(`peer:${peer.peer_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
             {peer.endpoints.length ? peer.endpoints.map((endpoint) => <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>{endpoint.active ? "* " : "  "}{transportName(endpoint.transport)} {endpoint.endpoint}</text>) : <text fg="#718096">No known endpoint</text>}
           </box>
         })}
