@@ -67,6 +67,20 @@ can run MeshTalk by building from source instead.
 ./meshtalk         # macOS or Linux: launches backend + TUI
 ```
 
+To update the installation that launched MeshTalk, run:
+
+```bash
+./meshtalk update --install
+```
+
+To update a different existing MeshTalk installation, use its directory:
+
+```bash
+./meshtalk update --install --dir /path/to/MeshTalk
+```
+
+The target directory must contain the complete MeshTalk release binaries.
+
 On Windows, run `meshtalk.exe` from the extracted archive. Keep these files
 together in the extracted directory: `meshtalk`, `meshtalk-backend`,
 `meshtalk-cli`, and `meshtalk-tui` (all end in `.exe` on Windows). Only the

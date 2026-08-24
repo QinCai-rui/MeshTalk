@@ -32,19 +32,21 @@ function platformAssetName(): string | null {
   return `meshtalk-${releasePlatform}-${assetArch}${suffix}.tar.gz`
 }
 
-function parseVersion(value: string): number[] | null {
-  const match = value.replace(/^v/, "").match(/^(\d+)\.(\d+)\.(\d+)$/)
-  return match ? match.slice(1).map(Number) : null
+type Version = { parts: number[]; revision: number }
+
+function parseVersion(value: string): Version | null {
+  const match = value.replace(/^v/, "").match(/^(\d+)\.(\d+)\.(\d+)(?:-(\d+))?$/)
+  return match ? { parts: match.slice(1, 4).map(Number), revision: Number(match[4] ?? 0) } : null
 }
 
 export function isNewerVersion(latest: string, current: string): boolean {
   const next = parseVersion(latest)
   const installed = parseVersion(current)
   if (!next || !installed) return false
-  for (let index = 0; index < next.length; index++) {
-    if (next[index] !== installed[index]) return next[index] > installed[index]
+  for (let index = 0; index < next.parts.length; index++) {
+    if (next.parts[index] !== installed.parts[index]) return next.parts[index] > installed.parts[index]
   }
-  return false
+  return next.revision > installed.revision
 }
 
 function githubToken(): string | undefined {
@@ -186,5 +188,16 @@ export async function installRelease(release: Release, installDir: string): Prom
 export function releaseInstallDir(): string | null {
   const executable = process.execPath
   const directory = dirname(executable)
-  return basename(executable).startsWith("meshtalk") && existsSync(join(directory, `meshtalk-tui${process.platform === "win32" ? ".exe" : ""}`)) ? directory : null
+  return basename(executable).startsWith("meshtalk") && isReleaseInstallDir(directory) ? directory : null
+}
+
+export function isReleaseInstallDir(directory: string): boolean {
+  try {
+    return statSync(directory).isDirectory() && expectedFiles().every((name) => {
+      const path = join(directory, name)
+      return existsSync(path) && statSync(path).isFile()
+    })
+  } catch {
+    return false
+  }
 }

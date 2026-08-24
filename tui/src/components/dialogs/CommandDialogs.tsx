@@ -47,7 +47,7 @@ export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeig
   return <box style={{ flexDirection: "column", gap: 1, backgroundColor: "#111923", width: "100%", height: "100%" }}>
     <text><span fg="#b9a7ff"><b>MeshTalk</b></span> <span fg="#77718f">terminal messenger</span></text>
     <text><span fg="#8fa7ff">Version </span><span fg="#66ddaa"><b>{appReleaseVersion}</b></span></text>
-    <text><span fg="#e0a34a">Made with love</span> <span fg="#bbbbbb">by </span><span fg="#ff8fa3">Raymont</span><span fg="#bbbbbb"> and </span><span fg="#8fa7ff">friends.</span></text>
+    <text><span fg="#e0a34a">Made with love</span> <span fg="#bbbbbb">by </span><span fg="#ff8fa3">Raymont</span><span fg="#bbbbbb">, </span><span fg="#8fa7ff">Kaesar, </span>and contributors.</text>
     {dialog.checked && <MarqueeText width={dialogWidth - 4} fg={isReleaseBuild ? "#66dd88" : "#ff5555"} text={isReleaseBuild ? "You are up to date, or release metadata is unavailable." : "Updates are available only in compiled MeshTalk releases."} />}
     {dialogError && <text fg="#ff7777">{dialogError}</text>}
     <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={[
@@ -67,21 +67,36 @@ type UpdateDialogProps = {
   dialogHeight: number
   dialogWidth: number
   closeDialog: () => void
-  installUpdate: () => void
+  installing: boolean
+  installUpdate: (release: Extract<Dialog, { kind: "update" }>["release"], destination?: string) => void
+  chooseUpdateDestination: (release: Extract<Dialog, { kind: "update" }>["release"]) => void
 }
 
-export function UpdateDialog({ appReleaseVersion, dialog, dialogError, dialogHeight, dialogWidth, closeDialog, installUpdate }: UpdateDialogProps) {
+export function UpdateDialog({ appReleaseVersion, dialog, dialogError, dialogHeight, dialogWidth, closeDialog, installing, installUpdate, chooseUpdateDestination }: UpdateDialogProps) {
   return <>
-    <text><b>MeshTalk {dialog.release.version} is available.</b></text>
-    <text fg="#bbbbbb">Installed version: {appReleaseVersion}</text>
-    <MarqueeText width={dialogWidth - 4} fg="#bbbbbb" text="The download will be verified with GitHub's SHA-256 digest before installation." />
+    <text><b>{dialog.installed ? `MeshTalk ${dialog.release.version} is ready.` : `MeshTalk ${dialog.release.version} is available.`}</b></text>
+    {!dialog.installed && <text fg="#bbbbbb">Installed version: {appReleaseVersion}</text>}
+    {installing ? <box style={{ flexDirection: "row", alignItems: "center", gap: 1 }}><spinner name="material" color="#e0a34a" /><text fg="#e0a34a">Downloading, verifying, and installing update...</text></box> : dialog.installed ? <MarqueeText width={dialogWidth - 4} fg="#66dd88" text="Update installed. MeshTalk remains open; restart it when you are ready to use the new version." /> : <MarqueeText width={dialogWidth - 4} fg="#bbbbbb" text="The download will be verified with GitHub's SHA-256 digest before installation." />}
     {dialogError && <text fg="#ff7777">{dialogError}</text>}
-    <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={[
-      { name: "Install now", description: "Close MeshTalk and install the verified release", value: "install" },
+    {!installing && <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={dialog.installed ? [
+      { name: "Close", description: "Continue using the current MeshTalk session", value: "close" },
+    ] : [
+      { name: "Install now", description: "Download and install while MeshTalk remains open", value: "install" },
+      { name: "Install to another folder", description: "Choose another existing MeshTalk installation", value: "destination" },
       { name: "Ignore", description: "Ask again the next time MeshTalk starts", value: "ignore" },
     ]} onSelect={(_, option) => {
-      if (option?.value === "install") installUpdate()
-      else if (option?.value === "ignore") closeDialog()
-    }} wrapSelection showDescription />
+      if (option?.value === "install") installUpdate(dialog.release)
+      else if (option?.value === "destination") chooseUpdateDestination(dialog.release)
+      else if (option?.value === "ignore" || option?.value === "close") closeDialog()
+    }} wrapSelection showDescription />}
   </>
+}
+
+export function UpdateDestinationDialog({ dialog, dialogError, dialogWidth, dialogDraft, setDialogDraft, installUpdate }: { dialog: Extract<Dialog, { kind: "update-directory" }>; dialogError: string; dialogWidth: number; dialogDraft: string; setDialogDraft: (value: string) => void; installUpdate: (release: Extract<Dialog, { kind: "update" }>["release"], destination?: string) => void }) {
+  return <box style={{ flexDirection: "column", gap: 1 }}>
+    <text>Install MeshTalk {dialog.release.version} into an existing installation folder.</text>
+    <MarqueeText width={dialogWidth - 4} fg="#888888" text="The folder must contain meshtalk, meshtalk-backend, meshtalk-cli, and meshtalk-tui." />
+    {dialogError && <text fg="#ff7777">{dialogError}</text>}
+    <input focused value={dialogDraft} placeholder="/path/to/MeshTalk" onInput={setDialogDraft} onSubmit={(value) => installUpdate(dialog.release, typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
+  </box>
 }
