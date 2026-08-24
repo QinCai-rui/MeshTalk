@@ -1,9 +1,9 @@
 import type { IPCClient } from "../../common/ipc-client"
 import type { Release } from "../../common/updater"
-import { checkForUpdate } from "../../common/updater"
+import { checkForUpdate, installRelease, isReleaseInstallDir, releaseInstallDir } from "../../common/updater"
 import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, Message, Peer, RoomStatus, VersionMismatch } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
-import { dirname, join, resolve } from "path"
+import { resolve } from "path"
 import { existsSync, statSync } from "fs"
 import { groupFromResponse } from "./utils"
 import { runCommand as navigationRunCommand } from "./navigation"
@@ -202,16 +202,21 @@ export function useChatActions(deps: ChatActionsDeps) {
     })
   }
 
-  async function installUpdate(release: Release) {
+  async function installUpdate(release: Release, destination?: string) {
     const action = beginDialogAction()
     if (action === null) return
-    const suffix = process.platform === "win32" ? ".exe" : ""
-    const launcher = join(dirname(process.execPath), `meshtalk${suffix}`)
     try {
-      Bun.spawn([launcher, "update", "--install"], { stdin: "inherit", stdout: "inherit", stderr: "inherit" })
-      renderer.destroy()
+      const installDir = destination?.trim() ? resolve(destination.trim()) : releaseInstallDir()
+      if (!installDir) throw new Error("Unable to locate the standalone MeshTalk installation.")
+      if (!isReleaseInstallDir(installDir)) throw new Error("Update directory must contain the current MeshTalk release binaries.")
+      await installRelease(release, installDir)
+      if (dialogActionRef.current !== action) return
+      setDialog({ kind: "update", release, installed: true })
+      showStatus(`MeshTalk ${release.version} is ready. Restart to use the update.`)
     } catch (error) {
       failDialogAction(action, error)
+    } finally {
+      finishDialogAction(action)
     }
   }
 

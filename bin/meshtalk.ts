@@ -4,10 +4,10 @@
 import { spawn } from "bun";
 import { spawn as spawnProcess, type ChildProcess } from "node:child_process";
 import { createConnection, type Socket } from "net";
-import { basename, dirname, join } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { checkForUpdate, installRelease, releaseInstallDir, saveGithubToken } from "../common/updater";
+import { checkForUpdate, installRelease, isReleaseInstallDir, releaseInstallDir, saveGithubToken } from "../common/updater";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -75,21 +75,28 @@ async function runUpdate(args: string[]): Promise<void> {
     console.log("Update checks are available only in compiled MeshTalk releases.");
     return;
   }
-  if (args.length > 1 || (args[0] && args[0] !== "--install")) throw new Error(`Usage: ${PROGRAM} update [--install]`);
+  let install = false;
+  let installDir: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === "--install" && !install) install = true;
+    else if (args[index] === "--dir" && !installDir && args[index + 1]) installDir = resolve(args[++index]);
+    else throw new Error(`Usage: ${PROGRAM} update [--install] [--dir <directory>]`);
+  }
   const release = await checkForUpdate(APP_RELEASE_VERSION);
   if (!release) {
     console.log(`MeshTalk ${APP_RELEASE_VERSION} is up to date, or release metadata is unavailable.`);
     return;
   }
   console.log(`MeshTalk ${release.version} is available (installed: ${APP_RELEASE_VERSION}).`);
-  if (args[0] !== "--install" && !await readConfirmation()) {
+  if (!install && !await readConfirmation()) {
     console.log("Update skipped.");
     return;
   }
-  const installDir = releaseInstallDir();
-  if (!installDir) throw new Error("Unable to locate the standalone MeshTalk installation.");
+  const destination = installDir ?? releaseInstallDir();
+  if (!destination) throw new Error("Unable to locate the standalone MeshTalk installation. Use --dir <directory> to select one.");
+  if (!isReleaseInstallDir(destination)) throw new Error("Update directory must contain the current MeshTalk release binaries.");
   console.log(`Downloading and installing MeshTalk ${release.version}...`);
-  await installRelease(release, installDir);
+  await installRelease(release, destination);
   console.log("Update installed. Restart MeshTalk to use the new version.");
 }
 
