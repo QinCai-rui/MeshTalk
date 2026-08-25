@@ -372,6 +372,11 @@ The TUI and CLI identify the active route as `TURN relay`. If allocation or
 credential issuance fails, LAN/direct UDP behavior continues and diagnostics log
 the relay failure.
 
+For relay verification, set `MESHTALK_FORCE_TURN=true` on both backend clients
+before starting them. This disables direct remote UDP attempts and recovery
+probes; a connection then requires a published TURN relay candidate. It does not
+disable LAN TCP, so test clients must be on separate LANs.
+
 ### Security And Privacy
 
 - coturn can observe allocation identity, source addresses, destination relay

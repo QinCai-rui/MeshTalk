@@ -164,6 +164,7 @@ class UdpTransport:
         on_packet: PacketCallback,
         on_disconnected: DisconnectedCallback,
         capabilities: list[str] | None = None,
+        force_turn: bool | None = None,
     ) -> None:
         self.identity = identity
         self.on_connected = on_connected
@@ -172,6 +173,7 @@ class UdpTransport:
         self.capabilities = validate_capabilities(
             list(DEFAULT_CAPABILITIES if capabilities is None else capabilities)
         )
+        self.force_turn = os.environ.get("MESHTALK_FORCE_TURN") == "true" if force_turn is None else force_turn
         self._transport: asyncio.DatagramTransport | None = None
         self._attempts: dict[str, Attempt] = {}
         self._expected_endpoints: dict[str, tuple[Endpoint, float]] = {}
@@ -185,6 +187,8 @@ class UdpTransport:
         self._pending: dict[tuple[bytes, int], asyncio.Event] = {}
         self._tasks: set[asyncio.Task] = set()
         self._maintenance_task: asyncio.Task | None = None
+        if self.force_turn:
+            logger.info("Direct remote UDP is disabled; TURN relay is required")
 
     async def start(self, port: int = 0) -> None:
         loop = asyncio.get_running_loop()
@@ -250,7 +254,7 @@ class UdpTransport:
     def expect_relay_peer(self, peer_id: str, endpoint: Endpoint) -> None:
         self._validate_peer_endpoint(peer_id, endpoint)
         self._relay_candidates[peer_id] = endpoint
-        if peer_id not in self._direct_candidates:
+        if self.force_turn or peer_id not in self._direct_candidates:
             self._start_attempt(peer_id, endpoint, via_relay=True)
 
     def expect_peer(self, peer_id: str, endpoint: Endpoint) -> None:
@@ -272,6 +276,8 @@ class UdpTransport:
         ):
             endpoint = verified[0]
         self._expected_endpoints[peer_id] = (endpoint, now)
+        if self.force_turn:
+            return
         if session and session.confirmed and session.endpoint == endpoint:
             return
         existing = self._attempts.get(peer_id)
@@ -344,6 +350,8 @@ class UdpTransport:
                 waiter.set_result(data)
             return
         if len(data) > MAX_DATAGRAM_SIZE or not data.startswith(MAGIC) or len(data) < 5:
+            return
+        if self.force_turn and not via_relay:
             return
         try:
             message_type = data[4]
@@ -614,7 +622,7 @@ class UdpTransport:
                     continue
                 if session.confirmed:
                     self._send_authenticated(session, PING, secrets.randbits(64))
-                    if session.via_relay and now - self._last_direct_probe.get(session.peer_id, 0) >= DIRECT_PROBE_INTERVAL:
+                    if session.via_relay and not self.force_turn and now - self._last_direct_probe.get(session.peer_id, 0) >= DIRECT_PROBE_INTERVAL:
                         direct = self._direct_candidates.get(session.peer_id)
                         if direct:
                             self._last_direct_probe[session.peer_id] = now
