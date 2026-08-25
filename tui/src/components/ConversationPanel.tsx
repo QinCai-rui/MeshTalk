@@ -18,7 +18,6 @@ type ConversationPanelProps = {
   composerRef: RefObject<TextareaRenderable | null>
   groupMembers: Record<string, GroupMember[]>
   identity: { peer_id: string; display_name: string } | undefined
-  imageRenderGeneration: number
   limitedGroupMembers: GroupMember[]
   capabilityGapMessage: string
   isSending: boolean
@@ -44,7 +43,7 @@ type ConversationPanelProps = {
 }
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageRenderGeneration, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectionKey, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, onComposerChange, send } = props
+  const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectionKey, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, onComposerChange, send } = props
   const typingText = typingNames.length === 1 ? `${typingNames[0]} is typing` : typingNames.length === 2 ? `${typingNames[0]} and ${typingNames[1]} are typing...` : typingNames.length > 2 ? "Multiple people are typing..." : undefined
   const composerTitle = selectedGroup || selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: queued until peer is online"
   const byteCount = `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`
@@ -56,7 +55,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
         {selectedHasCapabilityGap && !(selected.delivery_warnings ?? []).includes("limited") ? <text wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"}><b>{capabilityGapMessage}</b></text> : null}
       </box> : null}
       {selectedGroup && limitedGroupMembers.length > 0 ? <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}><MarqueeText width={width - 6} fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"} text={`Some group peers have capability differences: ${limitedGroupMembers.map((member) => member.display_name).join(", ")}. Shared features remain available.`} /></box> : null}
-      <scrollbox ref={scrollboxRef} focused={scrollFocused && !dialogOpen} onMouseDown={() => setScrollFocused(true)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, padding: 1 }} contentOptions={{ flexDirection: "column" }} stickyScroll stickyStart="bottom" viewportCulling={false} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" }, arrowOptions: { foregroundColor: "#6ea8fe" } }}>
+      <scrollbox ref={scrollboxRef} focused={scrollFocused && !dialogOpen} onMouseDown={() => setScrollFocused(true)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, padding: 1 }} contentOptions={{ flexDirection: "column" }} stickyScroll stickyStart="bottom" verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" }, arrowOptions: { foregroundColor: "#6ea8fe" } }}>
         {!selected && !selectedGroup ? <text fg="#888888">Select a peer or group.</text> : null}
         {selected && !conversationItems.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
         {selectedGroup && !conversationItems.length ? <text fg="#888888">No messages yet. Say hello to the group.</text> : null}
@@ -85,7 +84,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 </text>
                 <text wrapMode="word"><span fg="#7aa2d6">{file.filename}</span><span fg="#888888"> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
                 {isImageFile(file.filename) && (
-                  <image key={`${file.file_id}-${file.completed_at ?? 0}-${imageRenderGeneration}`} source={toFileUrl(file.file_path!, file.completed_at)} fit="fit" protocol="auto" style={{ width: 40, height: 12 }} onError={() => {}} />
+                  <image source={toFileUrl(file.file_path!, file.completed_at)} fit="fit" protocol="auto" style={{ width: 40, height: 12 }} onError={() => {}} />
                 )}
               </box>
             )
