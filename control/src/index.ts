@@ -56,7 +56,7 @@ const TURN_SHARED_SECRET = process.env.CONTROL_TURN_SHARED_SECRET ?? ""
 const TURN_TTL_SECONDS = Number(process.env.CONTROL_TURN_TTL_SECONDS ?? 600)
 const CLOUDFLARE_TURN_TOKEN_ID = process.env.CONTROL_CLOUDFLARE_TURN_TOKEN_ID ?? ""
 const CLOUDFLARE_API_TOKEN = process.env.CONTROL_CLOUDFLARE_API_TOKEN ?? ""
-const CLOUDFLARE_TURN_CREDENTIALS_URL = `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(CLOUDFLARE_TURN_TOKEN_ID)}/credentials/generate`
+const CLOUDFLARE_TURN_CREDENTIALS_URL = `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(CLOUDFLARE_TURN_TOKEN_ID)}/credentials/generate-ice-servers`
 
 const rooms = new Map<string, Set<ServerWebSocket<ClientData>>>()
 let connections = 0

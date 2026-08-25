@@ -366,7 +366,8 @@ class RendezvousService:
             await self._announce(websocket, room)
 
     async def _announce(self, websocket, room: Room) -> None:
-        payload = encrypt_endpoint_card(self.identity, room, self.public_endpoint, self.udp.relay_endpoints)
+        direct_endpoint = None if self.udp.force_turn else self.public_endpoint
+        payload = encrypt_endpoint_card(self.identity, room, direct_endpoint, self.udp.relay_endpoints)
         await websocket.send(json.dumps({"type": "signal", "room_id": room.id, "payload": payload}))
 
     async def _handle_card(self, room: Room, payload: str, announce_join: bool = False) -> None:
@@ -427,6 +428,7 @@ class RendezvousService:
         else:
             # Relay-only card: clear stale direct state before setting up relay
             self._last_candidates.pop(peer_id, None)
+            self.udp.clear_direct_candidate(peer_id)
         for kind, relay_endpoint in parsed:
             if kind == "relay":
                 self.udp.expect_relay_peer(peer_id, relay_endpoint)

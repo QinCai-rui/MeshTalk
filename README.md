@@ -327,7 +327,7 @@ CONTROL_TURN_TTL_SECONDS=600
 ```
 
 For every registered MeshTalk device, control requests a short-lived credential
-from `https://rtc.live.cloudflare.com/v1/turn/keys/<token-id>/credentials/generate`.
+from `https://rtc.live.cloudflare.com/v1/turn/keys/<token-id>/credentials/generate-ice-servers`.
 It forwards only Cloudflare's TURN URIs, username, and credential to the client;
 the API token is never sent to clients. Cloudflare's response may also contain a
 STUN URI, which MeshTalk ignores because STUN discovery is configured separately.
