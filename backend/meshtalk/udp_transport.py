@@ -264,7 +264,11 @@ class UdpTransport:
     def expect_relay_peer(self, peer_id: str, endpoint: Endpoint) -> None:
         self._validate_peer_endpoint(peer_id, endpoint)
         self._relay_candidates[peer_id] = endpoint
-        if self.force_turn or peer_id not in self._direct_candidates:
+        if self.force_turn:
+            if self._relays:
+                self._start_attempt(peer_id, endpoint, via_relay=True)
+            return
+        if peer_id not in self._direct_candidates:
             self._start_attempt(peer_id, endpoint, via_relay=bool(self._relays))
 
     def clear_direct_candidate(self, peer_id: str) -> None:

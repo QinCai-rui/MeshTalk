@@ -84,6 +84,14 @@ class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(self.identity_b.peer_id, transport._direct_candidates)
         self.assertNotIn(self.identity_b.peer_id, transport._attempts)
 
+    async def test_force_turn_expect_relay_peer_without_relays_does_not_start_attempt(self):
+        transport = UdpTransport(self.identity_a, lambda *_: None, lambda *_: None, lambda *_: None, force_turn=True)
+
+        transport.expect_relay_peer(self.identity_b.peer_id, ("203.0.113.1", 24890))
+
+        self.assertIn(self.identity_b.peer_id, transport._relay_candidates)
+        self.assertNotIn(self.identity_b.peer_id, transport._attempts)
+
     async def test_lan_network_info_uses_advertised_port_not_inbound_source_port(self):
         peer = PeerConnection(
             self.identity_b.peer_id, "192.168.1.20", 45982, PeerState.CONNECTED
