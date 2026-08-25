@@ -1,7 +1,8 @@
 import { createCliRenderer } from "@opentui/core"
-import { createRoot, useKeyboard, useRenderer } from "@opentui/react"
+import { createRoot, extend, useKeyboard, useRenderer } from "@opentui/react"
 import { useState } from "react"
-import "opentui-spinner/react"
+import { SpinnerRenderable } from "opentui-spinner"
+extend({ spinner: SpinnerRenderable })
 
 const spinnerNames = [
   "dots", "dots2", "dots3", "dots4", "dots5", "dots6", "dots7", "dots8", "dots9", "dots10", "dots11", "dots12", "dots13", "dots14", "dots8Bit", "dotsCircle", "sand",

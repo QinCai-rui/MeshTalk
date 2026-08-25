@@ -1,7 +1,8 @@
 import { createClipboard, createHostClipboard, createRendererClipboardAdapter, decodePasteBytes, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
-import { useKeyboard, usePaste, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/react"
+import { extend, useKeyboard, usePaste, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/react"
 import { useEffect, useMemo, useRef, useState } from "react"
-import "opentui-spinner/react"
+import { SpinnerRenderable } from "opentui-spinner"
+extend({ spinner: SpinnerRenderable })
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
 import { checkForUpdate, GitHubAuthenticationError } from "../../common/updater"
