@@ -16,6 +16,15 @@ import { useChatActions } from "./useChatActions"
 declare const APP_VERSION: string
 declare const MESHTALK_RELEASE: boolean
 
+function detectImageMime(bytes: Uint8Array): string | undefined {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png"
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg"
+  if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return "image/gif"
+  if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp"
+  if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) return "image/bmp"
+  return undefined
+}
+
 const IS_RELEASE_BUILD = typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE
 const APP_RELEASE_VERSION = typeof APP_VERSION !== "undefined" && APP_VERSION ? APP_VERSION : "dev"
 
@@ -213,7 +222,7 @@ export function ChatApp() {
   }, [dialog, editingName, scrollFocused, isSending])
 
   useEffect(() => {
-    const service = createClipboard({ host: createHostClipboard(), terminal: createRendererClipboardAdapter(renderer) })
+    const service = createClipboard({ host: createHostClipboard({ maxReadBytes: 8 * 1024 * 1024 }), terminal: createRendererClipboardAdapter(renderer) })
     clipboard.current = service
     return () => { clipboard.current = null; void service.dispose() }
   }, [renderer])
@@ -500,10 +509,25 @@ export function ChatApp() {
   }, [selectionKey, width])
 
   usePaste((event) => {
-    if (dialog || editingName) return
+    if (dialog || editingName || isSending) return
     try {
-      const raw = decodePasteBytes(event.bytes).trim()
-      if (!raw) return
+      const rawBytes = event.bytes
+      const eventMimeType = event.metadata?.mimeType?.toLowerCase()
+      const imageMimeType = eventMimeType?.startsWith("image/") ? eventMimeType : detectImageMime(rawBytes)
+      const eventIsImage = Boolean(imageMimeType)
+      if (eventIsImage || event.metadata?.kind === "binary" && !decodePasteBytes(rawBytes).trim()) event.preventDefault()
+      if (eventIsImage && imageMimeType) {
+        void actions.sendImage(rawBytes, imageMimeType)
+        return
+      }
+      const raw = decodePasteBytes(rawBytes).trim()
+      if (!raw || event.metadata?.kind === "binary") {
+        event.preventDefault()
+        void clipboard.current?.read({ preferredTypes: ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"] }).then((result) => {
+          if (result.status === "read") void actions.sendImage(result.representation.bytes, result.representation.mimeType)
+        }).catch(() => {})
+        return
+      }
       let candidate = raw.split("\n")[0].trim()
       if (candidate.startsWith("file://")) { candidate = decodeURIComponent(candidate.replace(/^file:\/\//, "")); if (/^\/[a-zA-Z]:\//.test(candidate)) candidate = candidate.slice(1) }
       candidate = candidate.replace(/^["']|["']$/g, "").trim()
@@ -528,8 +552,32 @@ export function ChatApp() {
     } catch {}
   })
 
+  async function pasteFromHostClipboard() {
+    const result = await clipboard.current?.read({
+      preferredTypes: ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "text/plain"],
+    })
+    if (!result) { actions.showStatus("Host clipboard is not available."); return }
+    if (result.status !== "read") {
+      actions.showStatus(result.status === "limit-exceeded" ? "Clipboard image exceeds the 8 MiB limit." : `Could not read host clipboard: ${result.status}`)
+      return
+    }
+    if (result.representation.mimeType.startsWith("image/")) {
+      await actions.sendImage(result.representation.bytes, result.representation.mimeType)
+      return
+    }
+    if (result.representation.mimeType === "text/plain") {
+      composerRef.current?.insertText(new TextDecoder().decode(result.representation.bytes))
+    }
+  }
+
   useKeyboard((key) => {
     if (dialog && dialogBusyRef.current) return
+    const isPasteShortcut = key.name === "v" && (key.ctrl || key.meta || key.super)
+    if (isPasteShortcut && !dialog && !editingName && !scrollFocused && !isSending && selection) {
+      key.preventDefault()
+      void pasteFromHostClipboard().catch(() => {})
+      return
+    }
     if (key.ctrl && key.name === "p") { if (dialog?.kind === "commands") actions.closeDialog(); else actions.showDialog({ kind: "commands" }); return }
     if (dialog) { if (key.name === "escape") actions.goBack(); return }
     if (key.name === "escape" && editingName) { setEditingName(false); setNameDraft(identity?.display_name ?? ""); actions.showStatus("Name edit cancelled."); return }

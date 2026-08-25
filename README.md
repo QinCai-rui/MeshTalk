@@ -369,7 +369,9 @@ the relay failure.
 MeshTalk supports sending files (up to 50 MiB) directly between peers over the
 existing E2EE transport. Files are chunked, encrypted per-chunk with ephemeral
 X25519 keys, and reassembled by the receiver. In the TUI, press `Ctrl+P` or use
-the file-send shortcut (`Ctrl+U`) while in a conversation to send a file. Incoming files
+the file-send shortcut (`Ctrl+U`) while in a conversation to send a file. Copy an
+image and press `Ctrl+V` in the composer to read it from the host clipboard and
+send it. Terminal-managed `Cmd+V` may not reach terminal applications. Incoming files
 show an image preview when the file is an image, and you can save them to any
 location via `file_download`.
 

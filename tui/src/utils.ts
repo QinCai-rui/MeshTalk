@@ -4,7 +4,7 @@ import type { TextareaRenderable } from "@opentui/core"
 export const MIN_COMPOSER_HEIGHT = 3
 export const MAX_COMPOSER_HEIGHT = 5
 export const MAX_MESSAGE_BYTES = 30 * 1024
-export const DEFAULT_STATUS = "Ctrl+P: commands  Ctrl+U: upload  Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+C: quit"
+export const DEFAULT_STATUS = "Ctrl+P: commands  Ctrl+U: upload  Ctrl+V: paste image  Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+C: quit"
 
 export function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
