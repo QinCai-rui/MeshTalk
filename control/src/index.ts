@@ -50,9 +50,13 @@ const PEER_ID = /^[a-f0-9]{64}$/
 const HEX_32 = /^[a-f0-9]{64}$/
 const HEX_64 = /^[a-f0-9]{128}$/
 const TURN_ENABLED = process.env.CONTROL_TURN_ENABLED === "true"
+const TURN_PROVIDER = process.env.CONTROL_TURN_PROVIDER ?? "coturn"
 const TURN_URIS = (process.env.CONTROL_TURN_URIS ?? "").split(",").map((value) => value.trim()).filter(Boolean)
 const TURN_SHARED_SECRET = process.env.CONTROL_TURN_SHARED_SECRET ?? ""
 const TURN_TTL_SECONDS = Number(process.env.CONTROL_TURN_TTL_SECONDS ?? 600)
+const CLOUDFLARE_TURN_TOKEN_ID = process.env.CONTROL_CLOUDFLARE_TURN_TOKEN_ID ?? ""
+const CLOUDFLARE_API_TOKEN = process.env.CONTROL_CLOUDFLARE_API_TOKEN ?? ""
+const CLOUDFLARE_TURN_CREDENTIALS_URL = `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(CLOUDFLARE_TURN_TOKEN_ID)}/credentials/generate`
 
 const rooms = new Map<string, Set<ServerWebSocket<ClientData>>>()
 let connections = 0
@@ -86,9 +90,26 @@ function registerDevice(socket: ServerWebSocket<ClientData>, message: ControlMes
   send(socket, { type: "device_registered", peer_id: message.peer_id, v: 1 })
 }
 
-function issueTurnCredentials(socket: ServerWebSocket<ClientData>): void {
+async function issueTurnCredentials(socket: ServerWebSocket<ClientData>): Promise<void> {
   if (!socket.data.peerId) throw new Error("Device registration required")
-  if (!TURN_ENABLED || !TURN_SHARED_SECRET || !TURN_URIS.length) throw new Error("TURN is not configured")
+  if (!TURN_ENABLED) throw new Error("TURN is not configured")
+  if (TURN_PROVIDER === "cloudflare") {
+    if (!CLOUDFLARE_TURN_TOKEN_ID || !CLOUDFLARE_API_TOKEN) throw new Error("Cloudflare TURN is not configured")
+    const response = await fetch(CLOUDFLARE_TURN_CREDENTIALS_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ttl: TURN_TTL_SECONDS }),
+    })
+    if (!response.ok) throw new Error(`Cloudflare TURN credential request failed (${response.status})`)
+    const payload = await response.json() as { iceServers?: Array<{ urls?: unknown; username?: unknown; credential?: unknown }> }
+    const server = payload.iceServers?.find((candidate) => Array.isArray(candidate.urls) && typeof candidate.username === "string" && typeof candidate.credential === "string")
+    const uris = Array.isArray(server?.urls) ? server.urls.filter((uri): uri is string => typeof uri === "string" && (uri.startsWith("turn:") || uri.startsWith("turns:"))) : []
+    if (!server || !uris.length) throw new Error("Cloudflare TURN returned no usable relay URI")
+    send(socket, { type: "turn_credentials", uris, username: server.username, credential: server.credential, ttl: TURN_TTL_SECONDS, v: 1 })
+    return
+  }
+  if (TURN_PROVIDER !== "coturn") throw new Error("Unsupported TURN provider")
+  if (!TURN_SHARED_SECRET || !TURN_URIS.length) throw new Error("TURN is not configured")
   const expiry = Math.floor(Date.now() / 1000) + TURN_TTL_SECONDS
   const username = `${expiry}:${socket.data.peerId}`
   send(socket, { type: "turn_credentials", uris: TURN_URIS, username, credential: createHmac("sha1", TURN_SHARED_SECRET).update(username).digest("base64"), ttl: TURN_TTL_SECONDS, v: 1 })
@@ -238,7 +259,7 @@ export function startControlServer(port = PORT) {
         connectionsByIp.set(socket.data.ip, (connectionsByIp.get(socket.data.ip) ?? 0) + 1)
         send(socket, { type: "device_challenge", challenge_id: socket.data.challengeId, nonce: socket.data.challenge, expires_at: socket.data.challengeExpiresAt, v: 1 })
       },
-      message(socket, raw) {
+      async message(socket, raw) {
         let isTurnCredentialsRequest = false
         try {
           const message = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw)) as ControlMessage
@@ -250,7 +271,7 @@ export function startControlServer(port = PORT) {
           }
           if (message.type === "turn_credentials") {
             checkRateLimit(socket, message.type)
-            issueTurnCredentials(socket)
+            await issueTurnCredentials(socket)
             return
           }
           if (TURN_ENABLED && !socket.data.peerId) throw new Error("Device registration required")

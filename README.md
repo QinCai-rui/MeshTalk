@@ -301,14 +301,46 @@ Compose file:
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `CONTROL_TURN_ENABLED` | Enables device registration and credential issuance | `false` |
+| `CONTROL_TURN_PROVIDER` | `coturn` or `cloudflare` credential provider | `coturn` |
 | `CONTROL_TURN_URIS` | Comma-separated `turn:` or `turns:` URIs | empty |
 | `CONTROL_TURN_SHARED_SECRET` | Must match coturn `static-auth-secret` | empty |
 | `CONTROL_TURN_TTL_SECONDS` | Lifetime encoded into each coturn username | `600` |
+| `CONTROL_CLOUDFLARE_TURN_TOKEN_ID` | Cloudflare TURN Token ID when provider is `cloudflare` | empty |
+| `CONTROL_CLOUDFLARE_API_TOKEN` | Cloudflare API token allowed to generate TURN credentials | empty |
 
 Clients connect over `wss://`, receive a signed device challenge, register their
 existing Ed25519 identity, and request credentials on that WebSocket. Credentials
 are short-lived and are not persisted in `settings.json` or returned through
 local IPC.
+
+### Cloudflare TURN
+
+Cloudflare TURN uses its credential-generation API rather than coturn's shared
+secret algorithm. Configure the control service, not the clients:
+
+```bash
+CONTROL_TURN_ENABLED=true
+CONTROL_TURN_PROVIDER=cloudflare
+CONTROL_CLOUDFLARE_TURN_TOKEN_ID=<Cloudflare TURN Token ID>
+CONTROL_CLOUDFLARE_API_TOKEN=<Cloudflare API token>
+CONTROL_TURN_TTL_SECONDS=600
+```
+
+For every registered MeshTalk device, control requests a short-lived credential
+from `https://rtc.live.cloudflare.com/v1/turn/keys/<token-id>/credentials/generate`.
+It forwards only Cloudflare's TURN URIs, username, and credential to the client;
+the API token is never sent to clients. Cloudflare's response may also contain a
+STUN URI, which MeshTalk ignores because STUN discovery is configured separately.
+
+Cloudflare currently returns `turn.cloudflare.com` relay endpoints. The client
+can use UDP/TCP `3478` or TLS `5349` (and its alternate ports if Cloudflare
+returns them). Do not set `CONTROL_TURN_SHARED_SECRET` for this provider and do
+not run the local `turn` Compose service. With the included Compose file, set
+the variables in `.env` and start only control:
+
+```bash
+docker compose --env-file .env up -d control
+```
 
 ### coturn Requirements
 
