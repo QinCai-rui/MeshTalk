@@ -1,5 +1,6 @@
 import type { Conversation, Group, GroupMember, Peer } from "../types"
 import { friendMarkers, peerPresence, transportName } from "../utils"
+import { SafeSpinner } from "./SafeSpinner"
 
 type SidebarProps = {
   activeCount: number
@@ -36,7 +37,7 @@ export function Sidebar({ activeCount, compact, dialogOpen, editingName, groups,
           const limited = Boolean(peer.capability_gap)
           const muted = peer.peer_id in mutedPeers
           return <box key={peer.peer_id} onMouseDown={() => { setSelection({ kind: "peer", id: peer.peer_id }); setScrollFocused(false); setEditingName(false) }} style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : undefined }}>
-            <box style={{ width: "100%", flexDirection: "row" }}><text truncate style={{ flexGrow: 1 }} fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>{peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {presence}{limited ? <span fg="#ff9f43"> LIMITED</span> : null}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}</text>{typingConversationKeys.has(`peer:${peer.peer_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
+            <box style={{ width: "100%", flexDirection: "row" }}><text truncate style={{ flexGrow: 1 }} fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>{peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name} {presence}{limited ? <span fg="#ff9f43"> LIMITED</span> : null}{peer.unread_count ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}</text>{typingConversationKeys.has(`peer:${peer.peer_id}`) && <SafeSpinner color="#7aa2d6" />}</box>
             {peer.endpoints.length ? peer.endpoints.map((endpoint) => <text key={`${endpoint.transport}-${endpoint.endpoint}`} truncate fg={endpoint.active ? "#7aa2d6" : "#718096"}>{endpoint.active ? "* " : "  "}{transportName(endpoint.transport)} {endpoint.endpoint}</text>) : <text fg="#718096">No known endpoint</text>}
           </box>
         })}
@@ -46,7 +47,7 @@ export function Sidebar({ activeCount, compact, dialogOpen, editingName, groups,
       <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
         {!groups.length ? <text fg="#888888">No groups joined</text> : null}
         {groups.map((group) => <box key={group.group_id} onMouseDown={() => { setSelection({ kind: "group", id: group.group_id }); setScrollFocused(false); setEditingName(false) }} style={{ width: "100%", flexDirection: "column", backgroundColor: group.group_id === selectedGroupId ? "#25354d" : undefined }}>
-          <box style={{ width: "100%", flexDirection: "row" }}><text truncate style={{ flexGrow: 1 }} fg="#b69cff">{group.group_id === selectedGroupId ? "> " : "  "}{compact ? group.name.slice(0, 14) : group.name}{group.unread_count ? ` (${group.unread_count} new)` : ""}</text>{typingConversationKeys.has(`group:${group.group_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
+          <box style={{ width: "100%", flexDirection: "row" }}><text truncate style={{ flexGrow: 1 }} fg="#b69cff">{group.group_id === selectedGroupId ? "> " : "  "}{compact ? group.name.slice(0, 14) : group.name}{group.unread_count ? ` (${group.unread_count} new)` : ""}</text>{typingConversationKeys.has(`group:${group.group_id}`) && <SafeSpinner color="#7aa2d6" />}</box>
           <text fg="#718096">  {group.member_count} member{group.member_count === 1 ? "" : "s"}</text>
           {group.group_id === selectedGroupId && groupMembers[group.group_id]?.filter((member) => member.show_in_sidebar !== false).map((member, index) => {
             const memberId = member.peer_id ?? member.member_id

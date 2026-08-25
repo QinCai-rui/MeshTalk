@@ -1,7 +1,6 @@
 import { createClipboard, createHostClipboard, createRendererClipboardAdapter, decodePasteBytes, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useKeyboard, usePaste, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/react"
 import { useEffect, useMemo, useRef, useState } from "react"
-import "opentui-spinner/react"
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
 import { checkForUpdate, GitHubAuthenticationError } from "../../common/updater"
@@ -71,6 +70,45 @@ export function ChatApp() {
   const selectedPeerId = selection?.kind === "peer" ? selection.id : undefined
   const selectedGroupId = selection?.kind === "group" ? selection.id : undefined
   const selectionKey = selection ? `${selection.kind}:${selection.id}` : undefined
+  const [isFocused, setIsFocused] = useState(true)
+  const isFocusedRef = useRef(true)
+
+  useEffect(() => {
+    isFocusedRef.current = isFocused
+  }, [isFocused])
+
+  useEffect(() => {
+    const onFocus = () => {
+      isFocusedRef.current = true
+      setIsFocused(true)
+    }
+    const onBlur = () => {
+      isFocusedRef.current = false
+      setIsFocused(false)
+    }
+    // renderer is an EventEmitter with focus/blur events (\x1B[I / \x1B[O)
+    const anyRenderer = renderer as unknown as { on: (e: string, h: () => void) => void; off: (e: string, h: () => void) => void; _terminalFocusState?: boolean | null }
+    try {
+      anyRenderer.on("focus", onFocus)
+      anyRenderer.on("blur", onBlur)
+      // Sync initial state if renderer already knows
+      if (anyRenderer._terminalFocusState === false) {
+        isFocusedRef.current = false
+        setIsFocused(false)
+      }
+    } catch {}
+    return () => {
+      try {
+        anyRenderer.off("focus", onFocus)
+        anyRenderer.off("blur", onBlur)
+      } catch {}
+    }
+  }, [renderer])
+
+  function maybeNotify(prefs: NotificationPreferences | null, event: import("./notifications").NotificationEvent, message: string) {
+    if (isFocusedRef.current) return
+    void notify(prefs, event, renderer, message)
+  }
 
   function sendTyping(conversation: Conversation, isTyping: boolean) {
     const target = conversation.kind === "peer" ? { recipient_id: conversation.id } : { group_id: conversation.id }
@@ -315,7 +353,7 @@ export function ChatApp() {
         ?? peers.find((peer) => peer.peer_id === senderId)?.display_name
         ?? groupMembers[groupId]?.find((member) => (member.peer_id ?? member.member_id) === senderId)?.display_name
         ?? "a member"
-      if (event.event === "group_message" && groupId !== selectedGroupId) void notify(notificationPreferences, "messages", renderer, `New message from ${sender} in ${group?.name ?? "a group"}`)
+      if (event.event === "group_message" && groupId !== selectedGroupId) maybeNotify(notificationPreferences, "messages", `New message from ${sender} in ${group?.name ?? "a group"}`)
       if (groupId !== selectedGroupId) {
         setGroups((current) => current.map((item) => item.group_id === groupId ? { ...item, unread_count: item.unread_count + 1 } : item))
       } else {
@@ -385,7 +423,7 @@ export function ChatApp() {
         sender_name: (event.sender_name as string) ?? "a peer", note: (event.note as string | null | undefined) ?? null,
         created_at: event.created_at as number, direction: "incoming", status: "pending",
       }
-      void notify(notificationPreferences, "friend_requests", renderer, `Friend request from ${request.sender_name}`)
+      maybeNotify(notificationPreferences, "friend_requests", `Friend request from ${request.sender_name}`)
       if (!dialog) setDialog({ kind: "friend-request-incoming", request })
       else actions.showStatus(`Friend request from ${request.sender_name}. Open Commands > Friends to respond.`)
       void actions.refreshPeers()
@@ -411,7 +449,7 @@ export function ChatApp() {
       const filename = event.filename as string
       const sender = peers.find((p) => p.peer_id === event.sender_id)?.display_name ?? String(event.sender_id).slice(0, 8)
       actions.showStatus(`Incoming file: ${filename} (${event.file_size} bytes) from ${sender}`)
-      void notify(notificationPreferences, "file_offers", renderer, `Incoming file ${filename} from ${sender}`)
+      maybeNotify(notificationPreferences, "file_offers", `Incoming file ${filename} from ${sender}`)
       void ipc.send("files").then((res) => { if (!res.error) setFileTransfers(res.files as FileTransfer[]) }).catch(() => {})
       return
     }
@@ -424,7 +462,7 @@ export function ChatApp() {
       const fpath = event.file_path as string
       const fileId = event.file_id as string
       actions.showStatus(`File received: ${filename} -> ${fpath}`)
-      void notify(notificationPreferences, "file_completed", renderer, `File received: ${filename}`)
+      maybeNotify(notificationPreferences, "file_completed", `File received: ${filename}`)
       setFileTransfers((current) => current.map((file) => file.file_id === fileId ? { ...file, status: "completed", file_path: fpath, completed_at: Date.now() / 1000 } : file))
       void ipc.send("files").then((res) => { if (!res.error) setFileTransfers(res.files as FileTransfer[]) }).catch(() => {})
       return
@@ -453,7 +491,7 @@ export function ChatApp() {
     const sender = peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "a peer"
     const mutedUntil = mutedPeers[senderId]
     const isMuted = mutedUntil === undefined ? false : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil
-    if (!isMuted && senderId !== selectedPeerId) void notify(notificationPreferences, "messages", renderer, `New message from ${sender}`)
+    if (!isMuted && senderId !== selectedPeerId) maybeNotify(notificationPreferences, "messages", `New message from ${sender}`)
     if (senderId !== selectedPeerId) {
       setPeers((current) => current.map((peer) => peer.peer_id === senderId ? { ...peer, unread_count: peer.unread_count + 1 } : peer))
       return

@@ -10,7 +10,13 @@ export type NotificationPreferences = {
 }
 
 type TerminalRenderer = {
-  capabilities?: { notifications?: boolean } | null
+  capabilities?: { notifications?: boolean; focus_tracking?: boolean } | null
+  // Optional focus state exposed by CliRenderer ("focus" / "blur" events).
+  // If present, we suppress notifications while the terminal is focused.
+  // Use index signature so CliRenderer (which has private _terminalFocusState)
+  // remains compatible.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any
   triggerNotification(message: string, title: string): boolean | void
 }
 
@@ -58,33 +64,46 @@ export async function sendNativeNotification(message: string, title = "MeshTalk"
 
 export async function sendTestNotification(
   delivery: Exclude<NotificationDelivery, "disabled">,
-  renderer: TerminalRenderer,
+  renderer: TerminalRenderer | unknown,
 ): Promise<boolean> {
   if (delivery === "native") return sendNativeNotification("If you can see this, native notifications work.")
-  if (!renderer.capabilities?.notifications) return false
+  if (!(renderer as TerminalRenderer).capabilities?.notifications) return false
   // Terminals commonly suppress OSC notifications while their own tab is focused.
   // Give the user time to switch tabs before testing the terminal protocol.
   await new Promise<void>((resolve) => setTimeout(resolve, 4_000))
   try {
-    return renderer.triggerNotification("If you can see this, terminal notifications work.", "MeshTalk") !== false
+    return (renderer as TerminalRenderer).triggerNotification("If you can see this, terminal notifications work.", "MeshTalk") !== false
   } catch {
     return false
   }
 }
 
+export function isAppFocused(renderer: unknown | null | undefined): boolean {
+  if (!renderer || typeof renderer !== "object") return true
+  const anyRenderer = renderer as { _terminalFocusState?: boolean | null; capabilities?: { focus_tracking?: boolean } | null }
+  const state = anyRenderer?._terminalFocusState
+  if (state === false) return false
+  if (state === true) return true
+  if (anyRenderer?.capabilities?.focus_tracking === false) return false
+  return true
+}
+
 export async function notify(
   preferences: NotificationPreferences | null,
   event: NotificationEvent,
-  renderer: TerminalRenderer,
+  renderer: unknown,
   message: string,
+  options?: { respectFocus?: boolean },
 ): Promise<void> {
   if (!preferences?.events[event] || preferences.delivery === "disabled") return
+  const respectFocus = options?.respectFocus !== false
+  if (respectFocus && isAppFocused(renderer)) return
   if (preferences.delivery === "native") {
     await sendNativeNotification(message)
     return
   }
-  if (!renderer.capabilities?.notifications) return
+  if (!(renderer as TerminalRenderer).capabilities?.notifications) return
   try {
-    renderer.triggerNotification(message, "MeshTalk")
+    (renderer as TerminalRenderer).triggerNotification(message, "MeshTalk")
   } catch {}
 }

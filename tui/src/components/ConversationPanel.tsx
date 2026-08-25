@@ -2,6 +2,7 @@ import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
 import type { ReactNode, RefObject } from "react"
 import type { ConversationItem, Group, GroupMember, Peer } from "../types"
 import { MarqueeText } from "./MarqueeText"
+import { SafeSpinner } from "./SafeSpinner"
 import { dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, toFileUrl, transportName } from "../utils"
 
 type ConversationPanelProps = {
@@ -138,7 +139,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
         setComposerHeight(getComposerHeight(composer))
         onComposerChange(content)
       }} onSubmit={() => void send()} keyBindings={[{ name: "return", action: "submit" }, { name: "return", meta: true, action: "newline" }]} height={composerHeight} wrapMode="word" overflow="hidden" scrollMargin={1} selectionBg="#365b85" />
-      {typingText && <box style={{ position: "absolute", right: 1, bottom: 0, flexDirection: "row", gap: 1 }}><text fg="#7aa2d6">{typingText}</text><spinner name="simpleDotsScrolling" color="#7aa2d6" /></box>}
+      {typingText && <box style={{ position: "absolute", right: 1, bottom: 0, flexDirection: "row", gap: 1 }}><text fg="#7aa2d6">{typingText}</text><SafeSpinner color="#7aa2d6" /></box>}
     </box>
     <MarqueeText width={width - 2} fg={status.includes("error") || status.includes("lost") || status.includes("exceeds") ? "#ff7777" : "#888888"} text={status} />
   </box>
