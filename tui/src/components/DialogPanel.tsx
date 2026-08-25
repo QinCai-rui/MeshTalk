@@ -115,7 +115,8 @@ export function DialogPanel(props: DialogPanelProps) {
         : dialog.kind === "friend-requests" ? "Friend requests"
         : dialog.kind === "friend-request-incoming" ? "Friend request"
         : dialog.kind === "friends" ? "Friends"
-        : dialog.kind === "notifications" ? "Notifications"
+         : dialog.kind === "notifications" ? "Notifications"
+        : dialog.kind.startsWith("notification-") ? "Desktop alerts"
         : dialog.kind === "notification-settings" ? "Desktop alerts"
         : dialog.kind === "notification-peer" ? "Selected peer alerts"
         : dialog.kind === "accessibility" ? "Accessibility"
@@ -137,7 +138,7 @@ export function DialogPanel(props: DialogPanelProps) {
         : dialog.kind === "files-dir" ? "File storage"
         : "Private rooms"}
       bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
-      style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: dialog.kind === "about" ? "#9b8cff" : dialog.kind === "update" ? "#e0a34a" : "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1 }}
+      style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: dialog.kind === "about" ? "#9b8cff" : dialog.kind === "update" ? "#e0a34a" : "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1, overflow: "hidden" }}
     >
       {dialog.kind === "commands" && <CommandsDialog dialogHeight={dialogHeight} groups={groups} peers={peers} selectedGroup={groups.find((group) => group.group_id === selectedGroupId)} selection={selection} runCommand={runCommand} />}
       {dialog.kind === "about" && <AboutDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} isReleaseBuild={isReleaseBuild} checkForUpdates={checkForUpdatesFromAbout} goBack={goBack} />}
