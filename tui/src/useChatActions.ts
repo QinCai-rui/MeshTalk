@@ -825,7 +825,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     try {
       await saveNotificationPreferences({ events: { [event]: !notificationEventEnabled(event) } })
       if (dialogActionRef.current !== action) return
-      showDialog({ kind: "notifications" })
+      showDialog({ kind: "notification-settings" })
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
   }
