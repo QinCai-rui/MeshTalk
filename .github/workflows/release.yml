@@ -4,11 +4,11 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
-  push:
-    branches: ["main"]
-    paths-ignore:
-      - "assets/**"
-      - "README.md"
+#  push:
+#    branches: ["main"]
+#    paths-ignore:
+#      - "assets/**"
+#      - "README.md"
   workflow_dispatch:
     inputs:
       version:
