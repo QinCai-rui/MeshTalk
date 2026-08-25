@@ -659,7 +659,7 @@ class UdpTransport:
             raise RuntimeError("UDP transport is not started")
         self._transport.sendto(data, endpoint)
 
-    def _relay_datagram_received(self, data: bytes, addr: TurnEndpoint) -> None:
+    def _relay_datagram_received(self, data: bytes, addr: Endpoint) -> None:
         self.datagram_received(data, addr, via_relay=True)
 
     def _spawn(self, awaitable: Awaitable[None]) -> asyncio.Task:

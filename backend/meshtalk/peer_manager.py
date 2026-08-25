@@ -170,14 +170,21 @@ class PeerManager:
             logger.info("LAN endpoint changed for %s: %s -> %s", peer_id, old, new)
         asyncio.ensure_future(self.db.save_peer_endpoint(peer_id, "lan_tcp", new))
 
-    async def record_remote_candidate(self, peer_id: str, endpoint: Endpoint) -> None:
+    async def record_remote_candidate(self, peer_id: str, endpoint: Endpoint | None) -> None:
         if peer_id not in self._known_endpoints and len(self._known_endpoints) >= MAX_KNOWN_PEERS:
             raise ValueError("Too many known peers")
         old = self._known_endpoints.get(peer_id, {}).get("remote_udp")
-        self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = endpoint
-        if old != endpoint:
-            logger.info("Remote UDP endpoint changed for %s: %s -> %s", peer_id, old, _format_endpoint(endpoint))
-        await self.db.save_peer_endpoint(peer_id, "remote_udp", endpoint)
+        if endpoint is not None:
+            self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = endpoint
+            if old != endpoint:
+                logger.info("Remote UDP endpoint changed for %s: %s -> %s", peer_id, old, _format_endpoint(endpoint))
+            await self.db.save_peer_endpoint(peer_id, "remote_udp", endpoint)
+        else:
+            # Clear remote_udp when transitioning to relay-only
+            self._known_endpoints.setdefault(peer_id, {}).pop("remote_udp", None)
+            if old is not None:
+                logger.info("Remote UDP endpoint cleared for %s (relay-only)", peer_id)
+            await self.db.save_peer_endpoint(peer_id, "remote_udp", None)
 
     async def load_endpoints(self) -> None:
         saved = await self.db.load_peer_endpoints()

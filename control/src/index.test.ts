@@ -54,4 +54,22 @@ describe("opaque control service", () => {
     const health = await fetch(`http://127.0.0.1:${server.port}/health`).then((response) => response.json())
     expect(health).toEqual({ status: "ok", rooms: 1, connections: 2 })
   })
+
+  test("closes with code 1008 for malformed JSON", async () => {
+    server = startControlServer(0)
+    const url = `ws://127.0.0.1:${server.port}/v1/rendezvous`
+    const socket = await open(url)
+    await waitFor(socket, (message) => message.type === "device_challenge")
+
+    const closePromise = new Promise<{ code: number; reason: string }>((resolve) => {
+      socket.addEventListener("close", (event) => {
+        resolve({ code: event.code, reason: event.reason })
+      }, { once: true })
+    })
+
+    socket.send("invalid-json{")
+    const { code, reason } = await closePromise
+    expect(code).toBe(1008)
+    expect(reason).toBe("Invalid control message")
+  })
 })

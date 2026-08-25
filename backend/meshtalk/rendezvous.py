@@ -421,11 +421,14 @@ class RendezvousService:
             changes.append(now)
         if endpoint is not None:
             self.udp.expect_peer(peer_id, endpoint)
+            if self._last_candidates.get(peer_id) != endpoint:
+                self._candidate_changes[peer_id] = changes
+                self._last_candidates[peer_id] = endpoint
+        else:
+            # Relay-only card: clear stale direct state before setting up relay
+            self._last_candidates.pop(peer_id, None)
         for kind, relay_endpoint in parsed:
             if kind == "relay":
                 self.udp.expect_relay_peer(peer_id, relay_endpoint)
         self._candidate_seen[peer_id] = now
-        if endpoint is not None and self._last_candidates.get(peer_id) != endpoint:
-            self._candidate_changes[peer_id] = changes
-            self._last_candidates[peer_id] = endpoint
         await self.on_candidate(peer_id, endpoint)

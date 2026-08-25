@@ -239,13 +239,17 @@ export function startControlServer(port = PORT) {
         send(socket, { type: "device_challenge", challenge_id: socket.data.challengeId, nonce: socket.data.challenge, expires_at: socket.data.challengeExpiresAt, v: 1 })
       },
       message(socket, raw) {
+        let isTurnCredentialsRequest = false
         try {
           const message = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw)) as ControlMessage
+          isTurnCredentialsRequest = message.type === "turn_credentials"
           if (message.type === "device_register") {
+            checkRateLimit(socket, message.type)
             registerDevice(socket, message)
             return
           }
           if (message.type === "turn_credentials") {
+            checkRateLimit(socket, message.type)
             issueTurnCredentials(socket)
             return
           }
@@ -266,7 +270,7 @@ export function startControlServer(port = PORT) {
           }
         } catch (error) {
           send(socket, { type: "error", error: error instanceof Error ? error.message : "Invalid request" })
-          if (typeof raw === "string" && JSON.parse(raw).type === "turn_credentials") return
+          if (isTurnCredentialsRequest) return
           socket.close(1008, "Invalid control message")
         }
       },

@@ -259,3 +259,36 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(transport._sessions[remote.peer_id].confirmed)
         self.assertEqual(connected, [])
         await transport.stop()
+
+    async def test_relay_only_card_clears_stale_direct_state(self):
+        """Regression test: relay-only card should clear _direct_candidates to allow relay creation."""
+        root = Path(self.tempdir.name)
+        settings = Settings(root / "settings.json")
+        room = settings.create_room()
+        recorded_endpoints = []
+
+        async def record_candidate(peer_id: str, endpoint):
+            recorded_endpoints.append((peer_id, endpoint))
+
+        rendezvous = RendezvousService(
+            self.identity_a, settings, self.manager_a.udp, record_candidate, allow_loopback=True
+        )
+
+        # First, receive a card with a direct endpoint
+        card_with_direct = encrypt_endpoint_card(
+            self.identity_b, room, ("127.0.0.1", 12345), relay_endpoints=[]
+        )
+        await rendezvous._handle_card(room, card_with_direct)
+        self.assertEqual(len(recorded_endpoints), 1)
+        self.assertEqual(recorded_endpoints[0], (self.identity_b.peer_id, ("127.0.0.1", 12345)))
+        self.assertIn(self.identity_b.peer_id, rendezvous._last_candidates)
+
+        # Now receive a relay-only card (no direct endpoint)
+        card_relay_only = encrypt_endpoint_card(
+            self.identity_b, room, None, relay_endpoints=[("127.0.0.1", 54321)]
+        )
+        await rendezvous._handle_card(room, card_relay_only)
+        self.assertEqual(len(recorded_endpoints), 2)
+        self.assertEqual(recorded_endpoints[1], (self.identity_b.peer_id, None))
+        # Verify that _last_candidates was cleared for this peer
+        self.assertNotIn(self.identity_b.peer_id, rendezvous._last_candidates)

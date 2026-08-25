@@ -31,6 +31,7 @@ services:
       - --static-auth-secret=${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET to a random value shared with control}
       - --realm=${TURN_REALM:-localhost}
       - --fingerprint
+      - --external-ip=${TURN_EXTERNAL_IP:?Set TURN_EXTERNAL_IP to the public IP address of the TURN server}
       - --min-port=${TURN_RELAY_MIN_PORT:-49152}
       - --max-port=${TURN_RELAY_MAX_PORT:-49200}
     ports:
