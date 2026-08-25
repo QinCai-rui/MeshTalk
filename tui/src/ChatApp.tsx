@@ -325,7 +325,7 @@ export function ChatApp() {
         ?? peers.find((peer) => peer.peer_id === senderId)?.display_name
         ?? groupMembers[groupId]?.find((member) => (member.peer_id ?? member.member_id) === senderId)?.display_name
         ?? "a member"
-      if (event.event === "group_message" && groupId !== selectedGroupId) void notify(notificationPreferences, "messages", renderer, `New message from ${sender} in ${group?.name ?? "a group"}`)
+      if (event.event === "group_message") void notify(notificationPreferences, "messages", renderer, `New message from ${sender} in ${group?.name ?? "a group"}`)
       if (groupId !== selectedGroupId) {
         setGroups((current) => current.map((item) => item.group_id === groupId ? { ...item, unread_count: item.unread_count + 1 } : item))
       } else {
@@ -463,7 +463,7 @@ export function ChatApp() {
     const sender = peers.find((peer) => peer.peer_id === senderId)?.display_name ?? "a peer"
     const mutedUntil = mutedPeers[senderId]
     const isMuted = mutedUntil === undefined ? false : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil
-    if (!isMuted && senderId !== selectedPeerId) void notify(notificationPreferences, "messages", renderer, `New message from ${sender}`)
+    if (!isMuted) void notify(notificationPreferences, "messages", renderer, `New message from ${sender}`)
     if (senderId !== selectedPeerId) {
       setPeers((current) => current.map((peer) => peer.peer_id === senderId ? { ...peer, unread_count: peer.unread_count + 1 } : peer))
       return
