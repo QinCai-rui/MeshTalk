@@ -365,8 +365,8 @@ bandwidth because TURN transfers consume relay-server egress.
 2. Both peers attempt direct server-reflexive UDP first.
 3. If direct HELLO/READY setup expires, the relay candidate is attempted.
 4. Authenticated MeshTalk packets are sent through TURN ChannelData.
-5. A relayed session probes direct UDP periodically and returns to it after a
-   successful stable handshake.
+5. A confirmed relay remains active for the session. Automatic direct recovery
+   is disabled until route replacement can preserve the working relay atomically.
 
 The TUI and CLI identify the active route as `TURN relay`. If allocation or
 credential issuance fails, LAN/direct UDP behavior continues and diagnostics log

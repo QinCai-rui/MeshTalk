@@ -397,7 +397,8 @@ The route-selection policy is:
 1. LAN TCP when available.
 2. Direct UDP server-reflexive candidate.
 3. TURN relay candidate after direct HELLO/READY setup expires.
-4. Direct recovery probe every 60 seconds while relayed.
+4. Keep the confirmed relay for the session. Direct recovery is deferred until
+   route replacement can preserve the working session atomically.
 
 TURN allocation failure is non-fatal. The peer remains available through any
 working LAN or direct route, and the client reports the relay failure in logs and

@@ -1,10 +1,12 @@
 import asyncio
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from meshtalk.database import Database
 from meshtalk.identity import Identity
@@ -12,7 +14,7 @@ from meshtalk.friends import FriendManager
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
 from meshtalk.protocol import CAP_TEXT_CHAT
-from meshtalk.rendezvous import RendezvousService, decrypt_endpoint_card, encrypt_endpoint_card
+from meshtalk.rendezvous import RendezvousService, _encode, _room_key, decrypt_endpoint_card, encrypt_endpoint_card
 from meshtalk.settings import Room, Settings
 from meshtalk.udp_transport import Attempt, HELLO, MAGIC, READY, UdpTransport
 
@@ -123,6 +125,28 @@ class PrivateRoomTest(unittest.TestCase):
 
         self.assertEqual(card["peer_id"], identity.peer_id)
         self.assertIsNone(card["candidate"])
+
+    def test_accepts_legacy_direct_only_endpoint_card(self):
+        room = Room.create()
+        identity = Identity.generate("Legacy")
+        endpoint = {"host": "203.0.113.7", "port": 42424}
+        value = {
+            "kind": "endpoint", "peer_id": identity.peer_id,
+            "signing_public_key": identity.signing_public_key_bytes().hex(),
+            "candidate": endpoint, "created_at": int(time.time()),
+            "nonce": "00" * 16,
+        }
+        value["signature"] = identity.signing_private_key.sign(
+            json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+        ).hex()
+        nonce = b"\x01" * 12
+        payload = _encode(nonce + AESGCM(_room_key(room)).encrypt(
+            nonce, json.dumps(value).encode(), room.room_id
+        ))
+
+        card = decrypt_endpoint_card(room, payload)
+
+        self.assertEqual(card["candidates"], [{"type": "direct", **endpoint}])
 
     def test_settings_persist_private_rooms(self):
         with tempfile.TemporaryDirectory() as temporary:
