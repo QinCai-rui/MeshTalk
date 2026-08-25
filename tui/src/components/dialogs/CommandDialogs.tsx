@@ -1,5 +1,7 @@
 import { MouseSelect } from "../MouseSelect"
 import { MarqueeText } from "../MarqueeText"
+import { releaseInstallDir } from "../../../../common/updater"
+import { resolve } from "path"
 import type { Conversation, Dialog, Group, Peer } from "../../types"
 
 type CommandsDialogProps = {
@@ -100,6 +102,10 @@ export function UpdateDialog({ appReleaseVersion, dialog, dialogError, dialogHei
       else if (option?.value === "restart" && dialog.installDir) restartUpdate(dialog.installDir)
       else if (option?.value === "ignore" || option?.value === "dismiss") closeDialog()
     }} wrapSelection showDescription />}
+    {!installing && !dialog.installed && (() => {
+      const dir = dialog.installDir ?? releaseInstallDir()
+      return dir ? <text fg="#666666">  {resolve(dir)}</text> : null
+    })()}
   </>
 }
 
@@ -118,5 +124,6 @@ export function UpdateDestinationDialog({ dialog, dialogError, dialogWidth, dial
     <MarqueeText width={dialogWidth - 4} fg="#888888" text="The folder must contain meshtalk, meshtalk-backend, meshtalk-cli, and meshtalk-tui." />
     {dialogError && <text fg="#ff7777">{dialogError}</text>}
     <input focused value={dialogDraft} placeholder="/path/to/MeshTalk" onInput={setDialogDraft} onSubmit={(value) => installUpdate(dialog.release, typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
+    {dialogDraft.trim() ? <text fg="#666666">  {resolve(dialogDraft.trim())}</text> : null}
   </box>
 }
