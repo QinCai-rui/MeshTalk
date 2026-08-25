@@ -16,8 +16,10 @@ Peer-to-peer encrypted messaging over a LAN or direct NAT-traversed UDP links.
 
 MeshTalk keeps the original offline LAN path: UDP broadcast discovers peers and
 TCP carries authenticated messages. Private rooms add remote discovery through
-an opaque control service and public STUN. The control service exchanges only
-encrypted endpoint cards; chat traffic always goes directly between peers.
+an opaque control service and public STUN. If configured, coturn provides a
+fallback path when direct UDP is unavailable. The control service exchanges only
+encrypted endpoint cards and short-lived relay credentials; chat traffic is never
+stored by either service.
 
 ## Architecture
 
@@ -31,6 +33,8 @@ Python backend ---- LAN broadcast + TCP ---- LAN peers
       +---- encrypted endpoint cards ---- control service
       |
       +---- STUN + reliable encrypted UDP ---- remote peers
+      |
+      +---- TURN relay (fallback; encrypted UDP) ---- remote peers
 ```
 
 ## Quick Start
@@ -241,6 +245,125 @@ MESHTALK_STUN_SERVER=stun.example.com:3478 meshtalk
 
 The control URL can similarly be supplied as `MESHTALK_CONTROL_URL`.
 
+## TURN Relay Deployment
+
+TURN is optional. Direct UDP is always attempted first. MeshTalk falls back to
+TURN after direct UDP setup fails or the authenticated direct path becomes
+unhealthy. A healthy direct path remains preferred. TURN carries only transport
+datagrams; MeshTalk transport encryption and message/file end-to-end encryption
+remain active.
+
+### Self-Hosted Compose
+
+The repository includes a coturn service in `docker-compose.yml`. Copy
+`turn.env.example` to `.env`, then replace the example values with one random
+secret shared by control and coturn:
+
+```bash
+TURN_SHARED_SECRET="$(openssl rand -base64 32)"
+TURN_REALM="turn.example.com"
+TURN_URIS="turn:turn.example.com:3478?transport=udp"
+TURN_PORT=3478
+TURN_RELAY_MIN_PORT=49152
+TURN_RELAY_MAX_PORT=49200
+```
+
+Use a public DNS name in `TURN_URIS`, not `localhost`, for Internet clients.
+Start and inspect the services with:
+
+```bash
+docker compose --env-file .env up -d control turn
+docker compose --env-file .env logs -f control turn
+```
+
+Allow TCP and UDP `3478` and UDP `49152-49200` in the host firewall and cloud
+security group. Publish TCP `8787` only when the control service is intended to
+be public, and put it behind HTTPS/WSS in production.
+
+The included coturn service supports TURN over UDP and plain TCP control
+connections. For TURN-over-TLS, provide a trusted certificate and private key to
+coturn, enable its TLS listener on `5349`, and set:
+
+```bash
+TURN_URIS="turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp"
+```
+
+The certificate must be valid for the hostname in the `turns:` URI. The Compose
+example leaves certificate mounting and the TLS listener to the operator because
+certificates are deployment secrets. If coturn is behind NAT, configure its
+public relay address with coturn's `external-ip` setting.
+
+### Control Configuration
+
+Set these variables when deploying the control service outside the included
+Compose file:
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `CONTROL_TURN_ENABLED` | Enables device registration and credential issuance | `false` |
+| `CONTROL_TURN_URIS` | Comma-separated `turn:` or `turns:` URIs | empty |
+| `CONTROL_TURN_SHARED_SECRET` | Must match coturn `static-auth-secret` | empty |
+| `CONTROL_TURN_TTL_SECONDS` | Lifetime encoded into each coturn username | `600` |
+
+Clients connect over `wss://`, receive a signed device challenge, register their
+existing Ed25519 identity, and request credentials on that WebSocket. Credentials
+are short-lived and are not persisted in `settings.json` or returned through
+local IPC.
+
+### coturn Requirements
+
+Configure coturn with long-term shared-secret authentication:
+
+```text
+lt-cred-mech
+use-auth-secret
+static-auth-secret=<TURN_SHARED_SECRET>
+realm=<TURN_REALM>
+fingerprint
+```
+
+Keep UDP relay enabled. Bound `min-port` and `max-port` to a documented range and
+publish the same range through the firewall. Monitor allocation counts and
+bandwidth because TURN transfers consume relay-server egress.
+
+### Fallback And Recovery
+
+1. The client allocates TURN and publishes relay candidates inside the encrypted,
+   signed endpoint card.
+2. Both peers attempt direct server-reflexive UDP first.
+3. If direct HELLO/READY setup expires, the relay candidate is attempted.
+4. Authenticated MeshTalk packets are sent through TURN ChannelData.
+5. A relayed session probes direct UDP periodically and returns to it after a
+   successful stable handshake.
+
+The TUI and CLI identify the active route as `TURN relay`. If allocation or
+credential issuance fails, LAN/direct UDP behavior continues and diagnostics log
+the relay failure.
+
+### Security And Privacy
+
+- coturn can observe allocation identity, source addresses, destination relay
+  addresses, timing, and encrypted datagram sizes.
+- coturn cannot decrypt MeshTalk transport or message content.
+- The control service can observe device registration, IP address, credential
+  issuance, room membership metadata, and opaque encrypted cards.
+- The shared TURN secret belongs only to control and coturn; never put it in a
+  client environment or endpoint card.
+- Signed registration proves possession of a MeshTalk identity but does not stop
+  Sybil identities. Enforce coturn allocation, bandwidth, IP, and device quotas.
+
+### Troubleshooting
+
+- `TURN is not configured`: set `CONTROL_TURN_ENABLED=true`, relay URIs, and the
+  shared secret on control.
+- `TURN allocation ... failed`: check DNS, credentials, coturn logs, port `3478`,
+  and relay-range reachability.
+- Direct works but relay does not: verify coturn `external-ip`, relay ports,
+  firewall rules, and the endpoint-card size.
+- TLS allocation fails: verify the certificate hostname, port `5349`, and CA chain.
+- A peer remains offline: inspect `debug_info`, confirm a `TURN relay` endpoint is
+  listed, and verify both clients use the same control service.
+
 ## File Transfer
 
 MeshTalk supports sending files (up to 50 MiB) directly between peers over the
@@ -327,8 +450,9 @@ older glibc than the build system.
   necessarily learn each other's public IP and UDP port.
 
 UDP hole punching does not work through every symmetric NAT, firewall, carrier
-network, or UDP-blocking policy. MeshTalk does not (yet) include a TURN relay, so it
-fails closed instead of routing chat content through the control service.
+network, or UDP-blocking policy. When the control service supplies short-lived
+coturn credentials, MeshTalk falls back to TURN without routing chat content
+through the control service.
 
 Peer networking and STUN are IPv4-only. Sockets bind to `0.0.0.0`/`127.0.0.1`,
 STUN resolution is forced to `AF_INET`, LAN discovery uses IPv4 broadcast, and

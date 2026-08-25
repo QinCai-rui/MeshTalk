@@ -170,14 +170,21 @@ class PeerManager:
             logger.info("LAN endpoint changed for %s: %s -> %s", peer_id, old, new)
         asyncio.ensure_future(self.db.save_peer_endpoint(peer_id, "lan_tcp", new))
 
-    async def record_remote_candidate(self, peer_id: str, endpoint: Endpoint) -> None:
+    async def record_remote_candidate(self, peer_id: str, endpoint: Endpoint | None) -> None:
         if peer_id not in self._known_endpoints and len(self._known_endpoints) >= MAX_KNOWN_PEERS:
             raise ValueError("Too many known peers")
         old = self._known_endpoints.get(peer_id, {}).get("remote_udp")
-        self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = endpoint
-        if old != endpoint:
-            logger.info("Remote UDP endpoint changed for %s: %s -> %s", peer_id, old, _format_endpoint(endpoint))
-        await self.db.save_peer_endpoint(peer_id, "remote_udp", endpoint)
+        if endpoint is not None:
+            self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = endpoint
+            if old != endpoint:
+                logger.info("Remote UDP endpoint changed for %s: %s -> %s", peer_id, old, _format_endpoint(endpoint))
+            await self.db.save_peer_endpoint(peer_id, "remote_udp", endpoint)
+        else:
+            # Clear remote_udp when transitioning to relay-only
+            self._known_endpoints.setdefault(peer_id, {}).pop("remote_udp", None)
+            if old is not None:
+                logger.info("Remote UDP endpoint cleared for %s (relay-only)", peer_id)
+            await self.db.save_peer_endpoint(peer_id, "remote_udp", None)
 
     async def load_endpoints(self) -> None:
         saved = await self.db.load_peer_endpoints()
@@ -267,13 +274,14 @@ class PeerManager:
         display_name: str,
         encryption_public_key: bytes,
         signing_public_key: bytes,
+        via_relay: bool,
     ) -> None:
         if peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
             logger.warning("Rejecting remote UDP peer %s: peer limit reached", peer_id)
             return
         old = self._udp_peers.get(peer_id)
         old_endpoint = old.endpoint if old else None
-        peer = PeerConnection(peer_id, address, port, PeerState.CONNECTED, "remote_udp")
+        peer = PeerConnection(peer_id, address, port, PeerState.CONNECTED, "remote_turn" if via_relay else "remote_udp")
         peer.display_name = display_name
         peer.encryption_public_key = encryption_public_key
         peer.signing_public_key = signing_public_key
@@ -282,7 +290,7 @@ class PeerManager:
         if gaps is not None:
             peer.remote_capabilities, peer.peer_missing_capabilities, peer.local_missing_capabilities = gaps
         self._udp_peers[peer_id] = peer
-        self._known_endpoints.setdefault(peer_id, {})["remote_udp"] = peer.endpoint
+        self._known_endpoints.setdefault(peer_id, {})[peer.transport] = peer.endpoint
         active = self.peers.get(peer_id)
         if not active or active.state != PeerState.CONNECTED or active.transport != "lan_tcp":
             self.peers[peer_id] = peer
@@ -292,7 +300,7 @@ class PeerManager:
         if old_endpoint and old_endpoint != peer.endpoint:
             logger.info("Remote UDP endpoint changed for %s: %s -> %s", peer_id, _format_endpoint(old_endpoint), _format_endpoint(peer.endpoint))
         else:
-            logger.info("Authenticated remote UDP connection to %s at %s", peer_id, _format_endpoint(peer.endpoint))
+            logger.info("Authenticated remote %s connection to %s at %s", "TURN" if via_relay else "UDP", peer_id, _format_endpoint(peer.endpoint))
 
     async def _on_udp_packet(self, peer_id: str, packet: Packet) -> None:
         peer = self._udp_peers.get(peer_id)
@@ -505,7 +513,7 @@ class PeerManager:
         try:
             await self._send_packet(peer, packet)
         except ConnectionError:
-            if peer.transport == "remote_udp":
+            if peer.transport in ("remote_udp", "remote_turn"):
                 await self._on_udp_disconnected(peer.peer_id)
             raise
 
@@ -513,7 +521,7 @@ class PeerManager:
         required = capability_for_packet(packet.type)
         if required is not None and not peer.supports(required):
             raise ValueError(f"Peer does not support capability: {required}")
-        if peer.transport == "remote_udp":
+        if peer.transport in ("remote_udp", "remote_turn"):
             await self.udp.send_packet(peer.peer_id, packet)
             return
         if peer.writer is None:

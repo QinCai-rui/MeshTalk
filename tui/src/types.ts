@@ -8,9 +8,9 @@ export type Peer = {
   is_friend?: boolean
   is_blocked?: boolean
   friend_request?: "incoming" | "outgoing" | "both" | null
-  active_transport?: "lan_tcp" | "remote_udp"
+  active_transport?: "lan_tcp" | "remote_udp" | "remote_turn"
   active_endpoint?: string
-  endpoints: { transport: "lan_tcp" | "remote_udp"; endpoint: string; active: boolean }[]
+  endpoints: { transport: "lan_tcp" | "remote_udp" | "remote_turn"; endpoint: string; active: boolean }[]
   delivery_warnings?: ("offline" | "not_friend" | "rendezvous_out_of_sync" | "limited")[]
   capabilities?: string[]
   remote_capabilities?: string[]

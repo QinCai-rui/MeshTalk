@@ -60,12 +60,20 @@ def _room_key(room: Room) -> bytes:
     ).derive(room.secret)
 
 
-def encrypt_endpoint_card(identity: Identity, room: Room, endpoint: Endpoint | None) -> str:
+def encrypt_endpoint_card(
+    identity: Identity, room: Room, endpoint: Endpoint | None, relay_endpoints: list[Endpoint] | None = None
+) -> str:
+    candidates = []
+    if endpoint:
+        candidates.append({"type": "direct", "host": endpoint[0], "port": endpoint[1]})
+    for host, port in relay_endpoints or []:
+        candidates.append({"type": "relay", "host": host, "port": port})
     value = {
         "kind": "endpoint",
         "peer_id": identity.peer_id,
         "signing_public_key": identity.signing_public_key_bytes().hex(),
         "candidate": {"host": endpoint[0], "port": endpoint[1]} if endpoint else None,
+        "candidates": candidates,
         "created_at": int(time.time()),
         "nonce": os.urandom(16).hex(),
     }
@@ -94,13 +102,17 @@ def decrypt_endpoint_card(room: Room, payload: str, now: float | None = None) ->
     created_at = value.get("created_at")
     if not isinstance(created_at, int) or abs(current_time - created_at) > CARD_MAX_AGE:
         raise ValueError("Expired endpoint card")
-    candidate = value.get("candidate")
-    if candidate is not None and (
-        not isinstance(candidate, dict)
-        or not isinstance(candidate.get("host"), str)
-        or not isinstance(candidate.get("port"), int)
-    ):
-        raise ValueError("Invalid endpoint card candidate")
+    candidates = value.get("candidates")
+    if not isinstance(candidates, list) or len(candidates) > 8:
+        raise ValueError("Invalid endpoint card candidates")
+    for candidate in candidates:
+        if (
+            not isinstance(candidate, dict)
+            or candidate.get("type") not in {"direct", "relay"}
+            or not isinstance(candidate.get("host"), str)
+            or not isinstance(candidate.get("port"), int)
+        ):
+            raise ValueError("Invalid endpoint card candidate")
     try:
         Ed25519PublicKey.from_public_bytes(signing_key).verify(signature, _canonical(value))
     except InvalidSignature as exc:
@@ -206,6 +218,9 @@ class RendezvousService:
                     ping_timeout=CONTROL_PING_TIMEOUT,
                     **connection_options,
                 ) as websocket:
+                    if url.startswith("wss://"):
+                        await self._register_device(websocket)
+                        await self._configure_turn(websocket)
                     self.connected = True
                     self._websocket = websocket
                     self.reconnect_attempts = 0
@@ -246,6 +261,35 @@ class RendezvousService:
                 except TimeoutError:
                     pass
                 backoff = min(backoff * 2, CONTROL_RECONNECT_MAX_DELAY)
+
+    async def _register_device(self, websocket) -> None:
+        raw = await asyncio.wait_for(websocket.recv(), CONTROL_CONNECT_TIMEOUT)
+        message = json.loads(raw)
+        if message.get("type") != "device_challenge":
+            raise ValueError("Control server did not issue a device challenge")
+        issued_at = int(time.time())
+        signed = {
+            "challenge_id": message["challenge_id"], "issued_at": issued_at,
+            "kind": "meshtalk-device-register-v1", "nonce": message["nonce"],
+            "peer_id": self.identity.peer_id,
+            "signing_public_key": self.identity.signing_public_key_bytes().hex(), "v": 1,
+        }
+        signed["signature"] = self.identity.signing_private_key.sign(_canonical(signed)).hex()
+        await websocket.send(json.dumps({"type": "device_register", **signed}))
+        response = json.loads(await asyncio.wait_for(websocket.recv(), CONTROL_CONNECT_TIMEOUT))
+        if response.get("type") != "device_registered" or response.get("peer_id") != self.identity.peer_id:
+            raise ValueError("Control server rejected device registration")
+
+    async def _configure_turn(self, websocket) -> None:
+        await websocket.send(json.dumps({"type": "turn_credentials"}))
+        response = json.loads(await asyncio.wait_for(websocket.recv(), CONTROL_CONNECT_TIMEOUT))
+        if response.get("type") != "turn_credentials":
+            logger.info("TURN credentials unavailable: %s", response.get("error", "not configured"))
+            return
+        uris, username, credential = response.get("uris"), response.get("username"), response.get("credential")
+        if not isinstance(uris, list) or not all(isinstance(uri, str) for uri in uris) or not isinstance(username, str) or not isinstance(credential, str):
+            raise ValueError("Invalid TURN credential response")
+        await self.udp.configure_turn(uris, username, credential)
 
     async def _receive_loop(self, websocket) -> None:
         async for raw in websocket:
@@ -322,7 +366,7 @@ class RendezvousService:
             await self._announce(websocket, room)
 
     async def _announce(self, websocket, room: Room) -> None:
-        payload = encrypt_endpoint_card(self.identity, room, self.public_endpoint)
+        payload = encrypt_endpoint_card(self.identity, room, self.public_endpoint, self.udp.relay_endpoints)
         await websocket.send(json.dumps({"type": "signal", "room_id": room.id, "payload": payload}))
 
     async def _handle_card(self, room: Room, payload: str, announce_join: bool = False) -> None:
@@ -340,19 +384,22 @@ class RendezvousService:
         }
         if self.on_room_member:
             await self.on_room_member(room.id, peer_id, announce_join)
-        candidate = value["candidate"]
-        if candidate is None:
+        candidates = value["candidates"]
+        if not candidates:
             return
-        address = ipaddress.ip_address(candidate["host"])
-        port = candidate["port"]
-        valid_address = isinstance(address, ipaddress.IPv4Address) and address.is_global and not (
-            address.is_multicast or address.is_unspecified or address.is_reserved or address.is_link_local
-        )
-        if self.allow_loopback and address.is_loopback:
-            valid_address = True
-        if not 1 <= port <= 65535 or not valid_address:
-            raise ValueError("Endpoint card is not a public address")
-        endpoint = str(address), port
+        parsed: list[tuple[str, Endpoint]] = []
+        for candidate in candidates:
+            address = ipaddress.ip_address(candidate["host"])
+            port = candidate["port"]
+            valid_address = isinstance(address, ipaddress.IPv4Address) and address.is_global and not (
+                address.is_multicast or address.is_unspecified or address.is_reserved or address.is_link_local
+            )
+            if self.allow_loopback and address.is_loopback:
+                valid_address = True
+            if not 1 <= port <= 65535 or not valid_address:
+                raise ValueError("Endpoint card is not a public address")
+            parsed.append((candidate["type"], (str(address), port)))
+        endpoint = next((item[1] for item in parsed if item[0] == "direct"), None)
         self._candidate_seen = {
             tracked_peer: seen_at for tracked_peer, seen_at in self._candidate_seen.items()
             if now - seen_at < CANDIDATE_TRACKING_AGE
@@ -367,14 +414,21 @@ class RendezvousService:
         }
         if peer_id not in self._candidate_seen and len(self._candidate_seen) >= MAX_TRACKED_CANDIDATES:
             raise ValueError("Too many room candidates")
-        if self._last_candidates.get(peer_id) != endpoint:
+        if endpoint is not None and self._last_candidates.get(peer_id) != endpoint:
             changes = [changed for changed in self._candidate_changes.get(peer_id, []) if now - changed < 60]
             if len(changes) >= MAX_CANDIDATE_CHANGES_PER_MINUTE:
                 raise ValueError("Endpoint card changed too frequently")
             changes.append(now)
-        self.udp.expect_peer(peer_id, endpoint)
+        if endpoint is not None:
+            self.udp.expect_peer(peer_id, endpoint)
+            if self._last_candidates.get(peer_id) != endpoint:
+                self._candidate_changes[peer_id] = changes
+                self._last_candidates[peer_id] = endpoint
+        else:
+            # Relay-only card: clear stale direct state before setting up relay
+            self._last_candidates.pop(peer_id, None)
+        for kind, relay_endpoint in parsed:
+            if kind == "relay":
+                self.udp.expect_relay_peer(peer_id, relay_endpoint)
         self._candidate_seen[peer_id] = now
-        if self._last_candidates.get(peer_id) != endpoint:
-            self._candidate_changes[peer_id] = changes
-            self._last_candidates[peer_id] = endpoint
         await self.on_candidate(peer_id, endpoint)

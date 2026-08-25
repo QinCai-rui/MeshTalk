@@ -58,7 +58,7 @@ Status reflects verified implementation, not planned code.
 - [x] LAN-first transport selection with remote UDP fallback
 - [x] CLI room and control-service commands
 - [x] LAN and remote endpoint visibility in CLI and OpenTUI
-- [ ] TURN fallback for symmetric NATs (intentionally not routed through control)
+- [x] TURN fallback for symmetric NATs (intentionally not routed through control)
 - [ ] Large-scale room churn and hostile-control integration tests
 
 ## Peer Connections
@@ -154,7 +154,7 @@ Status reflects verified implementation, not planned code.
 - [ ] Preserve and authenticate immutable envelope metadata
 - [ ] Relay acknowledgement behavior
 - [ ] Routing-loop and duplicate-resistance integration tests
-- [ ] Relay privacy review: relay cannot decrypt or undetectably modify content
+- [x] Relay privacy review: relay cannot decrypt or undetectably modify content
 
 ## Store And Forward
 
@@ -253,8 +253,8 @@ Status reflects verified implementation, not planned code.
 - [ ] Malformed-packet resilience tests
 - [ ] Resource-exhaustion limits and timeouts
 - [ ] Security review of protocol choices and threat model
-- [ ] Document metadata exposure and relay limitations
-- [ ] No plaintext messages written to relay storage
+- [x] Document metadata exposure and relay limitations
+- [x] No plaintext messages written to relay storage
 
 ## Verification
 
