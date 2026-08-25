@@ -40,9 +40,9 @@ members already online.
 
 LAN TCP has highest priority. For Internet peers, direct UDP has higher priority
 than TURN. Direct setup and keepalive health determine whether the relay route is
-selected. A relayed session periodically probes direct UDP and returns to it after
-stable recovery. The backend reports all known endpoints and marks the active
-endpoint through IPC.
+selected. A confirmed relay remains active for the session; replacing it with a
+direct route requires an atomic handoff and is not attempted yet. The backend
+reports all known endpoints and marks the active endpoint through IPC.
 
 ### TURN relay
 

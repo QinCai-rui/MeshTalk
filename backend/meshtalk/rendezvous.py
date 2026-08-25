@@ -103,6 +103,17 @@ def decrypt_endpoint_card(room: Room, payload: str, now: float | None = None) ->
     if not isinstance(created_at, int) or abs(current_time - created_at) > CARD_MAX_AGE:
         raise ValueError("Expired endpoint card")
     candidates = value.get("candidates")
+    legacy_candidate = value.get("candidate")
+    if candidates is None and legacy_candidate is not None:
+        if (
+            not isinstance(legacy_candidate, dict)
+            or not isinstance(legacy_candidate.get("host"), str)
+            or not isinstance(legacy_candidate.get("port"), int)
+        ):
+            raise ValueError("Invalid legacy endpoint card candidate")
+        candidates = [{"type": "direct", "host": legacy_candidate["host"], "port": legacy_candidate["port"]}]
+    elif candidates is None:
+        candidates = []
     if not isinstance(candidates, list) or len(candidates) > 8:
         raise ValueError("Invalid endpoint card candidates")
     for candidate in candidates:
@@ -117,6 +128,7 @@ def decrypt_endpoint_card(room: Room, payload: str, now: float | None = None) ->
         Ed25519PublicKey.from_public_bytes(signing_key).verify(signature, _canonical(value))
     except InvalidSignature as exc:
         raise ValueError("Invalid endpoint card signature") from exc
+    value["candidates"] = candidates
     value["signature"] = signature.hex()
     return value
 
@@ -366,7 +378,8 @@ class RendezvousService:
             await self._announce(websocket, room)
 
     async def _announce(self, websocket, room: Room) -> None:
-        payload = encrypt_endpoint_card(self.identity, room, self.public_endpoint, self.udp.relay_endpoints)
+        direct_endpoint = None if self.udp.force_turn else self.public_endpoint
+        payload = encrypt_endpoint_card(self.identity, room, direct_endpoint, self.udp.relay_endpoints)
         await websocket.send(json.dumps({"type": "signal", "room_id": room.id, "payload": payload}))
 
     async def _handle_card(self, room: Room, payload: str, announce_join: bool = False) -> None:
@@ -427,6 +440,7 @@ class RendezvousService:
         else:
             # Relay-only card: clear stale direct state before setting up relay
             self._last_candidates.pop(peer_id, None)
+            self.udp.clear_direct_candidate(peer_id)
         for kind, relay_endpoint in parsed:
             if kind == "relay":
                 self.udp.expect_relay_peer(peer_id, relay_endpoint)

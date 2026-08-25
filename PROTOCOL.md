@@ -373,13 +373,19 @@ coturn REST username and credential. The shared secret is never sent to clients.
 
 ### 5.6 TURN Relay
 
-The client uses coturn's long-term shared-secret REST credential scheme:
+The control service can issue coturn long-term shared-secret REST credentials:
 
 ```text
 expiry   = unix_now + CONTROL_TURN_TTL_SECONDS
 username = expiry + ":" + peer_id
 credential = base64(HMAC-SHA1(TURN_SHARED_SECRET, username))
 ```
+
+For `CONTROL_TURN_PROVIDER=cloudflare`, control instead uses its server-side API
+token to request short-lived credentials from Cloudflare's TURN credential API.
+It filters the returned ICE server URLs to `turn:` and `turns:` URLs before
+sending the normalized URI list, username, and credential to the client. The
+Cloudflare API token and coturn shared secret are never sent to clients.
 
 `aioice.turn.create_turn_endpoint` allocates a UDP relay and refreshes the
 allocation. The control connection to coturn may use UDP, TCP, or TLS. TLS
@@ -391,7 +397,8 @@ The route-selection policy is:
 1. LAN TCP when available.
 2. Direct UDP server-reflexive candidate.
 3. TURN relay candidate after direct HELLO/READY setup expires.
-4. Direct recovery probe every 60 seconds while relayed.
+4. Keep the confirmed relay for the session. Direct recovery is deferred until
+   route replacement can preserve the working session atomically.
 
 TURN allocation failure is non-fatal. The peer remains available through any
 working LAN or direct route, and the client reports the relay failure in logs and

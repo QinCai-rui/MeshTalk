@@ -28,8 +28,9 @@ class TurnServer:
         if scheme not in {"turn", "turns"} or not parsed.hostname or parsed.path not in {"", "/"}:
             raise ValueError("TURN URI must use turn: or turns:")
         query = parse_qs(parsed.query, strict_parsing=True)
-        transport = query.get("transport", ["udp"])[0]
-        if transport not in {"udp", "tcp"} or len(query) > 1:
+        values = query.get("transport", ["tcp" if scheme == "turns" else "udp"])
+        transport = values[0]
+        if transport not in {"udp", "tcp"} or len(query) > 1 or len(values) != 1:
             raise ValueError("TURN URI transport must be udp or tcp")
         if scheme == "turns" and transport != "tcp":
             raise ValueError("turns: requires TCP transport")
