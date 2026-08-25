@@ -24,8 +24,8 @@ type SidebarProps = {
 }
 
 export function Sidebar({ activeCount, compact, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
-  // ScrollBox draws its vertical bar over the viewport, so reserve its column for list text.
-  const listContentOptions = { flexDirection: "column" as const, paddingRight: 1 }
+  // Outer and section borders/padding consume eight columns; reserve one more for the scrollbar.
+  const listContentOptions = { flexDirection: "column" as const, width: Math.max(1, sidebarWidth - 9) }
   return <box title={`You: ${identity?.display_name ?? "..."}`} style={{ border: true, width: sidebarWidth, flexShrink: 0, flexDirection: "column", padding: 1, gap: 1 }}>
     <box onMouseDown={() => setEditingName(true)}>
       {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <><text fg="#888888">Click to rename</text><text fg="#888888">{identity?.peer_id.slice(0, 12)}</text></>}
