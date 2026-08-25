@@ -5,8 +5,8 @@
 MeshTalk provides direct encrypted messaging in two environments:
 
 1. LAN peers work without internet access or central infrastructure.
-2. Remote peers use an opaque control service and STUN only to establish direct
-   UDP connectivity.
+2. Remote peers use an opaque control service and prefer direct STUN-assisted UDP,
+   with optional TURN fallback for restrictive networks.
 
 The OpenTUI and CLI are local clients of one Python backend. The backend owns
 identity, networking, encryption, persistence, and transport selection.
@@ -38,9 +38,24 @@ members already online.
 
 ### Path selection
 
-When both paths are authenticated, LAN TCP is active and remote UDP remains a
-fallback. The backend reports all known endpoints and marks the active endpoint
-through IPC.
+LAN TCP has highest priority. For Internet peers, direct UDP has higher priority
+than TURN. Direct setup and keepalive health determine whether the relay route is
+selected. A relayed session periodically probes direct UDP and returns to it after
+stable recovery. The backend reports all known endpoints and marks the active
+endpoint through IPC.
+
+### TURN relay
+
+TURN allocations are created through the `aioice` adapter in
+`backend/meshtalk/turn.py`. UDP, TCP, and TLS are control transports to coturn;
+the relayed payload remains UDP. TURN ChannelData carries already encrypted
+MeshTalk datagrams. The relay never participates in MeshTalk identity or key
+negotiation.
+
+The control service optionally authenticates a device with a signed Ed25519
+challenge and returns coturn REST credentials derived from a shared secret. The
+secret is held only by control and coturn. Endpoint cards remain encrypted and
+opaque to control, and contain direct plus relay candidates.
 
 ### Capability differences
 
@@ -78,7 +93,7 @@ AES-256-GCM key with HKDF-SHA256. Endpoint cards contain:
 ```text
 peer ID
 Ed25519 public key
-optional public UDP address and port
+direct and optional relay UDP candidates
 creation time
 random replay nonce
 Ed25519 signature
@@ -357,8 +372,9 @@ and return JSON; responses are correlated by request id, and asynchronous events
 
 - Direct connections may fail with symmetric NAT, blocked UDP, or restrictive
   firewalls.
-- There is intentionally no TURN relay, because routing through one would expose
-  additional traffic metadata and make remote delivery infrastructure-dependent.
+- TURN is optional and introduces relay metadata visibility and bandwidth cost.
+  Operators must protect the shared secret, restrict relay ports, configure
+  quotas, and monitor allocation and egress usage.
 - Anyone holding a room invite can decrypt that room's endpoint cards and attempt
   to connect. Invite distribution and rotation are user responsibilities.
 - Direct peers and STUN providers necessarily observe public network endpoints.
@@ -374,7 +390,8 @@ and return JSON; responses are correlated by request id, and asynchronous events
 Fresh MeshTalk state is stored in `~/.meshtalk`:
 
 - `identity.json`: private identity and message-encryption keys, mode 0600
-- `settings.json`: control URL, room secrets, and files directory, mode 0600
+- `settings.json`: control URL, room secrets, and files directory, mode 0600;
+  TURN credentials are ephemeral and are not persisted
 - `meshtalk.db`: peer and conversation state, file transfer records
 - `meshtalk.sock`: owner-only local IPC socket while the backend runs
 - `files/`: received files stored in `<file_id>/` subdirectories

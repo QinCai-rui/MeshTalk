@@ -9,12 +9,35 @@ services:
     ports:
       - "${CONTROL_PORT:-8787}:8787"
     restart: unless-stopped
+    environment:
+      - CONTROL_TURN_ENABLED=true
+      - CONTROL_TURN_URIS=${TURN_URIS:-turn:localhost:3478?transport=udp}
+      - CONTROL_TURN_SHARED_SECRET=${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET to a random value shared with coturn}
+      - CONTROL_TURN_TTL_SECONDS=${CONTROL_TURN_TTL_SECONDS:-600}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8787/health"]
       interval: 15s
       timeout: 3s
       retries: 3
       start_period: 5s
+
+  turn:
+    image: coturn/coturn:4.6.3
+    command:
+      - -n
+      - --log-file=stdout
+      - --lt-cred-mech
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET to a random value shared with control}
+      - --realm=${TURN_REALM:-localhost}
+      - --fingerprint
+      - --min-port=${TURN_RELAY_MIN_PORT:-49152}
+      - --max-port=${TURN_RELAY_MAX_PORT:-49200}
+    ports:
+      - "${TURN_PORT:-3478}:3478/tcp"
+      - "${TURN_PORT:-3478}:3478/udp"
+      - "${TURN_RELAY_MIN_PORT:-49152}-${TURN_RELAY_MAX_PORT:-49200}:${TURN_RELAY_MIN_PORT:-49152}-${TURN_RELAY_MAX_PORT:-49200}/udp"
+    restart: unless-stopped
 
   client:
     # docker compose up client

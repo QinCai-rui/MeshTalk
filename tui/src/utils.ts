@@ -16,7 +16,7 @@ export function formatDateTime(timestamp: number): string { const d = new Date(t
 export function formatDateSeparator(timestamp: number): string { return new Date(timestamp * 1000).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" }) }
 export function dayKey(timestamp: number): string { const d = new Date(timestamp * 1000); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` }
 export function formatTimeMinute(timestamp: number): string { const d = new Date(timestamp * 1000); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()} ${d.getHours()}:${d.getMinutes()}` }
-export function transportName(transport?: Peer["active_transport"]): string { return transport === "lan_tcp" ? "LAN TCP" : transport === "remote_udp" ? "Remote UDP" : "No endpoint" }
+export function transportName(transport?: Peer["active_transport"]): string { return transport === "lan_tcp" ? "LAN TCP" : transport === "remote_udp" ? "Remote UDP" : transport === "remote_turn" ? "TURN relay" : "No endpoint" }
 export function peerPresence(peer: Peer): "active" | "away" | "offline" { return peer.presence ?? "offline" }
 export function friendMarkers(peer: Peer): string { const markers: string[] = []; if (peer.is_friend) markers.push("\u2665"); if (peer.friend_request === "incoming" || peer.friend_request === "both") markers.push("\u2199"); if (peer.friend_request === "outgoing" || peer.friend_request === "both") markers.push("\u2197"); return markers.length ? ` ${markers.join("")}` : "" }
 export function composerLimitColor(length: number): string | undefined { const usage = length / MAX_MESSAGE_BYTES; if (usage >= 1) return "#ff7777"; if (usage >= 0.9) return "#ff9f43"; if (usage >= 0.75) return "#e0a34a"; return undefined }

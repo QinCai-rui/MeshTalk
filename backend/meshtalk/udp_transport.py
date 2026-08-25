@@ -33,6 +33,7 @@ from .protocol import (
     intersect_capabilities,
     validate_capabilities,
 )
+from .turn import TurnRelay, TurnServer
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +54,14 @@ AUTH_HEADER = struct.Struct("!4sB8sQ")
 RETRY_INTERVAL = 0.45
 MAX_RETRIES = 10
 SESSION_TIMEOUT = 12.0
+DIRECT_PROBE_INTERVAL = 60.0
 EXPECTED_PEER_TIMEOUT = 600.0
 MAX_EXPECTED_PEERS = 512
 MAX_ATTEMPTS = 128
 MAX_SESSIONS = 256
 
 Endpoint = tuple[str, int]
-ConnectedCallback = Callable[[str, str, int, str, bytes, bytes], Awaitable[None]]
+ConnectedCallback = Callable[[str, str, int, str, bytes, bytes, bool], Awaitable[None]]
 PacketCallback = Callable[[str, Packet], Awaitable[None]]
 DisconnectedCallback = Callable[[str], Awaitable[None]]
 
@@ -111,6 +113,7 @@ def parse_stun_response(data: bytes, transaction_id: bytes) -> Endpoint:
 class Attempt:
     peer_id: str
     endpoint: Endpoint
+    via_relay: bool = False
     private_key: X25519PrivateKey = field(default_factory=X25519PrivateKey.generate)
     nonce: bytes = field(default_factory=lambda: os.urandom(32))
     hello: bytes = b""
@@ -129,6 +132,7 @@ class Reassembly:
 class Session:
     peer_id: str
     endpoint: Endpoint
+    via_relay: bool
     session_id: bytes
     transmit_encryption_key: bytes
     receive_encryption_key: bytes
@@ -171,6 +175,10 @@ class UdpTransport:
         self._transport: asyncio.DatagramTransport | None = None
         self._attempts: dict[str, Attempt] = {}
         self._expected_endpoints: dict[str, tuple[Endpoint, float]] = {}
+        self._relay_candidates: dict[str, Endpoint] = {}
+        self._direct_candidates: dict[str, Endpoint] = {}
+        self._last_direct_probe: dict[str, float] = {}
+        self._relays: list[TurnRelay] = []
         self._sessions: dict[str, Session] = {}
         self._sessions_by_id: dict[bytes, Session] = {}
         self._stun_waiters: dict[bytes, asyncio.Future[bytes]] = {}
@@ -202,6 +210,8 @@ class UdpTransport:
                 except Exception:
                     pass
             self._transport.close()
+        await asyncio.gather(*(relay.stop() for relay in self._relays), return_exceptions=True)
+        self._relays.clear()
         await asyncio.gather(
             *(task for task in [self._maintenance_task, *self._tasks] if task),
             return_exceptions=True,
@@ -218,13 +228,36 @@ class UdpTransport:
         session = self._sessions.get(peer_id)
         return session.endpoint if session and session.confirmed else None
 
+    @property
+    def relay_endpoints(self) -> list[Endpoint]:
+        return [relay.endpoint for relay in self._relays if relay.transport is not None]
+
+    async def configure_turn(self, uris: list[str], username: str, credential: str) -> None:
+        await asyncio.gather(*(relay.stop() for relay in self._relays), return_exceptions=True)
+        self._relays.clear()
+        servers = [TurnServer.from_uri(uri) for uri in uris]
+        for server in servers:
+            relay = TurnRelay(server, self._relay_datagram_received)
+            try:
+                await relay.start(username, credential)
+            except Exception as exc:
+                logger.warning("TURN allocation through %s:%d failed: %s", server.host, server.port, exc)
+                await relay.stop()
+                continue
+            self._relays.append(relay)
+            logger.info("TURN relay allocation available at %s:%d", *relay.endpoint)
+
+    def expect_relay_peer(self, peer_id: str, endpoint: Endpoint) -> None:
+        self._validate_peer_endpoint(peer_id, endpoint)
+        self._relay_candidates[peer_id] = endpoint
+        if peer_id not in self._direct_candidates:
+            self._start_attempt(peer_id, endpoint, via_relay=True)
+
     def expect_peer(self, peer_id: str, endpoint: Endpoint) -> None:
         if peer_id == self.identity.peer_id:
             return
-        host, port = endpoint
-        ipaddress.ip_address(host)
-        if not 1 <= port <= 65535:
-            raise ValueError("Invalid peer UDP port")
+        self._validate_peer_endpoint(peer_id, endpoint)
+        self._direct_candidates[peer_id] = endpoint
         if peer_id not in self._expected_endpoints and len(self._expected_endpoints) >= MAX_EXPECTED_PEERS:
             raise ValueError("Too many expected UDP peers")
         now = time.monotonic()
@@ -247,6 +280,14 @@ class UdpTransport:
         if existing and existing.task:
             existing.task.cancel()
         self._start_attempt(peer_id, endpoint)
+
+    def _validate_peer_endpoint(self, peer_id: str, endpoint: Endpoint) -> None:
+        host, port = endpoint
+        ipaddress.ip_address(host)
+        if not 1 <= port <= 65535:
+            raise ValueError("Invalid peer UDP port")
+        if peer_id not in self._expected_endpoints and len(self._expected_endpoints) >= MAX_EXPECTED_PEERS:
+            raise ValueError("Too many expected UDP peers")
 
     async def discover_public_endpoint(self, host: str, port: int, timeout: float = 5.0) -> Endpoint:
         if not self._transport:
@@ -286,7 +327,7 @@ class UdpTransport:
         try:
             for _ in range(MAX_RETRIES):
                 for datagram in datagrams:
-                    self._sendto(datagram, session.endpoint)
+                    self._send_route(datagram, session.endpoint, session.via_relay)
                 try:
                     await asyncio.wait_for(acknowledged.wait(), RETRY_INTERVAL)
                     return
@@ -296,7 +337,7 @@ class UdpTransport:
         finally:
             self._pending.pop((session.session_id, message_id), None)
 
-    def datagram_received(self, data: bytes, addr: Endpoint) -> None:
+    def datagram_received(self, data: bytes, addr: Endpoint, via_relay: bool = False) -> None:
         if len(data) >= 20 and data[4:8] == struct.pack("!I", STUN_COOKIE):
             waiter = self._stun_waiters.get(data[8:20])
             if waiter and not waiter.done():
@@ -307,13 +348,13 @@ class UdpTransport:
         try:
             message_type = data[4]
             if message_type == HELLO:
-                self._handle_hello(data[5:], addr)
+                self._handle_hello(data[5:], addr, via_relay)
             elif message_type == DATA:
-                self._handle_data(data, addr)
+                self._handle_data(data, addr, via_relay)
             elif message_type == ACK:
-                self._handle_ack(data, addr)
+                self._handle_ack(data, addr, via_relay)
             elif message_type in (PING, PONG, READY, GOODBYE):
-                self._handle_keepalive(data, addr)
+                self._handle_keepalive(data, addr, via_relay)
         except Exception as exc:
             logger.debug("Rejected UDP datagram from %s:%d: %s", *addr, exc)
 
@@ -334,10 +375,10 @@ class UdpTransport:
         for _ in range(20):
             current = self._attempts.get(attempt.peer_id)
             session = self._sessions.get(attempt.peer_id)
-            if current is not attempt or session and session.confirmed and session.endpoint == attempt.endpoint:
+            if current is not attempt or session and session.confirmed and session.endpoint == attempt.endpoint and session.via_relay == attempt.via_relay:
                 return
-            self._sendto(attempt.hello, attempt.endpoint)
-            if session and session.endpoint == attempt.endpoint:
+            self._send_route(attempt.hello, attempt.endpoint, attempt.via_relay)
+            if session and session.endpoint == attempt.endpoint and session.via_relay == attempt.via_relay:
                 self._send_authenticated(session, READY, 0)
             await asyncio.sleep(0.4)
         if self._attempts.get(attempt.peer_id) is attempt:
@@ -346,8 +387,12 @@ class UdpTransport:
             if session and not session.confirmed:
                 self._sessions.pop(attempt.peer_id, None)
                 self._sessions_by_id.pop(session.session_id, None)
+            if not attempt.via_relay:
+                relay_endpoint = self._relay_candidates.get(attempt.peer_id)
+                if relay_endpoint and self._relays:
+                    self._start_attempt(attempt.peer_id, relay_endpoint, via_relay=True)
 
-    def _handle_hello(self, payload: bytes, addr: Endpoint) -> None:
+    def _handle_hello(self, payload: bytes, addr: Endpoint, via_relay: bool) -> None:
         if len(payload) > 1000:
             raise ValueError("Oversized UDP handshake")
         value = json.loads(payload)
@@ -362,31 +407,32 @@ class UdpTransport:
         remote_capabilities = validate_capabilities(value.get("capabilities"))
         if any(len(item) != 32 for item in (signing_key, encryption_key, session_key, nonce)) or len(signature) != 64:
             raise ValueError("Invalid UDP handshake key length")
-        expected = self._expected_endpoints.get(peer_id)
-        if expected:
+        expected = self._expected_endpoints.get(peer_id) if not via_relay else self._relay_candidates.get(peer_id)
+        if expected and not via_relay:
             if expected[0][0] != addr[0]:
                 raise ValueError("UDP handshake source host does not match introduced endpoint")
             if expected[0] != addr:
                 logger.info("UDP endpoint changed for %s: %s -> %s:%d", peer_id, expected[0], *addr)
-        else:
+        elif expected is None:
             logger.debug("Accepting UDP handshake from %s without prior introduction", peer_id)
-        self._expected_endpoints[peer_id] = (addr, time.monotonic())
+        if not via_relay:
+            self._expected_endpoints[peer_id] = (addr, time.monotonic())
         try:
             Ed25519PublicKey.from_public_bytes(signing_key).verify(signature, _canonical(value))
         except InvalidSignature as exc:
             raise ValueError("Invalid UDP handshake signature") from exc
         current = self._sessions.get(peer_id)
         if (
-            current and current.endpoint == addr and current.remote_nonce == nonce
+            current and current.endpoint == addr and current.via_relay == via_relay and current.remote_nonce == nonce
             and current.remote_session_public_key == session_key
         ):
-            self._sendto(current.local_hello, addr)
+            self._send_route(current.local_hello, addr, via_relay)
             self._send_authenticated(current, READY, 0)
             return
         attempt = self._attempts.get(peer_id)
-        if not attempt or attempt.endpoint != addr:
-            attempt = self._start_attempt(peer_id, addr)
-        self._sendto(attempt.hello, addr)
+        if not attempt or attempt.endpoint != addr or attempt.via_relay != via_relay:
+            attempt = self._start_attempt(peer_id, addr, via_relay)
+        self._send_route(attempt.hello, addr, via_relay)
         shared = attempt.private_key.exchange(X25519PublicKey.from_public_bytes(session_key))
         local_first = self.identity.peer_id < peer_id
         salt = attempt.nonce + nonce if local_first else nonce + attempt.nonce
@@ -394,7 +440,7 @@ class UdpTransport:
             algorithm=SHA256(), length=128, salt=salt, info=b"meshtalk-udp-session-v1"
         ).derive(shared)
         session_id = hashlib.sha256(material + b"session-id").digest()[:8]
-        if current and current.session_id == session_id and current.endpoint == addr:
+        if current and current.session_id == session_id and current.endpoint == addr and current.via_relay == via_relay:
             self._send_authenticated(current, READY, 0)
             return
         if not current and len(self._sessions) >= MAX_SESSIONS:
@@ -407,7 +453,7 @@ class UdpTransport:
         second_to_first = material[64:96], material[96:128]
         transmit, receive = (first_to_second, second_to_first) if local_first else (second_to_first, first_to_second)
         session = Session(
-            peer_id, addr, session_id, transmit[0], receive[0], transmit[1], receive[1],
+            peer_id, addr, via_relay, session_id, transmit[0], receive[0], transmit[1], receive[1],
             Identity.normalize_display_name(value["display_name"]), encryption_key, signing_key,
             attempt.hello, nonce, session_key,
             intersect_capabilities(self.capabilities, remote_capabilities),
@@ -426,11 +472,11 @@ class UdpTransport:
         header = DATA_HEADER.pack(MAGIC, DATA, session.session_id, message_id, index, count, nonce)
         return header + AESGCM(session.transmit_encryption_key).encrypt(nonce, fragment, header)
 
-    def _handle_data(self, data: bytes, addr: Endpoint) -> None:
+    def _handle_data(self, data: bytes, addr: Endpoint, via_relay: bool) -> None:
         if len(data) < DATA_HEADER.size + 16:
             raise ValueError("Truncated UDP data")
         _, _, session_id, message_id, index, count, nonce = DATA_HEADER.unpack(data[:DATA_HEADER.size])
-        session = self._session_for(session_id, addr, require_confirmation=True)
+        session = self._session_for(session_id, addr, via_relay, require_confirmation=True)
         if not 1 <= count <= MAX_FRAGMENTS or index >= count:
             raise ValueError("Invalid UDP fragment index")
         fragment = AESGCM(session.receive_encryption_key).decrypt(
@@ -459,16 +505,17 @@ class UdpTransport:
 
     def _send_ack(self, session: Session, message_id: int) -> None:
         header = AUTH_HEADER.pack(MAGIC, ACK, session.session_id, message_id)
-        self._sendto(
+        self._send_route(
             header + hmac.digest(session.transmit_authentication_key, header, "sha256")[:16],
             session.endpoint,
+            session.via_relay,
         )
 
-    def _handle_ack(self, data: bytes, addr: Endpoint) -> None:
+    def _handle_ack(self, data: bytes, addr: Endpoint, via_relay: bool) -> None:
         if len(data) != AUTH_HEADER.size + 16:
             raise ValueError("Invalid UDP acknowledgement")
         _, _, session_id, message_id = AUTH_HEADER.unpack(data[:AUTH_HEADER.size])
-        session = self._session_for(session_id, addr, require_confirmation=True)
+        session = self._session_for(session_id, addr, via_relay, require_confirmation=True)
         expected = hmac.digest(
             session.receive_authentication_key, data[:AUTH_HEADER.size], "sha256"
         )[:16]
@@ -479,11 +526,11 @@ class UdpTransport:
         if event:
             event.set()
 
-    def _handle_keepalive(self, data: bytes, addr: Endpoint) -> None:
+    def _handle_keepalive(self, data: bytes, addr: Endpoint, via_relay: bool) -> None:
         if len(data) != AUTH_HEADER.size + 16:
             raise ValueError("Invalid UDP keepalive")
         _, message_type, session_id, token = AUTH_HEADER.unpack(data[:AUTH_HEADER.size])
-        session = self._session_for(session_id, addr)
+        session = self._session_for(session_id, addr, via_relay)
         expected = hmac.digest(
             session.receive_authentication_key, data[:AUTH_HEADER.size], "sha256"
         )[:16]
@@ -506,6 +553,7 @@ class UdpTransport:
                     session.display_name,
                     session.encryption_public_key,
                     session.signing_public_key,
+                    session.via_relay,
                 ))
             return
         if not session.confirmed:
@@ -520,9 +568,10 @@ class UdpTransport:
 
     def _send_authenticated(self, session: Session, message_type: int, token: int) -> None:
         header = AUTH_HEADER.pack(MAGIC, message_type, session.session_id, token)
-        self._sendto(
+        self._send_route(
             header + hmac.digest(session.transmit_authentication_key, header, "sha256")[:16],
             session.endpoint,
+            session.via_relay,
         )
 
     def get_capabilities(self, peer_id: str) -> list[str]:
@@ -540,10 +589,10 @@ class UdpTransport:
         )
 
     def _session_for(
-        self, session_id: bytes, addr: Endpoint, require_confirmation: bool = False
+        self, session_id: bytes, addr: Endpoint, via_relay: bool, require_confirmation: bool = False
     ) -> Session:
         session = self._sessions_by_id.get(session_id)
-        if not session or session.endpoint != addr:
+        if not session or session.endpoint != addr or session.via_relay != via_relay:
             raise ValueError("Unknown UDP session")
         if require_confirmation and not session.confirmed:
             raise ValueError("UDP session is not confirmed")
@@ -565,6 +614,11 @@ class UdpTransport:
                     continue
                 if session.confirmed:
                     self._send_authenticated(session, PING, secrets.randbits(64))
+                    if session.via_relay and now - self._last_direct_probe.get(session.peer_id, 0) >= DIRECT_PROBE_INTERVAL:
+                        direct = self._direct_candidates.get(session.peer_id)
+                        if direct:
+                            self._last_direct_probe[session.peer_id] = now
+                            self._start_attempt(session.peer_id, direct)
                 session.seen = {
                     message_id: seen_at for message_id, seen_at in session.seen.items()
                     if now - seen_at < SESSION_TIMEOUT
@@ -578,22 +632,35 @@ class UdpTransport:
                 if now - value[1] < EXPECTED_PEER_TIMEOUT or peer_id in self._sessions
             }
 
-    def _start_attempt(self, peer_id: str, endpoint: Endpoint) -> Attempt:
+    def _start_attempt(self, peer_id: str, endpoint: Endpoint, via_relay: bool = False) -> Attempt:
+        if via_relay and not self._relays:
+            return Attempt(peer_id, endpoint, via_relay=True)
         if peer_id not in self._attempts and len(self._attempts) >= MAX_ATTEMPTS:
             raise ValueError("Too many concurrent UDP punch attempts")
         old = self._attempts.get(peer_id)
         if old and old.task:
             old.task.cancel()
-        attempt = Attempt(peer_id, endpoint)
+        attempt = Attempt(peer_id, endpoint, via_relay=via_relay)
         attempt.hello = self._make_hello(attempt)
         self._attempts[peer_id] = attempt
         attempt.task = self._spawn(self._punch_loop(attempt))
         return attempt
 
+    def _send_route(self, data: bytes, endpoint: Endpoint, via_relay: bool) -> None:
+        if via_relay:
+            if not self._relays:
+                raise ConnectionError("TURN relay is not available")
+            self._relays[0].sendto(data, endpoint)
+            return
+        self._sendto(data, endpoint)
+
     def _sendto(self, data: bytes, endpoint: Endpoint) -> None:
         if not self._transport:
             raise RuntimeError("UDP transport is not started")
         self._transport.sendto(data, endpoint)
+
+    def _relay_datagram_received(self, data: bytes, addr: TurnEndpoint) -> None:
+        self.datagram_received(data, addr, via_relay=True)
 
     def _spawn(self, awaitable: Awaitable[None]) -> asyncio.Task:
         task = asyncio.create_task(awaitable)
