@@ -3,7 +3,8 @@ import type { Release } from "../../common/updater"
 import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, UPDATE_RESTART_EXIT_CODE } from "../../common/updater"
 import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, Message, Peer, RoomStatus } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
-import { resolve } from "path"
+import { join, resolve } from "path"
+import { tmpdir } from "os"
 import { existsSync, statSync } from "fs"
 import { groupFromResponse } from "./utils"
 import { runCommand as navigationRunCommand } from "./navigation"
@@ -15,6 +16,15 @@ declare const APP_VERSION: string
 declare const MESHTALK_RELEASE: boolean
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
+const MAX_PASTED_IMAGE_BYTES = 8 * 1024 * 1024
+
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/bmp": ".bmp",
+}
 
 type ChatActionsDeps = {
   ipc: IPCClient
@@ -81,7 +91,7 @@ type ChatActionsDeps = {
   dialogActionRef: { current: number }
   dialogBusyRef: { current: boolean }
   filePickerOpenRef: { current: boolean }
-  composerRef: { current: { plainText: string; selectAll: () => void; deleteSelection: () => void } | null }
+  composerRef: { current: { plainText: string; selectAll: () => void; deleteSelection: () => void; insertText: (text: string) => void } | null }
   selectionKey: string | undefined
 }
 
@@ -659,6 +669,21 @@ export function useChatActions(deps: ChatActionsDeps) {
     finally { finishDialogAction(action) }
   }
 
+  async function sendImage(bytes: Uint8Array, mimeType: string) {
+    if (!selection) { showStatus("Select a peer or group before pasting an image."); return }
+    const extension = IMAGE_EXTENSIONS[mimeType.toLowerCase()]
+    if (!extension) { showStatus(`Unsupported pasted image type: ${mimeType}`); return }
+    if (!bytes.byteLength) { showStatus("The pasted image is empty."); return }
+    if (bytes.byteLength > MAX_PASTED_IMAGE_BYTES) { showStatus("Pasted image exceeds the 8 MiB limit."); return }
+    const filePath = join(tmpdir(), `meshtalk-pasted-image-${crypto.randomUUID()}${extension}`)
+    try {
+      await Bun.write(filePath, bytes)
+      await sendFile(filePath)
+    } catch (error) {
+      showStatus(`Could not send pasted image: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
   async function openFilePicker() {
     if (filePickerOpenRef.current) return
     if (!selection) { showStatus("Select a peer or group before sending a file."); return }
@@ -900,7 +925,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     loadFriendRequests, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer,
     loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest,
     reStun, loadDebugInfo, loadFiles,
-    sendFile, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
+    sendFile, sendImage, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
     saveDisplayName, setAccessibilityFlashing,
     testNotificationDelivery, confirmNotificationDelivery, disableNotifications, toggleNotificationEvent,
     removeSelectedPeer, send, runCommand,
