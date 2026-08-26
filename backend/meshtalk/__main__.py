@@ -198,7 +198,7 @@ async def main(debug: bool = False) -> None:
         warnings = []
         if not is_friend:
             warnings.append("not_friend")
-        if active_transport == "remote_udp" and not control_connected:
+        if active_transport in ("remote_udp", "remote_derp") and not control_connected:
             warnings.append("rendezvous_out_of_sync")
         if getattr(connection, "has_capability_gap", False):
             warnings.append("limited")

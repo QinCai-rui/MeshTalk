@@ -6,7 +6,7 @@ MeshTalk provides direct encrypted messaging in two environments:
 
 1. LAN peers work without internet access or central infrastructure.
 2. Remote peers use an opaque control service and prefer direct STUN-assisted UDP,
-   with optional TURN fallback for restrictive networks.
+   with an embedded DERP fallback for restrictive networks.
 
 The OpenTUI and CLI are local clients of one Python backend. The backend owns
 identity, networking, encryption, persistence, and transport selection.
@@ -39,23 +39,21 @@ members already online.
 ### Path selection
 
 LAN TCP has highest priority. For Internet peers, direct UDP has higher priority
-than TURN. Direct setup and keepalive health determine whether the relay route is
+than DERP. Direct setup and keepalive health determine whether the relay route is
 selected. A confirmed relay remains active for the session; replacing it with a
 direct route requires an atomic handoff and is not attempted yet. The backend
 reports all known endpoints and marks the active endpoint through IPC.
 
-### TURN relay
+### Embedded DERP relay
 
-TURN allocations are created through the `aioice` adapter in
-`backend/meshtalk/turn.py`. UDP, TCP, and TLS are control transports to coturn;
-the relayed payload remains UDP. TURN ChannelData carries already encrypted
-MeshTalk datagrams. The relay never participates in MeshTalk identity or key
-negotiation.
-
-The control service optionally authenticates a device with a signed Ed25519
-challenge and returns coturn REST credentials derived from a shared secret. The
-secret is held only by control and coturn. Endpoint cards remain encrypted and
-opaque to control, and contain direct plus relay candidates.
+Control embeds a WebSocket relay for already encrypted MeshTalk datagrams. A
+client authenticates with its Ed25519 identity and proves room-invite possession
+by sending both the room_id and a derived room_auth (HMAC-SHA256 of the room
+secret) to control, while the underlying room secret remains client-side. Control
+accepts only peer-ID addressed frames between currently authorized members of a
+shared room, so it cannot relay arbitrary network traffic. Endpoint cards remain
+encrypted and opaque to control and contain direct plus DERP candidates.
+Per-device bandwidth and active-peer limits bound relay cost and abuse.
 
 ### Capability differences
 
@@ -372,9 +370,9 @@ and return JSON; responses are correlated by request id, and asynchronous events
 
 - Direct connections may fail with symmetric NAT, blocked UDP, or restrictive
   firewalls.
-- TURN is optional and introduces relay metadata visibility and bandwidth cost.
-  Operators must protect the shared secret, restrict relay ports, configure
-  quotas, and monitor allocation and egress usage.
+- MeshTalk Relay is optional and introduces relay metadata visibility and
+  bandwidth cost. Operators should configure its enable switch, quotas, and
+  monitor relay egress usage.
 - Anyone holding a room invite can decrypt that room's endpoint cards and attempt
   to connect. Invite distribution and rotation are user responsibilities.
 - Direct peers and STUN providers necessarily observe public network endpoints.
@@ -390,8 +388,7 @@ and return JSON; responses are correlated by request id, and asynchronous events
 Fresh MeshTalk state is stored in `~/.meshtalk`:
 
 - `identity.json`: private identity and message-encryption keys, mode 0600
-- `settings.json`: control URL, room secrets, and files directory, mode 0600;
-  TURN credentials are ephemeral and are not persisted
+- `settings.json`: control URL, room secrets, and files directory, mode 0600
 - `meshtalk.db`: peer and conversation state, file transfer records
 - `meshtalk.sock`: owner-only local IPC socket while the backend runs
 - `files/`: received files stored in `<file_id>/` subdirectories

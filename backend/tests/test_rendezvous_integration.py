@@ -42,9 +42,15 @@ class LocalOpaqueControl:
 
     async def handler(self, websocket):
         joined = set()
+        await websocket.send(json.dumps({
+            "type": "device_challenge", "challenge_id": "test", "nonce": "test", "expires_at": 2_000_000_000,
+        }))
         try:
             async for raw in websocket:
                 message = json.loads(raw)
+                if message["type"] == "device_register":
+                    await websocket.send(json.dumps({"type": "device_registered", "peer_id": message["peer_id"]}))
+                    continue
                 room_id = message["room_id"]
                 members = self.rooms.setdefault(room_id, set())
                 if message["type"] == "join":

@@ -76,20 +76,20 @@ class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(network["active_transport"], "remote_udp")
         self.assertEqual(network["active_endpoint"], f"127.0.0.1:{endpoint_b[1]}")
 
-    async def test_force_turn_does_not_start_direct_attempts(self):
-        transport = UdpTransport(self.identity_a, lambda *_: None, lambda *_: None, lambda *_: None, force_turn=True)
+    async def test_force_relay_does_not_start_direct_attempts(self):
+        transport = UdpTransport(self.identity_a, lambda *_: None, lambda *_: None, lambda *_: None, force_relay=True)
 
         transport.expect_peer(self.identity_b.peer_id, ("203.0.113.1", 24890))
 
         self.assertIn(self.identity_b.peer_id, transport._direct_candidates)
         self.assertNotIn(self.identity_b.peer_id, transport._attempts)
 
-    async def test_force_turn_expect_relay_peer_without_relays_does_not_start_attempt(self):
-        transport = UdpTransport(self.identity_a, lambda *_: None, lambda *_: None, lambda *_: None, force_turn=True)
+    async def test_force_relay_waits_for_a_derp_sender(self):
+        transport = UdpTransport(self.identity_a, lambda *_: None, lambda *_: None, lambda *_: None, force_relay=True)
 
-        transport.expect_relay_peer(self.identity_b.peer_id, ("203.0.113.1", 24890))
+        transport.expect_derp_peer(self.identity_b.peer_id)
 
-        self.assertIn(self.identity_b.peer_id, transport._relay_candidates)
+        self.assertIn(self.identity_b.peer_id, transport._derp_candidates)
         self.assertNotIn(self.identity_b.peer_id, transport._attempts)
 
     async def test_lan_network_info_uses_advertised_port_not_inbound_source_port(self):
@@ -247,7 +247,7 @@ class CandidateValidationTest(unittest.IsolatedAsyncioTestCase):
 
 
 class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
-    async def test_two_relay_only_peers_connect(self):
+    async def test_two_derp_only_peers_connect(self):
         local = Identity.generate("Local")
         remote = Identity.generate("Remote")
         connected = {local.peer_id: asyncio.Event(), remote.peer_id: asyncio.Event()}
@@ -262,29 +262,21 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         async def ignore(*_):
             pass
 
-        local_transport = UdpTransport(local, on_local_connected, ignore, ignore, force_turn=True)
-        remote_transport = UdpTransport(remote, on_remote_connected, ignore, ignore, force_turn=True)
-        local_endpoint, remote_endpoint = ("127.0.0.1", 41001), ("127.0.0.1", 41002)
-        transports[local_endpoint], transports[remote_endpoint] = local_transport, remote_transport
+        local_transport = UdpTransport(local, on_local_connected, ignore, ignore, force_relay=True)
+        remote_transport = UdpTransport(remote, on_remote_connected, ignore, ignore, force_relay=True)
 
-        class FakeRelay:
-            transport = object()
+        async def send_from_local(peer_id, data):
+            self.assertEqual(peer_id, remote.peer_id)
+            remote_transport.derp_datagram_received(local.peer_id, data)
 
-            def __init__(self, endpoint):
-                self.endpoint = endpoint
+        async def send_from_remote(peer_id, data):
+            self.assertEqual(peer_id, local.peer_id)
+            local_transport.derp_datagram_received(remote.peer_id, data)
 
-            def sendto(self, data, endpoint):
-                asyncio.get_running_loop().call_soon(
-                    transports[endpoint]._relay_datagram_received, data, self.endpoint
-                )
-
-            async def stop(self):
-                pass
-
-        local_transport._relays = [FakeRelay(local_endpoint)]
-        remote_transport._relays = [FakeRelay(remote_endpoint)]
-        local_transport.expect_relay_peer(remote.peer_id, remote_endpoint)
-        remote_transport.expect_relay_peer(local.peer_id, local_endpoint)
+        local_transport.configure_derp(send_from_local)
+        remote_transport.configure_derp(send_from_remote)
+        local_transport.expect_derp_peer(remote.peer_id)
+        remote_transport.expect_derp_peer(local.peer_id)
 
         async with asyncio.timeout(2):
             await asyncio.gather(*[event.wait() for event in connected.values()])
@@ -292,64 +284,6 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(remote_transport._sessions[local.peer_id].via_relay)
         await local_transport.stop()
         await remote_transport.stop()
-
-    async def test_direct_peer_connects_to_relay_only_peer(self):
-        relay_identity = Identity.generate("Relay")
-        direct_identity = Identity.generate("Direct")
-        relay_connected, direct_connected = asyncio.Event(), asyncio.Event()
-
-        async def mark_relay(*_):
-            relay_connected.set()
-
-        async def mark_direct(*_):
-            direct_connected.set()
-
-        async def ignore(*_):
-            pass
-
-        relay_transport = UdpTransport(relay_identity, mark_relay, ignore, ignore, force_turn=True)
-        direct_transport = UdpTransport(direct_identity, mark_direct, ignore, ignore)
-        relay_endpoint, direct_endpoint = ("127.0.0.1", 42001), ("127.0.0.1", 42002)
-
-        class FakeRelay:
-            transport = object()
-            endpoint = relay_endpoint
-
-            def sendto(self, data, endpoint):
-                self.assert_endpoint(endpoint)
-                asyncio.get_running_loop().call_soon(
-                    direct_transport.datagram_received, data, relay_endpoint
-                )
-
-            def assert_endpoint(self, endpoint):
-                if endpoint != direct_endpoint:
-                    raise AssertionError(endpoint)
-
-            async def stop(self):
-                pass
-
-        class FakeDirectTransport:
-            def sendto(self, data, endpoint):
-                if endpoint != relay_endpoint:
-                    raise AssertionError(endpoint)
-                asyncio.get_running_loop().call_soon(
-                    relay_transport._relay_datagram_received, data, direct_endpoint
-                )
-
-            def close(self):
-                pass
-
-        relay_transport._relays = [FakeRelay()]
-        direct_transport._transport = FakeDirectTransport()
-        relay_transport.expect_peer(direct_identity.peer_id, direct_endpoint)
-        direct_transport.expect_relay_peer(relay_identity.peer_id, relay_endpoint)
-
-        async with asyncio.timeout(2):
-            await asyncio.gather(relay_connected.wait(), direct_connected.wait())
-        self.assertTrue(relay_transport._sessions[direct_identity.peer_id].via_relay)
-        self.assertFalse(direct_transport._sessions[relay_identity.peer_id].via_relay)
-        await relay_transport.stop()
-        await direct_transport.stop()
 
     async def test_capability_gap_keeps_shared_udp_capabilities_enabled(self):
         local = Identity.generate("Local")
@@ -409,7 +343,7 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         calls = []
 
         class FakeUdp:
-            force_turn = False
+            force_relay = False
 
             def expect_peer(self, peer_id, endpoint):
                 calls.append(("direct", peer_id, endpoint))
@@ -417,8 +351,8 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
             def clear_direct_candidate(self, peer_id):
                 calls.append(("clear", peer_id))
 
-            def expect_relay_peer(self, peer_id, endpoint):
-                calls.append(("relay", peer_id, endpoint))
+            def expect_derp_peer(self, peer_id):
+                calls.append(("derp", peer_id))
 
         async def record_candidate(peer_id, endpoint):
             calls.append(("record", peer_id, endpoint))
@@ -428,7 +362,7 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
             room = settings.create_room()
             rendezvous = RendezvousService(local, settings, FakeUdp(), record_candidate, allow_loopback=True)
             await rendezvous._handle_card(room, encrypt_endpoint_card(remote, room, ("127.0.0.1", 12345)))
-            await rendezvous._handle_card(room, encrypt_endpoint_card(remote, room, None, [("127.0.0.1", 54321)]))
+            await rendezvous._handle_card(room, encrypt_endpoint_card(remote, room, None))
 
         self.assertIn(("clear", remote.peer_id), calls)
-        self.assertIn(("relay", remote.peer_id, ("127.0.0.1", 54321)), calls)
+        self.assertIn(("derp", remote.peer_id), calls)

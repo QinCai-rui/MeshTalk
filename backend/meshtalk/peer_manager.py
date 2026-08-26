@@ -42,6 +42,8 @@ def _key_fingerprint(key: bytes) -> str:
 
 def _format_endpoint(endpoint: Endpoint) -> str:
     host, port = endpoint
+    if host.startswith("derp:"):
+        return "MeshTalk Relay"
     return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 
@@ -281,7 +283,7 @@ class PeerManager:
             return
         old = self._udp_peers.get(peer_id)
         old_endpoint = old.endpoint if old else None
-        peer = PeerConnection(peer_id, address, port, PeerState.CONNECTED, "remote_turn" if via_relay else "remote_udp")
+        peer = PeerConnection(peer_id, address, port, PeerState.CONNECTED, "remote_derp" if via_relay else "remote_udp")
         peer.display_name = display_name
         peer.encryption_public_key = encryption_public_key
         peer.signing_public_key = signing_public_key
@@ -300,7 +302,7 @@ class PeerManager:
         if old_endpoint and old_endpoint != peer.endpoint:
             logger.info("Remote UDP endpoint changed for %s: %s -> %s", peer_id, _format_endpoint(old_endpoint), _format_endpoint(peer.endpoint))
         else:
-            logger.info("Authenticated remote %s connection to %s at %s", "TURN" if via_relay else "UDP", peer_id, _format_endpoint(peer.endpoint))
+            logger.info("Authenticated remote %s connection to %s at %s", "DERP" if via_relay else "UDP", peer_id, _format_endpoint(peer.endpoint))
 
     async def _on_udp_packet(self, peer_id: str, packet: Packet) -> None:
         peer = self._udp_peers.get(peer_id)
@@ -513,7 +515,7 @@ class PeerManager:
         try:
             await self._send_packet(peer, packet)
         except ConnectionError:
-            if peer.transport in ("remote_udp", "remote_turn"):
+            if peer.transport in ("remote_udp", "remote_derp"):
                 await self._on_udp_disconnected(peer.peer_id)
             raise
 
@@ -521,7 +523,7 @@ class PeerManager:
         required = capability_for_packet(packet.type)
         if required is not None and not peer.supports(required):
             raise ValueError(f"Peer does not support capability: {required}")
-        if peer.transport in ("remote_udp", "remote_turn"):
+        if peer.transport in ("remote_udp", "remote_derp"):
             await self.udp.send_packet(peer.peer_id, packet)
             return
         if peer.writer is None:

@@ -33,8 +33,6 @@ from .protocol import (
     intersect_capabilities,
     validate_capabilities,
 )
-from .turn import TurnRelay, TurnServer
-
 logger = logging.getLogger(__name__)
 
 MAGIC = b"MTU1"
@@ -64,6 +62,7 @@ Endpoint = tuple[str, int]
 ConnectedCallback = Callable[[str, str, int, str, bytes, bytes, bool], Awaitable[None]]
 PacketCallback = Callable[[str, Packet], Awaitable[None]]
 DisconnectedCallback = Callable[[str], Awaitable[None]]
+DerpSender = Callable[[str, bytes], Awaitable[None]]
 
 
 def _canonical(value: dict) -> bytes:
@@ -164,7 +163,7 @@ class UdpTransport:
         on_packet: PacketCallback,
         on_disconnected: DisconnectedCallback,
         capabilities: list[str] | None = None,
-        force_turn: bool | None = None,
+        force_relay: bool | None = None,
     ) -> None:
         self.identity = identity
         self.on_connected = on_connected
@@ -173,22 +172,24 @@ class UdpTransport:
         self.capabilities = validate_capabilities(
             list(DEFAULT_CAPABILITIES if capabilities is None else capabilities)
         )
-        self.force_turn = os.environ.get("MESHTALK_FORCE_TURN") == "true" if force_turn is None else force_turn
+        self.force_relay = os.environ.get("MESHTALK_FORCE_RELAY") == "true" if force_relay is None else force_relay
+        self.relay_enabled = True
         self._transport: asyncio.DatagramTransport | None = None
         self._attempts: dict[str, Attempt] = {}
         self._expected_endpoints: dict[str, tuple[Endpoint, float]] = {}
-        self._relay_candidates: dict[str, Endpoint] = {}
+        self._derp_candidates: dict[str, Endpoint] = {}
+        self._derp_peers: dict[Endpoint, str] = {}
+        self._derp_sender: DerpSender | None = None
         self._direct_candidates: dict[str, Endpoint] = {}
         self._last_direct_probe: dict[str, float] = {}
-        self._relays: list[TurnRelay] = []
         self._sessions: dict[str, Session] = {}
         self._sessions_by_id: dict[bytes, Session] = {}
         self._stun_waiters: dict[bytes, asyncio.Future[bytes]] = {}
         self._pending: dict[tuple[bytes, int], asyncio.Event] = {}
         self._tasks: set[asyncio.Task] = set()
         self._maintenance_task: asyncio.Task | None = None
-        if self.force_turn:
-            logger.info("Direct remote UDP is disabled; TURN relay is required")
+        if self.force_relay:
+            logger.info("Direct remote UDP is disabled; DERP relay is required")
 
     async def start(self, port: int = 0) -> None:
         loop = asyncio.get_running_loop()
@@ -214,8 +215,6 @@ class UdpTransport:
                 except Exception:
                     pass
             self._transport.close()
-        await asyncio.gather(*(relay.stop() for relay in self._relays), return_exceptions=True)
-        self._relays.clear()
         await asyncio.gather(
             *(task for task in [self._maintenance_task, *self._tasks] if task),
             return_exceptions=True,
@@ -232,44 +231,18 @@ class UdpTransport:
         session = self._sessions.get(peer_id)
         return session.endpoint if session and session.confirmed else None
 
-    @property
-    def relay_endpoints(self) -> list[Endpoint]:
-        return [relay.endpoint for relay in self._relays if relay.transport is not None]
+    def configure_derp(self, sender: DerpSender | None, server_enabled: bool = True) -> None:
+        self.relay_enabled = server_enabled
+        self._derp_sender = sender if self.relay_enabled else None
 
-    async def configure_turn(self, uris: list[str], username: str, credential: str) -> None:
-        replacement: TurnRelay | None = None
-        for uri in uris:
-            try:
-                server = TurnServer.from_uri(uri)
-            except ValueError as exc:
-                logger.warning("Ignoring invalid TURN URI %s: %s", uri, exc)
-                continue
-            relay = TurnRelay(server, self._relay_datagram_received)
-            try:
-                await asyncio.wait_for(relay.start(username, credential), 10)
-            except Exception as exc:
-                logger.warning("TURN allocation through %s:%d failed: %s", server.host, server.port, exc)
-                await relay.stop()
-                continue
-            replacement = relay
-            logger.info("TURN relay allocation available at %s:%d", *relay.endpoint)
-            break
-        if replacement is None:
-            if not self._relays:
-                logger.warning("No TURN allocation is available")
+    def expect_derp_peer(self, peer_id: str) -> None:
+        if peer_id == self.identity.peer_id:
             return
-        old_relays, self._relays = self._relays, [replacement]
-        await asyncio.gather(*(relay.stop() for relay in old_relays), return_exceptions=True)
-
-    def expect_relay_peer(self, peer_id: str, endpoint: Endpoint) -> None:
-        self._validate_peer_endpoint(peer_id, endpoint)
-        self._relay_candidates[peer_id] = endpoint
-        if self.force_turn:
-            if self._relays:
-                self._start_attempt(peer_id, endpoint, via_relay=True)
-            return
-        if peer_id not in self._direct_candidates:
-            self._start_attempt(peer_id, endpoint, via_relay=bool(self._relays))
+        endpoint = (f"derp:{peer_id}", 0)
+        self._derp_candidates[peer_id] = endpoint
+        self._derp_peers[endpoint] = peer_id
+        if self.relay_enabled and self._derp_sender and (self.force_relay or peer_id not in self._direct_candidates):
+            self._start_attempt(peer_id, endpoint, via_relay=True)
 
     def clear_direct_candidate(self, peer_id: str) -> None:
         self._direct_candidates.pop(peer_id, None)
@@ -299,9 +272,10 @@ class UdpTransport:
         ):
             endpoint = verified[0]
         self._expected_endpoints[peer_id] = (endpoint, now)
-        if self.force_turn:
-            if self._relays:
-                self._start_attempt(peer_id, endpoint, via_relay=True)
+        if self.force_relay:
+            derp_endpoint = self._derp_candidates.get(peer_id)
+            if self._derp_sender and derp_endpoint:
+                self._start_attempt(peer_id, derp_endpoint, via_relay=True)
             return
         if session and session.confirmed and session.endpoint == endpoint:
             return
@@ -376,7 +350,7 @@ class UdpTransport:
             return
         if len(data) > MAX_DATAGRAM_SIZE or not data.startswith(MAGIC) or len(data) < 5:
             return
-        if self.force_turn and not via_relay:
+        if self.force_relay and not via_relay:
             return
         try:
             message_type = data[4]
@@ -421,15 +395,9 @@ class UdpTransport:
                 self._sessions.pop(attempt.peer_id, None)
                 self._sessions_by_id.pop(session.session_id, None)
             if not attempt.via_relay:
-                relay_endpoint = self._relay_candidates.get(attempt.peer_id)
-                if self._relays:
-                    self._start_attempt(
-                        attempt.peer_id,
-                        relay_endpoint or self._direct_candidates.get(attempt.peer_id, attempt.endpoint),
-                        via_relay=True,
-                    )
-                elif relay_endpoint:
-                    self._start_attempt(attempt.peer_id, relay_endpoint)
+                derp_endpoint = self._derp_candidates.get(attempt.peer_id)
+                if self._derp_sender and derp_endpoint:
+                    self._start_attempt(attempt.peer_id, derp_endpoint, via_relay=True)
 
     def _handle_hello(self, payload: bytes, addr: Endpoint, via_relay: bool) -> None:
         if len(payload) > 1000:
@@ -447,7 +415,7 @@ class UdpTransport:
         if any(len(item) != 32 for item in (signing_key, encryption_key, session_key, nonce)) or len(signature) != 64:
             raise ValueError("Invalid UDP handshake key length")
         direct = self._expected_endpoints.get(peer_id)
-        relay = self._relay_candidates.get(peer_id)
+        relay = self._derp_candidates.get(peer_id)
         matches_direct = direct is not None and direct[0][0] == addr[0]
         matches_relay = relay == addr
         if (direct or relay) and not (matches_direct or matches_relay):
@@ -669,7 +637,7 @@ class UdpTransport:
             }
 
     def _start_attempt(self, peer_id: str, endpoint: Endpoint, via_relay: bool = False) -> Attempt:
-        if via_relay and not self._relays:
+        if via_relay and self._derp_sender is None:
             return Attempt(peer_id, endpoint, via_relay=True)
         if peer_id not in self._attempts and len(self._attempts) >= MAX_ATTEMPTS:
             raise ValueError("Too many concurrent UDP punch attempts")
@@ -684,9 +652,10 @@ class UdpTransport:
 
     def _send_route(self, data: bytes, endpoint: Endpoint, via_relay: bool) -> None:
         if via_relay:
-            if not self._relays:
-                raise ConnectionError("TURN relay is not available")
-            self._relays[0].sendto(data, endpoint)
+            peer_id = self._derp_peers.get(endpoint)
+            if not self._derp_sender or not peer_id:
+                raise ConnectionError("DERP relay is not available")
+            self._spawn(self._derp_sender(peer_id, data))
             return
         self._sendto(data, endpoint)
 
@@ -695,8 +664,10 @@ class UdpTransport:
             raise RuntimeError("UDP transport is not started")
         self._transport.sendto(data, endpoint)
 
-    def _relay_datagram_received(self, data: bytes, addr: Endpoint) -> None:
-        self.datagram_received(data, addr, via_relay=True)
+    def derp_datagram_received(self, peer_id: str, data: bytes) -> None:
+        endpoint = self._derp_candidates.get(peer_id)
+        if endpoint:
+            self.datagram_received(data, endpoint, via_relay=True)
 
     def _spawn(self, awaitable: Awaitable[None]) -> asyncio.Task:
         task = asyncio.create_task(awaitable)
