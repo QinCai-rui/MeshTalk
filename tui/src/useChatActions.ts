@@ -124,7 +124,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   async function refreshPeers() {
     const response = await ipc.send("peers")
     if (response.error) throw new Error(response.error)
-    const next = (response.peers as Peer[]).sort((a, b) => b.is_online - a.is_online || a.display_name.localeCompare(b.display_name))
+    const next = (response.peers as Peer[]).sort((a, b) => b.last_seen - a.last_seen || a.display_name.localeCompare(b.display_name))
     setPeers(next)
     setSelection((current) => current && (current.kind === "group" || next.some((p) => p.peer_id === current.id))
       ? current
