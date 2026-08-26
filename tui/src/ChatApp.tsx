@@ -6,8 +6,8 @@ extend({ spinner: SpinnerRenderable })
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
 import { checkForUpdate, GitHubAuthenticationError } from "../../common/updater"
-import type { Conversation, ConversationItem, Dialog, FileTransfer, Group, GroupMember, Message, Peer, TypingPeer } from "./types"
-import { composerLimitColor, DEFAULT_STATUS, getComposerHeight, MIN_COMPOSER_HEIGHT, peerPresence } from "./utils"
+import type { Conversation, ConversationItem, Dialog, FileTransfer, Group, GroupMember, Message, Peer, TypingPeer, UnreadMessageState } from "./types"
+import { composerLimitColor, DEFAULT_STATUS, getComposerHeight, MIN_COMPOSER_HEIGHT, peerPresence, UNREAD_MESSAGE_FADE_MS } from "./utils"
 import { Sidebar } from "./components/Sidebar"
 import { ConversationPanel } from "./components/ConversationPanel"
 import { DialogPanel } from "./components/DialogPanel"
@@ -40,6 +40,8 @@ export function ChatApp() {
   const [identity, setIdentity] = useState<{ peer_id: string; display_name: string }>()
   const [selection, setSelection] = useState<Conversation>()
   const [messages, setMessages] = useState<Message[]>([])
+  const [unreadMessages, setUnreadMessages] = useState<Record<string, UnreadMessageState>>({})
+  const [unreadNow, setUnreadNow] = useState(() => Date.now())
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [draftLength, setDraftLength] = useState(0)
   const [composerHeight, setComposerHeight] = useState(MIN_COMPOSER_HEIGHT)
@@ -80,6 +82,36 @@ export function ChatApp() {
   const selectedPeerId = selection?.kind === "peer" ? selection.id : undefined
   const selectedGroupId = selection?.kind === "group" ? selection.id : undefined
   const selectionKey = selection ? `${selection.kind}:${selection.id}` : undefined
+
+  function rememberUnreadMessage(conversationKey: string, messageId: string | undefined, receivedAt = Date.now()) {
+    if (!messageId) return
+    setUnreadMessages((current) => current[messageId] ? current : { ...current, [messageId]: { conversationKey, receivedAt } })
+  }
+
+  function rememberUnreadHistory(conversationKey: string, history: Message[], unreadCount: number) {
+    if (!identity?.peer_id || unreadCount <= 0) return
+    const incoming = history.filter((message) => message.sender_id !== identity.peer_id)
+    const unread = incoming.slice(Math.max(0, incoming.length - unreadCount))
+    setUnreadMessages((current) => {
+      let changed = false
+      const next = { ...current }
+      for (const message of unread) {
+        if (next[message.message_id]) continue
+        const receivedAt = typeof message.received_at === "number" && Number.isFinite(message.received_at) ? message.received_at * 1000 : Date.now()
+        next[message.message_id] = { conversationKey, receivedAt }
+        changed = true
+      }
+      return changed ? next : current
+    })
+  }
+
+  function markUnreadMessageVisible(messageId: string) {
+    setUnreadMessages((current) => {
+      const message = current[messageId]
+      if (!message || message.visibleAt !== undefined) return current
+      return { ...current, [messageId]: { ...message, visibleAt: Date.now() } }
+    })
+  }
 
   function sendTyping(conversation: Conversation, isTyping: boolean) {
     const target = conversation.kind === "peer" ? { recipient_id: conversation.id } : { group_id: conversation.id }
@@ -215,6 +247,27 @@ export function ChatApp() {
     return () => clearInterval(interval)
   }, [])
 
+  useEffect(() => {
+    if (!Object.values(unreadMessages).some((message) => message.visibleAt !== undefined)) return
+    const interval = setInterval(() => {
+      const now = Date.now()
+      setUnreadNow(now)
+      setUnreadMessages((current) => {
+        let changed = false
+        const next: Record<string, UnreadMessageState> = {}
+        for (const [messageId, message] of Object.entries(current)) {
+          if (message.visibleAt !== undefined && now - message.visibleAt >= UNREAD_MESSAGE_FADE_MS) {
+            changed = true
+            continue
+          }
+          next[messageId] = message
+        }
+        return changed ? next : current
+      })
+    }, 100)
+    return () => clearInterval(interval)
+  }, [unreadMessages])
+
   useEffect(() => () => stopOutgoingTyping(), [selectionKey])
 
   useEffect(() => {
@@ -320,6 +373,7 @@ export function ChatApp() {
         ?? "a member"
       if (event.event === "group_message") void notify(notificationPreferences, "messages", renderer, `New message from ${sender} in ${group?.name ?? "a group"}`)
       if (groupId !== selectedGroupId) {
+        if (event.event === "group_message") rememberUnreadMessage(`group:${groupId}`, event.message_id as string | undefined)
         setGroups((current) => current.map((item) => item.group_id === groupId ? { ...item, unread_count: item.unread_count + 1 } : item))
       } else {
         void ipc.send("group_messages", { group_id: groupId }).then((response) => {
@@ -390,7 +444,7 @@ export function ChatApp() {
       }
       void notify(notificationPreferences, "friend_requests", renderer, `Friend request from ${request.sender_name}`)
       if (!dialog) setDialog({ kind: "friend-request-incoming", request })
-      else actions.showStatus(`Friend request from ${request.sender_name}. Open Commands > Friends to respond.`)
+      else actions.showStatus(`Friend request from ${request.sender_name}. Open Settings > Friends to respond.`)
       void actions.refreshPeers()
       return
     }
@@ -458,6 +512,7 @@ export function ChatApp() {
     const isMuted = mutedUntil === undefined ? false : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil
     if (!isMuted) void notify(notificationPreferences, "messages", renderer, `New message from ${sender}`)
     if (senderId !== selectedPeerId) {
+      rememberUnreadMessage(`peer:${senderId}`, event.message_id as string | undefined)
       setPeers((current) => current.map((peer) => peer.peer_id === senderId ? { ...peer, unread_count: peer.unread_count + 1 } : peer))
       return
     }
@@ -473,6 +528,9 @@ export function ChatApp() {
   useEffect(() => {
     let cancelled = false
     if (!selection || !selectionKey) { setMessages([]); setDraftLength(0); setComposerHeight(MIN_COMPOSER_HEIGHT); return }
+    const unreadCount = selection.kind === "peer"
+      ? peers.find((peer) => peer.peer_id === selection.id)?.unread_count ?? 0
+      : groups.find((group) => group.group_id === selection.id)?.unread_count ?? 0
     setScrollFocused(false)
     setDraftLength(new TextEncoder().encode(drafts[selectionKey] ?? "").length)
     setComposerHeight(MIN_COMPOSER_HEIGHT)
@@ -488,7 +546,9 @@ export function ChatApp() {
     request.then((response) => {
       if (response.error) throw new Error(response.error)
       if (cancelled) return
-      setMessages(response.messages as Message[])
+      const history = response.messages as Message[]
+      rememberUnreadHistory(selectionKey, history, unreadCount)
+      setMessages(history)
       if (selection.kind === "peer") void actions.refreshPeers()
       else void actions.refreshGroups()
     }).catch((error) => {
@@ -631,7 +691,7 @@ export function ChatApp() {
   return (
     <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
        <Sidebar compact={compact} dialogOpen={Boolean(dialog)} editingName={editingName} groups={groups} groupMembers={groupMembers} identity={identity} mutedPeers={mutedPeers} nameDraft={nameDraft} peers={peers} selectedGroupId={selectedGroupId} selectedPeerId={selectedPeerId} sidebarWidth={sidebarWidth} typingConversationKeys={typingConversationKeys} setEditingName={setEditingName} setNameDraft={setNameDraft} setSelection={setSelection} setScrollFocused={setScrollFocused} saveDisplayName={() => void actions.saveDisplayName()} />
-      <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} limitedGroupMembers={limitedGroupMembers} capabilityGapMessage={capabilityGapMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedHasCapabilityGap={selectedHasCapabilityGap} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send() }} />
+       <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} limitedGroupMembers={limitedGroupMembers} capabilityGapMessage={capabilityGapMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedHasCapabilityGap={selectedHasCapabilityGap} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} unreadMessageStates={unreadMessages} unreadNow={unreadNow} markUnreadMessageVisible={markUnreadMessageVisible} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send() }} />
       {copyToast && (
         <box style={{ position: "absolute", right: 2, top: 1, border: true, borderColor: "#66dd88", backgroundColor: "#18251d", paddingLeft: 1, paddingRight: 1 }}>
           <text fg="#66dd88">Copied to clipboard</text>

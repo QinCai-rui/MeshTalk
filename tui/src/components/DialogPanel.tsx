@@ -101,9 +101,9 @@ export function DialogPanel(props: DialogPanelProps) {
 
   if (!dialog) return null
 
-  return <box style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", backgroundColor: "#080b10", alignItems: "center", justifyContent: "center" }}>
+  return <box style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", backgroundColor: "#080b1099", alignItems: "center", justifyContent: "center" }}>
     <box
-      title={dialog.kind === "commands" ? "Commands"
+      title={dialog.kind === "commands" ? "Settings"
         : dialog.kind.startsWith("control") ? "Control server"
         : dialog.kind.startsWith("advanced") ? "Advanced Configuration"
         : dialog.kind === "rename" ? "Display name"
@@ -136,7 +136,7 @@ export function DialogPanel(props: DialogPanelProps) {
         : dialog.kind === "file-download" ? "Save file"
         : dialog.kind === "files-dir" ? "File storage"
         : "Private rooms"}
-      bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P commands"}
+      bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P Settings"}
       style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: dialog.kind === "about" ? "#9b8cff" : dialog.kind === "update" ? "#e0a34a" : "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1, overflow: "hidden" }}
     >
       {dialog.kind === "commands" && <CommandsDialog dialogHeight={dialogHeight} groups={groups} peers={peers} selectedGroup={groups.find((group) => group.group_id === selectedGroupId)} selection={selection} runCommand={runCommand} />}
@@ -224,7 +224,7 @@ function ControlStatusDialogContent({ dialog, showDialog }: { dialog: Extract<Di
       <text><span fg="#888888">Public endpoint: </span>{dialog.control.public_endpoint?.join(":") ?? "Not discovered"}</text>
       <MouseSelect focused height={5} options={[
         { name: "Change server", description: "Choose the public server or enter a custom URL", value: "change" },
-        { name: "Back to commands", description: "Return to the command palette", value: "back" },
+         { name: "Back to Settings", description: "Return to Settings", value: "back" },
       ]} onSelect={(_, option) => option?.value === "change" ? showDialog({ kind: "control" }) : showDialog({ kind: "commands" })} />
     </>
   )
@@ -235,7 +235,7 @@ function AdvancedDialogContent({ dialog, dialogHeight, showDialog }: { dialog: E
     <MouseSelect focused height={Math.max(5, dialogHeight - 3)} options={[
       { name: "Control server", description: dialog.config.control_pinned_ips.length ? `Pinned: ${dialog.config.control_pinned_ips.join(", ")}` : "No IP pin", value: "control" },
       { name: "STUN server", description: dialog.config.stun_pinned_ips.length ? `Pinned: ${dialog.config.stun_pinned_ips.join(", ")}` : "No IP pin", value: "stun" },
-      { name: "Back to commands", description: "Return to the command palette", value: "back" },
+         { name: "Back to Settings", description: "Return to Settings", value: "back" },
     ]} onSelect={(_, option) => {
       if (option?.value === "control") showDialog({ kind: "advanced-control", config: dialog.config })
       else if (option?.value === "stun") showDialog({ kind: "advanced-stun", config: dialog.config })
@@ -470,7 +470,7 @@ function FriendRequestsDialogContent({ dialog, dialogHeight, showDialog }: { dia
           ...dialog.requests.filter((r) => r.direction === "outgoing").map((r) => ({
             name: `\u2197 Request to ${r.recipient_name ?? r.sender_name}`, description: "Cancel this request", value: `outgoing:${r.request_id}`,
           })),
-          { name: "Back to commands", description: "Return to the command palette", value: "back" },
+         { name: "Back to Settings", description: "Return to Settings", value: "back" },
         ]} onSelect={(_, option) => {
           if (!option) return
           if (option.value === "back") showDialog({ kind: "commands" })
@@ -514,7 +514,7 @@ function FriendsDialogContent({ dialogHeight, loadBlockedPeers, runCommand, show
       { name: "Add friend", description: "Send a friend request to the selected peer", value: "add-friend" },
       { name: "Friend requests", description: "View and respond to pending requests", value: "friend-requests" },
       { name: "Remove friend", description: "Stop being friends with the selected peer", value: "remove-friend" },
-      { name: "Back to commands", description: "Return to the command palette", value: "back" },
+         { name: "Back to Settings", description: "Return to Settings", value: "back" },
     ]} onSelect={(_, option) => {
       if (!option) return
       if (option.value === "back") showDialog({ kind: "commands" })
@@ -530,7 +530,7 @@ function AccessibilityDialogContent({ dialogHeight, flashingEnabled, setAccessib
       <text fg="#888888">Reduce motion and other accessibility options.</text>
       <MouseSelect focused height={Math.max(4, dialogHeight - 4)} options={[
         { name: flashingEnabled ? "Disable Flashing" : "Re-enable Flashing", description: flashingEnabled ? "Stop capability and rendezvous warnings from blinking" : "Allow capability and rendezvous warnings to blink", value: "toggle-flash" },
-        { name: "Back to commands", description: "Return to the command palette", value: "back" },
+         { name: "Back to Settings", description: "Return to Settings", value: "back" },
       ]} onSelect={(_, option) => {
         if (!option) return
         if (option.value === "toggle-flash") void setAccessibilityFlashing(!flashingEnabled)
@@ -595,7 +595,7 @@ function BlockPeerDialogContent({ dialog, blockPeer, loadBlockedPeers, showDialo
   return (
     <>
       <text>Block friend requests from <span fg="#66dd88">{dialog.displayName}</span>?</text>
-      <text fg="#888888">You can unblock later in Commands {'>'} Friends {'>'} Block.</text>
+      <text fg="#888888">You can unblock later in Settings {'>'} Friends {'>'} Block.</text>
       <MouseSelect focused height={4} options={[
         { name: "Block", description: "Ignore friend requests from this person", value: "yes" },
         { name: "Cancel", description: "Keep receiving friend requests", value: "no" },
@@ -634,7 +634,7 @@ function DebugDialogContent({ dialog, controlStatus, debugInfo, dialogHeight, re
         { name: "Re-STUN", description: "Re-query STUN server and republish endpoint cards", value: "re-stun" },
         { name: "Endpoints", description: "View your endpoint and connected peers", value: "endpoints" },
         { name: "Refresh", description: "Reload debug information", value: "refresh" },
-        { name: "Back to commands", description: "Return to the command palette", value: "back" },
+         { name: "Back to Settings", description: "Return to Settings", value: "back" },
       ]} onSelect={(_, option) => {
         if (!option) return
         if (option.value === "re-stun") void reStun()
@@ -734,7 +734,7 @@ function FileListDialogContent({ dialog, dialogHeight, dialogWidth, loadFiles, l
         })),
         { name: "Storage location", description: "View/change where received files are saved (e.g., E:\\ drive)", value: "storage" },
         { name: "Refresh", description: "Reload file list", value: "refresh" },
-        { name: "Back", description: "Return to commands", value: "back" },
+         { name: "Back", description: "Return to Settings", value: "back" },
       ]} onSelect={(_, option) => {
         if (!option) return
         if (option.value === "refresh") void loadFiles()

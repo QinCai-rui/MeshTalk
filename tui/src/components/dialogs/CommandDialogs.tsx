@@ -15,7 +15,7 @@ type CommandsDialogProps = {
 
 export function CommandsDialog({ dialogHeight, groups, peers, selectedGroup, selection, runCommand }: CommandsDialogProps) {
   return <box style={{ flexDirection: "column" }}>
-    <box height={1} flexShrink={0}><text><span fg="#b9a7ff"><b>COMMAND CENTER</b></span> <span fg="#77718f">Choose an action</span></text></box>
+    <box height={1} flexShrink={0}><text><span fg="#b9a7ff"><b>COMMAND CENTRE</b></span> <span fg="#77718f">Choose an action</span></text></box>
     <box height={1} flexShrink={0}><text fg="#534b70">────────────────────────────────────────</text></box>
     <MouseSelect focused height={Math.max(5, dialogHeight - 5)} options={[
       { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
@@ -54,7 +54,7 @@ export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeig
     {dialogError && <text fg="#ff7777">{dialogError}</text>}
     <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={[
       { name: dialog.checking ? "Checking for updates..." : "Check for updates", description: isReleaseBuild ? "Look for the latest stable MeshTalk release" : "Available in compiled MeshTalk releases", value: "check" },
-      { name: "Back", description: "Return to Commands", value: "back" },
+      { name: "Back", description: "Return to Settings", value: "back" },
     ]} onSelect={(_, option) => {
       if (option?.value === "check" && !dialog.checking) checkForUpdates()
       else if (option?.value === "back") goBack()
