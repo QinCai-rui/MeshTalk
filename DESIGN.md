@@ -48,11 +48,12 @@ reports all known endpoints and marks the active endpoint through IPC.
 
 Control embeds a WebSocket relay for already encrypted MeshTalk datagrams. A
 client authenticates with its Ed25519 identity and proves room-invite possession
-through an HMAC-derived room capability. Control accepts only peer-ID addressed
-frames between currently authorized members of a shared room, so it cannot relay
-arbitrary network traffic. Endpoint cards remain encrypted and opaque to control
-and contain direct plus DERP candidates. Per-device bandwidth and active-peer
-limits bound relay cost and abuse.
+by sending both the room_id and a derived room_auth (HMAC-SHA256 of the room
+secret) to control, while the underlying room secret remains client-side. Control
+accepts only peer-ID addressed frames between currently authorized members of a
+shared room, so it cannot relay arbitrary network traffic. Endpoint cards remain
+encrypted and opaque to control and contain direct plus DERP candidates.
+Per-device bandwidth and active-peer limits bound relay cost and abuse.
 
 ### Capability differences
 

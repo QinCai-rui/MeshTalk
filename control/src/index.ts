@@ -9,6 +9,8 @@ type ClientData = {
   controlMessagesInWindow: number
   signalsInWindow: number
   peerFetchesInWindow: number
+  relayWindowStartedAt: number
+  relayFramesInWindow: number
   challengeId: string
   challenge: string
   challengeExpiresAt: number
@@ -54,6 +56,7 @@ const MAX_SIGNAL_LENGTH = 8 * 1024
 const MAX_CONTROL_MESSAGES_PER_MINUTE = 96
 const MAX_SIGNALS_PER_MINUTE = 64
 const MAX_PEER_FETCHES_PER_MINUTE = 30
+const MAX_RELAY_FRAMES_PER_SECOND = 500
 const MAX_CONNECTIONS = 10_000
 const MAX_CONNECTIONS_PER_IP = 32
 const MAX_ROOMS = 10_000
@@ -64,6 +67,7 @@ const RELAY_PEER_IDLE_MS = 60_000
 const RELAY_BYTES_PER_SECOND = 1024 * 1024
 const RELAY_BURST_BYTES = 4 * 1024 * 1024
 const RELAY_ENABLED = process.env.CONTROL_RELAY_ENABLED !== "false"
+const TRUSTED_PROXY = process.env.CONTROL_TRUSTED_PROXY === "true"
 const ROOM_ID = /^[a-f0-9]{32}$/
 const ROOM_AUTH = /^[a-f0-9]{64}$/
 const PEER_ID = /^[a-f0-9]{64}$/
@@ -205,6 +209,16 @@ function checkRateLimit(socket: ServerWebSocket<ClientData>, messageType: unknow
   if (ipLimit.signalsInWindow > MAX_SIGNALS_PER_MINUTE || ipLimit.controlMessagesInWindow > MAX_CONTROL_MESSAGES_PER_MINUTE || ipLimit.peerFetchesInWindow > MAX_PEER_FETCHES_PER_MINUTE) throw new Error("IP message rate limit exceeded")
 }
 
+function checkRelayRateLimit(socket: ServerWebSocket<ClientData>): void {
+  const now = Date.now()
+  if (now - socket.data.relayWindowStartedAt >= 1_000) {
+    socket.data.relayWindowStartedAt = now
+    socket.data.relayFramesInWindow = 0
+  }
+  socket.data.relayFramesInWindow += 1
+  if (socket.data.relayFramesInWindow > MAX_RELAY_FRAMES_PER_SECOND) throw new Error("Relay frame rate limit exceeded")
+}
+
 function peersShareRoom(socket: ServerWebSocket<ClientData>, recipientId: string): boolean {
   if (!socket.data.peerId || socket.data.peerId === recipientId) return false
   for (const roomId of socket.data.rooms) {
@@ -239,7 +253,10 @@ function relayDatagram(socket: ServerWebSocket<ClientData>, recipientId: string,
   if (!socket.data.peerId || !PEER_ID.test(recipientId)) throw new Error("Invalid relay frame")
   const frame = Buffer.from(payload, "base64")
   if (!frame.length || frame.length > MAX_RELAY_FRAME_LENGTH || frame.toString("base64") !== payload) throw new Error("Invalid relay frame")
-  if (!peersShareRoom(socket, recipientId)) throw new Error("Relay recipient is not an authorized room member")
+  if (!peersShareRoom(socket, recipientId)) {
+    send(socket, { type: "relay_dropped", recipient_id: recipientId, reason: "unauthorized", v: 1 })
+    return
+  }
   const recipient = socketsByPeerId.get(recipientId)
   if (!recipient) {
     send(socket, { type: "relay_dropped", recipient_id: recipientId, reason: "offline", v: 1 })
@@ -261,12 +278,13 @@ export function startControlServer(port = PORT) {
       if (url.pathname === "/health") return Response.json({ status: "ok", rooms: rooms.size, connections })
       if (url.pathname !== "/v1/rendezvous") return new Response("Not found", { status: 404 })
       if (connections >= MAX_CONNECTIONS) return new Response("Control service is full", { status: 503 })
-      const ip = request.headers.get("cf-connecting-ip") ?? server.requestIP(request)?.address ?? "unknown"
+      const ip = TRUSTED_PROXY ? (request.headers.get("cf-connecting-ip") ?? server.requestIP(request)?.address ?? "unknown") : (server.requestIP(request)?.address ?? "unknown")
       if ((connectionsByIp.get(ip) ?? 0) >= MAX_CONNECTIONS_PER_IP) return new Response("Too many connections from this IP", { status: 429 })
       const upgraded = server.upgrade(request, {
         data: {
           ip, rooms: new Set(), signals: new Map(), windowStartedAt: Date.now(), controlMessagesInWindow: 0,
-          signalsInWindow: 0, peerFetchesInWindow: 0, challengeId: randomBytes(16).toString("base64url"),
+          signalsInWindow: 0, peerFetchesInWindow: 0, relayWindowStartedAt: Date.now(), relayFramesInWindow: 0,
+          challengeId: randomBytes(16).toString("base64url"),
           challenge: randomBytes(32).toString("hex"), challengeExpiresAt: Math.floor(Date.now() / 1000) + 60,
         },
       })
@@ -290,6 +308,7 @@ export function startControlServer(port = PORT) {
           }
           if (!socket.data.peerId) throw new Error("Device registration required")
           if (message.type === "relay" && typeof message.recipient_id === "string" && typeof message.payload === "string") {
+            checkRelayRateLimit(socket)
             relayDatagram(socket, message.recipient_id, message.payload)
             return
           }

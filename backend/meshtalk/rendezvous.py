@@ -305,7 +305,7 @@ class RendezvousService:
         if len(data) > 1200:
             raise ValueError("DERP frame is too large")
         await websocket.send(json.dumps({
-            "type": "relay", "recipient_id": peer_id, "payload": _encode(data), "v": 1,
+            "type": "relay", "recipient_id": peer_id, "payload": base64.b64encode(data).decode("ascii"), "v": 1,
         }))
 
     async def _receive_loop(self, websocket) -> None:
@@ -317,7 +317,7 @@ class RendezvousService:
                 if message.get("type") == "relay":
                     peer_id, payload = message.get("peer_id"), message.get("payload")
                     if isinstance(peer_id, str) and isinstance(payload, str):
-                        data = _decode(payload)
+                        data = base64.b64decode(payload)
                         if len(data) <= 1200:
                             self.udp.derp_datagram_received(peer_id, data)
                     continue

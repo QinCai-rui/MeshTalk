@@ -270,12 +270,12 @@ then encrypted locally before being sent to the control service:
   json_bytes, aad=room_id); the wire blob is base64url(nonce12 || ct).
 - Decryption & validation (decrypt_endpoint_card):
   1. AES-GCM decrypt with aad = room_id;
-   2. kind == "endpoint";
+  2. kind == "endpoint";
   3. peer_id == SHA-256(signing_public_key);
   4. card age |now - created_at| <= CARD_MAX_AGE (180 s);
-   5. each direct candidate has a global, non-multicast/unspecified/reserved/
-      link-local IPv4 host (loopback only allowed with allow_loopback); DERP has
-      no network address;
+  5. each direct candidate has a global, non-multicast/unspecified/reserved/
+     link-local IPv4 host (loopback only allowed with allow_loopback); DERP has
+     no network address;
   6. Ed25519 signature over the card body is valid.
 - Replay protection: (room_id, peer_id, nonce) is remembered for CARD_MAX_AGE;
   duplicates are dropped.
@@ -311,7 +311,7 @@ Client to server messages:
 | signal | room_id, payload (base64 card, <= 8 KiB) | Publish/replace this connection's card. |
 | get_peers | room_id | Fetch all retained cards. |
 | device_register | challenge_id, nonce, issued_at, peer_id, signing_public_key, signature, v | Signed device registration. |
-| relay | recipient_id, payload (base64, <= 1200 bytes) | Send an opaque MeshTalk Relay frame. |
+| relay | recipient_id, payload (base64-encoded frame) | Send an opaque MeshTalk Relay frame; decoded frame must be <= 1200 bytes. |
 
 Server to client messages:
 
