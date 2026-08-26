@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -60,14 +61,18 @@ def _room_key(room: Room) -> bytes:
     ).derive(room.secret)
 
 
-def encrypt_endpoint_card(
-    identity: Identity, room: Room, endpoint: Endpoint | None, relay_endpoints: list[Endpoint] | None = None
-) -> str:
+def _room_auth(room: Room) -> str:
+    return hmac.digest(
+        room.secret, b"meshtalk-relay-room-v1" + room.room_id, "sha256"
+    ).hex()
+
+
+def encrypt_endpoint_card(identity: Identity, room: Room, endpoint: Endpoint | None, derp: bool = True) -> str:
     candidates = []
     if endpoint:
         candidates.append({"type": "direct", "host": endpoint[0], "port": endpoint[1]})
-    for host, port in relay_endpoints or []:
-        candidates.append({"type": "relay", "host": host, "port": port})
+    if derp:
+        candidates.append({"type": "derp"})
     value = {
         "kind": "endpoint",
         "peer_id": identity.peer_id,
@@ -119,10 +124,10 @@ def decrypt_endpoint_card(room: Room, payload: str, now: float | None = None) ->
     for candidate in candidates:
         if (
             not isinstance(candidate, dict)
-            or candidate.get("type") not in {"direct", "relay"}
-            or not isinstance(candidate.get("host"), str)
-            or not isinstance(candidate.get("port"), int)
-        ):
+            or candidate.get("type") not in {"direct", "derp"}
+        ) or (candidate["type"] == "direct" and (
+            not isinstance(candidate.get("host"), str) or not isinstance(candidate.get("port"), int)
+        )):
             raise ValueError("Invalid endpoint card candidate")
     try:
         Ed25519PublicKey.from_public_bytes(signing_key).verify(signature, _canonical(value))
@@ -230,16 +235,18 @@ class RendezvousService:
                     ping_timeout=CONTROL_PING_TIMEOUT,
                     **connection_options,
                 ) as websocket:
-                    if url.startswith("wss://"):
-                        await self._register_device(websocket)
-                        await self._configure_turn(websocket)
+                    registration = await self._register_device(websocket)
                     self.connected = True
                     self._websocket = websocket
+                    self.udp.configure_derp(
+                        lambda peer_id, data: self._send_derp(websocket, peer_id, data),
+                        registration.get("relay_enabled") is True,
+                    )
                     self.reconnect_attempts = 0
                     backoff = 1.0
                     self._initializing_rooms = set(self.settings.rooms)
                     for room in self.settings.rooms.values():
-                        await websocket.send(json.dumps({"type": "join", "room_id": room.id}))
+                        await websocket.send(json.dumps({"type": "join", "room_id": room.id, "room_auth": _room_auth(room)}))
                     await self._discover_endpoint()
                     await self._announce_all(websocket)
                     receive_task = asyncio.create_task(self._receive_loop(websocket))
@@ -263,6 +270,7 @@ class RendezvousService:
             finally:
                 self.connected = False
                 self._websocket = None
+                self.udp.configure_derp(None, False)
                 self.member_counts.clear()
                 self._initializing_rooms.clear()
             if self._running:
@@ -274,7 +282,7 @@ class RendezvousService:
                     pass
                 backoff = min(backoff * 2, CONTROL_RECONNECT_MAX_DELAY)
 
-    async def _register_device(self, websocket) -> None:
+    async def _register_device(self, websocket) -> dict:
         raw = await asyncio.wait_for(websocket.recv(), CONTROL_CONNECT_TIMEOUT)
         message = json.loads(raw)
         if message.get("type") != "device_challenge":
@@ -291,17 +299,14 @@ class RendezvousService:
         response = json.loads(await asyncio.wait_for(websocket.recv(), CONTROL_CONNECT_TIMEOUT))
         if response.get("type") != "device_registered" or response.get("peer_id") != self.identity.peer_id:
             raise ValueError("Control server rejected device registration")
+        return response
 
-    async def _configure_turn(self, websocket) -> None:
-        await websocket.send(json.dumps({"type": "turn_credentials"}))
-        response = json.loads(await asyncio.wait_for(websocket.recv(), CONTROL_CONNECT_TIMEOUT))
-        if response.get("type") != "turn_credentials":
-            logger.info("TURN credentials unavailable: %s", response.get("error", "not configured"))
-            return
-        uris, username, credential = response.get("uris"), response.get("username"), response.get("credential")
-        if not isinstance(uris, list) or not all(isinstance(uri, str) for uri in uris) or not isinstance(username, str) or not isinstance(credential, str):
-            raise ValueError("Invalid TURN credential response")
-        await self.udp.configure_turn(uris, username, credential)
+    async def _send_derp(self, websocket, peer_id: str, data: bytes) -> None:
+        if len(data) > 1200:
+            raise ValueError("DERP frame is too large")
+        await websocket.send(json.dumps({
+            "type": "relay", "recipient_id": peer_id, "payload": _encode(data), "v": 1,
+        }))
 
     async def _receive_loop(self, websocket) -> None:
         async for raw in websocket:
@@ -309,6 +314,13 @@ class RendezvousService:
                 continue
             try:
                 message = json.loads(raw)
+                if message.get("type") == "relay":
+                    peer_id, payload = message.get("peer_id"), message.get("payload")
+                    if isinstance(peer_id, str) and isinstance(payload, str):
+                        data = _decode(payload)
+                        if len(data) <= 1200:
+                            self.udp.derp_datagram_received(peer_id, data)
+                    continue
                 room_id = message.get("room_id")
                 room = self.settings.rooms.get(room_id)
                 if not room:
@@ -378,8 +390,8 @@ class RendezvousService:
             await self._announce(websocket, room)
 
     async def _announce(self, websocket, room: Room) -> None:
-        direct_endpoint = None if self.udp.force_turn else self.public_endpoint
-        payload = encrypt_endpoint_card(self.identity, room, direct_endpoint, self.udp.relay_endpoints)
+        direct_endpoint = None if self.udp.force_relay else self.public_endpoint
+        payload = encrypt_endpoint_card(self.identity, room, direct_endpoint, derp=self.udp.relay_enabled)
         await websocket.send(json.dumps({"type": "signal", "room_id": room.id, "payload": payload}))
 
     async def _handle_card(self, room: Room, payload: str, announce_join: bool = False) -> None:
@@ -400,8 +412,11 @@ class RendezvousService:
         candidates = value["candidates"]
         if not candidates:
             return
-        parsed: list[tuple[str, Endpoint]] = []
+        parsed: list[tuple[str, Endpoint | None]] = []
         for candidate in candidates:
+            if candidate["type"] == "derp":
+                parsed.append(("derp", None))
+                continue
             address = ipaddress.ip_address(candidate["host"])
             port = candidate["port"]
             valid_address = isinstance(address, ipaddress.IPv4Address) and address.is_global and not (
@@ -441,8 +456,7 @@ class RendezvousService:
             # Relay-only card: clear stale direct state before setting up relay
             self._last_candidates.pop(peer_id, None)
             self.udp.clear_direct_candidate(peer_id)
-        for kind, relay_endpoint in parsed:
-            if kind == "relay":
-                self.udp.expect_relay_peer(peer_id, relay_endpoint)
+        if any(kind == "derp" for kind, _ in parsed):
+            self.udp.expect_derp_peer(peer_id)
         self._candidate_seen[peer_id] = now
         await self.on_candidate(peer_id, endpoint)

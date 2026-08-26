@@ -258,7 +258,7 @@ then encrypted locally before being sent to the control service:
   "candidate": { "host": "<ipv4>", "port": 12345 } | null,
   "candidates": [
     { "type": "direct", "host": "<ipv4>", "port": 12345 },
-    { "type": "relay", "host": "<ipv4>", "port": 45678 }
+    { "type": "derp" }
   ],
   "created_at": 1700000000,
   "nonce": "<32 hex>",
@@ -273,9 +273,9 @@ then encrypted locally before being sent to the control service:
    2. kind == "endpoint";
   3. peer_id == SHA-256(signing_public_key);
   4. card age |now - created_at| <= CARD_MAX_AGE (180 s);
-   5. each candidate has type direct or relay and its host is a global,
-     non-multicast/unspecified/reserved/link-local IPv4 (loopback only allowed
-     with allow_loopback);
+   5. each direct candidate has a global, non-multicast/unspecified/reserved/
+      link-local IPv4 host (loopback only allowed with allow_loopback); DERP has
+      no network address;
   6. Ed25519 signature over the card body is valid.
 - Replay protection: (room_id, peer_id, nonce) is remembered for CARD_MAX_AGE;
   duplicates are dropped.
@@ -283,16 +283,16 @@ then encrypted locally before being sent to the control service:
   introduced candidate address (section 6.2), preventing a control service from
   redirecting a peer to an attacker endpoint.
 
-A direct candidate starts a direct UDP attempt. A relay candidate starts a TURN
-attempt when direct setup fails. The relay server address is not treated as the
-peer address: TURN decapsulates the payload and the MeshTalk session binds the
-authenticated logical peer endpoint. A changed candidate causes a new attempt.
+A direct candidate starts a direct UDP attempt. A `derp` candidate starts a
+MeshTalk Relay attempt when direct setup fails. The relay frame is addressed to
+the authenticated logical peer ID, never a network address. A changed direct
+candidate causes a new attempt.
 
 ### 5.3 Control Service Protocol (control/src/index.ts)
 
 WebSocket endpoint /v1/rendezvous. Production must use wss:// (the backend
-rejects ws:// for any non-localhost host). When TURN is enabled, the control
-service also requires signed device registration before room or relay requests.
+rejects ws:// for any non-localhost host). The control service requires signed
+device registration before room or relay requests.
 The control service:
 
 - Stores one opaque blob per (WebSocket connection, room_id).
@@ -306,12 +306,12 @@ Client to server messages:
 
 | type | Fields | Notes |
 |------|--------|-------|
-| join | room_id (32 hex) | Join a room; triggers roster sync. |
+| join | room_id (32 hex), room_auth (64 hex) | Prove invite possession and join a room. |
 | leave | room_id | Drop the retained blob for that room. |
 | signal | room_id, payload (base64 card, <= 8 KiB) | Publish/replace this connection's card. |
 | get_peers | room_id | Fetch all retained cards. |
-| device_register | challenge_id, nonce, issued_at, peer_id, signing_public_key, signature, v | Signed device registration; required when TURN is enabled. |
-| turn_credentials | v | Request short-lived coturn REST credentials after registration. |
+| device_register | challenge_id, nonce, issued_at, peer_id, signing_public_key, signature, v | Signed device registration. |
+| relay | recipient_id, payload (base64, <= 1200 bytes) | Send an opaque MeshTalk Relay frame. |
 
 Server to client messages:
 
@@ -323,8 +323,9 @@ Server to client messages:
 | peers | room_id, payloads: string[] |
 | error | error (then socket closed, code 1008) |
 | device_challenge | challenge_id, nonce, expires_at, v |
-| device_registered | peer_id, v |
-| turn_credentials | uris, username, credential, ttl, v |
+| device_registered | peer_id, relay_enabled, v |
+| relay | peer_id, payload, v |
+| relay_dropped | recipient_id, reason, v |
 
 Limits & abuse controls:
 
@@ -332,6 +333,8 @@ Limits & abuse controls:
   MAX_ROOMS = 10_000.
 - MAX_CONNECTIONS = 10_000; MAX_CONNECTIONS_PER_IP = 32.
 - MAX_RETAINED_BYTES = 64 MiB total; MAX_SIGNAL_LENGTH = 8 KiB.
+- Relay frames are limited to 1200 bytes, 8 active peers per device, and 1 MiB/s
+  ingress plus egress with a 4 MiB burst.
 - Rate limits (per connection AND per source IP, rolling 60 s windows): 96
   control messages, 64 signals, 30 peer fetches.
 - GET /health returns { status, rooms, connections }.
@@ -339,11 +342,11 @@ Limits & abuse controls:
   with CONTROL_PING_TIMEOUT = 5 s; reconnect uses exponential backoff capped at
   CONTROL_RECONNECT_MAX_DELAY = 30 s.
 
-When TURN is enabled, the control connection begins with a signed device
-challenge. The client replies with its Ed25519 public key, derived peer ID, issue
-time, nonce, and signature over the domain-separated registration payload. The
-server then accepts `turn_credentials` and returns TURN URIs plus a short-lived
-coturn REST username and credential. The shared secret is never sent to clients.
+The control connection begins with a signed-device challenge. The client replies
+with its Ed25519 public key, derived peer ID, issue time, nonce, and signature
+over the domain-separated registration payload. Each room join includes
+`HMAC-SHA256(room_secret, "meshtalk-relay-room-v1" || room_id)`; control stores
+the derived capability and never receives the room secret.
 
 ### 5.4 STUN (backend/meshtalk/udp_transport.py)
 
@@ -371,38 +374,30 @@ coturn REST username and credential. The shared secret is never sent to clients.
   socket is used for STUN and traffic, compatible NATs open mappings in both
   directions.
 
-### 5.6 TURN Relay
+### 5.6 Embedded DERP Relay
 
-The control service can issue coturn long-term shared-secret REST credentials:
+Endpoint cards advertise a `derp` candidate in addition to a direct endpoint.
+After direct setup fails, a client sends an opaque authenticated MeshTalk
+datagram as a base64 `relay` frame on its established control WebSocket. The
+frame names a recipient peer ID, not an IP address or port. Control forwards only
+to a connected recipient that shares an authorized room with the sender.
 
-```text
-expiry   = unix_now + CONTROL_TURN_TTL_SECONDS
-username = expiry + ":" + peer_id
-credential = base64(HMAC-SHA1(TURN_SHARED_SECRET, username))
-```
-
-For `CONTROL_TURN_PROVIDER=cloudflare`, control instead uses its server-side API
-token to request short-lived credentials from Cloudflare's TURN credential API.
-It filters the returned ICE server URLs to `turn:` and `turns:` URLs before
-sending the normalized URI list, username, and credential to the client. The
-Cloudflare API token and coturn shared secret are never sent to clients.
-
-`aioice.turn.create_turn_endpoint` allocates a UDP relay and refreshes the
-allocation. The control connection to coturn may use UDP, TCP, or TLS. TLS
-protects the client-to-coturn connection; MeshTalk's own encryption protects
-the relayed datagram end to end.
+Frames are capped at 1200 bytes. Control applies a per-device token bucket of
+1 MiB/s for ingress plus egress with a 4 MiB burst and permits eight active
+relay peers per device. Excess frames are dropped without buffering.
+`CONTROL_RELAY_ENABLED=false` disables forwarding while retaining direct client
+connectivity.
 
 The route-selection policy is:
 
 1. LAN TCP when available.
 2. Direct UDP server-reflexive candidate.
-3. TURN relay candidate after direct HELLO/READY setup expires.
+3. Embedded DERP relay candidate after direct HELLO/READY setup expires.
 4. Keep the confirmed relay for the session. Direct recovery is deferred until
    route replacement can preserve the working session atomically.
 
-TURN allocation failure is non-fatal. The peer remains available through any
-working LAN or direct route, and the client reports the relay failure in logs and
-diagnostics.
+Relay unavailability is non-fatal. The peer remains available through any working
+LAN or direct route, and the client reports the relay failure in logs and diagnostics.
 
 ## 6. Remote UDP Transport (backend/meshtalk/udp_transport.py)
 
@@ -589,8 +584,8 @@ IPC "message" event. The sender marks delivery on the ACK.
 
 ### 7.4 Store-and-Forward (Offline Queueing)
 
-MeshTalk does not store messages on a server. An optional TURN relay forwards
-encrypted transport datagrams, so a relay compromise can reveal transport
+MeshTalk does not store messages on a server. MeshTalk Relay forwards encrypted
+transport datagrams, so a relay compromise can reveal transport
 metadata but not message content. A message can only be delivered while the
 recipient's device is connected. To
 avoid silently dropping messages sent to an offline peer, the sender performs
@@ -915,10 +910,11 @@ Cryptographic assumptions & limits:
 - Ed25519 authenticates; X25519 + AES-256-GCM (HKDF-SHA256-derived keys) provide
   confidentiality and integrity. NOT post-quantum (X25519 is Shor-vulnerable).
   "Store now, decrypt later" risk applies to captured traffic.
-- TURN is optional infrastructure for symmetric NAT and UDP-restricted networks.
-  It sees transport metadata and encrypted datagram sizes, but MeshTalk's
-  authenticated encryption prevents it from decrypting or undetectably modifying
-  content. Relay availability and bandwidth remain operator responsibilities.
+- MeshTalk Relay is optional infrastructure for symmetric NAT and UDP-restricted
+  networks. It sees transport metadata and encrypted datagram sizes, but
+  MeshTalk's authenticated encryption prevents it from decrypting or
+  undetectably modifying content. Relay availability and bandwidth remain
+  operator responsibilities.
 - Anyone with a room invite can join that room; invite secrecy is the user's
   responsibility.
 - A group roster is a device-local cache derived from decrypted room endpoint

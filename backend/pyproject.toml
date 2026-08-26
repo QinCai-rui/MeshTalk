@@ -9,7 +9,6 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "certifi>=2024.8.30",
     "websockets>=14.0",
-    "aioice==0.10.2",
 ]
 
 [project.scripts]
@@ -27,4 +26,3 @@ module-root = ""
 dev = [
     "pytest>=9.1.1",
 ]
-

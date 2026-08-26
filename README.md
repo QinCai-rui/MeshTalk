@@ -16,10 +16,9 @@ Peer-to-peer encrypted messaging over a LAN or direct NAT-traversed UDP links.
 
 MeshTalk keeps the original offline LAN path: UDP broadcast discovers peers and
 TCP carries authenticated messages. Private rooms add remote discovery through
-an opaque control service and public STUN. If configured, coturn provides a
-fallback path when direct UDP is unavailable. The control service exchanges only
-encrypted endpoint cards and short-lived relay credentials; chat traffic is never
-stored by either service.
+ an opaque control service and public STUN. MeshTalk Relay provides a bounded,
+peer-ID-only fallback path when direct UDP is unavailable. The control service
+exchanges encrypted endpoint cards and never stores chat traffic.
 
 ## Architecture
 
@@ -34,7 +33,7 @@ Python backend ---- LAN broadcast + TCP ---- LAN peers
       |
       +---- STUN + reliable encrypted UDP ---- remote peers
       |
-      +---- TURN relay (fallback; encrypted UDP) ---- remote peers
+      +---- MeshTalk Relay (fallback; encrypted WSS frames) ---- remote peers
 ```
 
 ## Quick Start
@@ -245,156 +244,39 @@ MESHTALK_STUN_SERVER=stun.example.com:3478 meshtalk
 
 The control URL can similarly be supplied as `MESHTALK_CONTROL_URL`.
 
-## TURN Relay Deployment
+## DERP Relay Deployment
 
-TURN is optional. Direct UDP is always attempted first. MeshTalk falls back to
-TURN after direct UDP setup fails or the authenticated direct path becomes
-unhealthy. A healthy direct path remains preferred. TURN carries only transport
-datagrams; MeshTalk transport encryption and message/file end-to-end encryption
-remain active.
+The control service embeds a MeshTalk-only DERP relay. Direct UDP remains
+preferred; if direct HELLO/READY setup expires, clients carry their authenticated
+and encrypted MeshTalk datagrams through the existing control `wss://` connection.
 
-### Self-Hosted Compose
-
-The repository includes a coturn service in `docker-compose.yml`. Copy
-`turn.env.example` to `.env`, then replace the example values with one random
-secret shared by control and coturn:
+Deploy only the `control` service. It needs no UDP relay ports or shared secrets.
+Cloudflare Tunnel can expose it directly because clients use WebSocket traffic:
 
 ```bash
-TURN_SHARED_SECRET="$(openssl rand -base64 32)"
-TURN_REALM="turn.example.com"
-TURN_URIS="turn:turn.example.com:3478?transport=udp"
-TURN_PORT=3478
-TURN_RELAY_MIN_PORT=49152
-TURN_RELAY_MAX_PORT=49200
+docker compose up -d control
+cloudflared tunnel --url http://localhost:8787
 ```
 
-Use a public DNS name in `TURN_URIS`, not `localhost`, for Internet clients.
-Start and inspect the services with:
+The feature is called **MeshTalk Relay**. It is enabled by default; set
+`CONTROL_RELAY_ENABLED=false` to disable forwarding on the control server. This
+leaves LAN and direct UDP connectivity available. `MESHTALK_FORCE_RELAY=true` is
+only for relay-only testing and requires MeshTalk Relay to be enabled.
 
-```bash
-docker compose --env-file .env up -d control turn
-docker compose --env-file .env logs -f control turn
-```
+Clients register their existing Ed25519 identity before joining rooms. Joining
+requires an HMAC derived from the room invite secret; control stores only that
+derived capability. A relay frame names an authenticated MeshTalk peer ID, and
+control forwards it only when both devices are authorized members of a shared
+room.
 
-Allow TCP and UDP `3478` and UDP `49152-49200` in the host firewall and cloud
-security group. Publish TCP `8787` only when the control service is intended to
-be public, and put it behind HTTPS/WSS in production.
+The control relay accepts frames up to 1200 bytes, limits each device to 1 MiB/s
+combined ingress/egress with a 4 MiB burst, and permits eight active relay peers
+per device. Over-limit frames are dropped rather than buffered. The service can
+observe registrations, IP addresses, room IDs, peer IDs, timing, and encrypted
+frame sizes, but not MeshTalk transport or message contents.
 
-The included coturn service supports TURN over UDP and plain TCP control
-connections. For TURN-over-TLS, provide a trusted certificate and private key to
-coturn, enable its TLS listener on `5349`, and set:
-
-```bash
-TURN_URIS="turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp"
-```
-
-The certificate must be valid for the hostname in the `turns:` URI. The Compose
-example leaves certificate mounting and the TLS listener to the operator because
-certificates are deployment secrets. If coturn is behind NAT, configure its
-public relay address with coturn's `external-ip` setting.
-
-### Control Configuration
-
-Set these variables when deploying the control service outside the included
-Compose file:
-
-| Variable | Meaning | Default |
-| --- | --- | --- |
-| `CONTROL_TURN_ENABLED` | Enables device registration and credential issuance | `false` |
-| `CONTROL_TURN_PROVIDER` | `coturn` or `cloudflare` credential provider | `coturn` |
-| `CONTROL_TURN_URIS` | Comma-separated `turn:` or `turns:` URIs | empty |
-| `CONTROL_TURN_SHARED_SECRET` | Must match coturn `static-auth-secret` | empty |
-| `CONTROL_TURN_TTL_SECONDS` | Lifetime encoded into each coturn username | `600` |
-| `CONTROL_CLOUDFLARE_TURN_TOKEN_ID` | Cloudflare TURN Token ID when provider is `cloudflare` | empty |
-| `CONTROL_CLOUDFLARE_API_TOKEN` | Cloudflare API token allowed to generate TURN credentials | empty |
-
-Clients connect over `wss://`, receive a signed device challenge, register their
-existing Ed25519 identity, and request credentials on that WebSocket. Credentials
-are short-lived and are not persisted in `settings.json` or returned through
-local IPC.
-
-### Cloudflare TURN
-
-Cloudflare TURN uses its credential-generation API rather than coturn's shared
-secret algorithm. Configure the control service, not the clients:
-
-```bash
-CONTROL_TURN_ENABLED=true
-CONTROL_TURN_PROVIDER=cloudflare
-CONTROL_CLOUDFLARE_TURN_TOKEN_ID=<Cloudflare TURN Token ID>
-CONTROL_CLOUDFLARE_API_TOKEN=<Cloudflare API token>
-CONTROL_TURN_TTL_SECONDS=600
-```
-
-For every registered MeshTalk device, control requests a short-lived credential
-from `https://rtc.live.cloudflare.com/v1/turn/keys/<token-id>/credentials/generate-ice-servers`.
-It forwards only Cloudflare's TURN URIs, username, and credential to the client;
-the API token is never sent to clients. Cloudflare's response may also contain a
-STUN URI, which MeshTalk ignores because STUN discovery is configured separately.
-
-Cloudflare currently returns `turn.cloudflare.com` relay endpoints. The client
-can use UDP/TCP `3478` or TLS `5349` (and its alternate ports if Cloudflare
-returns them). Do not set `CONTROL_TURN_SHARED_SECRET` for this provider and do
-not run the local `turn` Compose service. With the included Compose file, set
-the variables in `.env` and start only control:
-
-```bash
-docker compose --env-file .env up -d control
-```
-
-### coturn Requirements
-
-Configure coturn with long-term shared-secret authentication:
-
-```text
-lt-cred-mech
-use-auth-secret
-static-auth-secret=<TURN_SHARED_SECRET>
-realm=<TURN_REALM>
-fingerprint
-```
-
-Keep UDP relay enabled. Bound `min-port` and `max-port` to a documented range and
-publish the same range through the firewall. Monitor allocation counts and
-bandwidth because TURN transfers consume relay-server egress.
-
-### Fallback And Recovery
-
-1. The client allocates TURN and publishes relay candidates inside the encrypted,
-   signed endpoint card.
-2. Both peers attempt direct server-reflexive UDP first.
-3. If direct HELLO/READY setup expires, the relay candidate is attempted.
-4. Authenticated MeshTalk packets are sent through TURN ChannelData.
-5. A confirmed relay remains active for the session. Automatic direct recovery
-   is disabled until route replacement can preserve the working relay atomically.
-
-The TUI and CLI identify the active route as `TURN relay`. If allocation or
-credential issuance fails, LAN/direct UDP behavior continues and diagnostics log
-the relay failure.
-
-### Security And Privacy
-
-- coturn can observe allocation identity, source addresses, destination relay
-  addresses, timing, and encrypted datagram sizes.
-- coturn cannot decrypt MeshTalk transport or message content.
-- The control service can observe device registration, IP address, credential
-  issuance, room membership metadata, and opaque encrypted cards.
-- The shared TURN secret belongs only to control and coturn; never put it in a
-  client environment or endpoint card.
-- Signed registration proves possession of a MeshTalk identity but does not stop
-  Sybil identities. Enforce coturn allocation, bandwidth, IP, and device quotas.
-
-### Troubleshooting
-
-- `TURN is not configured`: set `CONTROL_TURN_ENABLED=true`, relay URIs, and the
-  shared secret on control.
-- `TURN allocation ... failed`: check DNS, credentials, coturn logs, port `3478`,
-  and relay-range reachability.
-- Direct works but relay does not: verify coturn `external-ip`, relay ports,
-  firewall rules, and the endpoint-card size.
-- TLS allocation fails: verify the certificate hostname, port `5349`, and CA chain.
-- A peer remains offline: inspect `debug_info`, confirm a `TURN relay` endpoint is
-  listed, and verify both clients use the same control service.
+A peer that remains offline should use the same control URL and room invite as its
+peer; inspect control logs for room authorization or relay quota drops.
 
 ## File Transfer
 
@@ -484,9 +366,8 @@ older glibc than the build system.
   necessarily learn each other's public IP and UDP port.
 
 UDP hole punching does not work through every symmetric NAT, firewall, carrier
-network, or UDP-blocking policy. When the control service supplies short-lived
-coturn credentials, MeshTalk falls back to TURN without routing chat content
-through the control service.
+network, or UDP-blocking policy. When MeshTalk Relay is enabled, clients fall
+back to peer-ID-addressed encrypted frames through the control connection.
 
 Peer networking and STUN are IPv4-only. Sockets bind to `0.0.0.0`/`127.0.0.1`,
 STUN resolution is forced to `AF_INET`, LAN discovery uses IPv4 broadcast, and
