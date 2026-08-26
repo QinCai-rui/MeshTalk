@@ -3,6 +3,7 @@ export type Peer = {
   display_name: string
   is_online: number
   last_seen: number
+  last_interaction: number
   unread_count: number
   presence?: "active" | "away" | "offline"
   is_friend?: boolean

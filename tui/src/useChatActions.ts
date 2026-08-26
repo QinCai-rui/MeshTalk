@@ -6,7 +6,7 @@ import type { NotificationDelivery, NotificationEvent, NotificationPreferences }
 import { join, resolve } from "path"
 import { tmpdir } from "os"
 import { existsSync, statSync } from "fs"
-import { groupFromResponse } from "./utils"
+import { groupFromResponse, sortPeersByInteraction } from "./utils"
 import { runCommand as navigationRunCommand } from "./navigation"
 import { sendTestNotification } from "./notifications"
 import { DEFAULT_STATUS, groupDeliveryLabel, MAX_MESSAGE_BYTES, MIN_COMPOSER_HEIGHT } from "./utils"
@@ -124,7 +124,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   async function refreshPeers() {
     const response = await ipc.send("peers")
     if (response.error) throw new Error(response.error)
-    const next = (response.peers as Peer[]).sort((a, b) => b.last_seen - a.last_seen || a.display_name.localeCompare(b.display_name))
+    const next = sortPeersByInteraction(response.peers as Peer[])
     setPeers(next)
     setSelection((current) => current && (current.kind === "group" || next.some((p) => p.peer_id === current.id))
       ? current
@@ -882,6 +882,10 @@ export function useChatActions(deps: ChatActionsDeps) {
         : await ipc.send("group_send", { group_id: selection.id, content })
       if (response.error) throw new Error(response.error)
       const queued = Boolean(response.queued)
+      if (selection.kind === "peer") {
+        const lastInteraction = Date.now() / 1000
+        setPeers((current) => sortPeersByInteraction(current.map((peer) => peer.peer_id === selection.id ? { ...peer, last_interaction: lastInteraction } : peer)))
+      }
       setMessages((c) => [...c, {
         message_id: response.message_id as string, sender_id: identity.peer_id,
         ...(selection.kind === "peer" ? { recipient_id: selection.id } : { group_id: selection.id, deliveries: response.deliveries as GroupDelivery[] }),

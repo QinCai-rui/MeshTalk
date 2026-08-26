@@ -7,7 +7,7 @@ import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
 import { checkForUpdate, GitHubAuthenticationError } from "../../common/updater"
 import type { Conversation, ConversationItem, Dialog, FileTransfer, Group, GroupMember, Message, Peer, TypingPeer, UnreadMessageState } from "./types"
-import { composerLimitColor, DEFAULT_STATUS, getComposerHeight, MIN_COMPOSER_HEIGHT, peerPresence, UNREAD_MESSAGE_FADE_MS } from "./utils"
+import { composerLimitColor, DEFAULT_STATUS, getComposerHeight, MIN_COMPOSER_HEIGHT, peerPresence, sortPeersByInteraction, UNREAD_MESSAGE_FADE_MS } from "./utils"
 import { Sidebar } from "./components/Sidebar"
 import { ConversationPanel } from "./components/ConversationPanel"
 import { DialogPanel } from "./components/DialogPanel"
@@ -111,6 +111,11 @@ export function ChatApp() {
       if (!message || message.visibleAt !== undefined) return current
       return { ...current, [messageId]: { ...message, visibleAt: Date.now() } }
     })
+  }
+
+  function updatePeerInteraction(peerId: string | undefined, timestamp = Date.now() / 1000) {
+    if (!peerId) return
+    setPeers((current) => sortPeersByInteraction(current.map((peer) => peer.peer_id === peerId ? { ...peer, last_interaction: timestamp } : peer)))
   }
 
   function sendTyping(conversation: Conversation, isTyping: boolean) {
@@ -466,6 +471,7 @@ export function ChatApp() {
     }
     if (event.event === "file_offer") {
       const filename = event.filename as string
+      updatePeerInteraction(event.sender_id as string | undefined)
       const sender = peers.find((p) => p.peer_id === event.sender_id)?.display_name ?? String(event.sender_id).slice(0, 8)
       actions.showStatus(`Incoming file: ${filename} (${event.file_size} bytes) from ${sender}`)
       void notify(notificationPreferences, "file_offers", renderer, `Incoming file ${filename} from ${sender}`)
@@ -480,6 +486,7 @@ export function ChatApp() {
       const filename = event.filename as string
       const fpath = event.file_path as string
       const fileId = event.file_id as string
+      updatePeerInteraction(event.sender_id as string | undefined)
       actions.showStatus(`File received: ${filename} -> ${fpath}`)
       void notify(notificationPreferences, "file_completed", renderer, `File received: ${filename}`)
       setFileTransfers((current) => current.map((file) => file.file_id === fileId ? { ...file, status: "completed", file_path: fpath, completed_at: Date.now() / 1000 } : file))
@@ -488,6 +495,7 @@ export function ChatApp() {
     }
     if (event.event === "file_sent" || event.event === "file_delivered" || event.event === "file_queued") {
       const name = (event.file_id as string)?.slice(0, 8) ?? "file"
+      updatePeerInteraction(event.recipient_id as string | undefined)
       if (event.event === "file_sent") actions.showStatus(`File ${name} sent.`)
       else if (event.event === "file_delivered") actions.showStatus(`File ${name} delivered.`)
       else actions.showStatus(`File ${name} queued for offline peer.`)
@@ -511,6 +519,7 @@ export function ChatApp() {
     const mutedUntil = mutedPeers[senderId]
     const isMuted = mutedUntil === undefined ? false : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil
     if (!isMuted) void notify(notificationPreferences, "messages", renderer, `New message from ${sender}`)
+    updatePeerInteraction(senderId)
     if (senderId !== selectedPeerId) {
       rememberUnreadMessage(`peer:${senderId}`, event.message_id as string | undefined)
       setPeers((current) => current.map((peer) => peer.peer_id === senderId ? { ...peer, unread_count: peer.unread_count + 1 } : peer))

@@ -29,7 +29,7 @@ export function Sidebar({ compact, dialogOpen, editingName, groups, groupMembers
     <box onMouseDown={() => setEditingName(true)}>
       {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <><text fg="#888888">Click to rename</text><text fg="#888888">{identity?.peer_id.slice(0, 12)}</text></>}
     </box>
-    <box title={`Peers: ${peers.length}`} bottomTitle="Ctrl+D removes peers" style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 3, flexDirection: "column", padding: 1 }}>
+    <box title={`Peers: ${peers.length}, Online: ${peers.filter((peer) => peer.is_online).length}`} bottomTitle="Ctrl+D removes peers" style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 3, flexDirection: "column", padding: 1 }}>
       <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={listContentOptions} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
         {!peers.length ? <text fg="#888888">No peers discovered</text> : null}
         {peers.map((peer) => {
