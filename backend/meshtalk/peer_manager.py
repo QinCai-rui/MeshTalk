@@ -226,7 +226,7 @@ class PeerManager:
             peer.state = PeerState.CONNECTED
             self.peers[peer.peer_id] = peer
             self.record_lan_candidate(peer.peer_id, address, tcp_port)
-            await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
+            await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, capabilities=peer.remote_capabilities)
             self._start_receive_loop(peer)
             await self._send_profile_update(peer)
             await self._notify_peer_changed(peer.peer_id)
@@ -257,7 +257,7 @@ class PeerManager:
             if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
                 raise ValueError("Connected peer limit reached")
             self.peers[peer.peer_id] = peer
-            await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key)
+            await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, capabilities=peer.remote_capabilities)
             self._start_receive_loop(peer)
             await self._send_profile_update(peer)
             await self._notify_peer_changed(peer.peer_id)
@@ -296,7 +296,7 @@ class PeerManager:
         active = self.peers.get(peer_id)
         if not active or active.state != PeerState.CONNECTED or active.transport != "lan_tcp":
             self.peers[peer_id] = peer
-        await self.db.upsert_peer(peer_id, display_name, encryption_public_key, signing_public_key)
+        await self.db.upsert_peer(peer_id, display_name, encryption_public_key, signing_public_key, capabilities=peer.remote_capabilities)
         await self._send_profile_update(peer)
         await self._notify_peer_changed(peer_id)
         if old_endpoint and old_endpoint != peer.endpoint:
@@ -507,7 +507,7 @@ class PeerManager:
             active.display_name = peer.display_name
             active.tui_active = peer.tui_active
         await self.db.upsert_peer(
-            peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, peer.tui_active
+            peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, peer.tui_active, peer.remote_capabilities
         )
         await self._notify_peer_changed(peer.peer_id)
 

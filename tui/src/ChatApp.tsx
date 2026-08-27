@@ -77,6 +77,7 @@ export function ChatApp() {
   const dialogAction = useRef(0)
   const dialogBusyRef = useRef(false)
   const filePickerOpen = useRef(false)
+  const deleteConfirmationTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const typingStartTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const typingHeartbeat = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
@@ -279,6 +280,22 @@ export function ChatApp() {
   useEffect(() => () => stopOutgoingTyping(), [selectionKey])
 
   useEffect(() => { setSelectedReplyTarget(undefined); setReplyTo(undefined); setDeleteConfirmation(undefined) }, [selectionKey])
+
+  useEffect(() => {
+    if (deleteConfirmationTimer.current) clearTimeout(deleteConfirmationTimer.current)
+    if (!deleteConfirmation) {
+      deleteConfirmationTimer.current = undefined
+      return
+    }
+    deleteConfirmationTimer.current = setTimeout(() => {
+      setDeleteConfirmation(undefined)
+      actions.showStatus("Message deletion timed out.")
+    }, 5_000)
+    return () => {
+      if (deleteConfirmationTimer.current) clearTimeout(deleteConfirmationTimer.current)
+      deleteConfirmationTimer.current = undefined
+    }
+  }, [deleteConfirmation])
 
   useEffect(() => {
     if (dialog || editingName || scrollFocused || isSending) stopOutgoingTyping()

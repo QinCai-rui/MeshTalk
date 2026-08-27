@@ -102,7 +102,7 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         conversation = await self.router_a.db.get_conversation(self.identity_a.peer_id, self.identity_b.peer_id)
         self.assertEqual(conversation[-1]["reply_to_message_id"], original_id)
 
-    async def test_local_message_deletion_keeps_a_tombstone(self):
+    async def test_local_message_deletion_removes_local_history(self):
         await self._become_friends()
         message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"remove locally")
         await asyncio.wait_for(self.received.get(), 1)

@@ -22,6 +22,7 @@ from .peer_manager import PeerConnection, PeerManager
 from .protocol import (
     CAP_BLOCK_REPORTS,
     CAP_DELIVERY_RECEIPTS,
+    CAP_MESSAGE_REPLIES,
     CAP_TEXT_CHAT,
     MAX_PACKET_SIZE,
     MessageBlockedPayload,
@@ -49,6 +50,11 @@ class MessageRouter:
         peer = self.peer_manager.get_connected_peer(recipient_id)
         if peer is not None and not peer.supports(CAP_TEXT_CHAT):
             raise ValueError("Peer does not support text chat")
+        if reply_to_message_id:
+            if peer is not None and not peer.supports(CAP_MESSAGE_REPLIES):
+                raise ValueError("Peer does not support message replies")
+            if peer is None and not await self.db.peer_supports(recipient_id, CAP_MESSAGE_REPLIES):
+                raise ValueError("Peer does not support message replies")
         encryption_key = peer.encryption_public_key if peer is not None else None
         if encryption_key is None:
             stored = await self.db.get_peer(recipient_id)
@@ -100,6 +106,8 @@ class MessageRouter:
             return
         if message.sender_id != peer.peer_id or peer.signing_public_key is None:
             raise ValueError("Message sender does not match authenticated peer")
+        if message.reply_to_message_id and not peer.supports(CAP_MESSAGE_REPLIES):
+            raise ValueError("Peer sent a message reply without negotiating support")
         if not await self.friend_manager.is_friend(message.sender_id):
             await self._send_blocked_notice(peer, message)
             return

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 import os
+import json
 from pathlib import Path
 
 import aiosqlite
@@ -20,7 +21,8 @@ CREATE TABLE IF NOT EXISTS peers (
     signing_public_key BLOB,
     last_seen REAL,
     is_online INTEGER NOT NULL DEFAULT 0,
-    tui_active INTEGER NOT NULL DEFAULT 0
+    tui_active INTEGER NOT NULL DEFAULT 0,
+    capabilities TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -174,6 +176,8 @@ class Database:
             await self._db.execute("ALTER TABLE peers ADD COLUMN lan_endpoint TEXT")
         if "remote_endpoint" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN remote_endpoint TEXT")
+        if "capabilities" not in columns:
+            await self._db.execute("ALTER TABLE peers ADD COLUMN capabilities TEXT")
         message_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(messages)")}
         if "read_at" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN read_at REAL")
@@ -277,22 +281,35 @@ class Database:
             return dict(row) if row else None
 
     async def upsert_peer(
-        self, peer_id: str, display_name: str, public_key: bytes, signing_public_key: bytes, tui_active: bool = False
+        self, peer_id: str, display_name: str, public_key: bytes, signing_public_key: bytes,
+        tui_active: bool = False, capabilities: list[str] | None = None,
     ) -> None:
         """Insert or update peer information including keys and online status."""
         await self._db.execute(
-            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active)
-               VALUES (?, ?, ?, ?, ?, 1, ?)
+            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active, capabilities)
+               VALUES (?, ?, ?, ?, ?, 1, ?, ?)
                ON CONFLICT(peer_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  public_key = excluded.public_key,
                  signing_public_key = excluded.signing_public_key,
                  last_seen = excluded.last_seen,
-                  is_online = 1,
-                  tui_active = excluded.tui_active""",
-            (peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active)),
+                   is_online = 1,
+                   tui_active = excluded.tui_active,
+                   capabilities = COALESCE(excluded.capabilities, peers.capabilities)""",
+            (peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active), json.dumps(sorted(set(capabilities))) if capabilities is not None else None),
         )
         await self._db.commit()
+
+    async def peer_supports(self, peer_id: str, capability: str) -> bool:
+        """Check a capability learned from the peer's most recent handshake."""
+        async with self._db.execute("SELECT capabilities FROM peers WHERE peer_id = ?", (peer_id,)) as cursor:
+            row = await cursor.fetchone()
+        if not row or not row["capabilities"]:
+            return False
+        try:
+            return capability in json.loads(row["capabilities"])
+        except (TypeError, json.JSONDecodeError):
+            return False
 
     async def set_peer_online(self, peer_id: str, online: bool) -> None:
         """Update peer online status and last seen timestamp."""
