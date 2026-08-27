@@ -102,6 +102,17 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         conversation = await self.router_a.db.get_conversation(self.identity_a.peer_id, self.identity_b.peer_id)
         self.assertEqual(conversation[-1]["reply_to_message_id"], original_id)
 
+    async def test_local_message_deletion_keeps_a_tombstone(self):
+        await self._become_friends()
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"remove locally")
+        await asyncio.wait_for(self.received.get(), 1)
+
+        self.assertTrue(await self.router_a.db.delete_message_locally(message_id))
+        conversation = await self.router_a.db.get_conversation(self.identity_a.peer_id, self.identity_b.peer_id)
+        message = next(item for item in conversation if item["message_id"] == message_id)
+        self.assertEqual(message["content"], "")
+        self.assertEqual(message["deleted_by_local"], 1)
+
     async def test_non_friend_message_is_blocked_with_notice(self):
         await self._connect_peers()
         message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"hello stranger")

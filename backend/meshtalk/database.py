@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS messages (
     stored INTEGER NOT NULL DEFAULT 0,
     queued INTEGER NOT NULL DEFAULT 0,
     failed INTEGER NOT NULL DEFAULT 0,
+    deleted_by_local INTEGER NOT NULL DEFAULT 0,
     read_at REAL,
     received_at REAL,
     reply_to_message_id TEXT
@@ -115,7 +116,8 @@ CREATE TABLE IF NOT EXISTS group_messages (
     created_at REAL NOT NULL,
     received_at REAL,
     kind TEXT NOT NULL DEFAULT 'message',
-    reply_to_message_id TEXT
+    reply_to_message_id TEXT,
+    deleted_by_local INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS group_deliveries (
@@ -183,6 +185,8 @@ class Database:
             await self._db.execute("ALTER TABLE messages ADD COLUMN queued INTEGER NOT NULL DEFAULT 0")
         if "failed" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN failed INTEGER NOT NULL DEFAULT 0")
+        if "deleted_by_local" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN deleted_by_local INTEGER NOT NULL DEFAULT 0")
         if "received_at" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN received_at REAL")
         if "reply_to_message_id" not in message_columns:
@@ -229,6 +233,8 @@ class Database:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN content BLOB")
             if gm_columns and "reply_to_message_id" not in gm_columns:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN reply_to_message_id TEXT")
+            if gm_columns and "deleted_by_local" not in gm_columns:
+                await self._db.execute("ALTER TABLE group_messages ADD COLUMN deleted_by_local INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass
         # Ensure group_deliveries exists (older DBs may lack it entirely - SCHEMA already handled)
@@ -387,9 +393,9 @@ class Database:
     ) -> list[dict]:
         """Return the latest direct messages with one peer in chronological order."""
         async with self._db.execute(
-            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at
+            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at, reply_to_message_id, deleted_by_local
                FROM (
-                    SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at
+                     SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at, reply_to_message_id, deleted_by_local
                    FROM messages
                    WHERE (sender_id = ? AND recipient_id = ?)
                       OR (sender_id = ? AND recipient_id = ?)
@@ -401,7 +407,7 @@ class Database:
         ) as cursor:
             messages = [dict(row) async for row in cursor]
         for message in messages:
-            message["content"] = self._decrypt_content(message["content"])
+            message["content"] = self._decrypt_content(message["content"]) or ""
             if isinstance(message["content"], bytes):
                 message["content"] = message["content"].decode("utf-8", errors="replace")
         return messages
@@ -545,6 +551,21 @@ class Database:
         )
         await self._db.commit()
 
+    async def delete_message_locally(self, message_id: str, group_id: str | None = None) -> bool:
+        """Remove local content while retaining a tombstone in conversation history."""
+        if group_id is None:
+            cursor = await self._db.execute(
+                "UPDATE messages SET content = NULL, encrypted_content = NULL, deleted_by_local = 1 WHERE message_id = ?",
+                (message_id,),
+            )
+        else:
+            cursor = await self._db.execute(
+                "UPDATE group_messages SET content = NULL, deleted_by_local = 1 WHERE message_id = ? AND group_id = ?",
+                (message_id, group_id),
+            )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
     async def upsert_group(self, group_id: str, name: str) -> None:
         """Insert or update a group with its name."""
         await self._db.execute(
@@ -655,13 +676,13 @@ class Database:
         content = message.get("content")
         cursor = await self._db.execute(
             """INSERT OR IGNORE INTO group_messages
-                (message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id, deleted_by_local)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 message["message_id"], message["group_id"], message["sender_id"],
                 self._encrypt_content(content) if content is not None else None,
                 message["created_at"], message.get("received_at"), message.get("kind", "message"),
-                message.get("reply_to_message_id"),
+                message.get("reply_to_message_id"), message.get("deleted_by_local", 0),
             ),
         )
         await self._db.commit()
@@ -670,14 +691,14 @@ class Database:
     async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
         """Retrieve recent group messages with delivery status."""
         async with self._db.execute(
-            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id
+            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id, deleted_by_local
                FROM (SELECT rowid AS sequence, * FROM group_messages WHERE group_id = ? ORDER BY rowid DESC LIMIT ?)
                ORDER BY sequence ASC""",
             (group_id, limit),
         ) as cursor:
             messages = [dict(row) async for row in cursor]
         for message in messages:
-            message["content"] = self._decrypt_content(message["content"])
+            message["content"] = self._decrypt_content(message["content"]) or ""
             message["deliveries"] = await self.get_group_deliveries(message["message_id"])
         return messages
 

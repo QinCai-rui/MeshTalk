@@ -42,6 +42,7 @@ export function ChatApp() {
   const [messages, setMessages] = useState<Message[]>([])
   const [selectedMessage, setSelectedMessage] = useState<Message>()
   const [replyTo, setReplyTo] = useState<Message>()
+  const [deleteConfirmation, setDeleteConfirmation] = useState<Message>()
   const [unreadMessages, setUnreadMessages] = useState<Record<string, UnreadMessageState>>({})
   const [unreadNow, setUnreadNow] = useState(() => Date.now())
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -277,7 +278,7 @@ export function ChatApp() {
 
   useEffect(() => () => stopOutgoingTyping(), [selectionKey])
 
-  useEffect(() => { setSelectedMessage(undefined); setReplyTo(undefined) }, [selectionKey])
+  useEffect(() => { setSelectedMessage(undefined); setReplyTo(undefined); setDeleteConfirmation(undefined) }, [selectionKey])
 
   useEffect(() => {
     if (dialog || editingName || scrollFocused || isSending) stopOutgoingTyping()
@@ -532,6 +533,7 @@ export function ChatApp() {
     setMessages((current) => [...current, {
       message_id: event.message_id as string, sender_id: senderId, recipient_id: "",
       content: event.content as string, created_at: event.created_at as number, received_at: Date.now() / 1000,
+      reply_to_message_id: event.reply_to_message_id as string | null | undefined,
     }])
     void ipc.send("messages", { peer_id: senderId }).then((response) => {
       if (!response.error) { setMessages(response.messages as Message[]); void actions.refreshPeers() }
@@ -639,6 +641,22 @@ export function ChatApp() {
 
   useKeyboard((key) => {
     if (dialog && dialogBusyRef.current) return
+    if (deleteConfirmation) {
+      if (key.name === "escape") { setDeleteConfirmation(undefined); actions.showStatus("Message deletion cancelled."); return }
+      if (key.name === "return" || key.name === "linefeed") {
+        key.preventDefault()
+        const message = deleteConfirmation
+        void ipc.send("delete_message", { message_id: message.message_id, group_id: message.group_id }).then((response) => {
+          if (response.error) throw new Error(response.error)
+          setMessages((current) => current.map((item) => item.message_id === message.message_id ? { ...item, content: "", deleted_by_local: 1 } : item))
+          setReplyTo((current) => current?.message_id === message.message_id ? undefined : current)
+          setDeleteConfirmation(undefined)
+          actions.showStatus("Message deleted locally.")
+        }).catch((error) => { setDeleteConfirmation(undefined); actions.showStatus(`Delete error: ${error instanceof Error ? error.message : String(error)}`) })
+        return
+      }
+      return
+    }
     const isPasteShortcut = key.name === "v" && (key.ctrl || key.meta || key.super)
     if (isPasteShortcut && !dialog && !editingName && !scrollFocused && !isSending && selection) {
       key.preventDefault()
@@ -664,6 +682,11 @@ export function ChatApp() {
       key.preventDefault()
       setReplyTo(selectedMessage)
       setScrollFocused(false)
+      return
+    }
+    if (scrollFocused && key.name === "d" && selectedMessage && !selectedMessage.deleted_by_local) {
+      key.preventDefault()
+      setDeleteConfirmation(selectedMessage)
       return
     }
     if (key.name === "escape" && replyTo) { setReplyTo(undefined); return }
@@ -721,6 +744,10 @@ export function ChatApp() {
     <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
        <Sidebar compact={compact} dialogOpen={Boolean(dialog)} editingName={editingName} groups={groups} groupMembers={groupMembers} identity={identity} mutedPeers={mutedPeers} nameDraft={nameDraft} peers={peers} selectedGroupId={selectedGroupId} selectedPeerId={selectedPeerId} sidebarWidth={sidebarWidth} typingConversationKeys={typingConversationKeys} setEditingName={setEditingName} setNameDraft={setNameDraft} setSelection={setSelection} setScrollFocused={setScrollFocused} saveDisplayName={() => void actions.saveDisplayName()} />
        <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} limitedGroupMembers={limitedGroupMembers} capabilityGapMessage={capabilityGapMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedHasCapabilityGap={selectedHasCapabilityGap} selectedMessageId={selectedMessage?.message_id} replyTo={replyTo} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} unreadMessageStates={unreadMessages} unreadNow={unreadNow} markUnreadMessageVisible={markUnreadMessageVisible} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} selectMessage={(message) => { setSelectedMessage(message); setScrollFocused(true) }} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send(replyTo?.message_id).then((sent) => { if (sent) setReplyTo(undefined) }) }} />
+       {deleteConfirmation && <box style={{ position: "absolute", left: Math.max(2, Math.floor(width / 2) - 24), top: Math.max(1, Math.floor(height / 2) - 2), width: Math.min(48, Math.max(1, width - 4)), border: true, borderColor: "#ff7777", backgroundColor: "#2d1818", padding: 1, flexDirection: "column" }}>
+         <text fg="#ff7777"><b>Delete this message locally?</b></text>
+         <text fg="#bbbbbb">Enter confirms. Esc cancels. This is not sent to peers.</text>
+       </box>}
       {copyToast && (
         <box style={{ position: "absolute", right: 2, top: 1, border: true, borderColor: "#66dd88", backgroundColor: "#18251d", paddingLeft: 1, paddingRight: 1 }}>
           <text fg="#66dd88">Copied to clipboard</text>

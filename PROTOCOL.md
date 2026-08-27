@@ -822,6 +822,7 @@ over IPC.
 | Action | Params | Returns |
 |--------|--------|---------|
 | send | recipient_id, content, reply_to_message_id? | message_id |
+| delete_message | message_id, group_id? | Locally deletes message content and retains a local tombstone. Never transmitted to peers. |
 | peers | - | List of peers with presence, unread counts, friend/blocked flags, network info. |
 | remove_peer | peer_id | Removed (only if not connected). |
 | friend_send | peer_id, note? | request_id |

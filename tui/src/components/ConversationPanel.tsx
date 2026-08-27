@@ -106,7 +106,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
 
   return <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
     {controlStatus.control_url && !controlStatus.connected ? <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}><MarqueeText width={width - 4} fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"} text={`Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting (${controlStatus.reconnect_attempts}).`} /></box> : null}
-     <box title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)}${selected.active_transport === "remote_derp" || !selected.active_endpoint ? "" : ` ${selected.active_endpoint}`}`}${selectedHasCapabilityGap ? ", limited" : ""})` : "Chat"} bottomTitle={compact ? "PgUp/PgDn scroll  Up/Down select  R reply" : "PgUp/PgDn scroll  Up/Down select  R reply  End latest  Drag text to select"} style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
+     <box title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)}${selected.active_transport === "remote_derp" || !selected.active_endpoint ? "" : ` ${selected.active_endpoint}`}`}${selectedHasCapabilityGap ? ", limited" : ""})` : "Chat"} bottomTitle={compact ? "PgUp/PgDn scroll  Up/Down select  R reply  D delete" : "PgUp/PgDn scroll  Up/Down select  R reply  D delete  End latest  Drag text to select"} style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
       {selected && ((selected.delivery_warnings ?? []).length > 0 || selectedHasCapabilityGap) ? <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
          {(selected.delivery_warnings ?? []).map((kind) => kind === "offline" ? <MarqueeText key="offline" width={width - 6} fg="#e0a34a" text="This peer is offline. Messages will be queued and delivered automatically upon reconnection." /> : kind === "not_friend" ? <MarqueeText key="not_friend" width={width - 6} fg="#e0a34a" text="Not friends yet. Your messages will be blocked until they accept your friend request (Commands > Friends > Add friend)." /> : kind === "limited" && selectedHasCapabilityGap ? <text key="limited" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"}><b>{capabilityGapMessage}</b></text> : null)}
         {selectedHasCapabilityGap && !(selected.delivery_warnings ?? []).includes("limited") ? <text wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"}><b>{capabilityGapMessage}</b></text> : null}
@@ -155,6 +155,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
           const blocked = Boolean(message.blocked)
           const queued = Boolean(message.queued)
           const failed = Boolean(message.failed)
+          const deleted = Boolean(message.deleted_by_local)
           const isSystem = Boolean(selectedGroup && message.kind && message.kind !== "message" && message.kind !== "text")
           const senderName = groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === message.sender_id)?.display_name
             ?? peers.find((peer) => peer.peer_id === message.sender_id)?.display_name
@@ -166,7 +167,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 ? `${isLocal ? "You" : senderName} left the group`
                 : message.content
             : message.content
-          const replyTarget = message.reply_to_message_id
+          const replyTarget = !deleted && message.reply_to_message_id
             ? conversationItems.find((candidate): candidate is Extract<ConversationItem, { type: "message" }> => candidate.type === "message" && candidate.message.message_id === message.reply_to_message_id)?.message
             : undefined
           const replySender = replyTarget?.sender_id === identity?.peer_id ? "You"
@@ -187,8 +188,8 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 )}
                 {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                 </text>
-                {message.reply_to_message_id && <text fg="#7aa2d6">&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? `: ${replySnippet}${replyTarget && replyTarget.content.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}` : ""}</text>}
-                <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
+                {!deleted && message.reply_to_message_id && <text fg="#7aa2d6">&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? `: ${replySnippet}${replyTarget && replyTarget.content.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}` : ""}</text>}
+                {deleted ? <text fg="#ff7777"><b>DELETED BY YOU</b></text> : <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />}
             </box>
           )
           return rows

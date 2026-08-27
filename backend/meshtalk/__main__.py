@@ -619,6 +619,18 @@ async def main(debug: bool = False) -> None:
         message_id, deliveries = await group_router.send_message(group_id, content.encode(), reply_to_message_id)
         return {"message_id": message_id, "deliveries": deliveries}
 
+    async def handle_delete_message(req: dict) -> dict:
+        message_id = req.get("message_id")
+        group_id = req.get("group_id")
+        if not isinstance(message_id, str) or not message_id:
+            return {"error": "message_id required"}
+        if group_id is not None and not isinstance(group_id, str):
+            return {"error": "group_id must be a string"}
+        deleted = await db.delete_message_locally(message_id, group_id)
+        if not deleted:
+            return {"error": "message not found"}
+        return {"message_id": message_id, "deleted": True}
+
     async def handle_group_leave(req: dict) -> dict:
         group_id = req.get("group_id")
         if not isinstance(group_id, str):
@@ -831,6 +843,7 @@ async def main(debug: bool = False) -> None:
         "group_members": handle_group_members,
         "group_messages": handle_group_messages,
         "group_send": handle_group_send,
+        "delete_message": handle_delete_message,
         "group_leave": handle_group_leave,
         "mute": handle_mute,
         "unmute": handle_unmute,
