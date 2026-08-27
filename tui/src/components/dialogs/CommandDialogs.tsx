@@ -54,7 +54,7 @@ export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeig
     {dialogError && <text fg="#ff7777">{dialogError}</text>}
     <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={[
       { name: dialog.checking ? "Checking for updates..." : "Check for updates", description: isReleaseBuild ? "Look for the latest stable MeshTalk release" : "Available in compiled MeshTalk releases", value: "check" },
-      { name: "Back", description: "Return to Settings", value: "back" },
+      { name: "Back", description: "Return to Commands", value: "back" },
     ]} onSelect={(_, option) => {
       if (option?.value === "check" && !dialog.checking) checkForUpdates()
       else if (option?.value === "back") goBack()
