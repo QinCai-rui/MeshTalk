@@ -6,7 +6,7 @@ extend({ spinner: SpinnerRenderable })
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
 import { checkForUpdate, GitHubAuthenticationError } from "../../common/updater"
-import type { Conversation, ConversationItem, Dialog, FileTransfer, Group, GroupMember, Message, Peer, TypingPeer, UnreadMessageState } from "./types"
+import type { Conversation, ConversationItem, Dialog, FileTransfer, Group, GroupMember, Message, Peer, ReplyTarget, TypingPeer, UnreadMessageState } from "./types"
 import { composerLimitColor, DEFAULT_STATUS, getComposerHeight, MIN_COMPOSER_HEIGHT, peerPresence, sortPeersByInteraction, UNREAD_MESSAGE_FADE_MS } from "./utils"
 import { Sidebar } from "./components/Sidebar"
 import { ConversationPanel } from "./components/ConversationPanel"
@@ -40,9 +40,9 @@ export function ChatApp() {
   const [identity, setIdentity] = useState<{ peer_id: string; display_name: string }>()
   const [selection, setSelection] = useState<Conversation>()
   const [messages, setMessages] = useState<Message[]>([])
-  const [selectedMessage, setSelectedMessage] = useState<Message>()
-  const [replyTo, setReplyTo] = useState<Message>()
-  const [deleteConfirmation, setDeleteConfirmation] = useState<Message>()
+  const [selectedReplyTarget, setSelectedReplyTarget] = useState<ReplyTarget>()
+  const [replyTo, setReplyTo] = useState<ReplyTarget>()
+  const [deleteConfirmation, setDeleteConfirmation] = useState<ReplyTarget>()
   const [unreadMessages, setUnreadMessages] = useState<Record<string, UnreadMessageState>>({})
   const [unreadNow, setUnreadNow] = useState(() => Date.now())
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -278,7 +278,7 @@ export function ChatApp() {
 
   useEffect(() => () => stopOutgoingTyping(), [selectionKey])
 
-  useEffect(() => { setSelectedMessage(undefined); setReplyTo(undefined); setDeleteConfirmation(undefined) }, [selectionKey])
+  useEffect(() => { setSelectedReplyTarget(undefined); setReplyTo(undefined); setDeleteConfirmation(undefined) }, [selectionKey])
 
   useEffect(() => {
     if (dialog || editingName || scrollFocused || isSending) stopOutgoingTyping()
@@ -646,10 +646,12 @@ export function ChatApp() {
       if (key.name === "return" || key.name === "linefeed") {
         key.preventDefault()
         const message = deleteConfirmation
-        void ipc.send("delete_message", { message_id: message.message_id, group_id: message.group_id }).then((response) => {
+        void ipc.send("delete_message", { message_id: message.id, group_id: message.groupId, file: message.kind === "file" }).then((response) => {
           if (response.error) throw new Error(response.error)
-          setMessages((current) => current.map((item) => item.message_id === message.message_id ? { ...item, content: "", deleted_by_local: 1 } : item))
-          setReplyTo((current) => current?.message_id === message.message_id ? undefined : current)
+          if (message.kind === "file") setFileTransfers((current) => current.filter((item) => item.file_id !== message.id))
+          else setMessages((current) => current.filter((item) => item.message_id !== message.id))
+          setSelectedReplyTarget((current) => current?.id === message.id ? undefined : current)
+          setReplyTo((current) => current?.id === message.id ? undefined : current)
           setDeleteConfirmation(undefined)
           actions.showStatus("Message deleted locally.")
         }).catch((error) => { setDeleteConfirmation(undefined); actions.showStatus(`Delete error: ${error instanceof Error ? error.message : String(error)}`) })
@@ -670,23 +672,25 @@ export function ChatApp() {
     if (key.ctrl && key.name === "u") { void actions.openFilePicker(); return }
     if (key.ctrl && key.name === "d") { void actions.removeSelectedPeer(); return }
     if (scrollFocused && (key.name === "up" || key.name === "down")) {
-      const chatMessages = conversationItems.filter((item): item is Extract<ConversationItem, { type: "message" }> => item.type === "message").map((item) => item.message)
-      if (!chatMessages.length) return
+      const replyTargets = conversationItems.map((item): ReplyTarget => item.type === "message"
+        ? { id: item.message.message_id, senderId: item.message.sender_id, label: item.message.content, groupId: item.message.group_id, kind: "message" }
+        : { id: item.file.file_id, senderId: item.file.sender_id, label: `Attachment: ${item.file.filename}`, groupId: item.file.group_id ?? undefined, kind: "file" })
+      if (!replyTargets.length) return
       key.preventDefault()
-      const index = selectedMessage ? chatMessages.findIndex((message) => message.message_id === selectedMessage.message_id) : -1
-      const nextIndex = index === -1 ? (key.name === "up" ? chatMessages.length - 1 : 0) : Math.max(0, Math.min(chatMessages.length - 1, index + (key.name === "up" ? -1 : 1)))
-      setSelectedMessage(chatMessages[nextIndex])
+      const index = selectedReplyTarget ? replyTargets.findIndex((target) => target.id === selectedReplyTarget.id) : -1
+      const nextIndex = index === -1 ? (key.name === "up" ? replyTargets.length - 1 : 0) : Math.max(0, Math.min(replyTargets.length - 1, index + (key.name === "up" ? -1 : 1)))
+      setSelectedReplyTarget(replyTargets[nextIndex])
       return
     }
-    if (scrollFocused && key.name === "r" && selectedMessage) {
+    if (scrollFocused && key.name === "r" && selectedReplyTarget) {
       key.preventDefault()
-      setReplyTo(selectedMessage)
+      setReplyTo(selectedReplyTarget)
       setScrollFocused(false)
       return
     }
-    if (scrollFocused && key.name === "d" && selectedMessage && !selectedMessage.deleted_by_local) {
+    if (scrollFocused && key.name === "d" && selectedReplyTarget) {
       key.preventDefault()
-      setDeleteConfirmation(selectedMessage)
+      setDeleteConfirmation(selectedReplyTarget)
       return
     }
     if (key.name === "escape" && replyTo) { setReplyTo(undefined); return }
@@ -743,7 +747,7 @@ export function ChatApp() {
   return (
     <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
        <Sidebar compact={compact} dialogOpen={Boolean(dialog)} editingName={editingName} groups={groups} groupMembers={groupMembers} identity={identity} mutedPeers={mutedPeers} nameDraft={nameDraft} peers={peers} selectedGroupId={selectedGroupId} selectedPeerId={selectedPeerId} sidebarWidth={sidebarWidth} typingConversationKeys={typingConversationKeys} setEditingName={setEditingName} setNameDraft={setNameDraft} setSelection={setSelection} setScrollFocused={setScrollFocused} saveDisplayName={() => void actions.saveDisplayName()} />
-       <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} limitedGroupMembers={limitedGroupMembers} capabilityGapMessage={capabilityGapMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedHasCapabilityGap={selectedHasCapabilityGap} selectedMessageId={selectedMessage?.message_id} replyTo={replyTo} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} unreadMessageStates={unreadMessages} unreadNow={unreadNow} markUnreadMessageVisible={markUnreadMessageVisible} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} selectMessage={(message) => { setSelectedMessage(message); setScrollFocused(true) }} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send(replyTo?.message_id).then((sent) => { if (sent) setReplyTo(undefined) }) }} />
+       <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} limitedGroupMembers={limitedGroupMembers} capabilityGapMessage={capabilityGapMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedHasCapabilityGap={selectedHasCapabilityGap} selectedReplyTargetId={selectedReplyTarget?.id} replyTo={replyTo} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} unreadMessageStates={unreadMessages} unreadNow={unreadNow} markUnreadMessageVisible={markUnreadMessageVisible} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} selectReplyTarget={(target) => { setSelectedReplyTarget(target); setScrollFocused(true) }} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send(replyTo?.id).then((sent) => { if (sent) setReplyTo(undefined) }) }} />
        {deleteConfirmation && <box style={{ position: "absolute", left: Math.max(2, Math.floor(width / 2) - 24), top: Math.max(1, Math.floor(height / 2) - 2), width: Math.min(48, Math.max(1, width - 4)), border: true, borderColor: "#ff7777", backgroundColor: "#2d1818", padding: 1, flexDirection: "column" }}>
          <text fg="#ff7777"><b>Delete this message locally?</b></text>
          <text fg="#bbbbbb">Enter confirms. Esc cancels. This is not sent to peers.</text>

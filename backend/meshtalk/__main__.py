@@ -626,9 +626,19 @@ async def main(debug: bool = False) -> None:
             return {"error": "message_id required"}
         if group_id is not None and not isinstance(group_id, str):
             return {"error": "group_id must be a string"}
-        deleted = await db.delete_message_locally(message_id, group_id)
-        if not deleted:
-            return {"error": "message not found"}
+        transfer = await db.delete_file_transfer_locally(message_id) if req.get("file") else None
+        if req.get("file"):
+            if transfer is None:
+                return {"error": "attachment not found"}
+            if transfer["direction"] == "inbound" and transfer.get("file_path"):
+                try:
+                    Path(transfer["file_path"]).unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not remove local attachment file %s", transfer["file_path"])
+        else:
+            deleted = await db.delete_message_locally(message_id, group_id)
+            if not deleted:
+                return {"error": "message not found"}
         return {"message_id": message_id, "deleted": True}
 
     async def handle_group_leave(req: dict) -> dict:
