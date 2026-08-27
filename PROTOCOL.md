@@ -170,13 +170,14 @@ HANDSHAKE_CONFIRM (challenge=ack.nonce)    -->
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
-`file_transfer`, `typing_indicators`). The agreed capability set is the **intersection** of both
+`file_transfer`, `typing_indicators`, `message_replies`). The agreed capability set is the **intersection** of both
 peers' advertised sets, and higher-level code gates behaviour on it:
 `text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
 enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
 `friend_requests` enables the friend-request packet family, `group_chat` enables
 the group packet family, and `file_transfer` enables file offer/chunk/ack
-packets (section 7.6).
+packets (section 7.6). `message_replies` enables reply references on message
+packets.
 A peer that does not advertise a capability will not be sent the corresponding
 packets. Missing capability lists are rejected. Unknown remote capabilities are
 retained for diagnostics but remain disabled locally. Each side reports both
@@ -431,7 +432,7 @@ JSON hello (canonical, then Ed25519-signed):
 
 ```json
 {
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "typing_indicators"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "typing_indicators", "message_replies"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -461,6 +462,7 @@ During the handshake, peers exchange signed lists of supported capabilities.
    - `file_transfer`: Exchange `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
      packets for cross-platform file transfer with image preview and download.
    - `typing_indicators`: Exchange encrypted, transient `TYPING` packets.
+   - `message_replies`: Exchange messages that reference an original message or attachment.
 
 ### 6.3 Session Key Derivation
 
@@ -558,13 +560,15 @@ same shared secret. Forward secrecy: each message uses a fresh ephemeral key.
   "expires_at":   <unix float>,
   "hop_count":    0,
   "max_hops":     0,
+  "reply_to_message_id": "<uuid, optional>",
   "encrypted_content": "<hex>",
   "signature":    "<128 hex>"
 }
 ```
 
 - Associated data (AAD) = canonical JSON of the immutable routing fields
-  (message_id, sender_id, recipient_id, created_at, expires_at). This binds the
+  (message_id, sender_id, recipient_id, created_at, reply_to_message_id when
+  present). This binds the
   ciphertext to its routing metadata.
 - Signature = Ed25519 over SHA-256(associated_data || encrypted_content). The
   sender's signature authenticates both the metadata and the ciphertext and is
@@ -653,13 +657,14 @@ groups and control connectivity when STUN discovery fails.
   "sender_id": "<64 hex>",
   "recipient_id": "<64 hex>",
   "created_at": 1700000000.0,
+  "reply_to_message_id": "<uuid, optional>",
   "encrypted_content": "<hex>",
   "signature": "<128 hex>"
 }
 ```
 
 The AAD is canonical JSON of `message_id`, `group_id`, `sender_id`,
-`recipient_id`, and `created_at`. Content uses the same one-time ephemeral
+`recipient_id`, `created_at`, and `reply_to_message_id` when present. Content uses the same one-time ephemeral
 X25519/AES-GCM construction as direct messages, independently for each
 recipient. The signature is Ed25519 over
 `SHA-256(AAD || encrypted_content)`. Content is limited to 30 KiB before
@@ -818,7 +823,8 @@ over IPC.
 
 | Action | Params | Returns |
 |--------|--------|---------|
-| send | recipient_id, content | message_id |
+| send | recipient_id, content, reply_to_message_id? | message_id |
+| delete_message | message_id, group_id?, file? | Removes the local message or attachment history and any local attachment file. Never transmitted to peers. |
 | peers | - | List of peers with presence, unread counts, friend/blocked flags, network info. |
 | remove_peer | peer_id | Removed (only if not connected). |
 | friend_send | peer_id, note? | request_id |
@@ -844,7 +850,7 @@ over IPC.
 | groups | - | Named groups with cached active-member and unread counts. |
 | group_members | group_id | Cached active roster with online state. |
 | group_messages | group_id | Last 200 local messages/system events and per-recipient deliveries; marks read. |
-| group_send | group_id, content | message_id and per-recipient `sent`, `delivered`, `queued`, or `unavailable` status. |
+| group_send | group_id, content, reply_to_message_id? | message_id and per-recipient `sent`, `delivered`, `queued`, or `unavailable` status. |
 | group_leave | group_id | Sends/queues signed leave events, removes local room/group state, returns group_id. |
 | file_send | recipient_id, file_path | file_id — send a file to a direct peer. |
 | group_file_send | group_id, file_path | Per-recipient results — send a file to all active group members. |
@@ -955,7 +961,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators, message_replies | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |

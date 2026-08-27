@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 import os
+import json
 from pathlib import Path
 
 import aiosqlite
@@ -20,7 +21,8 @@ CREATE TABLE IF NOT EXISTS peers (
     signing_public_key BLOB,
     last_seen REAL,
     is_online INTEGER NOT NULL DEFAULT 0,
-    tui_active INTEGER NOT NULL DEFAULT 0
+    tui_active INTEGER NOT NULL DEFAULT 0,
+    capabilities TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -37,7 +39,8 @@ CREATE TABLE IF NOT EXISTS messages (
     queued INTEGER NOT NULL DEFAULT 0,
     failed INTEGER NOT NULL DEFAULT 0,
     read_at REAL,
-    received_at REAL
+    received_at REAL,
+    reply_to_message_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS outgoing_queue (
@@ -113,7 +116,8 @@ CREATE TABLE IF NOT EXISTS group_messages (
     content BLOB,
     created_at REAL NOT NULL,
     received_at REAL,
-    kind TEXT NOT NULL DEFAULT 'message'
+    kind TEXT NOT NULL DEFAULT 'message',
+    reply_to_message_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS group_deliveries (
@@ -172,6 +176,8 @@ class Database:
             await self._db.execute("ALTER TABLE peers ADD COLUMN lan_endpoint TEXT")
         if "remote_endpoint" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN remote_endpoint TEXT")
+        if "capabilities" not in columns:
+            await self._db.execute("ALTER TABLE peers ADD COLUMN capabilities TEXT")
         message_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(messages)")}
         if "read_at" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN read_at REAL")
@@ -183,6 +189,8 @@ class Database:
             await self._db.execute("ALTER TABLE messages ADD COLUMN failed INTEGER NOT NULL DEFAULT 0")
         if "received_at" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN received_at REAL")
+        if "reply_to_message_id" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT")
         if "expires_at" in message_columns:
             try:
                 await self._db.execute("ALTER TABLE messages DROP COLUMN expires_at")
@@ -223,6 +231,8 @@ class Database:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'message'")
             if gm_columns and "content" not in gm_columns:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN content BLOB")
+            if gm_columns and "reply_to_message_id" not in gm_columns:
+                await self._db.execute("ALTER TABLE group_messages ADD COLUMN reply_to_message_id TEXT")
         except Exception:
             pass
         # Ensure group_deliveries exists (older DBs may lack it entirely - SCHEMA already handled)
@@ -271,22 +281,35 @@ class Database:
             return dict(row) if row else None
 
     async def upsert_peer(
-        self, peer_id: str, display_name: str, public_key: bytes, signing_public_key: bytes, tui_active: bool = False
+        self, peer_id: str, display_name: str, public_key: bytes, signing_public_key: bytes,
+        tui_active: bool = False, capabilities: list[str] | None = None,
     ) -> None:
         """Insert or update peer information including keys and online status."""
         await self._db.execute(
-            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active)
-               VALUES (?, ?, ?, ?, ?, 1, ?)
+            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active, capabilities)
+               VALUES (?, ?, ?, ?, ?, 1, ?, ?)
                ON CONFLICT(peer_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  public_key = excluded.public_key,
                  signing_public_key = excluded.signing_public_key,
                  last_seen = excluded.last_seen,
-                  is_online = 1,
-                  tui_active = excluded.tui_active""",
-            (peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active)),
+                   is_online = 1,
+                   tui_active = excluded.tui_active,
+                   capabilities = COALESCE(excluded.capabilities, peers.capabilities)""",
+            (peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active), json.dumps(sorted(set(capabilities))) if capabilities is not None else None),
         )
         await self._db.commit()
+
+    async def peer_supports(self, peer_id: str, capability: str) -> bool:
+        """Check a capability learned from the peer's most recent handshake."""
+        async with self._db.execute("SELECT capabilities FROM peers WHERE peer_id = ?", (peer_id,)) as cursor:
+            row = await cursor.fetchone()
+        if not row or not row["capabilities"]:
+            return False
+        try:
+            return capability in json.loads(row["capabilities"])
+        except (TypeError, json.JSONDecodeError):
+            return False
 
     async def set_peer_online(self, peer_id: str, online: bool) -> None:
         """Update peer online status and last seen timestamp."""
@@ -381,9 +404,9 @@ class Database:
     ) -> list[dict]:
         """Return the latest direct messages with one peer in chronological order."""
         async with self._db.execute(
-            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at
+            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at, reply_to_message_id
                FROM (
-                    SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at
+                     SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at, reply_to_message_id
                    FROM messages
                    WHERE (sender_id = ? AND recipient_id = ?)
                       OR (sender_id = ? AND recipient_id = ?)
@@ -395,7 +418,7 @@ class Database:
         ) as cursor:
             messages = [dict(row) async for row in cursor]
         for message in messages:
-            message["content"] = self._decrypt_content(message["content"])
+            message["content"] = self._decrypt_content(message["content"]) or ""
             if isinstance(message["content"], bytes):
                 message["content"] = message["content"].decode("utf-8", errors="replace")
         return messages
@@ -405,8 +428,8 @@ class Database:
         await self._db.execute(
             """INSERT OR IGNORE INTO messages
                 (message_id, sender_id, recipient_id, content, encrypted_content,
-                  created_at, hop_count, max_hops, read_at, blocked, queued, failed, received_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  created_at, hop_count, max_hops, read_at, blocked, queued, failed, received_at, reply_to_message_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 msg["message_id"],
                 msg["sender_id"],
@@ -421,6 +444,7 @@ class Database:
                 msg.get("queued", 0),
                 msg.get("failed", 0),
                 msg.get("received_at"),
+                msg.get("reply_to_message_id"),
             ),
         )
         await self._db.commit()
@@ -538,6 +562,34 @@ class Database:
         )
         await self._db.commit()
 
+    async def delete_message_locally(self, message_id: str, group_id: str | None = None) -> bool:
+        """Remove a message and its local history row without notifying peers."""
+        await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (message_id,))
+        if group_id is None:
+            cursor = await self._db.execute(
+                "DELETE FROM messages WHERE message_id = ?",
+                (message_id,),
+            )
+        else:
+            cursor = await self._db.execute(
+                "DELETE FROM group_messages WHERE message_id = ? AND group_id = ?",
+                (message_id, group_id),
+            )
+            await self._db.execute("DELETE FROM group_deliveries WHERE message_id = ?", (message_id,))
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def delete_file_transfer_locally(self, file_id: str) -> dict | None:
+        """Remove a local attachment record, chunks, and pending sends."""
+        transfer = await self.get_file_transfer(file_id)
+        if transfer is None:
+            return None
+        await self._db.execute("DELETE FROM file_transfers WHERE file_id = ?", (file_id,))
+        await self._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (file_id,))
+        await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (file_id,))
+        await self._db.commit()
+        return transfer
+
     async def upsert_group(self, group_id: str, name: str) -> None:
         """Insert or update a group with its name."""
         await self._db.execute(
@@ -648,12 +700,13 @@ class Database:
         content = message.get("content")
         cursor = await self._db.execute(
             """INSERT OR IGNORE INTO group_messages
-               (message_id, group_id, sender_id, content, created_at, received_at, kind)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 message["message_id"], message["group_id"], message["sender_id"],
                 self._encrypt_content(content) if content is not None else None,
                 message["created_at"], message.get("received_at"), message.get("kind", "message"),
+                message.get("reply_to_message_id"),
             ),
         )
         await self._db.commit()
@@ -662,14 +715,14 @@ class Database:
     async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
         """Retrieve recent group messages with delivery status."""
         async with self._db.execute(
-            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind
+            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id
                FROM (SELECT rowid AS sequence, * FROM group_messages WHERE group_id = ? ORDER BY rowid DESC LIMIT ?)
                ORDER BY sequence ASC""",
             (group_id, limit),
         ) as cursor:
             messages = [dict(row) async for row in cursor]
         for message in messages:
-            message["content"] = self._decrypt_content(message["content"])
+            message["content"] = self._decrypt_content(message["content"]) or ""
             message["deliveries"] = await self.get_group_deliveries(message["message_id"])
         return messages
 

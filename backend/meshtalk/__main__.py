@@ -178,7 +178,12 @@ async def main(debug: bool = False) -> None:
         content = req.get("content", "")
         if not recipient:
             return {"error": "recipient_id required"}
-        msg_id, queued = await router.send_message(recipient, content.encode())
+        reply_to_message_id = req.get("reply_to_message_id")
+        if reply_to_message_id is not None and (
+            not isinstance(reply_to_message_id, str) or not reply_to_message_id or len(reply_to_message_id) > 128
+        ):
+            return {"error": "reply_to_message_id must be a non-empty string up to 128 characters"}
+        msg_id, queued = await router.send_message(recipient, content.encode(), reply_to_message_id)
         return {"message_id": msg_id, "queued": queued}
 
     def _peer_delivery_warnings(
@@ -240,7 +245,7 @@ async def main(debug: bool = False) -> None:
                     rendezvous.connected,
                 ),
                 "capabilities": list(connection.capabilities) if connection else [],
-                "remote_capabilities": list(connection.remote_capabilities) if connection else [],
+                "remote_capabilities": list(connection.remote_capabilities or []) if connection else [],
                 "peer_missing_capabilities": list(connection.peer_missing_capabilities) if connection else [],
                 "local_missing_capabilities": list(connection.local_missing_capabilities) if connection else [],
                 "capability_gap": connection.has_capability_gap if connection else False,
@@ -422,7 +427,7 @@ async def main(debug: bool = False) -> None:
                         rendezvous.connected,
                     ),
                     "capabilities": list(peer.capabilities),
-                    "remote_capabilities": list(peer.remote_capabilities),
+                    "remote_capabilities": list(peer.remote_capabilities or []),
                     "peer_missing_capabilities": list(peer.peer_missing_capabilities),
                     "local_missing_capabilities": list(peer.local_missing_capabilities),
                     "capability_gap": peer.has_capability_gap,
@@ -606,8 +611,36 @@ async def main(debug: bool = False) -> None:
         content = req.get("content")
         if not isinstance(group_id, str) or not isinstance(content, str):
             return {"error": "group_id and content required"}
-        message_id, deliveries = await group_router.send_message(group_id, content.encode())
+        reply_to_message_id = req.get("reply_to_message_id")
+        if reply_to_message_id is not None and (
+            not isinstance(reply_to_message_id, str) or not reply_to_message_id or len(reply_to_message_id) > 128
+        ):
+            return {"error": "reply_to_message_id must be a non-empty string up to 128 characters"}
+        message_id, deliveries = await group_router.send_message(group_id, content.encode(), reply_to_message_id)
         return {"message_id": message_id, "deliveries": deliveries}
+
+    async def handle_delete_message(req: dict) -> dict:
+        message_id = req.get("message_id")
+        group_id = req.get("group_id")
+        if not isinstance(message_id, str) or not message_id:
+            return {"error": "message_id required"}
+        if group_id is not None and not isinstance(group_id, str):
+            return {"error": "group_id must be a string"}
+        is_file = req.get("file") is True
+        transfer = await db.delete_file_transfer_locally(message_id) if is_file else None
+        if is_file:
+            if transfer is None:
+                return {"error": "attachment not found"}
+            if transfer["direction"] == "inbound" and transfer.get("file_path"):
+                try:
+                    Path(transfer["file_path"]).unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not remove local attachment file %s", transfer["file_path"])
+        else:
+            deleted = await db.delete_message_locally(message_id, group_id)
+            if not deleted:
+                return {"error": "message not found"}
+        return {"message_id": message_id, "deleted": True}
 
     async def handle_group_leave(req: dict) -> dict:
         group_id = req.get("group_id")
@@ -683,7 +716,7 @@ async def main(debug: bool = False) -> None:
                 "display_name": peer["display_name"],
                 "is_online": connection is not None,
                 "capabilities": list(connection.capabilities) if connection else [],
-                "remote_capabilities": list(connection.remote_capabilities) if connection else [],
+                "remote_capabilities": list(connection.remote_capabilities or []) if connection else [],
                 "peer_missing_capabilities": list(connection.peer_missing_capabilities) if connection else [],
                 "local_missing_capabilities": list(connection.local_missing_capabilities) if connection else [],
                 **info,
@@ -821,6 +854,7 @@ async def main(debug: bool = False) -> None:
         "group_members": handle_group_members,
         "group_messages": handle_group_messages,
         "group_send": handle_group_send,
+        "delete_message": handle_delete_message,
         "group_leave": handle_group_leave,
         "mute": handle_mute,
         "unmute": handle_unmute,

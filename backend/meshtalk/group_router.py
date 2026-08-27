@@ -15,6 +15,7 @@ from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
 from .protocol import (
     CAP_GROUP_CHAT,
+    CAP_MESSAGE_REPLIES,
     MAX_PACKET_SIZE,
     GroupAckPayload,
     GroupLeavePayload,
@@ -106,7 +107,7 @@ class GroupRouter:
             "peer_id": peer_id, "display_name": display_name,
         })
 
-    async def send_message(self, group_id: str, plaintext: bytes) -> tuple[str, list[dict]]:
+    async def send_message(self, group_id: str, plaintext: bytes, reply_to_message_id: str | None = None) -> tuple[str, list[dict]]:
         if len(plaintext) > MAX_GROUP_MESSAGE_CONTENT_SIZE:
             raise ValueError("Message exceeds 30 KiB limit")
         room = self.settings.rooms.get(group_id)
@@ -121,6 +122,7 @@ class GroupRouter:
             "sender_id": self.identity.peer_id,
             "content": content,
             "created_at": created_at,
+            "reply_to_message_id": reply_to_message_id,
         })
         await self.db.mark_message_seen(message_id)
         members = [
@@ -137,12 +139,14 @@ class GroupRouter:
             peer = self.peer_manager.get_connected_peer(recipient_id)
             stored = await self.db.get_peer(recipient_id)
             key = peer.encryption_public_key if peer else (stored or {}).get("public_key")
-            if not key or (peer and not peer.supports(CAP_GROUP_CHAT)) or member.get("group_capable") == 0:
+            if not key or (peer and not peer.supports(CAP_GROUP_CHAT)) or member.get("group_capable") == 0 or (
+                reply_to_message_id and not ((peer and peer.supports(CAP_MESSAGE_REPLIES)) or (peer is None and await self.db.peer_supports(recipient_id, CAP_MESSAGE_REPLIES)))
+            ):
                 await self.db.set_group_delivery(message_id, recipient_id, "unavailable")
                 continue
             try:
                 payload = GroupMessagePayload(
-                    message_id, group_id, self.identity.peer_id, recipient_id, created_at, b""
+                    message_id, group_id, self.identity.peer_id, recipient_id, created_at, b"", reply_to_message_id=reply_to_message_id
                 )
                 payload.encrypted_content = encrypt_for_recipient(key, plaintext, payload.associated_data())
                 payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
@@ -182,6 +186,8 @@ class GroupRouter:
     async def _handle_message(self, peer: PeerConnection, message: GroupMessagePayload) -> None:
         if not peer.supports(CAP_GROUP_CHAT):
             raise ValueError("Peer did not negotiate group chat")
+        if message.reply_to_message_id and not peer.supports(CAP_MESSAGE_REPLIES):
+            raise ValueError("Peer sent a group reply without negotiating support")
         if await self.db.is_peer_blocked(peer.peer_id):
             return
         if message.recipient_id != self.identity.peer_id or message.sender_id != peer.peer_id:
@@ -210,13 +216,14 @@ class GroupRouter:
                 "content": content,
                 "created_at": message.created_at,
                 "received_at": time.time(),
+                "reply_to_message_id": message.reply_to_message_id,
             })
             await self.db.mark_message_seen(message.message_id)
             if inserted:
                 await self._emit({
                     "event": "group_message", "message_id": message.message_id,
                     "group_id": message.group_id, "sender_id": message.sender_id,
-                    "content": content, "created_at": message.created_at,
+                    "content": content, "created_at": message.created_at, "reply_to_message_id": message.reply_to_message_id,
                 })
         acknowledgement = GroupAckPayload(message.message_id, message.group_id, self.identity.peer_id)
         acknowledgement.signature = self.identity.signing_private_key.sign(acknowledgement.signed_bytes())

@@ -869,17 +869,17 @@ export function useChatActions(deps: ChatActionsDeps) {
     } catch (error) { if (!backendDisconnectedRef.current) setStatus(`Remove error: ${error instanceof Error ? error.message : String(error)}`) }
   }
 
-  async function send() {
+  async function send(replyToMessageId?: string): Promise<boolean> {
     const composer = composerRef.current
     const content = composer?.plainText.trim() ?? ""
-    if (!content) { showStatus("Message is empty."); return }
-    if (!selection || !selectionKey || !identity) { showStatus("Select a peer or group before sending."); return }
-    if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) { showStatus("Message exceeds the 30 KiB limit."); return }
+    if (!content) { showStatus("Message is empty."); return false }
+    if (!selection || !selectionKey || !identity) { showStatus("Select a peer or group before sending."); return false }
+    if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) { showStatus("Message exceeds the 30 KiB limit."); return false }
     setIsSending(true)
     try {
       const response = selection.kind === "peer"
-        ? await ipc.send("send", { recipient_id: selection.id, content })
-        : await ipc.send("group_send", { group_id: selection.id, content })
+        ? await ipc.send("send", { recipient_id: selection.id, content, reply_to_message_id: replyToMessageId })
+        : await ipc.send("group_send", { group_id: selection.id, content, reply_to_message_id: replyToMessageId })
       if (response.error) throw new Error(response.error)
       const queued = Boolean(response.queued)
       if (selection.kind === "peer") {
@@ -889,7 +889,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       setMessages((c) => [...c, {
         message_id: response.message_id as string, sender_id: identity.peer_id,
         ...(selection.kind === "peer" ? { recipient_id: selection.id } : { group_id: selection.id, deliveries: response.deliveries as GroupDelivery[] }),
-        content, created_at: Date.now() / 1000, delivered: 0, queued: queued ? 1 : 0,
+        content, created_at: Date.now() / 1000, delivered: 0, queued: queued ? 1 : 0, reply_to_message_id: replyToMessageId,
       }])
       if (composer && composer === composerRef.current) { composer.selectAll(); composer.deleteSelection() }
       setDrafts((c) => ({ ...c, [selectionKey]: "" }))
@@ -898,12 +898,14 @@ export function useChatActions(deps: ChatActionsDeps) {
       showStatus(selection.kind === "group" ? `Group message sent: ${groupDeliveryLabel(response.deliveries as GroupDelivery[])}.`
         : queued ? "Message stored and queued. It will send when the peer is online."
           : "Message sent. Waiting for delivery confirmation.")
+      return true
     } catch (error) {
       if (!backendDisconnectedRef.current) {
         const msg = error instanceof Error ? error.message : String(error)
         if (msg.includes("No known public key")) showStatus(`You must connect to ${peers.find((p) => p.peer_id === selection.id)?.display_name ?? "this peer"} at least once before offline messages can be queued.`)
         else setStatus(`Send error: ${msg}`)
       }
+      return false
     } finally { setIsSending(false) }
   }
 

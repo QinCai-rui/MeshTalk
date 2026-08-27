@@ -6,7 +6,7 @@ extend({ spinner: SpinnerRenderable })
 import { IPCClient, type IPCEvent } from "../../common/ipc-client"
 import { existsSync, statSync } from "fs"
 import { checkForUpdate, GitHubAuthenticationError } from "../../common/updater"
-import type { Conversation, ConversationItem, Dialog, FileTransfer, Group, GroupMember, Message, Peer, TypingPeer, UnreadMessageState } from "./types"
+import type { Conversation, ConversationItem, Dialog, FileTransfer, Group, GroupMember, Message, Peer, ReplyTarget, TypingPeer, UnreadMessageState } from "./types"
 import { composerLimitColor, DEFAULT_STATUS, getComposerHeight, MIN_COMPOSER_HEIGHT, peerPresence, sortPeersByInteraction, UNREAD_MESSAGE_FADE_MS } from "./utils"
 import { Sidebar } from "./components/Sidebar"
 import { ConversationPanel } from "./components/ConversationPanel"
@@ -40,6 +40,9 @@ export function ChatApp() {
   const [identity, setIdentity] = useState<{ peer_id: string; display_name: string }>()
   const [selection, setSelection] = useState<Conversation>()
   const [messages, setMessages] = useState<Message[]>([])
+  const [selectedReplyTarget, setSelectedReplyTarget] = useState<ReplyTarget>()
+  const [replyTo, setReplyTo] = useState<ReplyTarget>()
+  const [deleteConfirmation, setDeleteConfirmation] = useState<ReplyTarget>()
   const [unreadMessages, setUnreadMessages] = useState<Record<string, UnreadMessageState>>({})
   const [unreadNow, setUnreadNow] = useState(() => Date.now())
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -74,6 +77,7 @@ export function ChatApp() {
   const dialogAction = useRef(0)
   const dialogBusyRef = useRef(false)
   const filePickerOpen = useRef(false)
+  const deleteConfirmationTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const typingStartTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const typingHeartbeat = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
@@ -274,6 +278,24 @@ export function ChatApp() {
   }, [unreadMessages])
 
   useEffect(() => () => stopOutgoingTyping(), [selectionKey])
+
+  useEffect(() => { setSelectedReplyTarget(undefined); setReplyTo(undefined); setDeleteConfirmation(undefined) }, [selectionKey])
+
+  useEffect(() => {
+    if (deleteConfirmationTimer.current) clearTimeout(deleteConfirmationTimer.current)
+    if (!deleteConfirmation) {
+      deleteConfirmationTimer.current = undefined
+      return
+    }
+    deleteConfirmationTimer.current = setTimeout(() => {
+      setDeleteConfirmation(undefined)
+      actions.showStatus("Message deletion timed out.")
+    }, 5_000)
+    return () => {
+      if (deleteConfirmationTimer.current) clearTimeout(deleteConfirmationTimer.current)
+      deleteConfirmationTimer.current = undefined
+    }
+  }, [deleteConfirmation])
 
   useEffect(() => {
     if (dialog || editingName || scrollFocused || isSending) stopOutgoingTyping()
@@ -528,6 +550,7 @@ export function ChatApp() {
     setMessages((current) => [...current, {
       message_id: event.message_id as string, sender_id: senderId, recipient_id: "",
       content: event.content as string, created_at: event.created_at as number, received_at: Date.now() / 1000,
+      reply_to_message_id: event.reply_to_message_id as string | null | undefined,
     }])
     void ipc.send("messages", { peer_id: senderId }).then((response) => {
       if (!response.error) { setMessages(response.messages as Message[]); void actions.refreshPeers() }
@@ -635,6 +658,24 @@ export function ChatApp() {
 
   useKeyboard((key) => {
     if (dialog && dialogBusyRef.current) return
+    if (deleteConfirmation) {
+      if (key.name === "escape") { setDeleteConfirmation(undefined); actions.showStatus("Message deletion cancelled."); return }
+      if (key.name === "return" || key.name === "linefeed") {
+        key.preventDefault()
+        const message = deleteConfirmation
+        void ipc.send("delete_message", { message_id: message.id, group_id: message.groupId, file: message.kind === "file" }).then((response) => {
+          if (response.error) throw new Error(response.error)
+          if (message.kind === "file") setFileTransfers((current) => current.filter((item) => item.file_id !== message.id))
+          else setMessages((current) => current.filter((item) => item.message_id !== message.id))
+          setSelectedReplyTarget((current) => current?.id === message.id ? undefined : current)
+          setReplyTo((current) => current?.id === message.id ? undefined : current)
+          setDeleteConfirmation(undefined)
+          actions.showStatus("Message deleted locally.")
+        }).catch((error) => { setDeleteConfirmation(undefined); actions.showStatus(`Delete error: ${error instanceof Error ? error.message : String(error)}`) })
+        return
+      }
+      return
+    }
     const isPasteShortcut = key.name === "v" && (key.ctrl || key.meta || key.super)
     if (isPasteShortcut && !dialog && !editingName && !scrollFocused && !isSending && selection) {
       key.preventDefault()
@@ -647,6 +688,29 @@ export function ChatApp() {
     if (key.ctrl && key.name === "n") { setNameDraft(identity?.display_name ?? ""); setEditingName(true); return }
     if (key.ctrl && key.name === "u") { void actions.openFilePicker(); return }
     if (key.ctrl && key.name === "d") { void actions.removeSelectedPeer(); return }
+    if (scrollFocused && !key.ctrl && (key.name === "up" || key.name === "down")) {
+      const replyTargets = conversationItems.map((item): ReplyTarget => item.type === "message"
+        ? { id: item.message.message_id, senderId: item.message.sender_id, label: item.message.content, groupId: item.message.group_id, kind: "message" }
+        : { id: item.file.file_id, senderId: item.file.sender_id, label: `Attachment: ${item.file.filename}`, groupId: item.file.group_id ?? undefined, kind: "file" })
+      if (!replyTargets.length) return
+      key.preventDefault()
+      const index = selectedReplyTarget ? replyTargets.findIndex((target) => target.id === selectedReplyTarget.id) : -1
+      const nextIndex = index === -1 ? (key.name === "up" ? replyTargets.length - 1 : 0) : Math.max(0, Math.min(replyTargets.length - 1, index + (key.name === "up" ? -1 : 1)))
+      setSelectedReplyTarget(replyTargets[nextIndex])
+      return
+    }
+    if (scrollFocused && key.name === "r" && selectedReplyTarget) {
+      key.preventDefault()
+      setReplyTo(selectedReplyTarget)
+      setScrollFocused(false)
+      return
+    }
+    if (scrollFocused && key.name === "d" && selectedReplyTarget) {
+      key.preventDefault()
+      setDeleteConfirmation(selectedReplyTarget)
+      return
+    }
+    if (key.name === "escape" && replyTo) { setReplyTo(undefined); return }
     if ((key.name === "up" || key.name === "down") && key.ctrl && (peers.length || groups.length)) {
       const conversations: Conversation[] = [...peers.map((peer) => ({ kind: "peer" as const, id: peer.peer_id })), ...groups.map((group) => ({ kind: "group" as const, id: group.group_id }))]
       const index = conversations.findIndex((item) => item.kind === selection?.kind && item.id === selection.id)
@@ -700,7 +764,11 @@ export function ChatApp() {
   return (
     <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
        <Sidebar compact={compact} dialogOpen={Boolean(dialog)} editingName={editingName} groups={groups} groupMembers={groupMembers} identity={identity} mutedPeers={mutedPeers} nameDraft={nameDraft} peers={peers} selectedGroupId={selectedGroupId} selectedPeerId={selectedPeerId} sidebarWidth={sidebarWidth} typingConversationKeys={typingConversationKeys} setEditingName={setEditingName} setNameDraft={setNameDraft} setSelection={setSelection} setScrollFocused={setScrollFocused} saveDisplayName={() => void actions.saveDisplayName()} />
-       <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} limitedGroupMembers={limitedGroupMembers} capabilityGapMessage={capabilityGapMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedHasCapabilityGap={selectedHasCapabilityGap} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} unreadMessageStates={unreadMessages} unreadNow={unreadNow} markUnreadMessageVisible={markUnreadMessageVisible} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send() }} />
+       <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} limitedGroupMembers={limitedGroupMembers} capabilityGapMessage={capabilityGapMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedHasCapabilityGap={selectedHasCapabilityGap} selectedReplyTargetId={selectedReplyTarget?.id} replyTo={replyTo} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} unreadMessageStates={unreadMessages} unreadNow={unreadNow} markUnreadMessageVisible={markUnreadMessageVisible} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} selectReplyTarget={(target) => { setSelectedReplyTarget(target); setScrollFocused(true) }} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send(replyTo?.id).then((sent) => { if (sent) setReplyTo(undefined) }) }} />
+       {deleteConfirmation && <box style={{ position: "absolute", left: Math.max(2, Math.floor(width / 2) - 24), top: Math.max(1, Math.floor(height / 2) - 2), width: Math.min(48, Math.max(1, width - 4)), border: true, borderColor: "#ff7777", backgroundColor: "#2d1818", padding: 1, flexDirection: "column" }}>
+         <text fg="#ff7777"><b>Delete this message locally?</b></text>
+         <text fg="#bbbbbb">Enter confirms. Esc cancels. This is not sent to peers.</text>
+       </box>}
       {copyToast && (
         <box style={{ position: "absolute", right: 2, top: 1, border: true, borderColor: "#66dd88", backgroundColor: "#18251d", paddingLeft: 1, paddingRight: 1 }}>
           <text fg="#66dd88">Copied to clipboard</text>
