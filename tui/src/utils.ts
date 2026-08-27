@@ -17,7 +17,7 @@ export function formatDateTime(timestamp: number): string { const d = new Date(t
 export function formatDateSeparator(timestamp: number): string { return new Date(timestamp * 1000).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" }) }
 export function dayKey(timestamp: number): string { const d = new Date(timestamp * 1000); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` }
 export function formatTimeMinute(timestamp: number): string { const d = new Date(timestamp * 1000); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()} ${d.getHours()}:${d.getMinutes()}` }
-export function transportName(transport?: Peer["active_transport"]): string { return transport === "lan_tcp" ? "LAN TCP" : transport === "remote_udp" ? "Remote UDP" : transport === "remote_derp" ? "MeshTalk Relay" : "No endpoint" }
+export function transportName(transport?: Peer["active_transport"]): string { return transport === "lan_tcp" ? "LAN TCP" : transport === "remote_udp" ? "Remote UDP" : transport === "remote_derp" ? "MeshTalk Embedded Relay" : "No endpoint" }
 export function peerPresence(peer: Peer): "active" | "away" | "offline" { return peer.presence ?? "offline" }
 export function sortPeersByInteraction(peers: Peer[]): Peer[] { return [...peers].sort((a, b) => (b.last_interaction ?? 0) - (a.last_interaction ?? 0) || a.display_name.localeCompare(b.display_name)) }
 export function friendMarkers(peer: Peer): string { const markers: string[] = []; if (peer.is_friend) markers.push("\u2665"); if (peer.friend_request === "incoming" || peer.friend_request === "both") markers.push("\u2199"); if (peer.friend_request === "outgoing" || peer.friend_request === "both") markers.push("\u2197"); return markers.length ? ` ${markers.join("")}` : "" }

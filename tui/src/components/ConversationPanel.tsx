@@ -1,5 +1,5 @@
-import type { BoxRenderable, ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
-import { useEffect, useRef, type ReactNode, type RefObject } from "react"
+import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
+import { useEffect, useMemo, useRef, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, Group, GroupMember, Peer, UnreadMessageState } from "../types"
 import { MarqueeText } from "./MarqueeText"
 import { dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, toFileUrl, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
@@ -45,12 +45,40 @@ type ConversationPanelProps = {
   send: () => void
 }
 
+const MESSAGE_MARKDOWN_STYLES = {
+  default: { fg: "#d6deeb" },
+  "markup.heading.1": { fg: "#7aa2d6", bold: true },
+  "markup.heading.2": { fg: "#7aa2d6", bold: true },
+  "markup.heading.3": { fg: "#7aa2d6", bold: true },
+  "markup.heading.4": { fg: "#7aa2d6", bold: true },
+  "markup.heading.5": { fg: "#7aa2d6", bold: true },
+  "markup.heading.6": { fg: "#7aa2d6", bold: true },
+  "markup.strong": { bold: true },
+  "markup.italic": { italic: true },
+  "markup.link.label": { fg: "#7aa2d6", underline: true },
+  "markup.link.url": { fg: "#65a9ff", underline: true },
+  "markup.raw": { fg: "#a5d6ff" },
+  "markup.list": { fg: "#ff9f43" },
+  keyword: { fg: "#ff7b72", bold: true },
+  string: { fg: "#a5d6ff" },
+  comment: { fg: "#8b949e", italic: true },
+  number: { fg: "#79c0ff" },
+  boolean: { fg: "#79c0ff" },
+  function: { fg: "#d2a8ff" },
+  type: { fg: "#ffa657" },
+  operator: { fg: "#ff7b72" },
+  punctuation: { fg: "#c9d1d9" },
+} as const
+
 export function ConversationPanel(props: ConversationPanelProps) {
   const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, onComposerChange, send } = props
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
+  const messageSyntaxStyle = useMemo(() => SyntaxStyle.fromStyles(MESSAGE_MARKDOWN_STYLES), [])
   const typingText = typingNames.length === 1 ? `${typingNames[0]} is typing` : typingNames.length === 2 ? `${typingNames[0]} and ${typingNames[1]} are typing...` : typingNames.length > 2 ? "Multiple people are typing..." : undefined
   const composerTitle = selectedGroup || selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: queued until peer is online"
   const byteCount = `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`
+
+  useEffect(() => () => messageSyntaxStyle.destroy(), [messageSyntaxStyle])
 
   useEffect(() => {
     if (!selectionKey || !Object.entries(unreadMessageStates).some(([, message]) => message.conversationKey === selectionKey && message.visibleAt === undefined)) return
@@ -75,7 +103,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
 
   return <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
     {controlStatus.control_url && !controlStatus.connected ? <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}><MarqueeText width={width - 4} fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"} text={`Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting (${controlStatus.reconnect_attempts}).`} /></box> : null}
-    <box title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)} ${selected.active_endpoint ?? ""}`}${selectedHasCapabilityGap ? ", limited" : ""})` : "Chat"} bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"} style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
+     <box title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)}${selected.active_transport === "remote_derp" || !selected.active_endpoint ? "" : ` ${selected.active_endpoint}`}`}${selectedHasCapabilityGap ? ", limited" : ""})` : "Chat"} bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"} style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
       {selected && ((selected.delivery_warnings ?? []).length > 0 || selectedHasCapabilityGap) ? <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
          {(selected.delivery_warnings ?? []).map((kind) => kind === "offline" ? <MarqueeText key="offline" width={width - 6} fg="#e0a34a" text="This peer is offline. Messages will be queued and delivered automatically upon reconnection." /> : kind === "not_friend" ? <MarqueeText key="not_friend" width={width - 6} fg="#e0a34a" text="Not friends yet. Your messages will be blocked until they accept your friend request (Settings > Friends > Add friend)." /> : kind === "limited" && selectedHasCapabilityGap ? <text key="limited" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"}><b>{capabilityGapMessage}</b></text> : null)}
         {selectedHasCapabilityGap && !(selected.delivery_warnings ?? []).includes("limited") ? <text wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"}><b>{capabilityGapMessage}</b></text> : null}
@@ -150,7 +178,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 )}
                 {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
               </text>
-              <text wrapMode="word">{renderedContent}</text>
+              <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
             </box>
           )
           return rows
