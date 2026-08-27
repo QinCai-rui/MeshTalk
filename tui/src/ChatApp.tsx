@@ -449,7 +449,7 @@ export function ChatApp() {
       }
       void notify(notificationPreferences, "friend_requests", renderer, `Friend request from ${request.sender_name}`)
       if (!dialog) setDialog({ kind: "friend-request-incoming", request })
-      else actions.showStatus(`Friend request from ${request.sender_name}. Open Settings > Friends to respond.`)
+      else actions.showStatus(`Friend request from ${request.sender_name}. Open Commands > Friends to respond.`)
       void actions.refreshPeers()
       return
     }

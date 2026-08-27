@@ -117,7 +117,7 @@ export function runCommand(command: string, dependencies: CommandDependencies) {
     const peer = peers.find((peer) => peer.peer_id === selectedPeerId)
     if (!peer) { showStatus(command === "add-friend" ? "Select a peer to add as a friend." : "Select a friend to remove."); return }
     if (command === "add-friend" && peer.is_friend) { showStatus(`${peer.display_name} is already your friend.`); return }
-    if (command === "add-friend" && peer.is_blocked) { showStatus(`${peer.display_name} is blocked. Unblock them in Settings > Friends > Block.`); return }
+    if (command === "add-friend" && peer.is_blocked) { showStatus(`${peer.display_name} is blocked. Unblock them in Commands > Friends > Block.`); return }
     if (command === "add-friend" && (peer.friend_request === "outgoing" || peer.friend_request === "both")) { showStatus(`Friend request to ${peer.display_name} is already pending.`); return }
     if (command === "remove-friend" && !peer.is_friend) { showStatus(`${peer.display_name} is not your friend.`); return }
     if (command === "add-friend") setDialogDraft("")
