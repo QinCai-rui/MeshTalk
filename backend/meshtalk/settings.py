@@ -39,6 +39,7 @@ def _group_metadata_key(room_id: bytes, secret: bytes) -> bytes:
 
 
 def normalize_group_name(value: object) -> str:
+    """Validate and normalize a group name, raising ValueError if invalid."""
     if not isinstance(value, str):
         raise ValueError("Group name required")
     name = value.strip()
@@ -49,16 +50,19 @@ def normalize_group_name(value: object) -> str:
 
 @dataclass(frozen=True)
 class Room:
+    """A private rendezvous room, optionally with group chat capabilities."""
     room_id: bytes
     secret: bytes
     group_name: str | None = None
 
     @property
     def id(self) -> str:
+        """Return the room ID as a hex string."""
         return self.room_id.hex()
 
     @property
     def invite(self) -> str:
+        """Generate an invite link for this room."""
         prefix = GROUP_INVITE_PREFIX if self.group_name is not None else INVITE_PREFIX
         invite = f"{prefix}{_encode(self.room_id)}.{_encode(self.secret)}"
         if self.group_name is None:
@@ -74,6 +78,7 @@ class Room:
 
     @classmethod
     def create(cls, group_name: str | None = None) -> Room:
+        """Create a new room with random credentials and optional group name."""
         return cls(
             secrets.token_bytes(16),
             secrets.token_bytes(32),
@@ -82,6 +87,7 @@ class Room:
 
     @classmethod
     def from_invite(cls, invite: str) -> Room:
+        """Parse and validate a room invite link, returning a Room instance."""
         if not isinstance(invite, str):
             raise ValueError("Invalid MeshTalk room invite")
         is_group = invite.startswith(GROUP_INVITE_PREFIX)
@@ -114,7 +120,10 @@ class Room:
 
 
 class Settings:
+    """Persistent configuration including control server, rooms, and user preferences."""
+
     def __init__(self, path: Path) -> None:
+        """Initialize settings from a JSON file, creating default values if file doesn't exist."""
         self.path = path
         self._control_url = ""
         self._control_pinned_ips: tuple[str, ...] = ()
@@ -140,6 +149,7 @@ class Settings:
 
     @property
     def files_dir(self) -> Path:
+        """Return the files storage directory, checking environment variable first."""
         # Env var takes precedence (cross-platform: C:\, E:\, /mnt/e, ~/ )
         env = os.environ.get("MESHTALK_FILES_DIR")
         if env and env.strip():
@@ -150,6 +160,7 @@ class Settings:
         return self.path.parent / "files"
 
     def set_files_dir(self, path_str: str) -> Path:
+        """Set the files storage directory after validation."""
         if not isinstance(path_str, str) or not path_str.strip():
             raise ValueError("files_dir must be a non-empty path")
         raw = path_str.strip().strip('"').strip("'")
@@ -170,16 +181,19 @@ class Settings:
         return Path(self._files_dir)
 
     def clear_files_dir(self) -> None:
+        """Reset files directory to default."""
         self._files_dir = None
         self.save()
 
     @property
     def control_url(self) -> str:
+        """Return the control server URL, checking environment variable first."""
         configured = os.environ.get("MESHTALK_CONTROL_URL", self._control_url)
         return self._validate_control_url(configured) if configured else ""
 
     @property
     def stun_server(self) -> tuple[str, int]:
+        """Return the STUN server host and port."""
         configured = os.environ.get("MESHTALK_STUN_SERVER")
         if configured:
             host, separator, port = configured.rpartition(":")
@@ -189,27 +203,33 @@ class Settings:
         return self._stun_host, self._stun_port
 
     def set_control_url(self, url: str) -> None:
+        """Set and validate the control server URL."""
         self._control_url = self._validate_control_url(url)
         self._control_setup_dismissed = True
         self.save()
 
     @property
     def control_pinned_ips(self) -> tuple[str, ...]:
+        """Return the pinned control server IP addresses."""
         return self._control_pinned_ips
 
     def set_control_pinned_ips(self, ips: str) -> None:
+        """Set pinned IP addresses for the control server."""
         self._control_pinned_ips = self._validate_pinned_ips(ips)
         self.save()
 
     def clear_control_pinned_ips(self) -> None:
+        """Clear pinned control server IP addresses."""
         self._control_pinned_ips = ()
         self.save()
 
     @property
     def stun_pinned_ips(self) -> tuple[str, ...]:
+        """Return the pinned STUN server IP addresses."""
         return self._stun_pinned_ips
 
     def set_stun_pinned_ips(self, ips: str) -> None:
+        """Set pinned IPv4 addresses for the STUN server."""
         values = self._validate_pinned_ips(ips)
         if any(not isinstance(ipaddress.ip_address(value), ipaddress.IPv4Address) for value in values):
             raise ValueError("STUN pinned IPs must be IPv4")
@@ -217,38 +237,47 @@ class Settings:
         self.save()
 
     def clear_stun_pinned_ips(self) -> None:
+        """Clear pinned STUN server IP addresses."""
         self._stun_pinned_ips = ()
         self.save()
 
     @property
     def control_setup_dismissed(self) -> bool:
+        """Return whether the control server setup prompt has been dismissed."""
         return self._control_setup_dismissed
 
     def dismiss_control_setup(self) -> None:
+        """Mark the control server setup prompt as dismissed."""
         self._control_setup_dismissed = True
         self.save()
 
     @property
     def identity_setup_dismissed(self) -> bool:
+        """Return whether the identity setup prompt has been dismissed."""
         return self._identity_setup_dismissed
 
     def dismiss_identity_setup(self) -> None:
+        """Mark the identity setup prompt as dismissed."""
         self._identity_setup_dismissed = True
         self.save()
 
     @property
     def flashing_enabled(self) -> bool:
+        """Return whether screen flashing effects are enabled for accessibility."""
         return self._flashing_enabled
 
     def set_flashing_enabled(self, enabled: bool) -> None:
+        """Enable or disable screen flashing effects."""
         self._flashing_enabled = enabled
         self.save()
 
     @property
     def github_token(self) -> str:
+        """Return the stored GitHub personal access token."""
         return self._github_token
 
     def set_github_token(self, token: str) -> None:
+        """Set the GitHub personal access token."""
         if not isinstance(token, str):
             raise ValueError("GitHub token must be a string")
         self._github_token = token.strip()
@@ -281,12 +310,14 @@ class Settings:
         return tuple(values)
 
     def create_room(self, group_name: str | None = None) -> Room:
+        """Create a new private room with optional group chat capability."""
         room = Room.create(group_name)
         self.rooms[room.id] = room
         self.save()
         return room
 
     def join_room(self, invite: str) -> Room:
+        """Join a room using an invite link."""
         room = Room.from_invite(invite)
         existing = self.rooms.get(room.id)
         if existing and existing != room:
@@ -296,20 +327,24 @@ class Settings:
         return room
 
     def leave_room(self, room_id: str) -> None:
+        """Leave and remove a room from settings."""
         if room_id not in self.rooms:
             raise ValueError("Unknown room ID")
         del self.rooms[room_id]
         self.save()
 
     def mute_peer(self, peer_id: str, until: float = 0) -> None:
+        """Mute a peer until the specified timestamp (0 for permanent)."""
         self.muted_peers[peer_id] = until
         self.save()
 
     def unmute_peer(self, peer_id: str) -> None:
+        """Unmute a previously muted peer."""
         self.muted_peers.pop(peer_id, None)
         self.save()
 
     def is_peer_muted(self, peer_id: str) -> bool:
+        """Check if a peer is currently muted."""
         until = self.muted_peers.get(peer_id)
         if until is None:
             return False
@@ -321,6 +356,7 @@ class Settings:
 
     @property
     def notification_preferences(self) -> dict:
+        """Return notification preferences including delivery method and event filters."""
         return {
             "setup_dismissed": self._notification_setup_dismissed,
             "delivery": self._notification_delivery,
@@ -334,6 +370,7 @@ class Settings:
         delivery: str | None = None,
         events: dict[str, bool] | None = None,
     ) -> None:
+        """Update notification preferences."""
         if setup_dismissed is not None:
             self._notification_setup_dismissed = setup_dismissed
         if delivery is not None:
@@ -348,6 +385,7 @@ class Settings:
         self.save()
 
     def save(self) -> None:
+        """Save settings to disk as a JSON file."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "version": 1,

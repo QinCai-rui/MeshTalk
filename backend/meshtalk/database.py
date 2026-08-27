@@ -150,12 +150,16 @@ CREATE TABLE IF NOT EXISTS file_received_chunks (
 
 
 class Database:
+    """SQLite database interface for persistent storage of peers, messages, and metadata."""
+
     def __init__(self, db_path: Path, storage_key: bytes | None = None) -> None:
+        """Initialize database connection with optional encryption key for message content."""
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
         self._cipher = AESGCM(storage_key or os.urandom(32))
 
     async def connect(self) -> None:
+        """Connect to the database and apply schema migrations."""
         self._db = await aiosqlite.connect(str(self.db_path))
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
@@ -254,10 +258,12 @@ class Database:
                 )
 
     async def close(self) -> None:
+        """Close the database connection."""
         if self._db:
             await self._db.close()
 
     async def get_peer(self, peer_id: str) -> dict | None:
+        """Retrieve peer information by peer ID."""
         async with self._db.execute(
             "SELECT * FROM peers WHERE peer_id = ?", (peer_id,)
         ) as cursor:
@@ -267,6 +273,7 @@ class Database:
     async def upsert_peer(
         self, peer_id: str, display_name: str, public_key: bytes, signing_public_key: bytes, tui_active: bool = False
     ) -> None:
+        """Insert or update peer information including keys and online status."""
         await self._db.execute(
             """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active)
                VALUES (?, ?, ?, ?, ?, 1, ?)
@@ -282,6 +289,7 @@ class Database:
         await self._db.commit()
 
     async def set_peer_online(self, peer_id: str, online: bool) -> None:
+        """Update peer online status and last seen timestamp."""
         await self._db.execute(
             "UPDATE peers SET is_online = ?, last_seen = ? WHERE peer_id = ?",
             (1 if online else 0, time.time(), peer_id),
@@ -289,20 +297,24 @@ class Database:
         await self._db.commit()
 
     async def get_online_peers(self) -> list[dict]:
+        """Retrieve all peers currently marked as online."""
         async with self._db.execute(
             "SELECT * FROM peers WHERE is_online = 1"
         ) as cursor:
             return [dict(row) async for row in cursor]
 
     async def get_all_peers(self) -> list[dict]:
+        """Retrieve all peers from the database."""
         async with self._db.execute("SELECT * FROM peers") as cursor:
             return [dict(row) async for row in cursor]
 
     async def remove_peer(self, peer_id: str) -> None:
+        """Delete a peer from the database."""
         await self._db.execute("DELETE FROM peers WHERE peer_id = ?", (peer_id,))
         await self._db.commit()
 
     async def save_peer_endpoint(self, peer_id: str, transport: str, endpoint: tuple[str, int] | None) -> None:
+        """Store or clear a peer's network endpoint for LAN or remote transport."""
         column = "lan_endpoint" if transport == "lan_tcp" else "remote_endpoint"
         value = f"{endpoint[0]}:{endpoint[1]}" if endpoint else None
         await self._db.execute(
@@ -311,6 +323,7 @@ class Database:
         await self._db.commit()
 
     async def load_peer_endpoints(self) -> dict[str, dict[str, tuple[str, int]]]:
+        """Load stored network endpoints for all peers from the database."""
         result: dict[str, dict[str, tuple[str, int]]] = {}
         async with self._db.execute(
             "SELECT peer_id, lan_endpoint, remote_endpoint FROM peers WHERE lan_endpoint IS NOT NULL OR remote_endpoint IS NOT NULL"
@@ -331,6 +344,7 @@ class Database:
         return result
 
     async def get_unread_counts(self, local_peer_id: str) -> dict[str, int]:
+        """Get count of unread messages grouped by sender peer ID."""
         async with self._db.execute(
             """SELECT sender_id, COUNT(*) AS unread_count
                FROM messages
@@ -387,6 +401,7 @@ class Database:
         return messages
 
     async def save_message(self, msg: dict) -> None:
+        """Store a message in the database with encrypted content."""
         await self._db.execute(
             """INSERT OR IGNORE INTO messages
                 (message_id, sender_id, recipient_id, content, encrypted_content,
@@ -411,6 +426,7 @@ class Database:
         await self._db.commit()
 
     async def mark_conversation_read(self, local_peer_id: str, remote_peer_id: str) -> None:
+        """Mark all messages from a specific peer as read."""
         await self._db.execute(
             """UPDATE messages SET read_at = ?
                WHERE sender_id = ? AND recipient_id = ? AND read_at IS NULL""",
@@ -419,12 +435,14 @@ class Database:
         await self._db.commit()
 
     async def is_message_seen(self, message_id: str) -> bool:
+        """Check if a message ID has been seen before (for deduplication)."""
         async with self._db.execute(
             "SELECT 1 FROM seen_messages WHERE message_id = ?", (message_id,)
         ) as cursor:
             return await cursor.fetchone() is not None
 
     async def mark_message_seen(self, message_id: str) -> None:
+        """Record that a message ID has been seen (for deduplication)."""
         await self._db.execute(
             "INSERT OR IGNORE INTO seen_messages (message_id, seen_at) VALUES (?, ?)",
             (message_id, time.time()),
@@ -432,6 +450,7 @@ class Database:
         await self._db.commit()
 
     async def cleanup_expired(self) -> None:
+        """Remove seen message IDs older than 24 hours."""
         now = time.time()
         await self._db.execute(
             "DELETE FROM seen_messages WHERE seen_at < ?", (now - 86400,)
@@ -446,6 +465,7 @@ class Database:
         message_id: str | None = None,
         group_id: str | None = None,
     ) -> None:
+        """Add a packet to the outgoing queue for a recipient."""
         await self._db.execute(
             """INSERT INTO outgoing_queue
                (message_id, recipient_id, packet_type, encrypted_payload, created_at, group_id)
@@ -455,6 +475,7 @@ class Database:
         await self._db.commit()
 
     async def get_pending_outgoing(self, recipient_id: str | None = None) -> list[dict]:
+        """Retrieve pending outgoing queue items for a specific recipient or all recipients."""
         if recipient_id is None:
             query = "SELECT * FROM outgoing_queue WHERE attempts < 5"
             params: tuple = ()
@@ -465,6 +486,7 @@ class Database:
             return [dict(row) async for row in cursor]
 
     async def increment_outqueue_attempts(self, queue_id: int) -> None:
+        """Increment the attempt counter for an outgoing queue item."""
         await self._db.execute(
             "UPDATE outgoing_queue SET attempts = attempts + 1, last_attempt = ? WHERE id = ?",
             (time.time(), queue_id),
@@ -472,12 +494,14 @@ class Database:
         await self._db.commit()
 
     async def remove_from_outqueue(self, queue_id: int) -> None:
+        """Remove an item from the outgoing queue."""
         await self._db.execute(
             "DELETE FROM outgoing_queue WHERE id = ?", (queue_id,)
         )
         await self._db.commit()
 
     async def get_stored_messages_for(self, peer_id: str) -> list[dict]:
+        """Retrieve stored messages waiting to be delivered to a peer."""
         async with self._db.execute(
             """SELECT * FROM messages
                WHERE recipient_id = ? AND stored = 1""",
@@ -486,6 +510,7 @@ class Database:
             return [dict(row) async for row in cursor]
 
     async def mark_message_delivered(self, message_id: str) -> None:
+        """Mark a message as delivered to its recipient."""
         await self._db.execute(
             "UPDATE messages SET delivered = 1, queued = 0, received_at = ? WHERE message_id = ?",
             (time.time(), message_id),
@@ -493,24 +518,28 @@ class Database:
         await self._db.commit()
 
     async def mark_message_sent(self, message_id: str) -> None:
+        """Mark a message as successfully sent (not necessarily delivered)."""
         await self._db.execute(
             "UPDATE messages SET queued = 0 WHERE message_id = ?", (message_id,)
         )
         await self._db.commit()
 
     async def mark_message_blocked(self, message_id: str) -> None:
+        """Mark a message as blocked by the recipient."""
         await self._db.execute(
             "UPDATE messages SET blocked = 1 WHERE message_id = ?", (message_id,)
         )
         await self._db.commit()
 
     async def mark_message_failed(self, message_id: str) -> None:
+        """Mark a message as failed to send."""
         await self._db.execute(
             "UPDATE messages SET failed = 1, queued = 0 WHERE message_id = ?", (message_id,)
         )
         await self._db.commit()
 
     async def upsert_group(self, group_id: str, name: str) -> None:
+        """Insert or update a group with its name."""
         await self._db.execute(
             """INSERT INTO groups (group_id, name, joined_at) VALUES (?, ?, ?)
                ON CONFLICT(group_id) DO UPDATE SET name = excluded.name""",
@@ -519,6 +548,7 @@ class Database:
         await self._db.commit()
 
     async def get_group(self, group_id: str) -> dict | None:
+        """Retrieve group information by group ID."""
         async with self._db.execute(
             "SELECT * FROM groups WHERE group_id = ?", (group_id,)
         ) as cursor:
@@ -526,6 +556,7 @@ class Database:
             return dict(row) if row else None
 
     async def remove_group(self, group_id: str) -> None:
+        """Remove a group and its associated data from the database."""
         # History remains local so rejoining restores the user's previous view,
         # but pending traffic must not escape after membership is removed.
         await self._db.execute("DELETE FROM outgoing_queue WHERE group_id = ?", (group_id,))
@@ -534,6 +565,7 @@ class Database:
         await self._db.commit()
 
     async def get_groups(self, local_peer_id: str) -> list[dict]:
+        """Retrieve all groups with member counts and unread message counts."""
         async with self._db.execute(
             """SELECT g.group_id, g.name, g.joined_at,
                       COUNT(DISTINCT CASE WHEN gm.active = 1 THEN gm.peer_id END) AS member_count,
@@ -555,6 +587,7 @@ class Database:
         active: bool = True,
         group_capable: bool | None = None,
     ) -> bool:
+        """Insert or update a group member, returning True if member newly joined."""
         existing = await self.get_group_member(group_id, peer_id)
         now = time.time()
         await self._db.execute(
@@ -576,6 +609,7 @@ class Database:
         return existing is None or not bool(existing["active"])
 
     async def claim_group_join_announcement(self, group_id: str, peer_id: str) -> bool:
+        """Mark a member's join as announced, returning True if it was pending announcement."""
         cursor = await self._db.execute(
             """UPDATE group_members SET join_announced = 1
                WHERE group_id = ? AND peer_id = ? AND active = 1 AND join_announced = 0""",
@@ -585,6 +619,7 @@ class Database:
         return cursor.rowcount > 0
 
     async def get_group_member(self, group_id: str, peer_id: str) -> dict | None:
+        """Retrieve a specific group member by group ID and peer ID."""
         async with self._db.execute(
             "SELECT * FROM group_members WHERE group_id = ? AND peer_id = ?", (group_id, peer_id)
         ) as cursor:
@@ -592,6 +627,7 @@ class Database:
             return dict(row) if row else None
 
     async def get_group_members(self, group_id: str, include_inactive: bool = False) -> list[dict]:
+        """Retrieve all members of a group, optionally including inactive members."""
         query = "SELECT * FROM group_members WHERE group_id = ?"
         if not include_inactive:
             query += " AND active = 1"
@@ -600,6 +636,7 @@ class Database:
             return [dict(row) async for row in cursor]
 
     async def mark_group_member_left(self, group_id: str, peer_id: str) -> None:
+        """Mark a group member as having left the group."""
         await self._db.execute(
             "UPDATE group_members SET active = 0, left_at = ? WHERE group_id = ? AND peer_id = ?",
             (time.time(), group_id, peer_id),
@@ -607,6 +644,7 @@ class Database:
         await self._db.commit()
 
     async def save_group_message(self, message: dict) -> bool:
+        """Save a group message, returning True if the message was newly inserted."""
         content = message.get("content")
         cursor = await self._db.execute(
             """INSERT OR IGNORE INTO group_messages
@@ -622,6 +660,7 @@ class Database:
         return cursor.rowcount > 0
 
     async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
+        """Retrieve recent group messages with delivery status."""
         async with self._db.execute(
             """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind
                FROM (SELECT rowid AS sequence, * FROM group_messages WHERE group_id = ? ORDER BY rowid DESC LIMIT ?)
@@ -635,6 +674,7 @@ class Database:
         return messages
 
     async def get_group_message(self, message_id: str) -> dict | None:
+        """Retrieve a specific group message by message ID."""
         async with self._db.execute(
             "SELECT * FROM group_messages WHERE message_id = ?", (message_id,)
         ) as cursor:
@@ -642,10 +682,12 @@ class Database:
             return dict(row) if row else None
 
     async def mark_group_read(self, group_id: str) -> None:
+        """Mark all messages in a group as read."""
         await self._db.execute("UPDATE groups SET read_at = ? WHERE group_id = ?", (time.time(), group_id))
         await self._db.commit()
 
     async def set_group_delivery(self, message_id: str, recipient_id: str, status: str) -> None:
+        """Record or update delivery status for a group message to a specific recipient."""
         await self._db.execute(
             """INSERT INTO group_deliveries (message_id, recipient_id, status, updated_at)
                VALUES (?, ?, ?, ?)
@@ -663,6 +705,7 @@ class Database:
         await self._db.commit()
 
     async def get_group_deliveries(self, message_id: str) -> list[dict]:
+        """Get delivery status for all recipients of a group message."""
         async with self._db.execute(
             """SELECT d.recipient_id, COALESCE(p.display_name, gm.display_name, d.recipient_id) AS display_name,
                       d.status, d.updated_at
@@ -676,6 +719,7 @@ class Database:
             return [dict(row) async for row in cursor]
 
     async def add_friend(self, peer_id: str, display_name: str) -> None:
+        """Add a peer as a friend or update their display name."""
         await self._db.execute(
             """INSERT INTO friends (peer_id, display_name, created_at) VALUES (?, ?, ?)
                ON CONFLICT(peer_id) DO UPDATE SET display_name = excluded.display_name""",
@@ -684,22 +728,26 @@ class Database:
         await self._db.commit()
 
     async def remove_friend(self, peer_id: str) -> None:
+        """Remove a peer from the friends list."""
         await self._db.execute("DELETE FROM friends WHERE peer_id = ?", (peer_id,))
         await self._db.commit()
 
     async def is_friend(self, peer_id: str) -> bool:
+        """Check if a peer is in the friends list."""
         async with self._db.execute(
             "SELECT 1 FROM friends WHERE peer_id = ?", (peer_id,)
         ) as cursor:
             return await cursor.fetchone() is not None
 
     async def get_friends(self) -> list[dict]:
+        """Retrieve all friends sorted by display name."""
         async with self._db.execute(
             "SELECT peer_id, display_name, created_at FROM friends ORDER BY display_name"
         ) as cursor:
             return [dict(row) async for row in cursor]
 
     async def save_friend_request(self, request: dict) -> None:
+        """Store a friend request in the database."""
         await self._db.execute(
             """INSERT OR IGNORE INTO friend_requests
                (request_id, sender_id, sender_name, recipient_id, recipient_name, note, created_at, direction, status)
@@ -719,6 +767,7 @@ class Database:
         await self._db.commit()
 
     async def get_friend_request(self, request_id: str) -> dict | None:
+        """Retrieve a specific friend request by request ID."""
         async with self._db.execute(
             "SELECT * FROM friend_requests WHERE request_id = ?", (request_id,)
         ) as cursor:
@@ -726,12 +775,14 @@ class Database:
             return dict(row) if row else None
 
     async def get_pending_friend_requests(self) -> list[dict]:
+        """Retrieve all pending friend requests."""
         async with self._db.execute(
             "SELECT * FROM friend_requests WHERE status = 'pending' ORDER BY created_at DESC"
         ) as cursor:
             return [dict(row) async for row in cursor]
 
     async def get_pending_request_with(self, peer_id: str, direction: str) -> dict | None:
+        """Find a pending friend request with a specific peer in a given direction."""
         column = "sender_id" if direction == "incoming" else "recipient_id"
         async with self._db.execute(
             f"""SELECT * FROM friend_requests
@@ -742,6 +793,7 @@ class Database:
             return dict(row) if row else None
 
     async def update_friend_request_status(self, request_id: str, status: str) -> None:
+        """Update the status of a friend request (e.g., accepted, declined)."""
         await self._db.execute(
             "UPDATE friend_requests SET status = ?, responded_at = ? WHERE request_id = ?",
             (status, time.time(), request_id),
@@ -749,6 +801,7 @@ class Database:
         await self._db.commit()
 
     async def decline_pending_requests_with(self, peer_id: str) -> None:
+        """Decline all pending friend requests involving a specific peer."""
         await self._db.execute(
             """UPDATE friend_requests SET status = 'declined', responded_at = ?
                WHERE status = 'pending' AND (sender_id = ? OR recipient_id = ?)""",
@@ -757,6 +810,7 @@ class Database:
         await self._db.commit()
 
     async def cancel_friend_request(self, request_id: str) -> None:
+        """Cancel a friend request by request ID."""
         await self._db.execute(
             "UPDATE friend_requests SET status = 'cancelled', responded_at = ? WHERE request_id = ?",
             (time.time(), request_id),
@@ -764,6 +818,7 @@ class Database:
         await self._db.commit()
 
     async def cancel_incoming_requests_with(self, peer_id: str) -> None:
+        """Cancel all pending incoming friend requests from a specific peer."""
         await self._db.execute(
             """UPDATE friend_requests SET status = 'cancelled', responded_at = ?
                WHERE status = 'pending' AND direction = 'incoming' AND sender_id = ?""",
@@ -772,6 +827,7 @@ class Database:
         await self._db.commit()
 
     async def block_peer(self, peer_id: str, display_name: str) -> None:
+        """Add a peer to the blocked list."""
         await self._db.execute(
             """INSERT INTO blocked_peers (peer_id, display_name, created_at) VALUES (?, ?, ?)
                ON CONFLICT(peer_id) DO UPDATE SET display_name = excluded.display_name""",
@@ -780,16 +836,19 @@ class Database:
         await self._db.commit()
 
     async def unblock_peer(self, peer_id: str) -> None:
+        """Remove a peer from the blocked list."""
         await self._db.execute("DELETE FROM blocked_peers WHERE peer_id = ?", (peer_id,))
         await self._db.commit()
 
     async def is_peer_blocked(self, peer_id: str) -> bool:
+        """Check if a peer is blocked."""
         async with self._db.execute(
             "SELECT 1 FROM blocked_peers WHERE peer_id = ?", (peer_id,)
         ) as cursor:
             return await cursor.fetchone() is not None
 
     async def get_blocked_peers(self) -> list[dict]:
+        """Retrieve all blocked peers."""
         async with self._db.execute(
             "SELECT peer_id, display_name, created_at FROM blocked_peers ORDER BY display_name"
         ) as cursor:
@@ -797,6 +856,7 @@ class Database:
 
     # ------------------------------------------------------------------ file transfers
     async def save_file_transfer(self, transfer: dict) -> None:
+        """Store or update a file transfer record in the database."""
         await self._db.execute(
             """INSERT OR REPLACE INTO file_transfers
                (file_id, filename, file_size, chunk_size, total_chunks, sender_id, recipient_id, group_id, direction, status, file_path, created_at, completed_at, received_chunks)
@@ -811,11 +871,13 @@ class Database:
         await self._db.commit()
 
     async def get_file_transfer(self, file_id: str) -> dict | None:
+        """Retrieve a file transfer record by file ID."""
         async with self._db.execute("SELECT * FROM file_transfers WHERE file_id = ?", (file_id,)) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
     async def update_file_transfer(self, file_id: str, **fields) -> None:
+        """Update specific fields of a file transfer record."""
         if not fields:
             return
         sets = ", ".join(f"{k} = ?" for k in fields)
@@ -824,6 +886,7 @@ class Database:
         await self._db.commit()
 
     async def get_file_transfers(self, peer_id: str | None = None, group_id: str | None = None) -> list[dict]:
+        """Retrieve file transfers filtered by peer ID or group ID."""
         query = "SELECT * FROM file_transfers"
         clauses: list[str] = []
         params: list[str] = []
@@ -840,10 +903,12 @@ class Database:
             return [dict(row) async for row in cursor]
 
     async def get_pending_file_offers(self) -> list[dict]:
+        """Retrieve all file transfers that are pending or actively transferring."""
         async with self._db.execute("SELECT * FROM file_transfers WHERE status IN ('pending','transferring')") as cursor:
             return [dict(row) async for row in cursor]
 
     async def is_file_chunk_received(self, file_id: str, chunk_index: int) -> bool:
+        """Check if a specific file chunk has been received."""
         async with self._db.execute(
             "SELECT 1 FROM file_received_chunks WHERE file_id = ? AND chunk_index = ?",
             (file_id, chunk_index),
@@ -851,6 +916,7 @@ class Database:
             return await cursor.fetchone() is not None
 
     async def record_file_chunk_received(self, file_id: str, chunk_index: int) -> int:
+        """Mark a file chunk as received and return total received chunks count."""
         await self._db.execute(
             "INSERT OR IGNORE INTO file_received_chunks (file_id, chunk_index) VALUES (?, ?)",
             (file_id, chunk_index),
@@ -867,6 +933,7 @@ class Database:
         return received_chunks
 
     async def get_missing_file_chunk_ranges(self, file_id: str, total_chunks: int) -> list[tuple[int, int]]:
+        """Calculate contiguous ranges of missing file chunks."""
         async with self._db.execute(
             "SELECT chunk_index FROM file_received_chunks WHERE file_id = ? ORDER BY chunk_index",
             (file_id,),
@@ -885,6 +952,7 @@ class Database:
         return ranges
 
     async def complete_file_transfer(self, file_id: str, completed_at: float) -> None:
+        """Mark a file transfer as completed and clean up chunk tracking data."""
         await self._db.execute(
             "UPDATE file_transfers SET status = 'completed', completed_at = ? WHERE file_id = ?",
             (completed_at, file_id),
