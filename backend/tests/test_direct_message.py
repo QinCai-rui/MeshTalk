@@ -90,6 +90,18 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         conversation = await self.router_a.db.get_conversation(self.identity_a.peer_id, self.identity_b.peer_id)
         self.assertEqual(conversation[0]["content"], "secret hello")
 
+    async def test_direct_reply_references_original_message(self):
+        await self._become_friends()
+        original_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"original")
+        await asyncio.wait_for(self.received.get(), 1)
+        reply_id, _ = await self.router_b.send_message(self.identity_a.peer_id, b"reply", original_id)
+        received = await asyncio.wait_for(self.received.get(), 1)
+
+        self.assertEqual(received["message_id"], reply_id)
+        self.assertEqual(received["reply_to_message_id"], original_id)
+        conversation = await self.router_a.db.get_conversation(self.identity_a.peer_id, self.identity_b.peer_id)
+        self.assertEqual(conversation[-1]["reply_to_message_id"], original_id)
+
     async def test_non_friend_message_is_blocked_with_notice(self):
         await self._connect_peers()
         message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"hello stranger")

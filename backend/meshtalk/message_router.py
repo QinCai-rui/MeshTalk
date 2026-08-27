@@ -43,7 +43,7 @@ class MessageRouter:
         self.friend_manager = friend_manager or FriendManager(identity, peer_manager, db)
         self.group_router = group_router
 
-    async def send_message(self, recipient_id: str, plaintext: bytes) -> tuple[str, bool]:
+    async def send_message(self, recipient_id: str, plaintext: bytes, reply_to_message_id: str | None = None) -> tuple[str, bool]:
         if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:
             raise ValueError("Message exceeds 30 KiB limit")
         peer = self.peer_manager.get_connected_peer(recipient_id)
@@ -57,7 +57,7 @@ class MessageRouter:
         if encryption_key is None:
             raise ValueError("No known public key for recipient; connect once before sending offline")
         now = time.time()
-        message = MessagePayload(str(uuid.uuid4()), self.identity.peer_id, recipient_id, now, 0, 0, b"")
+        message = MessagePayload(str(uuid.uuid4()), self.identity.peer_id, recipient_id, now, 0, 0, b"", reply_to_message_id=reply_to_message_id)
         message.encrypted_content = encrypt_for_recipient(encryption_key, plaintext, message.associated_data())
         message.signature = self.identity.signing_private_key.sign(message.signed_bytes())
         encoded_message = message.encode()
@@ -67,7 +67,7 @@ class MessageRouter:
             "message_id": message.message_id, "sender_id": message.sender_id, "recipient_id": message.recipient_id,
             "content": plaintext.decode("utf-8"), "encrypted_content": message.encrypted_content,
             "created_at": message.created_at, "hop_count": 0, "max_hops": 0,
-            "read_at": now, "queued": 1 if peer is None else 0,
+            "read_at": now, "queued": 1 if peer is None else 0, "reply_to_message_id": reply_to_message_id,
         })
         await self.db.mark_message_seen(message.message_id)
         if peer is not None:
@@ -121,12 +121,12 @@ class MessageRouter:
             "message_id": message.message_id, "sender_id": message.sender_id, "recipient_id": message.recipient_id,
             "content": content, "encrypted_content": message.encrypted_content,
             "created_at": message.created_at,
-            "hop_count": 0, "max_hops": 0, "read_at": None, "received_at": time.time(),
+            "hop_count": 0, "max_hops": 0, "read_at": None, "received_at": time.time(), "reply_to_message_id": message.reply_to_message_id,
         })
         await self._send_delivery_receipt(peer, message.message_id)
         logger.info("Received encrypted message %s from %s", message.message_id, peer.peer_id)
         if self.on_received:
-            await self.on_received({"message_id": message.message_id, "sender_id": message.sender_id, "content": content, "created_at": message.created_at})
+            await self.on_received({"message_id": message.message_id, "sender_id": message.sender_id, "content": content, "created_at": message.created_at, "reply_to_message_id": message.reply_to_message_id})
 
     async def _send_delivery_receipt(self, peer: PeerConnection, message_id: str) -> None:
         # Only acknowledge delivery when both peers negotiated the capability.

@@ -178,7 +178,12 @@ async def main(debug: bool = False) -> None:
         content = req.get("content", "")
         if not recipient:
             return {"error": "recipient_id required"}
-        msg_id, queued = await router.send_message(recipient, content.encode())
+        reply_to_message_id = req.get("reply_to_message_id")
+        if reply_to_message_id is not None and (
+            not isinstance(reply_to_message_id, str) or not reply_to_message_id or len(reply_to_message_id) > 128
+        ):
+            return {"error": "reply_to_message_id must be a non-empty string up to 128 characters"}
+        msg_id, queued = await router.send_message(recipient, content.encode(), reply_to_message_id)
         return {"message_id": msg_id, "queued": queued}
 
     def _peer_delivery_warnings(
@@ -606,7 +611,12 @@ async def main(debug: bool = False) -> None:
         content = req.get("content")
         if not isinstance(group_id, str) or not isinstance(content, str):
             return {"error": "group_id and content required"}
-        message_id, deliveries = await group_router.send_message(group_id, content.encode())
+        reply_to_message_id = req.get("reply_to_message_id")
+        if reply_to_message_id is not None and (
+            not isinstance(reply_to_message_id, str) or not reply_to_message_id or len(reply_to_message_id) > 128
+        ):
+            return {"error": "reply_to_message_id must be a non-empty string up to 128 characters"}
+        message_id, deliveries = await group_router.send_message(group_id, content.encode(), reply_to_message_id)
         return {"message_id": message_id, "deliveries": deliveries}
 
     async def handle_group_leave(req: dict) -> dict:

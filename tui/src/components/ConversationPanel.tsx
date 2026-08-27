@@ -1,6 +1,6 @@
 import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useEffect, useMemo, useRef, type ReactNode, type RefObject } from "react"
-import type { ConversationItem, Group, GroupMember, Peer, UnreadMessageState } from "../types"
+import type { ConversationItem, Group, GroupMember, Message, Peer, UnreadMessageState } from "../types"
 import { MarqueeText } from "./MarqueeText"
 import { dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, toFileUrl, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
 
@@ -28,6 +28,8 @@ type ConversationPanelProps = {
   selectedGroup: Group | undefined
   selectedGroupId: string | undefined
   selectedHasCapabilityGap: boolean
+  selectedMessageId: string | undefined
+  replyTo: Message | undefined
   selectionKey: string | undefined
   unreadMessageStates: Record<string, UnreadMessageState>
   unreadNow: number
@@ -41,6 +43,7 @@ type ConversationPanelProps = {
   setComposerHeight: (height: number) => void
   setDraftLength: (length: number) => void
   setScrollFocused: (focused: boolean) => void
+  selectMessage: (message: Message) => void
   onComposerChange: (content: string) => void
   send: () => void
 }
@@ -71,7 +74,7 @@ const MESSAGE_MARKDOWN_STYLES = {
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, onComposerChange, send } = props
+  const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedMessageId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectMessage, onComposerChange, send } = props
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
   const messageSyntaxStyle = useMemo(() => SyntaxStyle.fromStyles(MESSAGE_MARKDOWN_STYLES), [])
   const typingText = typingNames.length === 1 ? `${typingNames[0]} is typing` : typingNames.length === 2 ? `${typingNames[0]} and ${typingNames[1]} are typing...` : typingNames.length > 2 ? "Multiple people are typing..." : undefined
@@ -103,7 +106,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
 
   return <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
     {controlStatus.control_url && !controlStatus.connected ? <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}><MarqueeText width={width - 4} fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"} text={`Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting (${controlStatus.reconnect_attempts}).`} /></box> : null}
-     <box title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)}${selected.active_transport === "remote_derp" || !selected.active_endpoint ? "" : ` ${selected.active_endpoint}`}`}${selectedHasCapabilityGap ? ", limited" : ""})` : "Chat"} bottomTitle={compact ? "PgUp/PgDn scroll" : "PgUp/PgDn scroll  End latest  Drag text to select"} style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
+     <box title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)}${selected.active_transport === "remote_derp" || !selected.active_endpoint ? "" : ` ${selected.active_endpoint}`}`}${selectedHasCapabilityGap ? ", limited" : ""})` : "Chat"} bottomTitle={compact ? "PgUp/PgDn scroll  Up/Down select  R reply" : "PgUp/PgDn scroll  Up/Down select  R reply  End latest  Drag text to select"} style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
       {selected && ((selected.delivery_warnings ?? []).length > 0 || selectedHasCapabilityGap) ? <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
          {(selected.delivery_warnings ?? []).map((kind) => kind === "offline" ? <MarqueeText key="offline" width={width - 6} fg="#e0a34a" text="This peer is offline. Messages will be queued and delivered automatically upon reconnection." /> : kind === "not_friend" ? <MarqueeText key="not_friend" width={width - 6} fg="#e0a34a" text="Not friends yet. Your messages will be blocked until they accept your friend request (Commands > Friends > Add friend)." /> : kind === "limited" && selectedHasCapabilityGap ? <text key="limited" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"}><b>{capabilityGapMessage}</b></text> : null)}
         {selectedHasCapabilityGap && !(selected.delivery_warnings ?? []).includes("limited") ? <text wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"}><b>{capabilityGapMessage}</b></text> : null}
@@ -163,11 +166,17 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 ? `${isLocal ? "You" : senderName} left the group`
                 : message.content
             : message.content
+          const replyTarget = message.reply_to_message_id
+            ? conversationItems.find((candidate): candidate is Extract<ConversationItem, { type: "message" }> => candidate.type === "message" && candidate.message.message_id === message.reply_to_message_id)?.message
+            : undefined
+          const replySender = replyTarget?.sender_id === identity?.peer_id ? "You"
+            : replyTarget ? (selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replyTarget.sender_id)?.display_name : selected?.display_name) ?? "Unknown member" : undefined
+          const replySnippet = replyTarget?.content.replace(/\s+/g, " ").trim().slice(0, 60)
           const showReceived =
             typeof message.received_at === "number" &&
             formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
           rows.push(
-             <box key={message.message_id} ref={(node) => { messageRefs.current[message.message_id] = node }} style={{ width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: unread ? unreadMessageBackground(fadeProgress) : undefined }}>
+              <box key={message.message_id} ref={(node) => { messageRefs.current[message.message_id] = node }} onMouseDown={() => selectMessage(message)} style={{ width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: selectedMessageId === message.message_id ? "#25354d" : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
               <text>
                 <span fg="#888888">{formatTime(message.created_at)} </span>
                 <span fg={isSystem ? "#e0a34a" : isLocal ? "#65a9ff" : "#66dd88"}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
@@ -177,8 +186,9 @@ export function ConversationPanel(props: ConversationPanelProps) {
                   </span>
                 )}
                 {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
-              </text>
-              <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
+                </text>
+                {message.reply_to_message_id && <text fg="#7aa2d6">&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? `: ${replySnippet}${replyTarget && replyTarget.content.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}` : ""}</text>}
+                <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
             </box>
           )
           return rows
@@ -186,6 +196,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
       </scrollbox>
     </box>
     <box title={composerTitle} bottomTitle={isSending ? "Sending..." : byteCount} titleColor={limitColor ?? "#888888"} style={{ border: true, borderColor: limitColor ?? (!scrollFocused && !editingName && (selected?.is_online || selectedGroup) ? "#6ea8fe" : undefined), flexShrink: 0, overflow: "hidden", padding: 1 }}>
+      {replyTo && <text fg="#7aa2d6">Replying to {replyTo.sender_id === identity?.peer_id ? "You" : selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replyTo.sender_id)?.display_name ?? "Unknown member" : selected?.display_name ?? "Unknown peer"}: {replyTo.content.replace(/\s+/g, " ").trim().slice(0, 60)}{replyTo.content.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""} (Esc cancels)</text>}
       <textarea key={selectionKey ?? "no-conversation"} ref={composerRef} initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""} placeholder={selectedGroup ? `Message ${selectedGroup.name} - Ctrl+V image` : selected ? "Write a message - Ctrl+V pastes an image" : "Select a peer or group"} focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !isSending && !dialogOpen} onMouseDown={() => setScrollFocused(false)} onContentChange={() => {
         const composer = composerRef.current
         const content = composer?.plainText ?? ""

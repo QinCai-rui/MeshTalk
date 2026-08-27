@@ -106,7 +106,7 @@ class GroupRouter:
             "peer_id": peer_id, "display_name": display_name,
         })
 
-    async def send_message(self, group_id: str, plaintext: bytes) -> tuple[str, list[dict]]:
+    async def send_message(self, group_id: str, plaintext: bytes, reply_to_message_id: str | None = None) -> tuple[str, list[dict]]:
         if len(plaintext) > MAX_GROUP_MESSAGE_CONTENT_SIZE:
             raise ValueError("Message exceeds 30 KiB limit")
         room = self.settings.rooms.get(group_id)
@@ -121,6 +121,7 @@ class GroupRouter:
             "sender_id": self.identity.peer_id,
             "content": content,
             "created_at": created_at,
+            "reply_to_message_id": reply_to_message_id,
         })
         await self.db.mark_message_seen(message_id)
         members = [
@@ -142,7 +143,7 @@ class GroupRouter:
                 continue
             try:
                 payload = GroupMessagePayload(
-                    message_id, group_id, self.identity.peer_id, recipient_id, created_at, b""
+                    message_id, group_id, self.identity.peer_id, recipient_id, created_at, b"", reply_to_message_id=reply_to_message_id
                 )
                 payload.encrypted_content = encrypt_for_recipient(key, plaintext, payload.associated_data())
                 payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
@@ -210,13 +211,14 @@ class GroupRouter:
                 "content": content,
                 "created_at": message.created_at,
                 "received_at": time.time(),
+                "reply_to_message_id": message.reply_to_message_id,
             })
             await self.db.mark_message_seen(message.message_id)
             if inserted:
                 await self._emit({
                     "event": "group_message", "message_id": message.message_id,
                     "group_id": message.group_id, "sender_id": message.sender_id,
-                    "content": content, "created_at": message.created_at,
+                    "content": content, "created_at": message.created_at, "reply_to_message_id": message.reply_to_message_id,
                 })
         acknowledgement = GroupAckPayload(message.message_id, message.group_id, self.identity.peer_id)
         acknowledgement.signature = self.identity.signing_private_key.sign(acknowledgement.signed_bytes())

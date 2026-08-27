@@ -558,13 +558,15 @@ same shared secret. Forward secrecy: each message uses a fresh ephemeral key.
   "expires_at":   <unix float>,
   "hop_count":    0,
   "max_hops":     0,
+  "reply_to_message_id": "<uuid, optional>",
   "encrypted_content": "<hex>",
   "signature":    "<128 hex>"
 }
 ```
 
 - Associated data (AAD) = canonical JSON of the immutable routing fields
-  (message_id, sender_id, recipient_id, created_at, expires_at). This binds the
+  (message_id, sender_id, recipient_id, created_at, reply_to_message_id when
+  present). This binds the
   ciphertext to its routing metadata.
 - Signature = Ed25519 over SHA-256(associated_data || encrypted_content). The
   sender's signature authenticates both the metadata and the ciphertext and is
@@ -653,13 +655,14 @@ groups and control connectivity when STUN discovery fails.
   "sender_id": "<64 hex>",
   "recipient_id": "<64 hex>",
   "created_at": 1700000000.0,
+  "reply_to_message_id": "<uuid, optional>",
   "encrypted_content": "<hex>",
   "signature": "<128 hex>"
 }
 ```
 
 The AAD is canonical JSON of `message_id`, `group_id`, `sender_id`,
-`recipient_id`, and `created_at`. Content uses the same one-time ephemeral
+`recipient_id`, `created_at`, and `reply_to_message_id` when present. Content uses the same one-time ephemeral
 X25519/AES-GCM construction as direct messages, independently for each
 recipient. The signature is Ed25519 over
 `SHA-256(AAD || encrypted_content)`. Content is limited to 30 KiB before
@@ -818,7 +821,7 @@ over IPC.
 
 | Action | Params | Returns |
 |--------|--------|---------|
-| send | recipient_id, content | message_id |
+| send | recipient_id, content, reply_to_message_id? | message_id |
 | peers | - | List of peers with presence, unread counts, friend/blocked flags, network info. |
 | remove_peer | peer_id | Removed (only if not connected). |
 | friend_send | peer_id, note? | request_id |
@@ -844,7 +847,7 @@ over IPC.
 | groups | - | Named groups with cached active-member and unread counts. |
 | group_members | group_id | Cached active roster with online state. |
 | group_messages | group_id | Last 200 local messages/system events and per-recipient deliveries; marks read. |
-| group_send | group_id, content | message_id and per-recipient `sent`, `delivered`, `queued`, or `unavailable` status. |
+| group_send | group_id, content, reply_to_message_id? | message_id and per-recipient `sent`, `delivered`, `queued`, or `unavailable` status. |
 | group_leave | group_id | Sends/queues signed leave events, removes local room/group state, returns group_id. |
 | file_send | recipient_id, file_path | file_id — send a file to a direct peer. |
 | group_file_send | group_id, file_path | Per-recipient results — send a file to all active group members. |

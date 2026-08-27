@@ -40,6 +40,8 @@ export function ChatApp() {
   const [identity, setIdentity] = useState<{ peer_id: string; display_name: string }>()
   const [selection, setSelection] = useState<Conversation>()
   const [messages, setMessages] = useState<Message[]>([])
+  const [selectedMessage, setSelectedMessage] = useState<Message>()
+  const [replyTo, setReplyTo] = useState<Message>()
   const [unreadMessages, setUnreadMessages] = useState<Record<string, UnreadMessageState>>({})
   const [unreadNow, setUnreadNow] = useState(() => Date.now())
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -274,6 +276,8 @@ export function ChatApp() {
   }, [unreadMessages])
 
   useEffect(() => () => stopOutgoingTyping(), [selectionKey])
+
+  useEffect(() => { setSelectedMessage(undefined); setReplyTo(undefined) }, [selectionKey])
 
   useEffect(() => {
     if (dialog || editingName || scrollFocused || isSending) stopOutgoingTyping()
@@ -647,6 +651,22 @@ export function ChatApp() {
     if (key.ctrl && key.name === "n") { setNameDraft(identity?.display_name ?? ""); setEditingName(true); return }
     if (key.ctrl && key.name === "u") { void actions.openFilePicker(); return }
     if (key.ctrl && key.name === "d") { void actions.removeSelectedPeer(); return }
+    if (scrollFocused && (key.name === "up" || key.name === "down")) {
+      const chatMessages = conversationItems.filter((item): item is Extract<ConversationItem, { type: "message" }> => item.type === "message").map((item) => item.message)
+      if (!chatMessages.length) return
+      key.preventDefault()
+      const index = selectedMessage ? chatMessages.findIndex((message) => message.message_id === selectedMessage.message_id) : -1
+      const nextIndex = index === -1 ? (key.name === "up" ? chatMessages.length - 1 : 0) : Math.max(0, Math.min(chatMessages.length - 1, index + (key.name === "up" ? -1 : 1)))
+      setSelectedMessage(chatMessages[nextIndex])
+      return
+    }
+    if (scrollFocused && key.name === "r" && selectedMessage) {
+      key.preventDefault()
+      setReplyTo(selectedMessage)
+      setScrollFocused(false)
+      return
+    }
+    if (key.name === "escape" && replyTo) { setReplyTo(undefined); return }
     if ((key.name === "up" || key.name === "down") && key.ctrl && (peers.length || groups.length)) {
       const conversations: Conversation[] = [...peers.map((peer) => ({ kind: "peer" as const, id: peer.peer_id })), ...groups.map((group) => ({ kind: "group" as const, id: group.group_id }))]
       const index = conversations.findIndex((item) => item.kind === selection?.kind && item.id === selection.id)
@@ -700,7 +720,7 @@ export function ChatApp() {
   return (
     <box style={{ flexDirection: "row", width: "100%", height: "100%", minWidth: 0, padding: 1, gap: 1 }}>
        <Sidebar compact={compact} dialogOpen={Boolean(dialog)} editingName={editingName} groups={groups} groupMembers={groupMembers} identity={identity} mutedPeers={mutedPeers} nameDraft={nameDraft} peers={peers} selectedGroupId={selectedGroupId} selectedPeerId={selectedPeerId} sidebarWidth={sidebarWidth} typingConversationKeys={typingConversationKeys} setEditingName={setEditingName} setNameDraft={setNameDraft} setSelection={setSelection} setScrollFocused={setScrollFocused} saveDisplayName={() => void actions.saveDisplayName()} />
-       <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} limitedGroupMembers={limitedGroupMembers} capabilityGapMessage={capabilityGapMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedHasCapabilityGap={selectedHasCapabilityGap} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} unreadMessageStates={unreadMessages} unreadNow={unreadNow} markUnreadMessageVisible={markUnreadMessageVisible} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send() }} />
+       <ConversationPanel compact={compact} controlStatus={controlStatus} conversationItems={conversationItems} deliveredMessageIds={deliveredMessageIds} dialogOpen={Boolean(dialog)} draftLength={draftLength} drafts={drafts} flashingEnabled={flashingEnabled} blinkOn={blinkOn} composerHeight={composerHeight} composerRef={composerRef} groupMembers={groupMembers} identity={identity} limitedGroupMembers={limitedGroupMembers} capabilityGapMessage={capabilityGapMessage} isSending={isSending} limitColor={limitColor} mutedPeers={mutedPeers} peers={peers} selected={selected} selectedGroup={selectedGroup} selectedGroupId={selectedGroupId} selectedHasCapabilityGap={selectedHasCapabilityGap} selectedMessageId={selectedMessage?.message_id} replyTo={replyTo} selectionKey={selectionKey} typingNames={selectedTypingNames} editingName={editingName} scrollFocused={scrollFocused} scrollboxRef={scrollboxRef} status={status} width={width} unreadMessageStates={unreadMessages} unreadNow={unreadNow} markUnreadMessageVisible={markUnreadMessageVisible} setComposerHeight={setComposerHeight} setDraftLength={setDraftLength} setScrollFocused={setScrollFocused} selectMessage={(message) => { setSelectedMessage(message); setScrollFocused(true) }} onComposerChange={handleComposerChange} send={() => { stopOutgoingTyping(); void actions.send(replyTo?.message_id).then((sent) => { if (sent) setReplyTo(undefined) }) }} />
       {copyToast && (
         <box style={{ position: "absolute", right: 2, top: 1, border: true, borderColor: "#66dd88", backgroundColor: "#18251d", paddingLeft: 1, paddingRight: 1 }}>
           <text fg="#66dd88">Copied to clipboard</text>

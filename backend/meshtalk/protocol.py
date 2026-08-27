@@ -327,16 +327,19 @@ class MessagePayload:
     max_hops: int
     encrypted_content: bytes
     signature: bytes = b""
+    reply_to_message_id: str | None = None
 
     def associated_data(self) -> bytes:
-        """Return routing metadata authenticated by AES-GCM."""
         """Immutable routing metadata authenticated by AES-GCM and sender signature."""
-        return json.dumps({
+        data: dict[str, object] = {
             "message_id": self.message_id,
             "sender_id": self.sender_id,
             "recipient_id": self.recipient_id,
             "created_at": self.created_at,
-        }, separators=(",", ":"), sort_keys=True).encode()
+        }
+        if self.reply_to_message_id:
+            data["reply_to_message_id"] = self.reply_to_message_id
+        return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
     def signed_bytes(self) -> bytes:
         """Return SHA256 hash of authenticated content for signature verification."""
@@ -344,7 +347,7 @@ class MessagePayload:
 
     def encode(self) -> bytes:
         """Encode message to JSON bytes."""
-        return json.dumps({
+        data: dict[str, object] = {
             "message_id": self.message_id,
             "sender_id": self.sender_id,
             "recipient_id": self.recipient_id,
@@ -353,13 +356,16 @@ class MessagePayload:
             "max_hops": self.max_hops,
             "encrypted_content": self.encrypted_content.hex(),
             "signature": self.signature.hex(),
-        }).encode()
+        }
+        if self.reply_to_message_id:
+            data["reply_to_message_id"] = self.reply_to_message_id
+        return json.dumps(data).encode()
 
     @classmethod
     def decode(cls, data: bytes) -> MessagePayload:
         """Decode message from JSON bytes."""
         obj = json.loads(data)
-        return cls(
+        payload = cls(
             message_id=obj["message_id"],
             sender_id=obj["sender_id"],
             recipient_id=obj["recipient_id"],
@@ -368,7 +374,11 @@ class MessagePayload:
             max_hops=obj["max_hops"],
             encrypted_content=bytes.fromhex(obj["encrypted_content"]),
             signature=bytes.fromhex(obj.get("signature", "")),
+            reply_to_message_id=obj.get("reply_to_message_id"),
         )
+        if payload.reply_to_message_id is not None and not _valid_request_id(payload.reply_to_message_id):
+            raise ValueError("Invalid reply target")
+        return payload
 
 
 @dataclass
@@ -382,16 +392,20 @@ class GroupMessagePayload:
     created_at: float
     encrypted_content: bytes
     signature: bytes = b""
+    reply_to_message_id: str | None = None
 
     def associated_data(self) -> bytes:
         """Return routing metadata authenticated by AES-GCM."""
-        return json.dumps({
+        data: dict[str, object] = {
             "message_id": self.message_id,
             "group_id": self.group_id,
             "sender_id": self.sender_id,
             "recipient_id": self.recipient_id,
             "created_at": self.created_at,
-        }, separators=(",", ":"), sort_keys=True).encode()
+        }
+        if self.reply_to_message_id:
+            data["reply_to_message_id"] = self.reply_to_message_id
+        return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
     def signed_bytes(self) -> bytes:
         """Return SHA256 hash for signature verification."""
@@ -399,7 +413,7 @@ class GroupMessagePayload:
 
     def encode(self) -> bytes:
         """Encode group message to JSON bytes."""
-        return json.dumps({
+        data: dict[str, object] = {
             "message_id": self.message_id,
             "group_id": self.group_id,
             "sender_id": self.sender_id,
@@ -407,7 +421,10 @@ class GroupMessagePayload:
             "created_at": self.created_at,
             "encrypted_content": self.encrypted_content.hex(),
             "signature": self.signature.hex(),
-        }).encode()
+        }
+        if self.reply_to_message_id:
+            data["reply_to_message_id"] = self.reply_to_message_id
+        return json.dumps(data).encode()
 
     @classmethod
     def decode(cls, data: bytes) -> GroupMessagePayload:
@@ -421,6 +438,7 @@ class GroupMessagePayload:
             created_at=obj["created_at"],
             encrypted_content=bytes.fromhex(obj["encrypted_content"]),
             signature=bytes.fromhex(obj.get("signature", "")),
+            reply_to_message_id=obj.get("reply_to_message_id"),
         )
         if (
             not _valid_request_id(payload.message_id)
@@ -433,6 +451,7 @@ class GroupMessagePayload:
             or not math.isfinite(payload.created_at)
             or payload.created_at <= 0
             or len(payload.signature) != 64
+            or (payload.reply_to_message_id is not None and not _valid_request_id(payload.reply_to_message_id))
         ):
             raise ValueError("Invalid group message payload")
         return payload

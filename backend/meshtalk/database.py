@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS messages (
     queued INTEGER NOT NULL DEFAULT 0,
     failed INTEGER NOT NULL DEFAULT 0,
     read_at REAL,
-    received_at REAL
+    received_at REAL,
+    reply_to_message_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS outgoing_queue (
@@ -113,7 +114,8 @@ CREATE TABLE IF NOT EXISTS group_messages (
     content BLOB,
     created_at REAL NOT NULL,
     received_at REAL,
-    kind TEXT NOT NULL DEFAULT 'message'
+    kind TEXT NOT NULL DEFAULT 'message',
+    reply_to_message_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS group_deliveries (
@@ -183,6 +185,8 @@ class Database:
             await self._db.execute("ALTER TABLE messages ADD COLUMN failed INTEGER NOT NULL DEFAULT 0")
         if "received_at" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN received_at REAL")
+        if "reply_to_message_id" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT")
         if "expires_at" in message_columns:
             try:
                 await self._db.execute("ALTER TABLE messages DROP COLUMN expires_at")
@@ -223,6 +227,8 @@ class Database:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'message'")
             if gm_columns and "content" not in gm_columns:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN content BLOB")
+            if gm_columns and "reply_to_message_id" not in gm_columns:
+                await self._db.execute("ALTER TABLE group_messages ADD COLUMN reply_to_message_id TEXT")
         except Exception:
             pass
         # Ensure group_deliveries exists (older DBs may lack it entirely - SCHEMA already handled)
@@ -405,8 +411,8 @@ class Database:
         await self._db.execute(
             """INSERT OR IGNORE INTO messages
                 (message_id, sender_id, recipient_id, content, encrypted_content,
-                  created_at, hop_count, max_hops, read_at, blocked, queued, failed, received_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  created_at, hop_count, max_hops, read_at, blocked, queued, failed, received_at, reply_to_message_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 msg["message_id"],
                 msg["sender_id"],
@@ -421,6 +427,7 @@ class Database:
                 msg.get("queued", 0),
                 msg.get("failed", 0),
                 msg.get("received_at"),
+                msg.get("reply_to_message_id"),
             ),
         )
         await self._db.commit()
@@ -648,12 +655,13 @@ class Database:
         content = message.get("content")
         cursor = await self._db.execute(
             """INSERT OR IGNORE INTO group_messages
-               (message_id, group_id, sender_id, content, created_at, received_at, kind)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 message["message_id"], message["group_id"], message["sender_id"],
                 self._encrypt_content(content) if content is not None else None,
                 message["created_at"], message.get("received_at"), message.get("kind", "message"),
+                message.get("reply_to_message_id"),
             ),
         )
         await self._db.commit()
@@ -662,7 +670,7 @@ class Database:
     async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
         """Retrieve recent group messages with delivery status."""
         async with self._db.execute(
-            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind
+            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id
                FROM (SELECT rowid AS sequence, * FROM group_messages WHERE group_id = ? ORDER BY rowid DESC LIMIT ?)
                ORDER BY sequence ASC""",
             (group_id, limit),

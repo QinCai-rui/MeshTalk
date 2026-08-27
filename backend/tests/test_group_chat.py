@@ -92,6 +92,24 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
                     break
                 await asyncio.sleep(0.02)
 
+    async def test_group_reply_references_original_message(self):
+        original_id, _ = await self.groups[0].send_message(self.group_id, b"original")
+        for index in (1, 2):
+            await self.events[index].get()
+        reply_id, _ = await self.groups[1].send_message(self.group_id, b"reply", original_id)
+        received = []
+        async with asyncio.timeout(3):
+            while len(received) < 2:
+                for index in (0, 2):
+                    while not self.events[index].empty():
+                        event = self.events[index].get_nowait()
+                        if event["event"] == "group_message" and event["message_id"] == reply_id:
+                            received.append(event)
+                await asyncio.sleep(0.02)
+        self.assertEqual({event["reply_to_message_id"] for event in received}, {original_id})
+        messages = await self.databases[0].get_group_messages(self.group_id)
+        self.assertEqual(next(message for message in messages if message["message_id"] == reply_id)["reply_to_message_id"], original_id)
+
     async def test_join_event_waits_for_handshake_name_and_is_deduplicated(self):
         group = self.groups[0]
         peer_id = self.identities[1].peer_id
