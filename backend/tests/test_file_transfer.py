@@ -201,7 +201,7 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
 
         self.assertEqual((await sender_db.get_file_transfer(self.file_id))["status"], "completed")
-        self.assertEqual(events, [{"event": "file_delivered", "file_id": self.file_id, "recipient_id": self.recipient.peer_id}])
+        self.assertEqual(events, [{"event": "file_delivered", "file_id": self.file_id, "recipient_id": self.recipient.peer_id, "group_id": self.group_id}])
         await sender_db.close()
 
     async def test_missing_ack_after_completion_does_not_resend_file(self):

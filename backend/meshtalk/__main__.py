@@ -207,6 +207,7 @@ async def main(debug: bool = False) -> None:
     async def handle_peers(req: dict) -> dict:
         peers = await db.get_all_peers()
         unread_counts = await db.get_unread_counts(identity.peer_id)
+        interaction_times = await db.get_peer_interaction_times(identity.peer_id)
         friends = {peer["peer_id"] for peer in await db.get_friends()}
         blocked = {peer["peer_id"] for peer in await db.get_blocked_peers()}
         friend_requests: dict[str, str] = {}
@@ -225,6 +226,7 @@ async def main(debug: bool = False) -> None:
                 "peer_id": peer["peer_id"],
                 "display_name": peer["display_name"],
                 "last_seen": peer["last_seen"],
+                "last_interaction": interaction_times.get(peer["peer_id"], 0),
                 "is_online": int((connection := peer_manager.get_connected_peer(peer["peer_id"])) is not None),
                 "presence": "active" if connection and connection.tui_active else "away" if connection else "offline",
                 "unread_count": unread_counts.get(peer["peer_id"], 0),

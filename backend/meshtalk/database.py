@@ -340,6 +340,28 @@ class Database:
         ) as cursor:
             return {row["sender_id"]: row["unread_count"] async for row in cursor}
 
+    async def get_peer_interaction_times(self, local_peer_id: str) -> dict[str, float]:
+        """Return the latest direct message or completed file activity for each peer."""
+        async with self._db.execute(
+            """SELECT peer_id, MAX(interacted_at) AS last_interaction
+               FROM (
+                   SELECT CASE WHEN sender_id = ? THEN recipient_id ELSE sender_id END AS peer_id,
+                          CASE WHEN sender_id = ? THEN created_at ELSE COALESCE(received_at, created_at) END AS interacted_at
+                   FROM messages
+                   WHERE sender_id = ? OR recipient_id = ?
+                   UNION ALL
+                   SELECT CASE WHEN sender_id = ? THEN recipient_id ELSE sender_id END AS peer_id,
+                          COALESCE(completed_at, created_at) AS interacted_at
+                   FROM file_transfers
+                   WHERE group_id IS NULL
+                     AND status IN ('sent', 'completed')
+                     AND (sender_id = ? OR recipient_id = ?)
+               )
+               GROUP BY peer_id""",
+            (local_peer_id, local_peer_id, local_peer_id, local_peer_id, local_peer_id, local_peer_id, local_peer_id),
+        ) as cursor:
+            return {row["peer_id"]: row["last_interaction"] async for row in cursor}
+
     async def get_conversation(
         self, local_peer_id: str, remote_peer_id: str, limit: int = 200
     ) -> list[dict]:
