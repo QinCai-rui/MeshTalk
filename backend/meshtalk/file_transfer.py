@@ -184,7 +184,7 @@ class FileTransferManager:
             await self.db.add_to_outqueue(recipient_id, PacketType.FILE_OFFER.value, encoded_offer, message_id=file_id, group_id=group_id)
             # We will re-read file on flush; mark queued
             await self.db.update_file_transfer(file_id, status="queued")
-            self._emit({"event": "file_queued", "file_id": file_id, "recipient_id": recipient_id, "filename": filename})
+            self._emit({"event": "file_queued", "file_id": file_id, "recipient_id": recipient_id, "filename": filename, "group_id": group_id})
             return file_id
         # Online: send offer then chunks
         await self.db.update_file_transfer(file_id, status="transferring")
@@ -236,13 +236,13 @@ class FileTransferManager:
                         logger.warning("File %s chunk %d failed, queued remainder: %s", file_id, idx, exc)
                         return
                     # Emit progress
-                    self._emit({"event": "file_progress", "file_id": file_id, "chunk_index": idx, "total_chunks": total_chunks, "direction": "outbound"})
+                    self._emit({"event": "file_progress", "file_id": file_id, "chunk_index": idx, "total_chunks": total_chunks, "direction": "outbound", "group_id": group_id})
                     # Small yield to avoid blocking
                     if idx % 10 == 0:
                         import asyncio
                         await asyncio.sleep(0)
             await self.db.update_file_transfer(file_id, status="sent")
-            self._emit({"event": "file_sent", "file_id": file_id, "recipient_id": recipient_id, "filename": Path(path).name})
+            self._emit({"event": "file_sent", "file_id": file_id, "recipient_id": recipient_id, "filename": Path(path).name, "group_id": group_id})
         except OSError as exc:
             await self.db.update_file_transfer(file_id, status="failed")
             raise ValueError(f"Failed to read file: {exc}") from exc
@@ -407,7 +407,7 @@ class FileTransferManager:
             "created_at": offer.created_at,
             "received_chunks": 0,
         })
-        self._emit({"event": "file_offer", "file_id": offer.file_id, "filename": safe_name, "file_size": offer.file_size, "sender_id": peer.peer_id})
+        self._emit({"event": "file_offer", "file_id": offer.file_id, "filename": safe_name, "file_size": offer.file_size, "sender_id": peer.peer_id, "group_id": offer.group_id})
         logger.info("Accepted file offer %s (%s, %d bytes, %d chunks) from %s", offer.file_id, safe_name, offer.file_size, offer.total_chunks, peer.peer_id)
         await self._store_early_chunks(offer.file_id)
 
@@ -490,7 +490,7 @@ class FileTransferManager:
             logger.warning("Failed to write chunk %d for %s: %s", chunk.chunk_index, chunk.file_id, exc)
             raise
         received_count = await self.db.record_file_chunk_received(chunk.file_id, chunk.chunk_index)
-        self._emit({"event": "file_progress", "file_id": chunk.file_id, "chunk_index": chunk.chunk_index, "total_chunks": chunk.total_chunks, "direction": "inbound", "received": received_count})
+        self._emit({"event": "file_progress", "file_id": chunk.file_id, "chunk_index": chunk.chunk_index, "total_chunks": chunk.total_chunks, "direction": "inbound", "received": received_count, "group_id": transfer["group_id"]})
         # Check completion
         if received_count == transfer["total_chunks"]:
             await self._complete_inbound_transfer(peer, transfer)
@@ -501,7 +501,7 @@ class FileTransferManager:
             raise ValueError("Received file has an invalid size")
         await self.db.complete_file_transfer(transfer["file_id"], time.time())
         await self._send_completion_ack(peer, transfer["file_id"])
-        self._emit({"event": "file_completed", "file_id": transfer["file_id"], "filename": transfer["filename"], "file_path": str(file_path), "file_size": transfer["file_size"], "sender_id": peer.peer_id})
+        self._emit({"event": "file_completed", "file_id": transfer["file_id"], "filename": transfer["filename"], "file_path": str(file_path), "file_size": transfer["file_size"], "sender_id": peer.peer_id, "group_id": transfer["group_id"]})
         logger.info("Completed file %s from %s -> %s", transfer["file_id"], peer.peer_id, file_path)
         try:
             os.chmod(file_path, 0o600)
@@ -549,7 +549,7 @@ class FileTransferManager:
             return
         if ack.status == "completed":
             await self.db.update_file_transfer(ack.file_id, status="completed", completed_at=time.time())
-            self._emit({"event": "file_delivered", "file_id": ack.file_id, "recipient_id": peer.peer_id})
+            self._emit({"event": "file_delivered", "file_id": ack.file_id, "recipient_id": peer.peer_id, "group_id": transfer["group_id"]})
             logger.info("File %s delivered to %s", ack.file_id, peer.peer_id)
         elif ack.status == "missing":
             if any(end >= transfer["total_chunks"] for _, end in ack.missing_ranges):

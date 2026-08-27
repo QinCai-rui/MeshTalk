@@ -471,7 +471,7 @@ export function ChatApp() {
     }
     if (event.event === "file_offer") {
       const filename = event.filename as string
-      updatePeerInteraction(event.sender_id as string | undefined)
+      if (!event.group_id) updatePeerInteraction(event.sender_id as string | undefined)
       const sender = peers.find((p) => p.peer_id === event.sender_id)?.display_name ?? String(event.sender_id).slice(0, 8)
       actions.showStatus(`Incoming file: ${filename} (${event.file_size} bytes) from ${sender}`)
       void notify(notificationPreferences, "file_offers", renderer, `Incoming file ${filename} from ${sender}`)
@@ -486,7 +486,7 @@ export function ChatApp() {
       const filename = event.filename as string
       const fpath = event.file_path as string
       const fileId = event.file_id as string
-      updatePeerInteraction(event.sender_id as string | undefined)
+      if (!event.group_id) updatePeerInteraction(event.sender_id as string | undefined)
       actions.showStatus(`File received: ${filename} -> ${fpath}`)
       void notify(notificationPreferences, "file_completed", renderer, `File received: ${filename}`)
       setFileTransfers((current) => current.map((file) => file.file_id === fileId ? { ...file, status: "completed", file_path: fpath, completed_at: Date.now() / 1000 } : file))
@@ -495,7 +495,7 @@ export function ChatApp() {
     }
     if (event.event === "file_sent" || event.event === "file_delivered" || event.event === "file_queued") {
       const name = (event.file_id as string)?.slice(0, 8) ?? "file"
-      updatePeerInteraction(event.recipient_id as string | undefined)
+      if (!event.group_id) updatePeerInteraction(event.recipient_id as string | undefined)
       if (event.event === "file_sent") actions.showStatus(`File ${name} sent.`)
       else if (event.event === "file_delivered") actions.showStatus(`File ${name} delivered.`)
       else actions.showStatus(`File ${name} queued for offline peer.`)
