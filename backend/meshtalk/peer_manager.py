@@ -74,7 +74,7 @@ class PeerConnection:
         self.signing_public_key: bytes | None = None
         self.encryption_public_key: bytes | None = None
         self.capabilities: list[str] = []
-        self.remote_capabilities: list[str] = []
+        self.remote_capabilities: list[str] | None = None
         self.peer_missing_capabilities: list[str] = []
         self.local_missing_capabilities: list[str] = []
         self.last_seen = time.time()
@@ -95,7 +95,7 @@ class PeerConnection:
         """Snapshot of the negotiated protocol state for IPC/debug consumers."""
         return {
             "capabilities": list(self.capabilities),
-            "remote_capabilities": list(self.remote_capabilities),
+            "remote_capabilities": list(self.remote_capabilities or []),
             "peer_missing_capabilities": list(self.peer_missing_capabilities),
             "local_missing_capabilities": list(self.local_missing_capabilities),
             "capability_gap": self.has_capability_gap,

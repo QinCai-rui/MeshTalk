@@ -564,6 +564,7 @@ class Database:
 
     async def delete_message_locally(self, message_id: str, group_id: str | None = None) -> bool:
         """Remove a message and its local history row without notifying peers."""
+        await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (message_id,))
         if group_id is None:
             cursor = await self._db.execute(
                 "DELETE FROM messages WHERE message_id = ?",

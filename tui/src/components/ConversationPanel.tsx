@@ -107,7 +107,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
   useEffect(() => {
     if (!selectedReplyTargetId) return
     scrollboxRef.current?.scrollChildIntoView(selectedReplyTargetId)
-  }, [selectedReplyTargetId, conversationItems])
+  }, [selectedReplyTargetId])
 
   return <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
     {controlStatus.control_url && !controlStatus.connected ? <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}><MarqueeText width={width - 4} fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"} text={`Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting (${controlStatus.reconnect_attempts}).`} /></box> : null}

@@ -688,7 +688,7 @@ export function ChatApp() {
     if (key.ctrl && key.name === "n") { setNameDraft(identity?.display_name ?? ""); setEditingName(true); return }
     if (key.ctrl && key.name === "u") { void actions.openFilePicker(); return }
     if (key.ctrl && key.name === "d") { void actions.removeSelectedPeer(); return }
-    if (scrollFocused && (key.name === "up" || key.name === "down")) {
+    if (scrollFocused && !key.ctrl && (key.name === "up" || key.name === "down")) {
       const replyTargets = conversationItems.map((item): ReplyTarget => item.type === "message"
         ? { id: item.message.message_id, senderId: item.message.sender_id, label: item.message.content, groupId: item.message.group_id, kind: "message" }
         : { id: item.file.file_id, senderId: item.file.sender_id, label: `Attachment: ${item.file.filename}`, groupId: item.file.group_id ?? undefined, kind: "file" })

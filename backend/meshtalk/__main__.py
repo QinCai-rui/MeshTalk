@@ -245,7 +245,7 @@ async def main(debug: bool = False) -> None:
                     rendezvous.connected,
                 ),
                 "capabilities": list(connection.capabilities) if connection else [],
-                "remote_capabilities": list(connection.remote_capabilities) if connection else [],
+                "remote_capabilities": list(connection.remote_capabilities or []) if connection else [],
                 "peer_missing_capabilities": list(connection.peer_missing_capabilities) if connection else [],
                 "local_missing_capabilities": list(connection.local_missing_capabilities) if connection else [],
                 "capability_gap": connection.has_capability_gap if connection else False,
@@ -427,7 +427,7 @@ async def main(debug: bool = False) -> None:
                         rendezvous.connected,
                     ),
                     "capabilities": list(peer.capabilities),
-                    "remote_capabilities": list(peer.remote_capabilities),
+                    "remote_capabilities": list(peer.remote_capabilities or []),
                     "peer_missing_capabilities": list(peer.peer_missing_capabilities),
                     "local_missing_capabilities": list(peer.local_missing_capabilities),
                     "capability_gap": peer.has_capability_gap,
@@ -626,8 +626,9 @@ async def main(debug: bool = False) -> None:
             return {"error": "message_id required"}
         if group_id is not None and not isinstance(group_id, str):
             return {"error": "group_id must be a string"}
-        transfer = await db.delete_file_transfer_locally(message_id) if req.get("file") else None
-        if req.get("file"):
+        is_file = req.get("file") is True
+        transfer = await db.delete_file_transfer_locally(message_id) if is_file else None
+        if is_file:
             if transfer is None:
                 return {"error": "attachment not found"}
             if transfer["direction"] == "inbound" and transfer.get("file_path"):
@@ -715,7 +716,7 @@ async def main(debug: bool = False) -> None:
                 "display_name": peer["display_name"],
                 "is_online": connection is not None,
                 "capabilities": list(connection.capabilities) if connection else [],
-                "remote_capabilities": list(connection.remote_capabilities) if connection else [],
+                "remote_capabilities": list(connection.remote_capabilities or []) if connection else [],
                 "peer_missing_capabilities": list(connection.peer_missing_capabilities) if connection else [],
                 "local_missing_capabilities": list(connection.local_missing_capabilities) if connection else [],
                 **info,
