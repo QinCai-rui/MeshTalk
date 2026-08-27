@@ -190,7 +190,15 @@ async function scheduleWindowsReplacement(extracted: string, installDir: string)
   lines.push(`rmdir /s /q "${staging}"`, `if not exist "${RESTART_PATH}" exit /b 0`, `set /p restartPath=<"${RESTART_PATH}"`, `del "${RESTART_PATH}"`, "start \"\" /b \"%restartPath%\"", "exit /b 0", ":failed", "set /a attempts+=1", "if %attempts% LSS 60 goto retry", "echo MeshTalk update could not replace running files.", "exit /b 1")
   const script = join(staging, "replace.cmd")
   writeFileSync(script, lines.join("\r\n"))
-  Bun.spawn(["cmd.exe", "/d", "/c", "start", "", "/b", script], { stdin: "ignore", stdout: "ignore", stderr: "ignore" })
+  // The batch file must outlive the TUI and launcher that hold these executables open.
+  const replacement = Bun.spawn(["cmd.exe", "/d", "/c", script], {
+    detached: true,
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+    windowsHide: true,
+  })
+  replacement.unref()
 }
 
 export async function installRelease(release: Release, installDir: string, onProgress?: (progress: UpdateProgress) => void): Promise<void> {
