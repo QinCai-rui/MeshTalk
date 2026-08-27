@@ -35,6 +35,8 @@ MAX_FRIEND_NOTE_LENGTH = 1024
 
 
 class FriendManager:
+    """Manages friend requests, friendships, and blocking relationships between peers."""
+
     def __init__(
         self,
         identity: Identity,
@@ -45,6 +47,7 @@ class FriendManager:
         on_friend_cancelled: Callable[[dict], Awaitable[None]] | None = None,
         on_message_blocked: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
+        """Initialize friend manager with identity, peer manager, and event callbacks."""
         self.identity, self.peer_manager, self.db = identity, peer_manager, db
         self.on_friend_request = on_friend_request
         self.on_friend_response = on_friend_response
@@ -52,9 +55,11 @@ class FriendManager:
         self.on_message_blocked = on_message_blocked
 
     async def is_friend(self, peer_id: str) -> bool:
+        """Check if a peer is on the local friend list."""
         return await self.db.is_friend(peer_id)
 
     async def send_friend_request(self, peer_id: str, note: str = "") -> str:
+        """Send a friend request to a peer with an optional note."""
         note = (note or "").strip()
         if len(note) > MAX_FRIEND_NOTE_LENGTH:
             raise ValueError("Friend request note is too long")
@@ -94,6 +99,7 @@ class FriendManager:
         return payload.request_id
 
     async def respond_to_friend_request(self, request_id: str, accept: bool) -> None:
+        """Accept or decline a pending friend request."""
         request = await self.db.get_friend_request(request_id)
         if request is None or request["direction"] != "incoming" or request["status"] != "pending":
             raise ValueError("Unknown or already answered friend request")
@@ -130,6 +136,7 @@ class FriendManager:
             logger.info("Queued friend request response %s to %s (offline)", request_id, requester_id)
 
     async def cancel_friend_request(self, request_id: str) -> None:
+        """Cancel a pending outgoing friend request."""
         request = await self.db.get_friend_request(request_id)
         if request is None or request["direction"] != "outgoing" or request["status"] != "pending":
             raise ValueError("Unknown or already answered friend request")
@@ -148,12 +155,14 @@ class FriendManager:
             logger.info("Queued friend request cancel %s to %s (offline)", request_id, recipient_id)
 
     async def unfriend(self, peer_id: str) -> None:
+        """Remove a peer from the friend list."""
         if not await self.is_friend(peer_id):
             raise ValueError("This peer is not your friend")
         await self.db.remove_friend(peer_id)
         logger.info("Removed %s as a friend", peer_id)
 
     async def block_peer(self, peer_id: str) -> None:
+        """Block a peer from sending messages and friend requests."""
         if peer_id == self.identity.peer_id:
             raise ValueError("You cannot block yourself")
         if await self.db.is_peer_blocked(peer_id):
@@ -172,18 +181,22 @@ class FriendManager:
         logger.info("Blocked %s", peer_id)
 
     async def unblock_peer(self, peer_id: str) -> None:
+        """Unblock a previously blocked peer."""
         if not await self.db.is_peer_blocked(peer_id):
             raise ValueError("This peer is not blocked")
         await self.db.unblock_peer(peer_id)
         logger.info("Unblocked %s", peer_id)
 
     async def is_peer_blocked(self, peer_id: str) -> bool:
+        """Check if a peer is blocked."""
         return await self.db.is_peer_blocked(peer_id)
 
     async def get_blocked_peers(self) -> list[dict]:
+        """Retrieve the list of all blocked peers."""
         return await self.db.get_blocked_peers()
 
     async def handle_packet(self, peer: PeerConnection, packet: Packet) -> None:
+        """Handle friend-related packets (requests, responses, cancellations, block notices)."""
         if packet.type == PacketType.FRIEND_REQUEST:
             await self._handle_friend_request(peer, FriendRequestPayload.decode(packet.payload))
         elif packet.type == PacketType.FRIEND_REQUEST_RESPONSE:

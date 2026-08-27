@@ -98,6 +98,8 @@ def validate_capabilities(capabilities: object) -> list[str]:
 
 
 class PacketType(enum.IntEnum):
+    """Enumeration of all packet types in the MeshTalk protocol."""
+
     HANDSHAKE = 0x01
     HANDSHAKE_ACK = 0x02
     MESSAGE = 0x03
@@ -139,15 +141,18 @@ PACKET_CAPABILITIES = {
 
 
 def capability_for_packet(packet_type: PacketType) -> str | None:
+    """Return the capability required to send/receive a packet type, or None if no capability needed."""
     return PACKET_CAPABILITIES.get(packet_type)
 
 
 @dataclass
 class Packet:
+    """A MeshTalk protocol packet with type and payload."""
     type: PacketType
     payload: bytes = field(default=b"")
 
     def encode(self) -> bytes:
+        """Encode the packet to wire format with length header."""
         length = len(self.payload)
         if length > MAX_PACKET_SIZE:
             raise ValueError(f"Payload too large: {length} > {MAX_PACKET_SIZE}")
@@ -156,6 +161,7 @@ class Packet:
 
     @classmethod
     def decode_header(cls, data: bytes) -> tuple[int, PacketType]:
+        """Decode packet header, returning payload length and packet type."""
         if len(data) < HEADER_SIZE:
             raise ValueError(f"Header too short: {len(data)} < {HEADER_SIZE}")
         length, ptype = struct.unpack(HEADER_FORMAT, data)
@@ -165,6 +171,7 @@ class Packet:
 
     @classmethod
     def decode(cls, header_data: bytes, payload: bytes) -> Packet:
+        """Decode a complete packet from header and payload."""
         length, ptype = cls.decode_header(header_data)
         if len(payload) != length:
             raise ValueError(f"Payload length mismatch: {len(payload)} != {length}")
@@ -173,10 +180,13 @@ class Packet:
 
 @dataclass
 class DiscoveryPacket:
+    """LAN discovery announcement containing ephemeral ID and TCP port."""
+
     discovery_id: str
     tcp_port: int
 
     def encode(self) -> bytes:
+        """Encode discovery packet to JSON bytes."""
         import json
         return json.dumps({
             "discovery_id": self.discovery_id,
@@ -185,6 +195,7 @@ class DiscoveryPacket:
 
     @classmethod
     def decode(cls, data: bytes) -> DiscoveryPacket:
+        """Decode and validate a discovery packet from JSON bytes."""
         import json
         obj = json.loads(data)
         if not isinstance(obj, dict):
@@ -204,6 +215,8 @@ class DiscoveryPacket:
 
 @dataclass
 class HandshakePayload:
+    """Initial handshake containing peer identity, keys, and capabilities."""
+
     peer_id: str
     signing_public_key: bytes
     encryption_public_key: bytes
@@ -214,6 +227,7 @@ class HandshakePayload:
     capabilities: list[str] = field(default_factory=lambda: list(DEFAULT_CAPABILITIES))
 
     def signed_bytes(self) -> bytes:
+        """Return canonical bytes that are signed by the peer's private key."""
         data = {
             "peer_id": self.peer_id,
             "signing_public_key": self.signing_public_key.hex(),
@@ -226,6 +240,7 @@ class HandshakePayload:
         return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
+        """Encode handshake to JSON bytes."""
         return json.dumps({
             "peer_id": self.peer_id,
             "signing_public_key": self.signing_public_key.hex(),
@@ -239,6 +254,7 @@ class HandshakePayload:
 
     @classmethod
     def decode(cls, data: bytes) -> HandshakePayload:
+        """Decode and validate handshake from JSON bytes."""
         obj = json.loads(data)
         capabilities = validate_capabilities(obj.get("capabilities"))
         payload = cls(
@@ -268,6 +284,7 @@ class ProfilePayload:
     signature: bytes
 
     def signed_bytes(self) -> bytes:
+        """Return canonical bytes for signature verification."""
         return json.dumps({
             "peer_id": self.peer_id,
             "display_name": self.display_name,
@@ -275,6 +292,7 @@ class ProfilePayload:
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
+        """Encode profile to JSON bytes."""
         return json.dumps({
             "peer_id": self.peer_id,
             "display_name": self.display_name,
@@ -284,6 +302,7 @@ class ProfilePayload:
 
     @classmethod
     def decode(cls, data: bytes) -> ProfilePayload:
+        """Decode profile from JSON bytes."""
         obj = json.loads(data)
         payload = cls(
             peer_id=obj["peer_id"],
@@ -298,6 +317,8 @@ class ProfilePayload:
 
 @dataclass
 class MessagePayload:
+    """Direct message with routing metadata and encrypted content."""
+
     message_id: str
     sender_id: str
     recipient_id: str
@@ -308,6 +329,7 @@ class MessagePayload:
     signature: bytes = b""
 
     def associated_data(self) -> bytes:
+        """Return routing metadata authenticated by AES-GCM."""
         """Immutable routing metadata authenticated by AES-GCM and sender signature."""
         return json.dumps({
             "message_id": self.message_id,
@@ -317,9 +339,11 @@ class MessagePayload:
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def signed_bytes(self) -> bytes:
+        """Return SHA256 hash of authenticated content for signature verification."""
         return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
 
     def encode(self) -> bytes:
+        """Encode message to JSON bytes."""
         return json.dumps({
             "message_id": self.message_id,
             "sender_id": self.sender_id,
@@ -333,6 +357,7 @@ class MessagePayload:
 
     @classmethod
     def decode(cls, data: bytes) -> MessagePayload:
+        """Decode message from JSON bytes."""
         obj = json.loads(data)
         return cls(
             message_id=obj["message_id"],
@@ -348,6 +373,8 @@ class MessagePayload:
 
 @dataclass
 class GroupMessagePayload:
+    """Group chat message with routing metadata and encrypted content."""
+
     message_id: str
     group_id: str
     sender_id: str
@@ -357,6 +384,7 @@ class GroupMessagePayload:
     signature: bytes = b""
 
     def associated_data(self) -> bytes:
+        """Return routing metadata authenticated by AES-GCM."""
         return json.dumps({
             "message_id": self.message_id,
             "group_id": self.group_id,
@@ -366,9 +394,11 @@ class GroupMessagePayload:
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def signed_bytes(self) -> bytes:
+        """Return SHA256 hash for signature verification."""
         return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
 
     def encode(self) -> bytes:
+        """Encode group message to JSON bytes."""
         return json.dumps({
             "message_id": self.message_id,
             "group_id": self.group_id,
@@ -381,6 +411,7 @@ class GroupMessagePayload:
 
     @classmethod
     def decode(cls, data: bytes) -> GroupMessagePayload:
+        """Decode and validate group message from JSON bytes."""
         obj = json.loads(data)
         payload = cls(
             message_id=obj["message_id"],
@@ -418,6 +449,7 @@ class TypingPayload:
     signature: bytes = b""
 
     def associated_data(self) -> bytes:
+        """Return routing metadata authenticated by AES-GCM."""
         return json.dumps({
             "sender_id": self.sender_id,
             "recipient_id": self.recipient_id,
@@ -425,9 +457,11 @@ class TypingPayload:
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def signed_bytes(self) -> bytes:
+        """Return SHA256 hash for signature verification."""
         return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
 
     def encode(self) -> bytes:
+        """Encode typing indicator to JSON bytes."""
         return json.dumps({
             "sender_id": self.sender_id,
             "recipient_id": self.recipient_id,
@@ -438,6 +472,7 @@ class TypingPayload:
 
     @classmethod
     def decode(cls, data: bytes) -> TypingPayload:
+        """Decode and validate typing indicator from JSON bytes."""
         obj = json.loads(data)
         payload = cls(
             sender_id=obj["sender_id"],
@@ -461,12 +496,15 @@ class TypingPayload:
 
 @dataclass
 class GroupAckPayload:
+    """Acknowledgement of group message receipt."""
+
     message_id: str
     group_id: str
     recipient_id: str
     signature: bytes = b""
 
     def signed_bytes(self) -> bytes:
+        """Return canonical bytes for signature verification."""
         return json.dumps({
             "message_id": self.message_id,
             "group_id": self.group_id,
@@ -474,6 +512,7 @@ class GroupAckPayload:
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
+        """Encode group acknowledgement to JSON bytes."""
         return json.dumps({
             "message_id": self.message_id,
             "group_id": self.group_id,
@@ -483,6 +522,7 @@ class GroupAckPayload:
 
     @classmethod
     def decode(cls, data: bytes) -> GroupAckPayload:
+        """Decode and validate group acknowledgement from JSON bytes."""
         obj = json.loads(data)
         payload = cls(
             message_id=obj["message_id"],
@@ -502,6 +542,8 @@ class GroupAckPayload:
 
 @dataclass
 class GroupLeavePayload:
+    """Announcement that a peer has left a group."""
+
     event_id: str
     group_id: str
     peer_id: str
@@ -509,6 +551,7 @@ class GroupLeavePayload:
     signature: bytes = b""
 
     def signed_bytes(self) -> bytes:
+        """Return canonical bytes for signature verification."""
         return json.dumps({
             "event_id": self.event_id,
             "group_id": self.group_id,
@@ -517,6 +560,7 @@ class GroupLeavePayload:
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
+        """Encode group leave event to JSON bytes."""
         return json.dumps({
             "event_id": self.event_id,
             "group_id": self.group_id,
@@ -527,6 +571,7 @@ class GroupLeavePayload:
 
     @classmethod
     def decode(cls, data: bytes) -> GroupLeavePayload:
+        """Decode and validate group leave event from JSON bytes."""
         obj = json.loads(data)
         payload = cls(
             event_id=obj["event_id"],
@@ -569,6 +614,7 @@ class FriendRequestPayload:
     signature: bytes
 
     def signed_bytes(self) -> bytes:
+        """Return canonical bytes for signature verification."""
         return json.dumps({
             "request_id": self.request_id,
             "sender_id": self.sender_id,
@@ -577,6 +623,7 @@ class FriendRequestPayload:
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
+        """Encode friend request to JSON bytes."""
         return json.dumps({
             "request_id": self.request_id,
             "sender_id": self.sender_id,
@@ -587,6 +634,7 @@ class FriendRequestPayload:
 
     @classmethod
     def decode(cls, data: bytes) -> FriendRequestPayload:
+        """Decode and validate friend request from JSON bytes."""
         obj = json.loads(data)
         payload = cls(
             request_id=obj["request_id"],
@@ -619,6 +667,7 @@ class FriendRequestResponsePayload:
     signature: bytes
 
     def signed_bytes(self) -> bytes:
+        """Return canonical bytes for signature verification."""
         return json.dumps({
             "request_id": self.request_id,
             "responder_id": self.responder_id,
@@ -626,6 +675,7 @@ class FriendRequestResponsePayload:
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
+        """Encode friend request response to JSON bytes."""
         return json.dumps({
             "request_id": self.request_id,
             "responder_id": self.responder_id,
@@ -635,6 +685,7 @@ class FriendRequestResponsePayload:
 
     @classmethod
     def decode(cls, data: bytes) -> FriendRequestResponsePayload:
+        """Decode and validate friend request response from JSON bytes."""
         obj = json.loads(data)
         payload = cls(
             request_id=obj["request_id"],
@@ -662,12 +713,14 @@ class MessageBlockedPayload:
     signature: bytes
 
     def signed_bytes(self) -> bytes:
+        """Return canonical bytes for signature verification."""
         return json.dumps({
             "message_id": self.message_id,
             "blocked_by": self.blocked_by,
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
+        """Encode block notice to JSON bytes."""
         return json.dumps({
             "message_id": self.message_id,
             "blocked_by": self.blocked_by,
@@ -676,6 +729,7 @@ class MessageBlockedPayload:
 
     @classmethod
     def decode(cls, data: bytes) -> MessageBlockedPayload:
+        """Decode and validate block notice from JSON bytes."""
         obj = json.loads(data)
         payload = cls(
             message_id=obj["message_id"],
@@ -700,12 +754,14 @@ class FriendRequestCancelledPayload:
     signature: bytes
 
     def signed_bytes(self) -> bytes:
+        """Return canonical bytes for signature verification."""
         return json.dumps({
             "request_id": self.request_id,
             "sender_id": self.sender_id,
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
+        """Encode cancellation notice to JSON bytes."""
         return json.dumps({
             "request_id": self.request_id,
             "sender_id": self.sender_id,
@@ -714,6 +770,7 @@ class FriendRequestCancelledPayload:
 
     @classmethod
     def decode(cls, data: bytes) -> FriendRequestCancelledPayload:
+        """Decode and validate cancellation notice from JSON bytes."""
         obj = json.loads(data)
         payload = cls(
             request_id=obj["request_id"],
@@ -781,6 +838,8 @@ def sanitize_filename(name: str) -> str:
 
 @dataclass
 class FileOfferPayload:
+    """File transfer offer containing metadata about the file."""
+
     file_id: str
     filename: str
     file_size: int
@@ -793,6 +852,7 @@ class FileOfferPayload:
     group_id: str | None = None
 
     def signed_bytes(self) -> bytes:
+        """Return canonical bytes for signature verification."""
         data: dict[str, object] = {
             "file_id": self.file_id,
             "filename": self.filename,
@@ -808,6 +868,7 @@ class FileOfferPayload:
         return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
+        """Encode file offer to JSON bytes."""
         payload: dict[str, object] = {
             "file_id": self.file_id,
             "filename": self.filename,
@@ -825,6 +886,7 @@ class FileOfferPayload:
 
     @classmethod
     def decode(cls, data: bytes) -> FileOfferPayload:
+        """Decode and validate file offer from JSON bytes."""
         obj = json.loads(data)
         payload = cls(
             file_id=obj["file_id"],
@@ -862,6 +924,8 @@ class FileOfferPayload:
 
 @dataclass
 class FileChunkPayload:
+    """A single chunk of a file transfer with encrypted content."""
+
     file_id: str
     chunk_index: int
     total_chunks: int
@@ -872,6 +936,7 @@ class FileChunkPayload:
     group_id: str | None = None
 
     def associated_data(self) -> bytes:
+        """Return file chunk metadata authenticated by AES-GCM."""
         data: dict[str, object] = {
             "file_id": self.file_id,
             "chunk_index": self.chunk_index,
@@ -883,9 +948,11 @@ class FileChunkPayload:
         return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
     def signed_bytes(self) -> bytes:
+        """Return SHA256 hash for signature verification."""
         return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
 
     def encode(self) -> bytes:
+        """Encode file chunk to JSON bytes."""
         payload: dict[str, object] = {
             "file_id": self.file_id,
             "chunk_index": self.chunk_index,
@@ -901,6 +968,7 @@ class FileChunkPayload:
 
     @classmethod
     def decode(cls, data: bytes) -> FileChunkPayload:
+        """Decode and validate file chunk from JSON bytes."""
         obj = json.loads(data)
         payload = cls(
             file_id=obj["file_id"],
@@ -933,6 +1001,8 @@ class FileChunkPayload:
 
 @dataclass
 class FileAckPayload:
+    """Acknowledgement of file transfer progress or completion."""
+
     file_id: str
     recipient_id: str
     status: str
@@ -940,6 +1010,7 @@ class FileAckPayload:
     missing_ranges: list[tuple[int, int]] = field(default_factory=list)
 
     def signed_bytes(self) -> bytes:
+        """Return canonical bytes for signature verification."""
         data: dict[str, object] = {
             "file_id": self.file_id,
             "recipient_id": self.recipient_id,
@@ -950,6 +1021,7 @@ class FileAckPayload:
         return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
+        """Encode file acknowledgement to JSON bytes."""
         payload: dict[str, object] = {
             "file_id": self.file_id,
             "recipient_id": self.recipient_id,
@@ -962,6 +1034,7 @@ class FileAckPayload:
 
     @classmethod
     def decode(cls, data: bytes) -> FileAckPayload:
+        """Decode and validate file acknowledgement from JSON bytes."""
         obj = json.loads(data)
         raw_ranges = obj.get("missing_ranges", [])
         if not isinstance(raw_ranges, list):

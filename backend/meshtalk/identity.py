@@ -39,6 +39,7 @@ class Identity:
 
     @classmethod
     def generate(cls, display_name: str = "Anonymous") -> Identity:
+        """Generate a new identity with fresh signing and encryption keys."""
         signing_private_key = Ed25519PrivateKey.generate()
         peer_id = hashlib.sha256(_raw_public(signing_private_key.public_key())).hexdigest()
         return cls(signing_private_key, X25519PrivateKey.generate(), peer_id, display_name)
@@ -49,12 +50,15 @@ class Identity:
         return self.encryption_private_key
 
     def signing_public_key_bytes(self) -> bytes:
+        """Return the Ed25519 signing public key as raw bytes."""
         return _raw_public(self.signing_private_key.public_key())
 
     def encryption_public_key_bytes(self) -> bytes:
+        """Return the X25519 encryption public key as raw bytes."""
         return _raw_public(self.encryption_private_key.public_key())
 
     def public_key_bytes(self) -> bytes:
+        """Return the encryption public key (alias for encryption_public_key_bytes)."""
         return self.encryption_public_key_bytes()
 
     def storage_key(self) -> bytes:
@@ -81,6 +85,7 @@ class Identity:
         return display_name
 
     def save(self, path: Path) -> None:
+        """Save the identity to disk as an encrypted JSON file."""
         path.mkdir(parents=True, exist_ok=True)
         key_path = path / "identity.json"
         key_path.write_text(json.dumps({
@@ -94,6 +99,7 @@ class Identity:
 
     @classmethod
     def load(cls, path: Path) -> Identity | None:
+        """Load an identity from disk, or return None if not found."""
         key_path = path / "identity.json"
         if not key_path.exists():
             return None
@@ -117,6 +123,7 @@ class Identity:
 
     @classmethod
     def load_or_generate(cls, path: Path, display_name: str = "Anonymous") -> Identity:
+        """Load an identity from disk, or generate and save a new one if not found."""
         identity = cls.load(path)
         if identity is None:
             identity = cls.generate(display_name)

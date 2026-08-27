@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 
 def derive_shared_key(private_key: X25519PrivateKey, public_key: X25519PublicKey) -> bytes:
+    """Derive a shared encryption key using X25519 key exchange and HKDF."""
     return HKDF(algorithm=SHA256(), length=32, salt=None, info=b"meshtalk-e2ee-v1").derive(
         private_key.exchange(public_key)
     )
@@ -29,6 +30,7 @@ def encrypt_for_recipient(recipient_public_bytes: bytes, plaintext: bytes, assoc
 
 
 def decrypt_as_recipient(private_key: X25519PrivateKey, encrypted: bytes, associated_data: bytes) -> bytes:
+    """Decrypt a message using recipient's private key and ephemeral public key from message."""
     if len(encrypted) < 32 + 12 + 16:
         raise ValueError("Encrypted message is too short")
     ephemeral_public = X25519PublicKey.from_public_bytes(encrypted[:32])

@@ -77,6 +77,8 @@ def _resolve_files_base(data_dir: Path, settings=None) -> Path:
 
 
 class FileTransferManager:
+    """Manages file transfers between peers with chunking and encryption."""
+
     def __init__(
         self,
         identity: Identity,
@@ -86,6 +88,7 @@ class FileTransferManager:
         on_event: Callable[[dict], Awaitable[None]] | None = None,
         settings=None,
     ) -> None:
+        """Initialize file transfer manager with identity, peer manager, and storage location."""
         self.identity = identity
         self.peer_manager = peer_manager
         self.db = db
@@ -97,9 +100,11 @@ class FileTransferManager:
 
     @property
     def files_base(self) -> Path:
+        """Return the base directory for file storage, respecting settings and environment."""
         return _resolve_files_base(self.data_dir, self.settings)
 
     def _incoming_dir_for(self, file_id: str) -> Path:
+        """Return the directory for storing chunks of an incoming file."""
         return self.files_base / file_id
 
     def _emit(self, event: dict) -> None:
@@ -107,6 +112,7 @@ class FileTransferManager:
             asyncio.create_task(self.on_event(event))
 
     async def send_file(self, recipient_id: str, file_path_str: str, group_id: str | None = None) -> str:
+        """Send a file to a peer, chunking and encrypting it for transmission."""
         # Cross-platform path handling: expanduser, handle both separators,
         # resolve without requiring existence of intermediate symlinks.
         raw = file_path_str.strip().strip('"').strip("'")
@@ -248,6 +254,7 @@ class FileTransferManager:
             raise ValueError(f"Failed to read file: {exc}") from exc
 
     async def flush_for_peer(self, peer_id: str) -> int:
+        """Send queued outgoing file chunks to a connected peer."""
         # Flush queued file transfers for this peer - re-read file and resend
         transfers = [t for t in await self.db.get_file_transfers(peer_id) if t["status"] == "queued" and t["direction"] == "outbound"]
         flushed = 0
@@ -292,6 +299,7 @@ class FileTransferManager:
         return flushed
 
     async def resume_for_peer(self, peer_id: str) -> None:
+        """Resume interrupted inbound file transfers when peer reconnects."""
         peer = self.peer_manager.get_connected_peer(peer_id)
         if not peer or not peer.supports(CAP_FILE_TRANSFER):
             return
@@ -317,6 +325,7 @@ class FileTransferManager:
                 await self._complete_inbound_transfer(peer, transfer)
 
     async def handle_packet(self, peer: PeerConnection, packet: Packet) -> bool:
+        """Handle file transfer packets (offer, chunk, ack), returning True if handled."""
         if packet.type not in (PacketType.FILE_OFFER, PacketType.FILE_CHUNK, PacketType.FILE_ACK):
             return False
         # UDP dispatches application handlers independently. Serialize file
@@ -586,9 +595,11 @@ class FileTransferManager:
             logger.warning("Failed to resume file %s: %s", transfer["file_id"], exc)
 
     async def list_transfers(self) -> list[dict]:
+        """List all file transfers from the database."""
         return await self.db.get_file_transfers()
 
     async def get_transfer(self, file_id: str) -> dict | None:
+        """Get a specific file transfer by ID."""
         return await self.db.get_file_transfer(file_id)
 
     async def download_file(self, file_id: str, dest_path_str: str) -> str:
