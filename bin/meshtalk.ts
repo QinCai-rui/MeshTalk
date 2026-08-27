@@ -7,7 +7,7 @@ import { createConnection, type Socket } from "net";
 import { basename, dirname, join, resolve } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { checkForUpdate, githubRepository, installRelease, isReleaseInstallDir, releaseInstallDir, saveGithubRepository, saveGithubToken, takeUpdateRestartPath, updateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
+import { checkForUpdate, githubRepository, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubRepository, saveGithubToken, startWindowsReplacement, takeUpdateRestartPath, updateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -112,6 +112,12 @@ async function runUpdate(args: string[]): Promise<void> {
   if (!isReleaseInstallDir(destination)) throw new Error("Update directory must contain the current MeshTalk release binaries.");
   console.log(`Downloading and installing MeshTalk ${release.version}...`);
   await installRelease(release, destination);
+  if (isWindows) {
+    requestUpdateRestart(destination);
+    if (!startWindowsReplacement()) throw new Error("Unable to start the Windows update replacement process.");
+    console.log("Update installed. MeshTalk will restart shortly.");
+    return;
+  }
   console.log("Update installed. Restart MeshTalk to use the new version.");
 }
 
@@ -440,13 +446,14 @@ async function main() {
       if (!await requestBackendShutdown()) await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt);
       const restartPath = isWindows ? updateRestartPath() : takeUpdateRestartPath();
       if (!restartPath) throw new Error("Update restart target was not provided.");
-      const launchDirectly = !isWindows;
-      if (launchDirectly) {
-        if (isWindows) takeUpdateRestartPath();
+      if (isWindows) {
+        if (!startWindowsReplacement()) throw new Error("Unable to start the Windows update replacement process.");
+        code = 0;
+      } else {
         if (!existsSync(restartPath)) throw new Error(`Updated launcher does not exist: ${restartPath}`);
         const restarted = spawn([restartPath], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
         code = await restarted.exited;
-      } else code = 0;
+      }
     } else {
       await cleanup();
     }

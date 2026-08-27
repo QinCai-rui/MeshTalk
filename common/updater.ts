@@ -8,6 +8,7 @@ const DEFAULT_GITHUB_REPO = "MeshTalk"
 const DATA_DIR = join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".meshtalk")
 const SETTINGS_PATH = join(DATA_DIR, "settings.json")
 const RESTART_PATH = join(DATA_DIR, "update-restart-path")
+const WINDOWS_REPLACEMENT_PATH = join(DATA_DIR, "windows-update-replacement-path")
 export const UPDATE_RESTART_EXIT_CODE = 75
 
 export type Release = {
@@ -190,6 +191,22 @@ async function scheduleWindowsReplacement(extracted: string, installDir: string)
   lines.push(`rmdir /s /q "${staging}"`, `if not exist "${RESTART_PATH}" exit /b 0`, `set /p restartPath=<"${RESTART_PATH}"`, `del "${RESTART_PATH}"`, "start \"\" /b \"%restartPath%\"", "exit /b 0", ":failed", "set /a attempts+=1", "if %attempts% LSS 60 goto retry", "echo MeshTalk update could not replace running files.", "exit /b 1")
   const script = join(staging, "replace.cmd")
   writeFileSync(script, lines.join("\r\n"))
+  mkdirSync(DATA_DIR, { recursive: true })
+  const temporary = `${WINDOWS_REPLACEMENT_PATH}.tmp`
+  writeFileSync(temporary, script)
+  chmodSync(temporary, 0o600)
+  renameSync(temporary, WINDOWS_REPLACEMENT_PATH)
+}
+
+export function startWindowsReplacement(): boolean {
+  let script: string
+  try {
+    script = readFileSync(WINDOWS_REPLACEMENT_PATH, "utf-8").trim()
+    if (!script || !existsSync(script)) return false
+    rmSync(WINDOWS_REPLACEMENT_PATH, { force: true })
+  } catch {
+    return false
+  }
   // The batch file must outlive the TUI and launcher that hold these executables open.
   const replacement = Bun.spawn(["cmd.exe", "/d", "/c", script], {
     detached: true,
@@ -199,6 +216,7 @@ async function scheduleWindowsReplacement(extracted: string, installDir: string)
     windowsHide: true,
   })
   replacement.unref()
+  return true
 }
 
 export async function installRelease(release: Release, installDir: string, onProgress?: (progress: UpdateProgress) => void): Promise<void> {
