@@ -6,7 +6,7 @@ import { MouseSelect } from "./MouseSelect"
 import { MarqueeText } from "./MarqueeText"
 import { NotificationDialogs } from "./dialogs/NotificationDialogs"
 import { AboutDialog, CommandsDialog, UpdateDestinationDialog, UpdateDialog, UpdateTokenDialog } from "./dialogs/CommandDialogs"
-import { isImageFile, toFileUrl } from "../utils"
+import { isImageFile, peerPresence, toFileUrl } from "../utils"
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
 
@@ -159,7 +159,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "room-join" && <RoomJoinDialogContent dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} joinRoom={joinRoom} />}
       {dialog.kind === "room-created" && <RoomCreatedDialogContent dialog={dialog} copyInvite={copyInvite} loadRooms={loadRooms} />}
       {dialog.kind === "room-detail" && <RoomDetailDialogContent dialog={dialog} groups={groups} leaveGroup={leaveGroup} leaveRoom={leaveRoom} loadRoomInvite={loadRoomInvite} loadRooms={loadRooms} />}
-      {dialog.kind === "group-detail" && <GroupDetailDialogContent dialog={dialog} identity={identity} closeDialog={closeDialog} leaveGroup={leaveGroup} />}
+       {dialog.kind === "group-detail" && <GroupDetailDialogContent dialog={dialog} identity={identity} peers={peers} closeDialog={closeDialog} leaveGroup={leaveGroup} />}
       {dialog.kind === "rename" && <RenameDialogContent dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setNameDraft={setNameDraft} saveDisplayName={saveDisplayName} />}
       {dialog.kind === "mute-timeout" && <MuteTimeoutDialogContent dialog={dialog} dialogHeight={dialogHeight} mutePeer={mutePeer} />}
       {dialog.kind === "unmute-confirm" && <UnmuteConfirmDialogContent dialog={dialog} unmutePeer={unmutePeer} showDialog={showDialog} />}
@@ -403,19 +403,22 @@ function RoomDetailDialogContent({ dialog, groups, leaveGroup, leaveRoom, loadRo
   )
 }
 
-function GroupDetailDialogContent({ dialog, identity, closeDialog, leaveGroup }: { dialog: Extract<Dialog, { kind: "group-detail" }>; identity: { peer_id: string; display_name: string } | undefined; closeDialog: () => void; leaveGroup: (g: Group) => void }) {
+function GroupDetailDialogContent({ dialog, identity, peers, closeDialog, leaveGroup }: { dialog: Extract<Dialog, { kind: "group-detail" }>; identity: { peer_id: string; display_name: string } | undefined; peers: Peer[]; closeDialog: () => void; leaveGroup: (g: Group) => void }) {
   return (
     <>
       <text><span fg="#888888">Name: </span>{dialog.group.name}</text>
       <text><span fg="#888888">Group ID: </span>{dialog.group.group_id}</text>
       <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
         {!dialog.members.length ? <text fg="#888888">No member details available.</text> : null}
-        {dialog.members.map((member, index) => (
-          <text key={member.peer_id ?? member.member_id ?? String(index)}>
-            <span fg={(member.peer_id ?? member.member_id) === identity?.peer_id ? "#65a9ff" : "#66dd88"}>{member.display_name}</span>
-            <span fg="#718096"> {(member.peer_id ?? member.member_id ?? "").slice(0, 12)}</span>
+        {dialog.members.map((member, index) => {
+          const memberId = member.peer_id ?? member.member_id
+          const knownPeer = peers.find((peer) => peer.peer_id === memberId)
+          const color = memberId === identity?.peer_id ? "#65a9ff" : knownPeer ? peerPresence(knownPeer) === "active" ? "#66dd88" : peerPresence(knownPeer) === "away" ? "#e0a34a" : "#888888" : member.is_online ? "#66dd88" : "#888888"
+          return <text key={memberId ?? String(index)}>
+            <span fg={color}>{member.display_name}</span>
+            <span fg="#718096"> {(memberId ?? "").slice(0, 12)}</span>
           </text>
-        ))}
+        })}
       </scrollbox>
       <MouseSelect focused height={4} options={[
         { name: "Close", description: "Return to the group chat", value: "close" },
