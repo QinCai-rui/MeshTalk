@@ -109,8 +109,8 @@ async function runUpdate(args: string[]): Promise<void> {
   }
   if (isWindows && await backendRunning()) throw new Error("A MeshTalk instance is already running. Close MeshTalk before updating.");
   const destination = installDir ?? releaseInstallDir();
-  if (!destination) throw new Error("Unable to locate the standalone MeshTalk installation. Use --dir <directory> to select one.");
-  if (!isReleaseInstallDir(destination)) throw new Error("Update directory must contain the current MeshTalk release binaries.");
+  if (!destination) throw new Error(`Unable to locate the standalone MeshTalk installation. Use --dir <directory> to select one. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
+  if (!isReleaseInstallDir(destination)) throw new Error(`Update directory must contain the current MeshTalk release binaries. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
   console.log(`Downloading and installing MeshTalk ${release.version}...`);
   if (isWindows) applyPendingWindowsReplacement();
   await installRelease(release, destination);
@@ -438,7 +438,7 @@ async function main() {
     if (code === UPDATE_RESTART_EXIT_CODE) {
       if (!await requestBackendShutdown()) await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt);
       if (isWindows) {
-        if (!spawnWindowsReplacementHelper()) throw new Error("Unable to start the Windows update replacement process.");
+    if (!spawnWindowsReplacementHelper()) throw new Error(`Unable to start the Windows update replacement process. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
         code = 0;
       } else {
         const restartPath = takeUpdateRestartPath();

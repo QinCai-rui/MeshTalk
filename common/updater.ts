@@ -13,6 +13,8 @@ function expandHomePath(value: string): string {
     : trimmed
 }
 
+const REINSTALL_HINT = "Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install"
+
 const DATA_DIR = process.env.MESHTALK_DATA_DIR ? expandHomePath(process.env.MESHTALK_DATA_DIR) : join(HOME, ".meshtalk")
 const SETTINGS_PATH = join(DATA_DIR, "settings.json")
 const RESTART_PATH = join(DATA_DIR, "update-restart-path")
@@ -297,11 +299,11 @@ export async function installRelease(release: Release, installDir: string, onPro
     })
     if (!response.ok) {
       if ([401, 403, 404].includes(response.status)) throw new GitHubAuthenticationError()
-      throw new Error(`Download failed (${response.status})`)
+      throw new Error(`Download failed (${response.status}). ${REINSTALL_HINT}`)
     }
     const totalBytes = Number(response.headers.get("content-length")) || undefined
     const reader = response.body?.getReader()
-    if (!reader) throw new Error("Download response did not include a body")
+    if (!reader) throw new Error(`Download response did not include a body. ${REINSTALL_HINT}`)
     const archivePath = join(temporary, release.assetName)
     const archiveFile = await open(archivePath, "w")
     const hasher = new Bun.CryptoHasher("sha256")
@@ -321,19 +323,19 @@ export async function installRelease(release: Release, installDir: string, onPro
     onProgress?.({ current: 2, total: 6, step: "Verifying SHA-256 digest" })
     await Bun.sleep(16)
     const expectedDigest = release.digest?.replace(/^sha256:/, "").toLowerCase()
-    if (!expectedDigest) throw new Error("GitHub did not provide a SHA-256 digest for this release")
-    if (hasher.digest("hex") !== expectedDigest) throw new Error("SHA-256 verification failed")
+    if (!expectedDigest) throw new Error(`GitHub did not provide a SHA-256 digest for this release. ${REINSTALL_HINT}`)
+    if (hasher.digest("hex") !== expectedDigest) throw new Error(`SHA-256 verification failed. ${REINSTALL_HINT}`)
     onProgress?.({ current: 3, total: 6, step: "Inspecting release archive" })
     const listing = Bun.spawn(["tar", "-tzf", archivePath], { stdout: "pipe", stderr: "ignore" })
     const listingOutput = new Response(listing.stdout).text()
-    if (await listing.exited !== 0) throw new Error("Unable to inspect the release archive")
+    if (await listing.exited !== 0) throw new Error(`Unable to inspect the release archive. ${REINSTALL_HINT}`)
     const entries = (await listingOutput).split("\n").filter(Boolean)
-    if (entries.some((entry) => entry.startsWith("/") || entry === ".." || entry.includes("../"))) throw new Error("Release archive contains an unsafe path")
+    if (entries.some((entry) => entry.startsWith("/") || entry === ".." || entry.includes("../"))) throw new Error(`Release archive contains an unsafe path. ${REINSTALL_HINT}`)
     const extracted = join(temporary, "extracted")
     await mkdir(extracted)
     onProgress?.({ current: 4, total: 6, step: "Extracting release archive" })
     const extract = Bun.spawn(["tar", "-xzf", archivePath, "-C", extracted], { stdout: "ignore", stderr: "ignore" })
-    if (await extract.exited !== 0) throw new Error("Unable to extract the release archive")
+    if (await extract.exited !== 0) throw new Error(`Unable to extract the release archive. ${REINSTALL_HINT}`)
     onProgress?.({ current: 5, total: 6, step: "Validating extracted binaries" })
     await Bun.sleep(16)
     for (const name of expectedFiles()) {
@@ -341,7 +343,7 @@ export async function installRelease(release: Release, installDir: string, onPro
       try {
         if (!(await stat(source)).isFile()) throw new Error()
       } catch {
-        throw new Error(`Release archive is missing ${name}`)
+        throw new Error(`Release archive is missing ${name}. ${REINSTALL_HINT}`)
       }
     }
     if (process.platform === "win32") {
