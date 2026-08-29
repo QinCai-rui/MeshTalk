@@ -785,7 +785,7 @@ function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtoco
             <text><span fg={f.direction === "inbound" ? "#66dd88" : "#65a9ff"}>{f.direction === "inbound" ? "\u2193" : "\u2191"}</span> {f.filename} ({(f.file_size / 1024).toFixed(1)} KiB) <span fg="#888888">{f.status}</span></text>
             <text fg="#888888">  {f.file_id.slice(0, 8)} {f.direction === "inbound" ? `from ${f.sender_id.slice(0, 8)}` : `to ${f.recipient_id.slice(0, 8)}`} {f.file_path ?? ""} {isImageFile(f.filename) ? "(image)" : ""}</text>
             {["completed", "sent"].includes(f.status) && isLocalFileMissing(f.file_path) ? <text fg="#ff7777">  File unavailable: not found or deleted locally</text> : null}
-            {f.status === "completed" && f.file_path && !isLocalFileMissing(f.file_path) ? <ImageAttachment filePath={f.file_path} filename={f.filename} protocol={imageProtocol} expectedImage={isImageFile(f.filename)} maxWidth={Math.max(12, dialogWidth - 4)} maxHeight={Math.max(4, Math.floor(dialogHeight / 2))} onOpen={() => showDialog({ kind: "image-view", filePath: f.file_path!, filename: f.filename, version: f.completed_at, returnTo: "files" })} /> : null}
+            {f.status === "completed" && f.file_path && !isLocalFileMissing(f.file_path) ? <ImageAttachment filePath={f.file_path} filename={f.filename} protocol={imageProtocol} expectedImage={isImageFile(f.filename)} lazy={false} maxWidth={Math.max(12, dialogWidth - 4)} maxHeight={Math.max(4, Math.floor(dialogHeight / 2))} onOpen={() => showDialog({ kind: "image-view", filePath: f.file_path!, filename: f.filename, version: f.completed_at, returnTo: "files" })} /> : null}
           </box>
         ))}
       </scrollbox>

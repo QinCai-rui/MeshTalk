@@ -497,5 +497,5 @@ class Settings:
             # Validate but don't fail load if old path no longer exists - keep stored value
             self._files_dir = files_dir.strip()
         image_protocol = data.get("image_protocol", "auto")
-        if image_protocol in {"auto", "kitty", "sixel", "blocks"}:
+        if isinstance(image_protocol, str) and image_protocol in {"auto", "kitty", "sixel", "blocks"}:
             self._image_protocol = image_protocol

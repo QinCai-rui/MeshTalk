@@ -446,6 +446,7 @@ async function main() {
         log("Backend did not start within timeout.");
         tui.kill();
         await tui.exited;
+        await cleanup();
         log(`See ${BACKEND_LOG_PATH} for details.`);
         process.exit(1);
       }

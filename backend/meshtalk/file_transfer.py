@@ -142,12 +142,24 @@ class FileTransferManager:
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
         try:
-            with open(source, "rb") as input_file, open(temporary, "xb") as output_file:
-                shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
+            with open(source, "rb") as input_file, open(
+                temporary, "xb", opener=lambda path, flags: os.open(path, flags, 0o600)
+            ) as output_file:
+                copied = 0
+                copy_limit = MAX_FILE_SIZE + 1
+                while copied < copy_limit:
+                    chunk = input_file.read(min(1024 * 1024, copy_limit - copied))
+                    if not chunk:
+                        break
+                    output_file.write(chunk)
+                    copied += len(chunk)
                 output_file.flush()
                 os.fsync(output_file.fileno())
+            if copied > MAX_FILE_SIZE:
+                temporary.unlink(missing_ok=True)
+                raise ValueError(f"File exceeds {MAX_FILE_SIZE // (1024*1024)} MiB limit")
+            os.chmod(temporary, 0o600)
             os.replace(temporary, destination)
-            os.chmod(destination, 0o600)
         except OSError as exc:
             temporary.unlink(missing_ok=True)
             raise ValueError(f"Could not store a local copy of file: {exc}") from exc

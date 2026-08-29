@@ -1,8 +1,10 @@
 import asyncio
 import hashlib
+import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from meshtalk.database import Database
 from meshtalk.encryption import encrypt_for_recipient
@@ -245,8 +247,24 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(snapshot.exists())
         self.assertEqual(snapshot.read_bytes(), self.content)
+        self.assertEqual(stat.S_IMODE(snapshot.stat().st_mode), 0o600)
         self.assertIn("sent", snapshot.parts)
         await sender_db.close()
+
+    async def test_outgoing_snapshot_rejects_content_over_copy_limit(self):
+        source = self.root / "growing-source.bin"
+        source.write_bytes(b"12345")
+        sender_transfer = FileTransferManager(
+            self.sender, FakePeerManager(self.recipient_peer), self.db, self.root / "sender-files"
+        )
+
+        with patch("meshtalk.file_transfer.MAX_FILE_SIZE", 4):
+            with self.assertRaisesRegex(ValueError, "File exceeds"):
+                sender_transfer._snapshot_outgoing_file(source, "oversize", source.name)
+
+        destination = sender_transfer._outgoing_path_for("oversize", source.name)
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(destination.parent.glob("*.tmp")), [])
 
     async def test_duplicate_completed_ack_is_ignored(self):
         sender_db = Database(self.root / "sender.db")

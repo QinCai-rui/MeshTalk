@@ -11,6 +11,8 @@ type CachedImage = {
 
 const MAX_CACHED_IMAGES = 48
 const THUMBNAIL_MAX_SIDE = 640
+const MAX_LOAD_RETRIES = 2
+const LOAD_RETRY_DELAY_MS = 500
 const cache = new Map<string, CachedImage>()
 
 export function detectImageFormat(bytes: Uint8Array): "png" | "jpeg" | "webp" | "gif" | undefined {
@@ -83,11 +85,15 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
   const containerRef = useRef<BoxRenderable>(null)
   const [nearViewport, setNearViewport] = useState(!lazy)
   const [image, setImage] = useState<NativeImage>()
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [loadAttempt, setLoadAttempt] = useState(0)
 
   useEffect(() => {
     setNearViewport(!lazy)
     setImage(undefined)
-  }, [filePath, lazy])
+    setLoadFailed(false)
+    setLoadAttempt(0)
+  }, [filePath, fullSize, lazy])
 
   useEffect(() => {
     if (!lazy || nearViewport) return
@@ -106,18 +112,31 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
   useEffect(() => {
     if (!nearViewport) return
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    setLoadFailed(false)
     void cachedImage(filePath).then((loaded) => {
       if (cancelled) return
-      if (!loaded) return
-      setImage(fullSize ? loaded.original : loaded.thumbnail)
-    }).catch(() => {})
-    return () => { cancelled = true }
-  }, [filePath, fullSize, nearViewport, expectedImage])
+      if (loaded) {
+        setImage(fullSize ? loaded.original : loaded.thumbnail)
+        return
+      }
+      setLoadFailed(true)
+      if (loadAttempt < MAX_LOAD_RETRIES) retryTimer = setTimeout(() => setLoadAttempt(loadAttempt + 1), LOAD_RETRY_DELAY_MS)
+    }).catch(() => {
+      if (cancelled) return
+      setLoadFailed(true)
+      if (loadAttempt < MAX_LOAD_RETRIES) retryTimer = setTimeout(() => setLoadAttempt(loadAttempt + 1), LOAD_RETRY_DELAY_MS)
+    })
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
+  }, [filePath, fullSize, nearViewport, loadAttempt])
 
   const displayed = image ? fittedImageSize(image.width, image.height, maxWidth, maxHeight) : undefined
   return <box ref={containerRef} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={{ flexDirection: "column", width: displayed?.width, height: displayed?.height }}>
     {!nearViewport && expectedImage ? <text fg="#888888">{filename} (image preview loads nearby)</text> : null}
-    {nearViewport && !image && expectedImage ? <text fg="#888888">Loading image...</text> : null}
+    {nearViewport && !image && expectedImage ? <text fg="#888888">{loadFailed ? `${filename} (image unavailable)` : "Loading image..."}</text> : null}
     {image && displayed ? <image source={image} fit="fit" protocol={protocol} style={displayed} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} /> : null}
   </box>
 }

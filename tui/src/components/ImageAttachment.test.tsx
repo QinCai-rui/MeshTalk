@@ -35,6 +35,20 @@ test("opens a loaded thumbnail with a mouse click", async () => {
   }
 })
 
+test("shows an unavailable state when an expected image cannot be loaded", async () => {
+  const setup = await testRender(
+    <ImageAttachment filePath={join(tmpdir(), `missing-${crypto.randomUUID()}.png`)} filename="missing.png" protocol="blocks" expectedImage lazy={false} maxWidth={20} maxHeight={8} />,
+    { width: 30, height: 10 },
+  )
+  try {
+    const frame = await setup.waitForFrame((value) => value.includes("unavailable)"))
+    expect(frame).toContain("missing.png (image")
+    expect(frame).toContain("unavailable)")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
 test("Escape navigation closes the full-screen image preview", () => {
   let closed = 0
   goBack({ dialog: { kind: "image-view", filePath: "/definitely/missing/image.png", filename: "image.png" }, selection: undefined, fileTransfers: [], closeDialog: () => { closed += 1 }, showDialog: () => {}, loadAdvancedConfig: async () => {}, loadRooms: async () => {}, loadFriendRequests: async () => {}, loadBlockedPeers: async () => {} })
