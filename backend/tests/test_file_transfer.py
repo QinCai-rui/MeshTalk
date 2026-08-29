@@ -110,9 +110,36 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         transfer = await self.db.get_file_transfer(self.file_id)
         self.assertEqual(transfer["status"], "completed")
-        self.assertEqual(Path(transfer["file_path"]).read_bytes(), self.content)
+        stored_path = Path(transfer["file_path"])
+        self.assertEqual(stored_path.parent.name, self.group_id)
+        self.assertEqual(stored_path.name, "document_1.bin")
+        self.assertEqual(stored_path.read_bytes(), self.content)
         await self.receiver.handle_packet(self.sender_peer, self._chunk(1))
         self.assertEqual((await self.db.get_file_transfer(self.file_id))["status"], "completed")
+
+    async def test_direct_files_use_sender_folder_and_timestamped_name(self):
+        await self.db.add_friend(self.sender.peer_id, self.sender.display_name)
+        file_id = "direct-transfer-test"
+        offer = FileOfferPayload(
+            file_id=file_id,
+            filename="document.bin",
+            file_size=len(self.content),
+            chunk_size=4,
+            total_chunks=2,
+            sender_id=self.sender.peer_id,
+            recipient_id=self.recipient.peer_id,
+            created_at=123.75,
+        )
+        offer.signature = self.sender.signing_private_key.sign(offer.signed_bytes())
+
+        await self.receiver.handle_packet(
+            self.sender_peer, Packet(PacketType.FILE_OFFER, offer.encode())
+        )
+
+        transfer = await self.db.get_file_transfer(file_id)
+        stored_path = Path(transfer["file_path"])
+        self.assertEqual(stored_path.parent.name, self.sender.peer_id)
+        self.assertEqual(stored_path.name, "document_123.bin")
 
     async def test_reconnect_requests_only_missing_ranges(self):
         await self.receiver.handle_packet(self.sender_peer, self._chunk(0))

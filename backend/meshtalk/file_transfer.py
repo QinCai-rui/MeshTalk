@@ -42,6 +42,7 @@ from .protocol import (
     FileAckPayload,
     FileChunkPayload,
     FileOfferPayload,
+    MAX_FILENAME_LENGTH,
     Packet,
     PacketType,
     sanitize_filename,
@@ -63,9 +64,6 @@ def _files_base(data_dir: Path) -> Path:
     return data_dir / FILES_SUBDIR
 
 
-def _incoming_dir(data_dir: Path, file_id: str) -> Path:
-    return _files_base(data_dir) / file_id
-
 def _resolve_files_base(data_dir: Path, settings=None) -> Path:
     # Settings takes precedence over env/data_dir (user can change via TUI/CLI and persist)
     if settings is not None:
@@ -74,6 +72,17 @@ def _resolve_files_base(data_dir: Path, settings=None) -> Path:
         except Exception:
             pass
     return _files_base(data_dir)
+
+
+def _timestamped_filename(filename: str, created_at: float) -> str:
+    """Add the sender's Unix timestamp while preserving the original extension."""
+    safe_name = sanitize_filename(filename)
+    timestamp = str(int(created_at))
+    suffix = Path(safe_name).suffix
+    stem = safe_name[:-len(suffix)] if suffix else safe_name
+    available_stem_length = MAX_FILENAME_LENGTH - len(timestamp) - len(suffix) - 1
+    stem = stem[:max(1, available_stem_length)].rstrip(" ._") or "file"
+    return sanitize_filename(f"{stem}_{timestamp}{suffix}")
 
 
 class FileTransferManager:
@@ -103,9 +112,16 @@ class FileTransferManager:
         """Return the base directory for file storage, respecting settings and environment."""
         return _resolve_files_base(self.data_dir, self.settings)
 
-    def _incoming_dir_for(self, file_id: str) -> Path:
-        """Return the directory for storing chunks of an incoming file."""
-        return self.files_base / file_id
+    def _incoming_path_for(
+        self, file_id: str, sender_id: str, group_id: str | None, filename: str, created_at: float
+    ) -> Path:
+        """Return a contact/group-organized path for an incoming file."""
+        folder_name = sanitize_filename(group_id or sender_id)
+        stored_name = _timestamped_filename(filename, created_at)
+        path = self.files_base / folder_name / stored_name
+        if path.exists():
+            path = path.with_name(f"{path.stem}_{file_id[:8]}{path.suffix}")
+        return path
 
     def _emit(self, event: dict) -> None:
         if self.on_event:
@@ -390,7 +406,9 @@ class FileTransferManager:
         await self.db.mark_message_seen(offer.file_id)
         # Create inbound transfer record and prepare file
         safe_name = sanitize_filename(offer.filename)
-        incoming_path = self._incoming_dir_for(offer.file_id) / safe_name
+        incoming_path = self._incoming_path_for(
+            offer.file_id, offer.sender_id, offer.group_id, safe_name, offer.created_at
+        )
         incoming_path.parent.mkdir(parents=True, exist_ok=True)
         # Preallocate file to file_size with zeros (cross-platform)
         try:

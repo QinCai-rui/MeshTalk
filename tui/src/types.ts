@@ -60,6 +60,7 @@ export type Dialog =
   | { kind: "notification-settings" } | { kind: "notification-peer" } | { kind: "accessibility" }
   | { kind: "debug" } | { kind: "debug-endpoints" } | { kind: "debug-peer"; peerId: string; displayName: string }
   | { kind: "file-send" } | { kind: "file-list"; files: FileTransfer[] } | { kind: "file-download"; fileId: string; filename: string; filePath: string }
+  | { kind: "image-view"; filePath: string; filename: string; version?: number | null; returnTo?: "files" }
   | { kind: "files-dir"; filesDir: string; env?: string; configured?: string; dataDir?: string } | { kind: "group-file-send" }
   | { kind: "update"; release: import("../../common/updater").Release; installed?: boolean; installDir?: string; progress?: import("../../common/updater").UpdateProgress }
   | { kind: "update-directory"; release: import("../../common/updater").Release }
