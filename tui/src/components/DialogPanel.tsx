@@ -135,6 +135,7 @@ export function DialogPanel(props: DialogPanelProps) {
         : dialog.kind === "file-list" ? "Files"
         : dialog.kind === "file-download" ? "Save file"
         : dialog.kind === "files-dir" ? "File storage"
+        : dialog.kind === "image-view" ? "Image preview"
         : "Private rooms"}
       bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P Commands"}
       style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: dialog.kind === "about" ? "#9b8cff" : dialog.kind === "update" ? "#e0a34a" : "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1, overflow: "hidden" }}
@@ -179,11 +180,24 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidth} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} defaultDownloadPath={defaultDownloadPath} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} />}
+      {dialog.kind === "image-view" && <ImageViewerDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} />}
     </box>
     <box style={{ position: "absolute", right: 1, bottom: 0 }}>
       <text><span fg="#66dd88">● </span><span fg="#bbbbbb">MeshTalk </span><span fg="#888888">{appReleaseVersion}</span></text>
     </box>
   </box>
+}
+
+function ImageViewerDialogContent({ dialog, dialogWidth, dialogHeight }: { dialog: Extract<Dialog, { kind: "image-view" }>; dialogWidth: number; dialogHeight: number }) {
+  return (
+    <>
+      <text wrapMode="none"><span fg="#66dd88">{dialog.filename}</span></text>
+      <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, alignItems: "center", justifyContent: "center" }}>
+        <image source={toFileUrl(dialog.filePath, dialog.version)} fit="fit" protocol="auto" style={{ width: Math.max(1, dialogWidth - 4), height: Math.max(1, dialogHeight - 5) }} onError={() => {}} />
+      </box>
+      <text fg="#888888">Esc returns.</text>
+    </>
+  )
 }
 
 function ControlDialogContent({ dialog, dialogHeight, configureControl, dismissControlSetup, loadControlStatus, showDialog }: { dialog: Extract<Dialog, { kind: "control" }>; dialogHeight: number; configureControl: (url: string) => void; dismissControlSetup: () => void; loadControlStatus: () => void; showDialog: (d: Dialog) => void }) {
@@ -723,7 +737,7 @@ function FileListDialogContent({ dialog, dialogHeight, dialogWidth, loadFiles, l
             <text><span fg={f.direction === "inbound" ? "#66dd88" : "#65a9ff"}>{f.direction === "inbound" ? "\u2193" : "\u2191"}</span> {f.filename} ({(f.file_size / 1024).toFixed(1)} KiB) <span fg="#888888">{f.status}</span></text>
             <text fg="#888888">  {f.file_id.slice(0, 8)} {f.direction === "inbound" ? `from ${f.sender_id.slice(0, 8)}` : `to ${f.recipient_id.slice(0, 8)}`} {f.file_path ?? ""} {isImageFile(f.filename) ? "(image)" : ""}</text>
             {f.status === "completed" && f.file_path && isImageFile(f.filename) && (
-              <image source={toFileUrl(f.file_path, f.completed_at)} fit="fit" protocol="auto" style={{ width: 20, height: 6 }} onError={() => {}} />
+              <image source={toFileUrl(f.file_path, f.completed_at)} fit="fit" protocol="auto" style={{ width: 20, height: 6 }} onMouseDown={(event) => { if (event.button === 0) { event.preventDefault(); event.stopPropagation(); showDialog({ kind: "image-view", filePath: f.file_path!, filename: f.filename, version: f.completed_at, returnTo: "files" }) } }} onError={() => {}} />
             )}
           </box>
         ))}

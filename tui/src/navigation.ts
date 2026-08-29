@@ -15,6 +15,9 @@ type NavigationDependencies = {
 export function goBack({ dialog, selection, fileTransfers, closeDialog, showDialog, loadAdvancedConfig, loadRooms, loadFriendRequests, loadBlockedPeers }: NavigationDependencies) {
   if (!dialog || dialog.kind === "commands" || dialog.kind === "update" || (dialog.kind === "control" && dialog.firstRun) || (dialog.kind === "rename" && dialog.firstRun)) {
     closeDialog()
+  } else if (dialog.kind === "image-view") {
+    if (dialog.returnTo === "files") showDialog({ kind: "file-list", files: fileTransfers })
+    else closeDialog()
   } else if (dialog.kind === "control-custom") {
     showDialog({ kind: "control", firstRun: dialog.firstRun })
   } else if (dialog.kind === "control-status") {
