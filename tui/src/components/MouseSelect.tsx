@@ -2,8 +2,11 @@ import { type ScrollBoxRenderable } from "@opentui/core"
 import { type SelectProps } from "@opentui/react"
 import { useEffect, useRef, useState } from "react"
 import { terminalWidth } from "../utils"
+import { MarqueeText } from "./MarqueeText"
 
-export function MouseSelect(props: SelectProps) {
+type MouseSelectProps = SelectProps & { marqueeNames?: boolean }
+
+export function MouseSelect(props: MouseSelectProps) {
   const options = props.options ?? []
   const [selectedIndex, setSelectedIndex] = useState(() => Math.min(props.selectedIndex ?? 0, Math.max(0, options.length - 1)))
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
@@ -15,6 +18,11 @@ export function MouseSelect(props: SelectProps) {
   const descriptionPrefix = showSelectionIndicator ? "   " : " "
   const activeIndex = hoveredIndex ?? selectedIndex
   const activeDescription = options[activeIndex]?.description ?? ""
+  // Descriptive options consume two rows, so reserve room for at least two.
+  // Dialog content scrollboxes shrink before action menus do.
+  const menuHeight = typeof props.height === "number" ? Math.max(4, props.height) : props.height
+  const optionWidth = typeof props.width === "number" ? props.width : 64
+  const nameWidth = Math.max(1, optionWidth - (showSelectionIndicator ? 3 : 1))
 
   useEffect(() => {
     if (!showDescription || !activeDescription) return
@@ -45,7 +53,7 @@ export function MouseSelect(props: SelectProps) {
   }
   function selectOption(index: number) { changeSelection(index); props.onSelect?.(index, options[index] ?? null) }
 
-  return <box width={props.width} height={props.height} style={{ ...props.style, flexShrink: 1, minHeight: 0, overflow: "hidden", backgroundColor: props.style?.backgroundColor ?? "#1a1a1a" }}><scrollbox ref={scrollboxRef} focused={props.focused} width="100%" height="100%" style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} onKeyDown={(key) => {
+  return <box width={props.width} height={menuHeight} style={{ ...props.style, flexShrink: 0, minHeight: 0, overflow: "hidden", backgroundColor: props.style?.backgroundColor ?? "#1a1a1a" }}><scrollbox ref={scrollboxRef} focused={props.focused} width="100%" height="100%" style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} onKeyDown={(key) => {
     if (key.name === "up" || key.name === "k") { key.preventDefault(); setHoveredIndex(null); changeSelection(selectedIndex - 1) }
     else if (key.name === "down" || key.name === "j") { key.preventDefault(); setHoveredIndex(null); changeSelection(selectedIndex + 1) }
     else if (key.name === "return" || key.name === "linefeed") { key.preventDefault(); setHoveredIndex(null); selectOption(selectedIndex) }
@@ -59,6 +67,7 @@ export function MouseSelect(props: SelectProps) {
   }}>
     {options.map((option, index) => {
       const highlighted = index === activeIndex
+      const nameColor = highlighted ? props.selectedTextColor ?? "#FFFF00" : props.textColor ?? "#FFFFFF"
       let descriptionText = option.description
       if (highlighted && showDescription && descriptionOffset > 0) {
         const fullText = option.description
@@ -77,7 +86,10 @@ export function MouseSelect(props: SelectProps) {
         descriptionText = fullText.substring(startIndex)
       }
       return <box id={`${menuId}-${index}`} key={index} width="100%" height={showDescription ? 2 : 1} flexShrink={0} overflow="hidden" backgroundColor={highlighted ? props.selectedBackgroundColor ?? "#334455" : undefined} onMouseMove={() => setHoveredIndex(index)} onMouseOut={() => setHoveredIndex(null)} onMouseDown={(event) => { if (event.button === 0) { selectOption(index); event.stopPropagation() } }}>
-        <text fg={highlighted ? props.selectedTextColor ?? "#FFFF00" : props.textColor ?? "#FFFFFF"}>{showSelectionIndicator ? highlighted ? " ▶ " : "   " : " "}{option.name}</text>
+        {props.marqueeNames ? <box style={{ flexDirection: "row", width: "100%", height: 1, overflow: "hidden" }}>
+          <box width={showSelectionIndicator ? 3 : 1} height={1} overflow="hidden"><text wrapMode="none" fg={nameColor}>{showSelectionIndicator ? highlighted ? " ▶" : "  " : ""}</text></box>
+          <MarqueeText width={nameWidth} fg={nameColor} text={option.name} />
+        </box> : <text fg={nameColor}>{showSelectionIndicator ? highlighted ? " ▶ " : "   " : " "}{option.name}</text>}
         {showDescription && <text wrapMode="none" fg={highlighted ? props.selectedDescriptionColor ?? "#CCCCCC" : props.descriptionColor ?? "#888888"}>{descriptionPrefix}{descriptionText}</text>}
       </box>
     })}
