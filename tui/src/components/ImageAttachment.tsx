@@ -13,6 +13,7 @@ const MAX_CACHED_IMAGES = 48
 const THUMBNAIL_MAX_SIDE = 640
 const MAX_LOAD_RETRIES = 2
 const LOAD_RETRY_DELAY_MS = 500
+const IMAGE_BACKGROUND = [17, 25, 35, 255] as const
 const cache = new Map<string, CachedImage>()
 
 export function detectImageFormat(bytes: Uint8Array): "png" | "jpeg" | "webp" | "gif" | undefined {
@@ -35,6 +36,22 @@ export function isLocalFileMissing(filePath: string | null | undefined): boolean
   return !filePath || !existsSync(filePath)
 }
 
+export function isFullyWithinViewport(node: Pick<BoxRenderable, "screenY" | "height">, viewport: Pick<BoxRenderable, "screenY" | "height">): boolean {
+  return node.screenY >= viewport.screenY && node.screenY + node.height <= viewport.screenY + viewport.height
+}
+
+function opaqueImage(image: NativeImage): NativeImage {
+  if (!image.info().hasAlpha) return image.retain()
+  const pixels = new Uint8Array(image.width * image.height * 4)
+  for (let offset = 0; offset < pixels.length; offset += 4) pixels.set(IMAGE_BACKGROUND, offset)
+  const background = NativeImage.fromRgba(pixels, image.width, image.height)
+  try {
+    return background.composite(image)
+  } finally {
+    background.dispose()
+  }
+}
+
 async function cachedImage(filePath: string): Promise<CachedImage | undefined> {
   if (!existsSync(filePath)) return undefined
   const modifiedAt = statSync(filePath).mtimeMs
@@ -51,11 +68,13 @@ async function cachedImage(filePath: string): Promise<CachedImage | undefined> {
   }
   const header = new Uint8Array(await Bun.file(filePath).slice(0, 16).arrayBuffer())
   if (!detectImageFormat(header)) return undefined
-  const original = await NativeImage.load(filePath)
-  const maxSide = Math.max(original.width, original.height)
+  const source = await NativeImage.load(filePath)
+  const maxSide = Math.max(source.width, source.height)
+  const original = opaqueImage(source)
   const thumbnail = maxSide > THUMBNAIL_MAX_SIDE
-    ? original.resize(original.width >= original.height ? { width: THUMBNAIL_MAX_SIDE } : { height: THUMBNAIL_MAX_SIDE })
-    : original.retain()
+    ? source.resize(source.width >= source.height ? { width: THUMBNAIL_MAX_SIDE } : { height: THUMBNAIL_MAX_SIDE })
+    : source.retain()
+  source.dispose()
   const loaded = { modifiedAt, original, thumbnail }
   cache.set(filePath, loaded)
   while (cache.size > MAX_CACHED_IMAGES) {
@@ -84,12 +103,14 @@ type ImageAttachmentProps = {
 export function ImageAttachment({ filePath, filename, protocol, expectedImage = false, fullSize = false, lazy = true, scrollboxRef, maxWidth, maxHeight, onOpen }: ImageAttachmentProps) {
   const containerRef = useRef<BoxRenderable>(null)
   const [nearViewport, setNearViewport] = useState(!lazy)
+  const [fullyVisible, setFullyVisible] = useState(!scrollboxRef)
   const [image, setImage] = useState<NativeImage>()
   const [loadFailed, setLoadFailed] = useState(false)
   const [loadAttempt, setLoadAttempt] = useState(0)
 
   useEffect(() => {
     setNearViewport(!lazy)
+    setFullyVisible(!scrollboxRef)
     setImage(undefined)
     setLoadFailed(false)
     setLoadAttempt(0)
@@ -108,6 +129,20 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
     const interval = setInterval(checkViewport, 100)
     return () => clearInterval(interval)
   }, [lazy, nearViewport, scrollboxRef])
+
+  useEffect(() => {
+    if (!scrollboxRef) return
+    const updateVisibility = () => {
+      const node = containerRef.current
+      const viewport = scrollboxRef.current?.viewport
+      if (!node || !viewport || node.height < 1) return
+      const next = isFullyWithinViewport(node, viewport)
+      setFullyVisible((current) => current === next ? current : next)
+    }
+    updateVisibility()
+    const interval = setInterval(updateVisibility, 32)
+    return () => clearInterval(interval)
+  }, [image, scrollboxRef])
 
   useEffect(() => {
     if (!nearViewport) return
@@ -134,9 +169,11 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
   }, [filePath, fullSize, nearViewport, loadAttempt])
 
   const displayed = image ? fittedImageSize(image.width, image.height, maxWidth, maxHeight) : undefined
+  // Kitty and Sixel placements are terminal overlays and cannot be scroll-clipped reliably.
+  const displayProtocol = scrollboxRef && !fullyVisible && protocol !== "blocks" ? "blocks" : protocol
   return <box ref={containerRef} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={{ flexDirection: "column", width: displayed?.width, height: displayed?.height }}>
     {!nearViewport && expectedImage ? <text fg="#888888">{filename} (image preview loads nearby)</text> : null}
     {nearViewport && !image && expectedImage ? <text fg="#888888">{loadFailed ? `${filename} (image unavailable)` : "Loading image..."}</text> : null}
-    {image && displayed ? <image source={image} fit="fit" protocol={protocol} style={displayed} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} /> : null}
+    {image && displayed ? <image source={image} fit="fit" protocol={displayProtocol} style={displayed} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} /> : null}
   </box>
 }

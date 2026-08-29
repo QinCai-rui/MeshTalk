@@ -3,7 +3,7 @@ import { testRender } from "@opentui/react/test-utils"
 import { mkdir, rm } from "fs/promises"
 import { join } from "path"
 import { tmpdir } from "os"
-import { ImageAttachment, detectImageFormat, fittedImageSize } from "./ImageAttachment"
+import { ImageAttachment, detectImageFormat, fittedImageSize, isFullyWithinViewport } from "./ImageAttachment"
 import { goBack } from "../navigation"
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JNNsAAAAASUVORK5CYII="
@@ -12,6 +12,8 @@ test("identifies supported formats and fits an image within its terminal area", 
   expect(detectImageFormat(new Uint8Array(Buffer.from(PNG, "base64")))).toBe("png")
   expect(detectImageFormat(new Uint8Array([0x42, 0x4d]))).toBeUndefined()
   expect(fittedImageSize(1600, 900, 40, 12)).toEqual({ width: 40, height: 12 })
+  expect(isFullyWithinViewport({ screenY: 6, height: 4 }, { screenY: 5, height: 8 })).toBe(true)
+  expect(isFullyWithinViewport({ screenY: 4, height: 4 }, { screenY: 5, height: 8 })).toBe(false)
 })
 
 test("opens a loaded thumbnail with a mouse click", async () => {
