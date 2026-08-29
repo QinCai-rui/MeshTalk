@@ -340,7 +340,7 @@ export function ChatApp() {
       })
       void actions.refreshFiles()
       void ipc.send("control").then((control) => {
-        if (!control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number, control_url: control.url as string | null | undefined })
+        if (active && !control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number, control_url: control.url as string | null | undefined })
       }).catch(() => {})
     }, 3000)
     return () => { active = false; clearInterval(interval) }

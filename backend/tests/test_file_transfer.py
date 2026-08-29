@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,7 @@ from meshtalk.protocol import (
     FileAckPayload,
     FileChunkPayload,
     FileOfferPayload,
+    MAX_FILENAME_LENGTH,
     Packet,
     PacketType,
 )
@@ -140,6 +142,41 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         stored_path = Path(transfer["file_path"])
         self.assertEqual(stored_path.parent.name, self.sender.peer_id)
         self.assertEqual(stored_path.name, "document_123.bin")
+
+    async def test_incoming_path_retries_when_suffixed_path_exists(self):
+        first = self.receiver._incoming_path_for(
+            self.file_id, self.sender.peer_id, None, "document.bin", 1.0
+        )
+        first.parent.mkdir(parents=True, exist_ok=True)
+        first.touch()
+        suffixed = self.receiver._incoming_path_for(
+            self.file_id, self.sender.peer_id, None, "document.bin", 1.0
+        )
+        suffixed.touch()
+
+        candidate = self.receiver._incoming_path_for(
+            self.file_id, self.sender.peer_id, None, "document.bin", 1.0
+        )
+
+        file_id_suffix = hashlib.sha256(self.file_id.encode("utf-8")).hexdigest()[:16]
+        self.assertNotEqual(candidate, suffixed)
+        self.assertIn(file_id_suffix, candidate.stem)
+        self.assertFalse(candidate.exists())
+
+    async def test_collision_path_respects_maximum_filename_length(self):
+        filename = "a" * (MAX_FILENAME_LENGTH - len(".bin")) + ".bin"
+        first = self.receiver._incoming_path_for(
+            self.file_id, self.sender.peer_id, None, filename, 1.0
+        )
+        first.parent.mkdir(parents=True, exist_ok=True)
+        first.touch()
+
+        candidate = self.receiver._incoming_path_for(
+            self.file_id, self.sender.peer_id, None, filename, 1.0
+        )
+
+        self.assertLessEqual(len(candidate.name), MAX_FILENAME_LENGTH)
+        self.assertEqual(candidate.suffix, ".bin")
 
     async def test_reconnect_requests_only_missing_ranges(self):
         await self.receiver.handle_packet(self.sender_peer, self._chunk(0))

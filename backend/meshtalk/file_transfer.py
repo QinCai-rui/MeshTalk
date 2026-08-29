@@ -74,15 +74,19 @@ def _resolve_files_base(data_dir: Path, settings=None) -> Path:
     return _files_base(data_dir)
 
 
-def _timestamped_filename(filename: str, created_at: float) -> str:
-    """Add the sender's Unix timestamp while preserving the original extension."""
+def _suffixed_filename(filename: str, suffix_text: str) -> str:
+    """Add a suffix while preserving the extension and filename length limit."""
     safe_name = sanitize_filename(filename)
-    timestamp = str(int(created_at))
     suffix = Path(safe_name).suffix
     stem = safe_name[:-len(suffix)] if suffix else safe_name
-    available_stem_length = MAX_FILENAME_LENGTH - len(timestamp) - len(suffix) - 1
+    available_stem_length = MAX_FILENAME_LENGTH - len(suffix_text) - len(suffix) - 1
     stem = stem[:max(1, available_stem_length)].rstrip(" ._") or "file"
-    return sanitize_filename(f"{stem}_{timestamp}{suffix}")
+    return sanitize_filename(f"{stem}_{suffix_text}{suffix}")
+
+
+def _timestamped_filename(filename: str, created_at: float) -> str:
+    """Add the sender's Unix timestamp while preserving the original extension."""
+    return _suffixed_filename(filename, str(int(created_at)))
 
 
 class FileTransferManager:
@@ -119,9 +123,14 @@ class FileTransferManager:
         folder_name = sanitize_filename(group_id or sender_id)
         stored_name = _timestamped_filename(filename, created_at)
         path = self.files_base / folder_name / stored_name
-        if path.exists():
-            path = path.with_name(f"{path.stem}_{file_id[:8]}{path.suffix}")
-        return path
+        file_id_suffix = hashlib.sha256(file_id.encode("utf-8")).hexdigest()[:16]
+        candidate = path
+        attempt = 1
+        while candidate.exists():
+            collision_suffix = file_id_suffix if attempt == 1 else f"{file_id_suffix}_{attempt}"
+            candidate = path.with_name(_suffixed_filename(path.name, collision_suffix))
+            attempt += 1
+        return candidate
 
     def _emit(self, event: dict) -> None:
         if self.on_event:
@@ -406,19 +415,23 @@ class FileTransferManager:
         await self.db.mark_message_seen(offer.file_id)
         # Create inbound transfer record and prepare file
         safe_name = sanitize_filename(offer.filename)
-        incoming_path = self._incoming_path_for(
-            offer.file_id, offer.sender_id, offer.group_id, safe_name, offer.created_at
-        )
-        incoming_path.parent.mkdir(parents=True, exist_ok=True)
-        # Preallocate file to file_size with zeros (cross-platform)
-        try:
-            with open(incoming_path, "wb") as f:
-                if offer.file_size > 0:
-                    f.seek(offer.file_size - 1)
-                    f.write(b"\x00")
-        except OSError as exc:
-            logger.warning("Failed to preallocate file %s: %s", offer.file_id, exc)
-            raise
+        while True:
+            incoming_path = self._incoming_path_for(
+                offer.file_id, offer.sender_id, offer.group_id, safe_name, offer.created_at
+            )
+            incoming_path.parent.mkdir(parents=True, exist_ok=True)
+            # Create exclusively so a concurrent offer cannot overwrite the chosen path.
+            try:
+                with open(incoming_path, "xb") as f:
+                    if offer.file_size > 0:
+                        f.seek(offer.file_size - 1)
+                        f.write(b"\x00")
+                break
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                logger.warning("Failed to preallocate file %s: %s", offer.file_id, exc)
+                raise
         await self.db.save_file_transfer({
             "file_id": offer.file_id,
             "filename": safe_name,
