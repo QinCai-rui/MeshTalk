@@ -327,22 +327,23 @@ export function ChatApp() {
   }, [ipc, renderer])
 
   useEffect(() => {
+    let active = true
     const interval = setInterval(() => {
       void actions.refreshPeers().catch((error) => {
-        if (!backendDisconnected.current) setStatus(`Peer refresh error: ${String(error)}`)
+        if (active && !backendDisconnected.current) setStatus(`Peer refresh error: ${String(error)}`)
       })
       void actions.refreshGroups().catch((error) => {
-        if (!backendDisconnected.current) setStatus(`Group refresh error: ${String(error)}`)
+        if (active && !backendDisconnected.current) setStatus(`Group refresh error: ${String(error)}`)
       })
       void actions.refreshGroupMembers().catch((error) => {
-        if (!backendDisconnected.current && selectedGroupId) setStatus(`Group member refresh error: ${String(error)}`)
+        if (active && !backendDisconnected.current && selectedGroupId) setStatus(`Group member refresh error: ${String(error)}`)
       })
       void actions.refreshFiles()
       void ipc.send("control").then((control) => {
         if (!control.error) setControlStatus({ connected: control.connected as boolean, reconnect_attempts: control.reconnect_attempts as number, control_url: control.url as string | null | undefined })
       }).catch(() => {})
     }, 3000)
-    return () => clearInterval(interval)
+    return () => { active = false; clearInterval(interval) }
   }, [ipc, selectedGroupId])
 
   useEffect(() => {
