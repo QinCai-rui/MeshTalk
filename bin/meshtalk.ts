@@ -114,6 +114,11 @@ async function runUpdate(args: string[]): Promise<void> {
   console.log(`Downloading and installing MeshTalk ${release.version}...`);
   if (isWindows) applyPendingWindowsReplacement();
   await installRelease(release, destination);
+  if (isWindows) {
+    if (!spawnWindowsReplacementHelper()) throw new Error("Unable to start the Windows update replacement process.");
+    console.log("Update installed. MeshTalk will restart shortly.");
+    return;
+  }
   console.log("Update installed. Restart MeshTalk to use the new version.");
 }
 
@@ -331,7 +336,7 @@ async function main() {
 
   if (args[0] === "update") {
     await runUpdate(args.slice(1));
-    return;
+    process.exit(0);
   }
 
   if (args.length === 1 && ["help", "--help", "-h"].includes(args[0])) {

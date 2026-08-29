@@ -197,6 +197,15 @@ type PendingUpdate = {
   files: string[]
 }
 
+function writePendingUpdate(pending: PendingUpdate): void {
+  mkdirSync(DATA_DIR, { recursive: true })
+  const temporary = `${PENDING_UPDATE_PATH}.tmp`
+  writeFileSync(temporary, JSON.stringify(pending))
+  chmodSync(temporary, 0o600)
+  rmSync(PENDING_UPDATE_PATH, { force: true })
+  renameSync(temporary, PENDING_UPDATE_PATH)
+}
+
 export function applyPendingWindowsReplacement(): boolean {
   let pending: PendingUpdate
   try {
@@ -204,21 +213,24 @@ export function applyPendingWindowsReplacement(): boolean {
   } catch {
     return true
   }
-  let allSucceeded = true
+  const remaining = [...pending.files]
   for (const name of pending.files) {
     const source = join(pending.staging, name)
     const dest = join(pending.installDir, name)
     try {
       renameSync(source, dest)
     } catch {
-      allSucceeded = false
+      continue
     }
+    remaining.splice(remaining.indexOf(name), 1)
+    if (remaining.length > 0) writePendingUpdate({ ...pending, files: remaining })
   }
-  if (allSucceeded) {
+  if (remaining.length === 0) {
     try { rmSync(pending.staging, { recursive: true, force: true }) } catch {}
     try { rmSync(PENDING_UPDATE_PATH, { force: true }) } catch {}
+    return true
   }
-  return allSucceeded
+  return false
 }
 
 export function spawnWindowsReplacementHelper(): boolean {
@@ -231,24 +243,27 @@ export function spawnWindowsReplacementHelper(): boolean {
   const launcherPath = join(pending.installDir, `meshtalk${process.platform === "win32" ? ".exe" : ""}`)
   const lines = [
     "@echo off",
-    "setlocal",
+    "setlocal EnableExtensions EnableDelayedExpansion",
     `set PID=${process.pid}`,
     "set /a attempts=0",
     ":wait",
     `tasklist /fi "PID eq %PID%" 2>nul | find /i "%PID%" >nul`,
     "if not errorlevel 1 (",
     "    set /a attempts+=1",
-    "    if %attempts% GEQ 120 goto giveup",
+    "    if !attempts! GEQ 120 goto giveup",
     "    timeout /t 1 /nobreak >nul",
     "    goto wait",
     ")",
-    ...pending.files.map((name) => `copy /y "${join(pending.staging, name)}" "${join(pending.installDir, name)}" >nul`),
+    ...pending.files.map((name) => `copy /y "${join(pending.staging, name)}" "${join(pending.installDir, name)}" >nul || goto failed`),
     `rmdir /s /q "${pending.staging}"`,
     `del "${PENDING_UPDATE_PATH}" >nul 2>&1`,
     `start "" "${launcherPath}"`,
     "exit /b 0",
     ":giveup",
-    `del "${PENDING_UPDATE_PATH}" >nul 2>&1`,
+    "echo MeshTalk update helper could not wait for the launcher to exit.",
+    "exit /b 1",
+    ":failed",
+    "echo MeshTalk update helper could not replace all installed files.",
     "exit /b 1",
   ]
   const script = join(pending.staging, "replace.cmd")
@@ -337,11 +352,7 @@ export async function installRelease(release: Release, installDir: string, onPro
       await Promise.all(expectedFiles().map(async (name) => {
         await copyFile(join(extracted, name), join(installStaging, name))
       }))
-      const pendingTemporary = `${PENDING_UPDATE_PATH}.tmp`
-      try { rmSync(PENDING_UPDATE_PATH, { force: true }) } catch {}
-      writeFileSync(pendingTemporary, JSON.stringify({ staging: installStaging, installDir, files: expectedFiles() }))
-      chmodSync(pendingTemporary, 0o600)
-      renameSync(pendingTemporary, PENDING_UPDATE_PATH)
+      writePendingUpdate({ staging: installStaging, installDir, files: expectedFiles() })
       staging = undefined
       return
     }
