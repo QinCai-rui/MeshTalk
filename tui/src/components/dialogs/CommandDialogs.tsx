@@ -15,7 +15,7 @@ type CommandsDialogProps = {
 
 export function CommandsDialog({ dialogHeight, groups, peers, selectedGroup, selection, runCommand }: CommandsDialogProps) {
   return <box style={{ flexDirection: "column" }}>
-    <box height={1} flexShrink={0}><text><span fg="#b9a7ff"><b>SETTINGS</b></span> <span fg="#77718f">Choose an action</span></text></box>
+    <box height={1} flexShrink={0}><text><span fg="#b9a7ff"><b>COMMAND CENTER</b></span> <span fg="#77718f">Choose an action</span></text></box>
     <box height={1} flexShrink={0}><text fg="#534b70">────────────────────────────────────────</text></box>
     <MouseSelect focused height={Math.max(5, dialogHeight - 5)} options={[
       { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },

@@ -16,8 +16,7 @@ function expandHomePath(value: string): string {
 const DATA_DIR = process.env.MESHTALK_DATA_DIR ? expandHomePath(process.env.MESHTALK_DATA_DIR) : join(HOME, ".meshtalk")
 const SETTINGS_PATH = join(DATA_DIR, "settings.json")
 const RESTART_PATH = join(DATA_DIR, "update-restart-path")
-const WINDOWS_REPLACEMENT_PATH = join(DATA_DIR, "windows-update-replacement-path")
-const WINDOWS_REPLACEMENT_STATUS_PATH = join(DATA_DIR, "windows-update-replacement-status")
+const PENDING_UPDATE_PATH = join(DATA_DIR, "pending-update.json")
 export const UPDATE_RESTART_EXIT_CODE = 75
 
 export type Release = {
@@ -192,62 +191,96 @@ function expectedFiles(): string[] {
   return ["meshtalk", "meshtalk-backend", "meshtalk-cli", "meshtalk-tui"].map((name) => `${name}${suffix}`)
 }
 
-async function scheduleWindowsReplacement(extracted: string, installDir: string): Promise<void> {
-  const staging = mkdtempSync(join(tmpdir(), "meshtalk-update-ready-"))
-  await Promise.all(expectedFiles().map((name) => copyFile(join(extracted, name), join(staging, name))))
-  const lines = ["@echo off", "setlocal", "set /a attempts=0", ":retry", "timeout /t 1 /nobreak >nul"]
-  for (const name of expectedFiles()) lines.push(`copy /y "${join(staging, name)}" "${join(installDir, name)}" >nul || goto failed`)
-  lines.push(`rmdir /s /q "${staging}"`, `>"${WINDOWS_REPLACEMENT_STATUS_PATH}" echo success`, `if not exist "${RESTART_PATH}" exit /b 0`, `set /p restartPath=<"${RESTART_PATH}"`, `del "${RESTART_PATH}"`, "start \"\" /b \"%restartPath%\"", "exit /b 0", ":failed", "set /a attempts+=1", "if %attempts% LSS 60 goto retry", `>"${WINDOWS_REPLACEMENT_STATUS_PATH}" echo failed`, "echo MeshTalk update could not replace running files.", "exit /b 1")
-  const script = join(staging, "replace.cmd")
-  writeFileSync(script, lines.join("\r\n"))
-  rmSync(WINDOWS_REPLACEMENT_STATUS_PATH, { force: true })
-  writeWindowsReplacementPath(script)
+type PendingUpdate = {
+  staging: string
+  installDir: string
+  files: string[]
 }
 
-function writeWindowsReplacementPath(script: string): void {
+function writePendingUpdate(pending: PendingUpdate): void {
   mkdirSync(DATA_DIR, { recursive: true })
-  const temporary = `${WINDOWS_REPLACEMENT_PATH}.tmp`
-  writeFileSync(temporary, script)
+  const temporary = `${PENDING_UPDATE_PATH}.tmp`
+  writeFileSync(temporary, JSON.stringify(pending))
   chmodSync(temporary, 0o600)
-  renameSync(temporary, WINDOWS_REPLACEMENT_PATH)
+  rmSync(PENDING_UPDATE_PATH, { force: true })
+  renameSync(temporary, PENDING_UPDATE_PATH)
 }
 
-export function startWindowsReplacement(): boolean {
-  let script: string
+export function applyPendingWindowsReplacement(): boolean {
+  let pending: PendingUpdate
   try {
-    script = readFileSync(WINDOWS_REPLACEMENT_PATH, "utf-8").trim()
-    if (!script || !existsSync(script)) return false
-    rmSync(WINDOWS_REPLACEMENT_PATH, { force: true })
+    pending = JSON.parse(readFileSync(PENDING_UPDATE_PATH, "utf-8"))
+  } catch {
+    return true
+  }
+  const remaining = [...pending.files]
+  for (const name of pending.files) {
+    const source = join(pending.staging, name)
+    const dest = join(pending.installDir, name)
+    try {
+      renameSync(source, dest)
+    } catch {
+      continue
+    }
+    remaining.splice(remaining.indexOf(name), 1)
+    if (remaining.length > 0) writePendingUpdate({ ...pending, files: remaining })
+  }
+  if (remaining.length === 0) {
+    try { rmSync(pending.staging, { recursive: true, force: true }) } catch {}
+    try { rmSync(PENDING_UPDATE_PATH, { force: true }) } catch {}
+    return true
+  }
+  return false
+}
+
+export function spawnWindowsReplacementHelper(): boolean {
+  let pending: PendingUpdate
+  try {
+    pending = JSON.parse(readFileSync(PENDING_UPDATE_PATH, "utf-8"))
   } catch {
     return false
   }
-  // The batch file must outlive the TUI and launcher that hold these executables open.
+  const launcherPath = join(pending.installDir, `meshtalk${process.platform === "win32" ? ".exe" : ""}`)
+  const lines = [
+    "@echo off",
+    "setlocal EnableExtensions EnableDelayedExpansion",
+    `set PID=${process.pid}`,
+    "set /a attempts=0",
+    ":wait",
+    `tasklist /fi "PID eq %PID%" 2>nul | find /i "%PID%" >nul`,
+    "if not errorlevel 1 (",
+    "    set /a attempts+=1",
+    "    if !attempts! GEQ 120 goto giveup",
+    "    timeout /t 1 /nobreak >nul",
+    "    goto wait",
+    ")",
+    ...pending.files.map((name) => `copy /y "${join(pending.staging, name)}" "${join(pending.installDir, name)}" >nul || goto failed`),
+    `rmdir /s /q "${pending.staging}"`,
+    `del "${PENDING_UPDATE_PATH}" >nul 2>&1`,
+    `start "" "${launcherPath}"`,
+    "exit /b 0",
+    ":giveup",
+    "echo MeshTalk update helper could not wait for the launcher to exit.",
+    "exit /b 1",
+    ":failed",
+    "echo MeshTalk update helper could not replace all installed files.",
+    "exit /b 1",
+  ]
+  const script = join(pending.staging, "replace.cmd")
+  writeFileSync(script, lines.join("\r\n"))
   try {
-    const replacement = Bun.spawn(["cmd.exe", "/d", "/c", script], {
+    const helper = Bun.spawn(["cmd.exe", "/d", "/c", script], {
       detached: true,
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
       windowsHide: true,
     })
-    if (!Number.isInteger(replacement.pid) || replacement.pid <= 0) throw new Error("Windows update replacement process did not start")
-    replacement.unref()
+    if (!Number.isInteger(helper.pid) || helper.pid <= 0) throw new Error("Windows update helper process did not start")
+    helper.unref()
     return true
   } catch {
-    try { writeWindowsReplacementPath(script) } catch {}
     return false
-  }
-}
-
-export type WindowsReplacementStatus = "success" | "failed"
-
-export function takeWindowsReplacementStatus(): WindowsReplacementStatus | null {
-  try {
-    const status = readFileSync(WINDOWS_REPLACEMENT_STATUS_PATH, "utf-8").trim()
-    rmSync(WINDOWS_REPLACEMENT_STATUS_PATH, { force: true })
-    return status === "success" || status === "failed" ? status : null
-  } catch {
-    return null
   }
 }
 
@@ -314,10 +347,16 @@ export async function installRelease(release: Release, installDir: string, onPro
     if (process.platform === "win32") {
       onProgress?.({ current: 6, total: 6, step: "Staging files for replacement after restart" })
       await Bun.sleep(16)
-      await scheduleWindowsReplacement(extracted, installDir)
+      staging = mkdtempSync(join(installDir, ".meshtalk-update-"))
+      const installStaging = staging
+      await Promise.all(expectedFiles().map(async (name) => {
+        await copyFile(join(extracted, name), join(installStaging, name))
+      }))
+      writePendingUpdate({ staging: installStaging, installDir, files: expectedFiles() })
+      staging = undefined
       return
     }
-    // A running Unix executable cannot be copied over, but its pathname can be
+    // A running executable cannot be copied over, but its pathname can be
     // atomically replaced. Stage on the installation filesystem so rename does
     // not fail when the system temporary directory is on another filesystem.
     onProgress?.({ current: 6, total: 6, step: "Replacing installed binaries" })
@@ -327,7 +366,7 @@ export async function installRelease(release: Release, installDir: string, onPro
     await Promise.all(expectedFiles().map(async (name) => {
       const staged = join(installStaging, name)
       await copyFile(join(extracted, name), staged)
-      await chmod(staged, 0o755)
+      if (process.platform !== "win32") await chmod(staged, 0o755)
     }))
     for (const name of expectedFiles()) {
       await rename(join(installStaging, name), join(installDir, name))
