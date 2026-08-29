@@ -105,7 +105,7 @@ const IS_RELEASE_BUILD =
 const APP_RELEASE_VERSION =
   typeof APP_VERSION !== "undefined" && APP_VERSION ? APP_VERSION : "dev";
 const MIN_SPLASH_PHASE_MS = 500;
-const MIN_SPLASH_DURATION_MS = 5000;
+const MIN_SPLASH_DURATION_MS = 4000;
 
 const MESHTALK_WORDMARK = [
   "███╗   ███╗███████╗███████╗██╗  ██╗████████╗ █████╗ ██╗     ██╗  ██╗",
@@ -255,6 +255,8 @@ export function ChatApp() {
   const [startupMessage, setStartupMessage] = useState("Preparing terminal graphics...");
   const [rendererReady, setRendererReady] = useState(false);
   const [appReady, setAppReady] = useState(false);
+  const [splashDurationMs, setSplashDurationMs] = useState(MIN_SPLASH_DURATION_MS);
+  const [splashPhaseMs, setSplashPhaseMs] = useState(MIN_SPLASH_PHASE_MS);
   const startupPhase = useRef({
     message: "Preparing terminal graphics...",
     startedAt: Date.now(),
@@ -324,8 +326,8 @@ export function ChatApp() {
   async function showStartupPhase(message: string) {
     if (startupPhase.current.message === message) return;
     const elapsed = Date.now() - startupPhase.current.startedAt;
-    if (elapsed < MIN_SPLASH_PHASE_MS)
-      await Bun.sleep(MIN_SPLASH_PHASE_MS - elapsed);
+    if (elapsed < splashPhaseMs)
+      await Bun.sleep(splashPhaseMs - elapsed);
     startupPhase.current = { message, startedAt: Date.now() };
     setStartupMessage(message);
   }
@@ -594,12 +596,17 @@ export function ChatApp() {
           control_url: control.url as string | null | undefined,
         });
         const advanced = await ipc.send("advanced_config");
-        if (!advanced.error)
+        if (!advanced.error) {
           setImageProtocol(advanced.image_protocol as ImageProtocol);
+          if (typeof advanced.splash_duration_ms === "number" && advanced.splash_duration_ms >= 0)
+            setSplashDurationMs(advanced.splash_duration_ms);
+          if (typeof advanced.splash_phase_ms === "number" && advanced.splash_phase_ms >= 0)
+            setSplashPhaseMs(advanced.splash_phase_ms);
+        }
         await showStartupPhase("Finalising terminal layout...");
         await Promise.race([renderer.idle(), Bun.sleep(250)]);
         await Bun.sleep(50);
-        await Bun.sleep(Math.max(0, MIN_SPLASH_DURATION_MS - (Date.now() - splashStartedAt.current)));
+        await Bun.sleep(Math.max(0, splashDurationMs - (Date.now() - splashStartedAt.current)));
         if (!(response.setup_dismissed as boolean)) {
           setDialog({ kind: "rename", firstRun: true });
         } else if (!control.url && !control.setup_dismissed) {

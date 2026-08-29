@@ -146,6 +146,8 @@ class Settings:
         self.muted_peers: dict[str, float] = {}
         self._files_dir: str | None = None
         self._image_protocol = "auto"
+        self._splash_duration_ms = 4000
+        self._splash_phase_ms = 500
         self._load()
 
     @property
@@ -194,6 +196,26 @@ class Settings:
         if protocol not in {"auto", "kitty", "sixel", "blocks"}:
             raise ValueError("image_protocol must be auto, kitty, sixel, or blocks")
         self._image_protocol = protocol
+        self.save()
+
+    @property
+    def splash_duration_ms(self) -> int:
+        return self._splash_duration_ms
+
+    def set_splash_duration_ms(self, ms: int) -> None:
+        if not isinstance(ms, (int, float)) or ms < 0:
+            raise ValueError("splash_duration_ms must be a non-negative number")
+        self._splash_duration_ms = int(ms)
+        self.save()
+
+    @property
+    def splash_phase_ms(self) -> int:
+        return self._splash_phase_ms
+
+    def set_splash_phase_ms(self, ms: int) -> None:
+        if not isinstance(ms, (int, float)) or ms < 0:
+            raise ValueError("splash_phase_ms must be a non-negative number")
+        self._splash_phase_ms = int(ms)
         self.save()
 
     @property
@@ -420,6 +442,8 @@ class Settings:
             "muted_peers": self.muted_peers,
             "files_dir": self._files_dir,
             "image_protocol": self._image_protocol,
+            "splash_duration_ms": self._splash_duration_ms,
+            "splash_phase_ms": self._splash_phase_ms,
         }
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, indent=2))
@@ -499,3 +523,9 @@ class Settings:
         image_protocol = data.get("image_protocol", "auto")
         if isinstance(image_protocol, str) and image_protocol in {"auto", "kitty", "sixel", "blocks"}:
             self._image_protocol = image_protocol
+        splash_duration_ms = data.get("splash_duration_ms", 4000)
+        if isinstance(splash_duration_ms, (int, float)) and splash_duration_ms >= 0:
+            self._splash_duration_ms = int(splash_duration_ms)
+        splash_phase_ms = data.get("splash_phase_ms", 500)
+        if isinstance(splash_phase_ms, (int, float)) and splash_phase_ms >= 0:
+            self._splash_phase_ms = int(splash_phase_ms)

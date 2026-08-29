@@ -540,6 +540,8 @@ async def main(debug: bool = False) -> None:
             "control_url": settings.control_url or None,
             "stun_server": f"{stun_host}:{stun_port}",
             "image_protocol": settings.image_protocol,
+            "splash_duration_ms": settings.splash_duration_ms,
+            "splash_phase_ms": settings.splash_phase_ms,
         }
 
     async def handle_room_create(req: dict) -> dict:
