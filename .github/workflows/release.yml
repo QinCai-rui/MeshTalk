@@ -117,6 +117,9 @@ jobs:
       - name: Build backend binary
         run: uv run --project backend --with nuitka python -m nuitka --mode=onefile --onefile-tempdir-spec='{CACHE_DIR}/MeshTalk/meshtalk-backend' --onefile-cache-mode=cached --output-dir=build/nuitka --output-filename=meshtalk-backend --assume-yes-for-downloads backend/meshtalk_launcher.py
 
+      - name: Create release directory
+        run: mkdir -p dist/release
+
       - name: Move backend binary to release directory
         run: cp build/nuitka/meshtalk-backend${{ matrix.suffix }} dist/release/meshtalk-backend${{ matrix.suffix }}
 
