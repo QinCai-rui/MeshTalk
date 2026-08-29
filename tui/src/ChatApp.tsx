@@ -178,9 +178,8 @@ function StartupSplash({ message, width, height }: { message: string; width: num
           overflow: "hidden",
         }}
       >
-        <box style={{ width: "100%", marginBottom: 1, flexDirection: "row", justifyContent: "space-between" }}>
-          <text fg="#60708d">PRIVATE PEER-TO-PEER MESSENGER</text>
-          <text><span fg="#3f516f">BUILD </span><span fg="#8fa7c9">{APP_RELEASE_VERSION}</span></text>
+        <box style={{ width: "100%", marginBottom: 1, flexDirection: "row", justifyContent: "flex-end" }}>
+          <text><span fg="#3f516f">VERSION </span><span fg="#8fa7c9">{APP_RELEASE_VERSION}</span></text>
         </box>
 
         {wide ? <box style={{ width: "100%", height: 7, flexDirection: "column", justifyContent: "center", alignItems: "center" }}>
@@ -207,13 +206,8 @@ function StartupSplash({ message, width, height }: { message: string; width: num
           {STARTUP_PHASES.map((label, index) => <text key={label}><span fg={index < phase ? "#65d6b4" : index === phase ? "#a997ff" : "#35445d"}>{index <= phase ? "●" : "○"}</span><span fg={index === phase ? "#c7d3e8" : "#526078"}> {label}</span></text>)}
         </box> : null}
 
-        {!compact ? <box style={{ width: "100%", marginTop: 1, flexDirection: "row", justifyContent: "space-between" }}>
-          <text fg="#40506a">Private by architecture • Not by policy</text>
-          <text fg="#40506a">Fully decentralised</text>
-        </box> : null}
       </box>
 
-      {!compact ? <text fg="#7187a8"> A network of trusted peers </text> : null}
     </box>
   );
 }
