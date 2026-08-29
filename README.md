@@ -97,9 +97,8 @@ variables `MESHTALK_GITHUB_USER` and `MESHTALK_GITHUB_REPO` override the
 saved values for a single launch.
 
 On Windows, run `meshtalk.exe` from the extracted archive. Keep these files
-together in the extracted directory: `meshtalk`, `meshtalk-backend`,
-`meshtalk-cli`, and `meshtalk-tui` (all end in `.exe` on Windows). Only the
-`meshtalk` launcher is invoked directly.
+together in the extracted directory: `meshtalk` and `meshtalk-backend` (all end
+in `.exe` on Windows). Only the `meshtalk` launcher is invoked directly.
 
 ### First Launch
 
@@ -307,25 +306,23 @@ platform. From the repository root, run:
 bun install
 mkdir -p dist/local
 
-# Compile the launcher, CLI, and TUI for the current platform.
+# Compile the launcher (includes CLI and TUI) for the current platform.
 bun build ./bin/meshtalk.ts --compile --outfile dist/local/meshtalk
-bun build ./cli/src/index.ts --compile --outfile dist/local/meshtalk-cli
-bun build ./tui/src/index.tsx --compile \
-  --define 'process.env.OPENTUI_LIBC="glibc"' \
-  --outfile dist/local/meshtalk-tui
 
 # Compile the Python backend into a standalone executable.
-uv run --project backend --with pyinstaller pyinstaller \
-  --noconfirm --onefile --name meshtalk-backend \
-  --distpath dist/local --workpath build/pyinstaller \
-  --specpath build/pyinstaller backend/meshtalk_launcher.py
+uv run --project backend --with nuitka python -m nuitka \
+  --mode=onefile --onefile-tempdir-spec='{CACHE_DIR}/MeshTalk/meshtalk-backend' \
+  --onefile-cache-mode=cached --output-dir=build/nuitka \
+  --output-filename=meshtalk-backend \
+  --assume-yes-for-downloads backend/meshtalk_launcher.py
+cp build/nuitka/meshtalk-backend dist/local/meshtalk-backend
 ```
 
-The resulting `meshtalk`, `meshtalk-cli`, `meshtalk-tui`, and
-`meshtalk-backend` files are in `dist/local`. Keep them together when running
-the launcher. To compile for another Bun-supported target, add a target such
-as `--target=bun-linux-arm64` to each `bun build` command. The PyInstaller
-backend must be compiled on the target operating system and CPU architecture.
+The resulting `meshtalk` and `meshtalk-backend` files are in `dist/local`. Keep
+them together when running the launcher. To compile for another Bun-supported
+target, add a target such as `--target=bun-linux-arm64` to the `bun build`
+command. The Nuitka backend must be compiled on the target operating system and
+CPU architecture.
 
 On Linux, the compiled backend uses the glibc version available on the build
 system. Building on an older Linux distribution generally provides broader

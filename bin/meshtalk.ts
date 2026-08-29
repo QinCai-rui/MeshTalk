@@ -8,6 +8,8 @@ import { basename, dirname, join, resolve } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { applyPendingWindowsReplacement, checkForUpdate, githubRepository, installRelease, isReleaseInstallDir, releaseInstallDir, saveGithubRepository, saveGithubToken, spawnWindowsReplacementHelper, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
+import { main as cliMain } from "../cli/src/index";
+import { runTui } from "./tui-entry";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -41,8 +43,6 @@ type Component = {
 
 type Components = {
   backend: Component;
-  cli: Component;
-  tui: Component;
 };
 
 function log(msg: string) {
@@ -159,17 +159,19 @@ function resolveRoot(): string {
 }
 
 function bundledComponent(name: string): Component | null {
-  const path = join(dirname(process.execPath), `${name}${EXECUTABLE_SUFFIX}`);
-  if (!existsSync(path)) return null;
-  if (!isWindows) chmodSync(path, 0o755);
-  return { command: [path] };
+  for (const executable of [process.argv[0], process.argv[1], process.execPath]) {
+    if (!executable) continue;
+    const path = join(dirname(executable), `${name}${EXECUTABLE_SUFFIX}`);
+    if (!existsSync(path)) continue;
+    if (!isWindows) chmodSync(path, 0o755);
+    return { command: [path] };
+  }
+  return null;
 }
 
 function resolveComponents(): Components {
   const backend = bundledComponent("meshtalk-backend");
-  const cli = bundledComponent("meshtalk-cli");
-  const tui = bundledComponent("meshtalk-tui");
-  if (backend && cli && tui) return { backend, cli, tui };
+  if (backend) return { backend };
 
   const uv = findExecutable("uv");
   if (!uv) {
@@ -179,8 +181,6 @@ function resolveComponents(): Components {
   const repoRoot = resolveRoot();
   return {
     backend: { command: [uv, "run", "meshtalk"], cwd: join(repoRoot, "backend") },
-    cli: { command: [process.execPath, "run", "src/index.ts"], cwd: join(repoRoot, "cli") },
-    tui: { command: [process.execPath, "run", "src/index.tsx"], cwd: join(repoRoot, "tui") },
   };
 }
 
@@ -339,15 +339,9 @@ async function main() {
   }
 
   if (args.length === 1 && ["help", "--help", "-h"].includes(args[0])) {
-    const cliComponent = resolveComponents().cli;
-    const cli = spawn([...cliComponent.command, "help"], {
-      cwd: cliComponent.cwd,
-      env: { ...process.env, MESHTALK_PROGRAM: PROGRAM },
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    process.exit(await cli.exited);
+    process.env.MESHTALK_PROGRAM = PROGRAM;
+    await cliMain();
+    process.exit(0);
   }
 
   if (args[0] === "backend") {
@@ -428,33 +422,19 @@ async function main() {
       if (!iStartedIt) return Promise.resolve();
       return (cleanupPromise ??= stopBackend(backendPid, false));
     };
-    const handleSignal = () => {
-      void cleanup().finally(() => process.exit(130));
-    };
-    process.once("SIGINT", handleSignal);
-    process.once("SIGTERM", handleSignal);
-    const tui = spawn(components.tui.command, {
-      cwd: components.tui.cwd,
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-    });
+    const tui = await runTui();
     if (iStartedIt) {
       // The TUI owns the visible startup state while the launcher waits silently.
       const ready = await waitForBackend(backendProcess);
       if (!ready) {
         log("Backend did not start within timeout.");
-        tui.kill();
-        await tui.exited;
+        tui.destroy();
         await cleanup();
         log(`See ${BACKEND_LOG_PATH} for details.`);
         process.exit(1);
       }
     }
-    const tuiExit = await tui.exited;
-    code = tuiExit;
-    process.removeListener("SIGINT", handleSignal);
-    process.removeListener("SIGTERM", handleSignal);
+    code = await tui.exited;
     if (code === UPDATE_RESTART_EXIT_CODE) {
       if (!await requestBackendShutdown()) await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt);
       if (isWindows) {
@@ -471,15 +451,10 @@ async function main() {
       await cleanup();
     }
   } else {
-    const cli = spawn([...components.cli.command, ...args], {
-      cwd: components.cli.cwd,
-      env: { ...process.env, MESHTALK_PROGRAM: PROGRAM },
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    const cliExit = await cli.exited;
-    code = cliExit;
+    process.env.MESHTALK_PROGRAM = PROGRAM;
+    process.argv = [process.argv[0], process.argv[1], ...args];
+    await cliMain();
+    code = process.exitCode ?? 0;
   }
 
   process.exit(code);

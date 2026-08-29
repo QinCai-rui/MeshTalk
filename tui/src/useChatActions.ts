@@ -247,8 +247,8 @@ export function useChatActions(deps: ChatActionsDeps) {
 
   function restartUpdate(installDir: string) {
     requestUpdateRestart(installDir)
+    process.exitCode = UPDATE_RESTART_EXIT_CODE
     renderer.destroy()
-    process.exit(UPDATE_RESTART_EXIT_CODE)
   }
 
   async function checkForUpdatesFromAbout() {

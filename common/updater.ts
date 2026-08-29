@@ -188,7 +188,7 @@ export async function checkForUpdate(currentVersion: string): Promise<Release | 
 
 function expectedFiles(): string[] {
   const suffix = process.platform === "win32" ? ".exe" : ""
-  return ["meshtalk", "meshtalk-backend", "meshtalk-cli", "meshtalk-tui"].map((name) => `${name}${suffix}`)
+  return ["meshtalk", "meshtalk-backend"].map((name) => `${name}${suffix}`)
 }
 
 type PendingUpdate = {
@@ -401,9 +401,12 @@ export function updateRestartPath(): string | null {
 }
 
 export function releaseInstallDir(): string | null {
-  const executable = process.execPath
-  const directory = dirname(executable)
-  return basename(executable).startsWith("meshtalk") && isReleaseInstallDir(directory) ? directory : null
+  for (const executable of [process.argv[0], process.argv[1], process.execPath]) {
+    if (!executable || !basename(executable).startsWith("meshtalk")) continue
+    const directory = dirname(executable)
+    if (isReleaseInstallDir(directory)) return directory
+  }
+  return null
 }
 
 export function isReleaseInstallDir(directory: string): boolean {

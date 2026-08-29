@@ -289,8 +289,6 @@ detect_platform() {
   EXPECTED_FILES=(
     "meshtalk${EXECUTABLE_SUFFIX}"
     "meshtalk-backend${EXECUTABLE_SUFFIX}"
-    "meshtalk-cli${EXECUTABLE_SUFFIX}"
-    "meshtalk-tui${EXECUTABLE_SUFFIX}"
   )
 }
 
@@ -1002,7 +1000,7 @@ uninstall_meshtalk() {
   IFS=',' read -r -a installed_files <<< "$files"
   for file in "${installed_files[@]}"; do
     case $file in
-      meshtalk|meshtalk-backend|meshtalk-cli|meshtalk-tui|meshtalk.exe|meshtalk-backend.exe|meshtalk-cli.exe|meshtalk-tui.exe) ;;
+      meshtalk|meshtalk-backend|meshtalk.exe|meshtalk-backend.exe) ;;
       *) die "Refusing to remove an unsafe metadata path." ;;
     esac
     rm -f -- "$INSTALL_DIR/$file"

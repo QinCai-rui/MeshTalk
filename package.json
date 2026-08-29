@@ -12,5 +12,10 @@
     "dev:cli": "bun run --filter meshtalk-cli dev",
     "dev:control": "bun run --filter meshtalk-control dev",
     "build": "bun run --filter '*' build"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.5.9",
+    "@opentui/react": "^0.5.9",
+    "react": "^19.0.0"
   }
 }

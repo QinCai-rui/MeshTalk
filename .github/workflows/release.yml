@@ -109,14 +109,16 @@ jobs:
             echo "version=dev" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Build backend binary
-        run: uv run --project backend --with pyinstaller pyinstaller --noconfirm --onefile --name meshtalk-backend --distpath dist/release --workpath build/pyinstaller --specpath build/pyinstaller backend/meshtalk_launcher.py
+        run: uv run --project backend --with nuitka python -m nuitka --mode=onefile --onefile-tempdir-spec='{CACHE_DIR}/MeshTalk/meshtalk-backend' --onefile-cache-mode=cached --output-dir=build/nuitka --output-filename=meshtalk-backend --assume-yes-for-downloads backend/meshtalk_launcher.py
 
-      - name: Build CLI binary
-        run: bun build ./cli/src/index.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --outfile dist/release/meshtalk-cli${{ matrix.suffix }}
-
-      - name: Build TUI binary
-        run: bun build ./tui/src/index.tsx --compile --target=${{ matrix.target }} --define 'process.env.OPENTUI_LIBC="glibc"' --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --outfile dist/release/meshtalk-tui${{ matrix.suffix }}
+      - name: Move backend binary to release directory
+        run: cp build/nuitka/meshtalk-backend${{ matrix.suffix }} dist/release/meshtalk-backend${{ matrix.suffix }}
 
       - name: Build launcher binary
         run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --outfile dist/release/meshtalk${{ matrix.suffix }}

@@ -88,7 +88,7 @@ function printPeer(peer: Record<string, unknown>): void {
   }
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (!command || command === "help") {
     console.log(USAGE);
@@ -484,4 +484,6 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+if (import.meta.main) {
+  void main();
+}
