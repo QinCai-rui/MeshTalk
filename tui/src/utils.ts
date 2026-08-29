@@ -29,7 +29,16 @@ export function unreadMessageBackground(progress: number): string {
   const channels = start.map((channel, index) => Math.round(channel + (end[index] - channel) * amount))
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`
 }
-export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string { if (!deliveries.length) return "sent"; const delivered = deliveries.filter((d) => d.status === "delivered").length; const queued = deliveries.filter((d) => d.status === "queued"); const unavailable = deliveries.filter((d) => d.status === "unavailable"); const details = [`delivered ${delivered}/${deliveries.length}`]; if (queued.length) details.push(`queued for ${queued.map((d) => d.display_name).join(", ")}`); if (unavailable.length) details.push(`unavailable for ${unavailable.map((d) => d.display_name).join(", ")}`); return details.join(", ") }
+export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
+  if (!deliveries.length) return "sent"
+  const delivered = deliveries.filter((delivery) => delivery.status === "delivered").length
+  const queued = deliveries.filter((delivery) => delivery.status === "queued").length
+  const unavailable = deliveries.filter((delivery) => delivery.status === "unavailable").length
+  const details = [`delivered ${delivered}/${deliveries.length}`]
+  if (queued) details.push(`queued ${queued}`)
+  if (unavailable) details.push(`unavailable ${unavailable}`)
+  return details.join(" · ")
+}
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }
 export function isImageFile(filename: string): boolean { return ["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(filename.split(".").pop()?.toLowerCase() ?? "") }
 export function toFileUrl(path: string, version?: number | null): string { let normalized = path.replace(/\\/g, "/"); if (/^[a-zA-Z]:\//.test(normalized)) normalized = "/" + normalized; const encoded = normalized.split("/").map((segment) => encodeURIComponent(segment)).join("/"); return "file://" + encoded + (version != null ? `?v=${version}` : "") }
