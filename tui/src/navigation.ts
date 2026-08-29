@@ -18,6 +18,8 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
   } else if (dialog.kind === "image-view") {
     if (dialog.returnTo === "files") showDialog({ kind: "file-list", files: fileTransfers })
     else closeDialog()
+  } else if (dialog.kind === "delivery-details") {
+    closeDialog()
   } else if (dialog.kind === "control-custom") {
     showDialog({ kind: "control", firstRun: dialog.firstRun })
   } else if (dialog.kind === "control-status") {

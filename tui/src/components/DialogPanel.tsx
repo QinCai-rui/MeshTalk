@@ -1,4 +1,4 @@
-import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, FriendRequest, Group, RoomStatus } from "../types"
+import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, FriendRequest, Group, GroupDelivery, RoomStatus } from "../types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "../notifications"
 import type { GroupMember, Peer } from "../types"
 import type { Release } from "../../../common/updater"
@@ -6,7 +6,7 @@ import { MouseSelect } from "./MouseSelect"
 import { MarqueeText } from "./MarqueeText"
 import { NotificationDialogs } from "./dialogs/NotificationDialogs"
 import { AboutDialog, CommandsDialog, UpdateDestinationDialog, UpdateDialog, UpdateTokenDialog } from "./dialogs/CommandDialogs"
-import { isImageFile, toFileUrl } from "../utils"
+import { isImageFile, peerPresence, toFileUrl } from "../utils"
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
 
@@ -134,9 +134,10 @@ export function DialogPanel(props: DialogPanelProps) {
         : dialog.kind === "file-send" ? "Upload file"
         : dialog.kind === "file-list" ? "Files"
         : dialog.kind === "file-download" ? "Save file"
-        : dialog.kind === "files-dir" ? "File storage"
-        : dialog.kind === "image-view" ? "Image preview"
-        : "Private rooms"}
+         : dialog.kind === "files-dir" ? "File storage"
+         : dialog.kind === "image-view" ? "Image preview"
+         : dialog.kind === "delivery-details" ? "Delivery details"
+         : "Private rooms"}
       bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P Commands"}
       style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: dialog.kind === "about" ? "#9b8cff" : dialog.kind === "update" ? "#e0a34a" : "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1, overflow: "hidden" }}
     >
@@ -158,7 +159,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "room-join" && <RoomJoinDialogContent dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} joinRoom={joinRoom} />}
       {dialog.kind === "room-created" && <RoomCreatedDialogContent dialog={dialog} copyInvite={copyInvite} loadRooms={loadRooms} />}
       {dialog.kind === "room-detail" && <RoomDetailDialogContent dialog={dialog} groups={groups} leaveGroup={leaveGroup} leaveRoom={leaveRoom} loadRoomInvite={loadRoomInvite} loadRooms={loadRooms} />}
-      {dialog.kind === "group-detail" && <GroupDetailDialogContent dialog={dialog} identity={identity} closeDialog={closeDialog} leaveGroup={leaveGroup} />}
+       {dialog.kind === "group-detail" && <GroupDetailDialogContent dialog={dialog} identity={identity} peers={peers} closeDialog={closeDialog} leaveGroup={leaveGroup} />}
       {dialog.kind === "rename" && <RenameDialogContent dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setNameDraft={setNameDraft} saveDisplayName={saveDisplayName} />}
       {dialog.kind === "mute-timeout" && <MuteTimeoutDialogContent dialog={dialog} dialogHeight={dialogHeight} mutePeer={mutePeer} />}
       {dialog.kind === "unmute-confirm" && <UnmuteConfirmDialogContent dialog={dialog} unmutePeer={unmutePeer} showDialog={showDialog} />}
@@ -181,6 +182,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} />}
       {dialog.kind === "image-view" && <ImageViewerDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} />}
+      {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} />}
     </box>
     <box style={{ position: "absolute", right: 1, bottom: 0 }}>
       <text><span fg="#66dd88">● </span><span fg="#bbbbbb">MeshTalk </span><span fg="#888888">{appReleaseVersion}</span></text>
@@ -198,6 +200,19 @@ function ImageViewerDialogContent({ dialog, dialogWidth, dialogHeight }: { dialo
       <text fg="#888888">Esc returns.</text>
     </>
   )
+}
+
+function DeliveryDetailsDialogContent({ dialog }: { dialog: Extract<Dialog, { kind: "delivery-details" }> }) {
+  const statusOrder = ["delivered", "sent", "queued", "pending", "unavailable"]
+  const statusColor: Record<string, string> = { delivered: "#66dd88", sent: "#7aa2d6", queued: "#e0a34a", pending: "#888888", unavailable: "#ff7777" }
+  const grouped = statusOrder.map((status) => [status, dialog.deliveries.filter((delivery) => delivery.status === status)] as const).filter(([, deliveries]) => deliveries.length)
+  return <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
+    {!dialog.deliveries.length ? <text fg="#888888">No delivery details are available yet.</text> : null}
+    {grouped.map(([status, deliveries]) => <box key={status} style={{ flexDirection: "column", marginBottom: 1 }}>
+      <text fg={statusColor[status]}><b>{status[0].toUpperCase() + status.slice(1)} ({deliveries.length})</b></text>
+      {deliveries.map((delivery: GroupDelivery) => <text key={delivery.recipient_id}>  {delivery.display_name}</text>)}
+    </box>)}
+  </scrollbox>
 }
 
 function ControlDialogContent({ dialog, dialogHeight, configureControl, dismissControlSetup, loadControlStatus, showDialog }: { dialog: Extract<Dialog, { kind: "control" }>; dialogHeight: number; configureControl: (url: string) => void; dismissControlSetup: () => void; loadControlStatus: () => void; showDialog: (d: Dialog) => void }) {
@@ -388,19 +403,22 @@ function RoomDetailDialogContent({ dialog, groups, leaveGroup, leaveRoom, loadRo
   )
 }
 
-function GroupDetailDialogContent({ dialog, identity, closeDialog, leaveGroup }: { dialog: Extract<Dialog, { kind: "group-detail" }>; identity: { peer_id: string; display_name: string } | undefined; closeDialog: () => void; leaveGroup: (g: Group) => void }) {
+function GroupDetailDialogContent({ dialog, identity, peers, closeDialog, leaveGroup }: { dialog: Extract<Dialog, { kind: "group-detail" }>; identity: { peer_id: string; display_name: string } | undefined; peers: Peer[]; closeDialog: () => void; leaveGroup: (g: Group) => void }) {
   return (
     <>
       <text><span fg="#888888">Name: </span>{dialog.group.name}</text>
       <text><span fg="#888888">Group ID: </span>{dialog.group.group_id}</text>
       <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
         {!dialog.members.length ? <text fg="#888888">No member details available.</text> : null}
-        {dialog.members.map((member, index) => (
-          <text key={member.peer_id ?? member.member_id ?? String(index)}>
-            <span fg={(member.peer_id ?? member.member_id) === identity?.peer_id ? "#65a9ff" : "#66dd88"}>{member.display_name}</span>
-            <span fg="#718096"> {(member.peer_id ?? member.member_id ?? "").slice(0, 12)}</span>
+        {dialog.members.map((member, index) => {
+          const memberId = member.peer_id ?? member.member_id
+          const knownPeer = peers.find((peer) => peer.peer_id === memberId)
+          const color = memberId === identity?.peer_id ? "#65a9ff" : knownPeer ? peerPresence(knownPeer) === "active" ? "#66dd88" : peerPresence(knownPeer) === "away" ? "#e0a34a" : "#888888" : member.is_online ? "#66dd88" : "#888888"
+          return <text key={memberId ?? String(index)}>
+            <span fg={color}>{member.display_name}</span>
+            <span fg="#718096"> {(memberId ?? "").slice(0, 12)}</span>
           </text>
-        ))}
+        })}
       </scrollbox>
       <MouseSelect focused height={4} options={[
         { name: "Close", description: "Return to the group chat", value: "close" },

@@ -1,6 +1,6 @@
 import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useEffect, useMemo, useRef, type ReactNode, type RefObject } from "react"
-import type { ConversationItem, FileTransfer, Group, GroupMember, Peer, ReplyTarget, UnreadMessageState } from "../types"
+import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { MarqueeText } from "./MarqueeText"
 import { dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, toFileUrl, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
 
@@ -35,6 +35,7 @@ type ConversationPanelProps = {
   unreadNow: number
   markUnreadMessageVisible: (messageId: string) => void
   openImage: (file: FileTransfer) => void
+  openDeliveryDetails: (deliveries: GroupDelivery[]) => void
   typingNames: string[]
   editingName: boolean
   scrollFocused: boolean
@@ -75,7 +76,7 @@ const MESSAGE_MARKDOWN_STYLES = {
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openImage, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, onComposerChange, send } = props
+  const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, onComposerChange, send } = props
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
   const messageSyntaxStyle = useMemo(() => SyntaxStyle.fromStyles(MESSAGE_MARKDOWN_STYLES), [])
   const typingText = typingNames.length === 1 ? `${typingNames[0]} is typing` : typingNames.length === 2 ? `${typingNames[0]} and ${typingNames[1]} are typing...` : typingNames.length > 2 ? "Multiple people are typing..." : undefined
@@ -188,13 +189,10 @@ export function ConversationPanel(props: ConversationPanelProps) {
               <text>
                 <span fg="#888888">{formatTime(message.created_at)} </span>
                 <span fg={isSystem ? "#e0a34a" : isLocal ? "#65a9ff" : "#66dd88"}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
-                {isLocal && !isSystem && (
-                  <span fg={blocked || failed ? "#ff7777" : queued ? "#d9b36b" : "#888888"}>
-                    {selectedGroup ? ` ${groupDeliveryLabel(message.deliveries)}` : blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}
-                  </span>
-                )}
-                {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
-                </text>
+                 {isLocal && !isSystem && !selectedGroup && <span fg={blocked || failed ? "#ff7777" : queued ? "#d9b36b" : "#888888"}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
+                 {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
+                 </text>
+                {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg="#888888">{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
                 {message.reply_to_message_id && <text fg="#7aa2d6">&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? `: ${replySnippet}${replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}` : ""}</text>}
                 <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
             </box>

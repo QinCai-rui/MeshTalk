@@ -1,5 +1,5 @@
 import type { Conversation, Group, GroupMember, Peer } from "../types"
-import { friendMarkers, peerPresence, transportName } from "../utils"
+import { friendMarkers, peerConnectionLabel, peerPresence } from "../utils"
 
 type SidebarProps = {
   compact: boolean
@@ -15,6 +15,7 @@ type SidebarProps = {
   selectedPeerId: string | undefined
   sidebarWidth: number
   typingConversationKeys: Set<string>
+  openGroupDetails: (group: Group) => void
   setEditingName: (value: boolean) => void
   setNameDraft: (value: string) => void
   setSelection: (selection: Conversation) => void
@@ -22,7 +23,7 @@ type SidebarProps = {
   saveDisplayName: () => void
 }
 
-export function Sidebar({ compact, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
+export function Sidebar({ compact, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
   // Outer and section borders/padding consume eight columns; reserve one more for the scrollbar.
   const listContentOptions = { flexDirection: "column" as const, width: Math.max(1, sidebarWidth - 9) }
   return <box title={`You: ${identity?.display_name ?? "..."}`} style={{ border: true, width: sidebarWidth, flexShrink: 0, flexDirection: "column", padding: 1, gap: 1 }}>
@@ -40,7 +41,7 @@ export function Sidebar({ compact, dialogOpen, editingName, groups, groupMembers
           const peerLabel = <>{peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name}{limited ? <span fg="#ff9f43"> LIMITED</span> : null}{unread ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}</>
           return <box key={peer.peer_id} onMouseDown={() => { setSelection({ kind: "peer", id: peer.peer_id }); setScrollFocused(false); setEditingName(false) }} style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : unread ? "#304d3d" : undefined }}>
             <box style={{ width: "100%", flexDirection: "row" }}><text wrapMode="word" style={{ flexGrow: 1, flexShrink: 1 }} fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>{unread ? <b>{peerLabel}</b> : peerLabel}</text>{typingConversationKeys.has(`peer:${peer.peer_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
-            {peer.endpoints.length ? peer.endpoints.map((endpoint) => <text key={`${endpoint.transport}-${endpoint.endpoint}`} wrapMode="word" fg={endpoint.active ? "#7aa2d6" : "#718096"}>{endpoint.active ? "* " : "  "}{transportName(endpoint.transport)}{endpoint.transport === "remote_derp" ? "" : ` ${endpoint.endpoint}`}</text>) : <text fg="#718096">No known endpoint</text>}
+             <text fg="#718096">  {peerConnectionLabel(peer)}</text>
           </box>
         })}
       </scrollbox>
@@ -51,16 +52,20 @@ export function Sidebar({ compact, dialogOpen, editingName, groups, groupMembers
         {groups.map((group) => {
           const unread = group.unread_count > 0
           const groupLabel = <>{group.group_id === selectedGroupId ? "> " : "  "}{compact ? group.name.slice(0, 14) : group.name}{unread ? ` (${group.unread_count} new)` : ""}</>
+          const members = groupMembers[group.group_id]
+          const visibleMembers = members?.filter((member) => member.show_in_sidebar !== false) ?? []
+          const memberLabel = members ? `${group.member_count} member${group.member_count === 1 ? "" : "s"} · showing ${visibleMembers.length}` : `${group.member_count} member${group.member_count === 1 ? "" : "s"}`
           return <box key={group.group_id} onMouseDown={() => { setSelection({ kind: "group", id: group.group_id }); setScrollFocused(false); setEditingName(false) }} style={{ width: "100%", flexDirection: "column", backgroundColor: group.group_id === selectedGroupId ? "#25354d" : unread ? "#453c61" : undefined }}>
-          <box style={{ width: "100%", flexDirection: "row" }}><text wrapMode="word" style={{ flexGrow: 1, flexShrink: 1 }} fg="#b69cff">{unread ? <b>{groupLabel}</b> : groupLabel}</text>{typingConversationKeys.has(`group:${group.group_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
-          <text fg="#718096">  {group.member_count} member{group.member_count === 1 ? "" : "s"}</text>
-          {group.group_id === selectedGroupId && groupMembers[group.group_id]?.filter((member) => member.show_in_sidebar !== false).map((member, index) => {
+           <box style={{ width: "100%", flexDirection: "row" }}><text wrapMode="word" style={{ flexGrow: 1, flexShrink: 1 }} fg="#b69cff">{unread ? <b>{groupLabel}</b> : groupLabel}</text>{typingConversationKeys.has(`group:${group.group_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
+           <text fg="#718096">  {memberLabel}</text>
+           {group.group_id === selectedGroupId && visibleMembers.map((member, index) => {
             const memberId = member.peer_id ?? member.member_id
             const knownPeer = peers.find((peer) => peer.peer_id === memberId)
             const color = memberId === identity?.peer_id ? "#65a9ff" : knownPeer ? peerPresence(knownPeer) === "active" ? "#66dd88" : peerPresence(knownPeer) === "away" ? "#e0a34a" : "#888888" : member.is_online ? "#66dd88" : "#888888"
              return <text key={memberId ?? String(index)} wrapMode="word" fg={color}>{"    "}{compact ? member.display_name.slice(0, 12) : member.display_name}</text>
-           })}
-          </box>
+            })}
+           {group.group_id === selectedGroupId && members && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg="#7aa2d6">    <u>View all members</u></text></box>}
+           </box>
         })}
       </scrollbox>
     </box>

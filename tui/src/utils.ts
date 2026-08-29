@@ -18,6 +18,7 @@ export function formatDateSeparator(timestamp: number): string { return new Date
 export function dayKey(timestamp: number): string { const d = new Date(timestamp * 1000); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` }
 export function formatTimeMinute(timestamp: number): string { const d = new Date(timestamp * 1000); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()} ${d.getHours()}:${d.getMinutes()}` }
 export function transportName(transport?: Peer["active_transport"]): string { return transport === "lan_tcp" ? "LAN TCP" : transport === "remote_udp" ? "Remote UDP" : transport === "remote_derp" ? "MeshTalk Embedded Relay" : "No endpoint" }
+export function peerConnectionLabel(peer: Peer): string { if (!peer.is_online) return "Offline"; return peer.active_transport === "lan_tcp" ? "Direct (TCP)" : peer.active_transport === "remote_udp" ? "Direct (UDP)" : peer.active_transport === "remote_derp" ? "MeshTalk Relay" : "No endpoint" }
 export function peerPresence(peer: Peer): "active" | "away" | "offline" { return peer.presence ?? "offline" }
 export function sortPeersByInteraction(peers: Peer[]): Peer[] { return [...peers].sort((a, b) => (b.last_interaction ?? 0) - (a.last_interaction ?? 0) || a.display_name.localeCompare(b.display_name)) }
 export function friendMarkers(peer: Peer): string { const markers: string[] = []; if (peer.is_friend) markers.push("\u2665"); if (peer.friend_request === "incoming" || peer.friend_request === "both") markers.push("\u2199"); if (peer.friend_request === "outgoing" || peer.friend_request === "both") markers.push("\u2197"); return markers.length ? ` ${markers.join("")}` : "" }
@@ -29,7 +30,16 @@ export function unreadMessageBackground(progress: number): string {
   const channels = start.map((channel, index) => Math.round(channel + (end[index] - channel) * amount))
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`
 }
-export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string { if (!deliveries.length) return "sent"; const delivered = deliveries.filter((d) => d.status === "delivered").length; const queued = deliveries.filter((d) => d.status === "queued"); const unavailable = deliveries.filter((d) => d.status === "unavailable"); const details = [`delivered ${delivered}/${deliveries.length}`]; if (queued.length) details.push(`queued for ${queued.map((d) => d.display_name).join(", ")}`); if (unavailable.length) details.push(`unavailable for ${unavailable.map((d) => d.display_name).join(", ")}`); return details.join(", ") }
+export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
+  if (!deliveries.length) return "sent"
+  const delivered = deliveries.filter((delivery) => delivery.status === "delivered").length
+  const queued = deliveries.filter((delivery) => delivery.status === "queued").length
+  const unavailable = deliveries.filter((delivery) => delivery.status === "unavailable").length
+  const details = [`delivered ${delivered}/${deliveries.length}`]
+  if (queued) details.push(`queued ${queued}`)
+  if (unavailable) details.push(`unavailable ${unavailable}`)
+  return details.join(" · ")
+}
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }
 export function isImageFile(filename: string): boolean { return ["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(filename.split(".").pop()?.toLowerCase() ?? "") }
 export function toFileUrl(path: string, version?: number | null): string { let normalized = path.replace(/\\/g, "/"); if (/^[a-zA-Z]:\//.test(normalized)) normalized = "/" + normalized; const encoded = normalized.split("/").map((segment) => encodeURIComponent(segment)).join("/"); return "file://" + encoded + (version != null ? `?v=${version}` : "") }
