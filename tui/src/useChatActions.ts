@@ -215,8 +215,8 @@ export function useChatActions(deps: ChatActionsDeps) {
     if (action === null) return
     try {
       const installDir = destination?.trim() ? resolve(destination.trim()) : releaseInstallDir()
-      if (!installDir) throw new Error("Unable to locate the standalone MeshTalk installation.")
-      if (!isReleaseInstallDir(installDir)) throw new Error("Update directory must contain the current MeshTalk release binaries.")
+      if (!installDir) throw new Error(`Unable to locate the standalone MeshTalk installation. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`)
+      if (!isReleaseInstallDir(installDir)) throw new Error(`Update directory must contain the current MeshTalk release binaries. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`)
       await installRelease(release, installDir, (progress) => {
         if (dialogActionRef.current === action) setDialog((current) => current?.kind === "update" ? { ...current, progress } : current)
       })

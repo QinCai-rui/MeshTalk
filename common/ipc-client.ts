@@ -166,11 +166,7 @@ export class IPCClient {
       this.connectReject = null;
     }
     for (const entry of this.pending.values()) {
-      if (this.intentionallyClosed) {
-        entry.resolve({ error: "Connection closed" });
-      } else {
-        entry.reject(new Error("Connection closed"));
-      }
+      entry.resolve({ error: "Connection closed" });
     }
     this.pending.clear();
     if (!this.intentionallyClosed) {
