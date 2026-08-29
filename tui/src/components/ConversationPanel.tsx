@@ -192,7 +192,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
                  {isLocal && !isSystem && !selectedGroup && <span fg={blocked || failed ? "#ff7777" : queued ? "#d9b36b" : "#888888"}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
                  {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                  </text>
-                {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg="#888888">{groupDeliveryLabel(message.deliveries)} (click for details)</text></box>}
+                {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg="#888888">{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
                 {message.reply_to_message_id && <text fg="#7aa2d6">&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? `: ${replySnippet}${replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}` : ""}</text>}
                 <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
             </box>

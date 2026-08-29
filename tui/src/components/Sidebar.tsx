@@ -1,5 +1,5 @@
 import type { Conversation, Group, GroupMember, Peer } from "../types"
-import { friendMarkers, peerPresence, transportName } from "../utils"
+import { friendMarkers, peerConnectionLabel, peerPresence } from "../utils"
 
 type SidebarProps = {
   compact: boolean
@@ -41,7 +41,7 @@ export function Sidebar({ compact, dialogOpen, editingName, groups, groupMembers
           const peerLabel = <>{peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name}{limited ? <span fg="#ff9f43"> LIMITED</span> : null}{unread ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}</>
           return <box key={peer.peer_id} onMouseDown={() => { setSelection({ kind: "peer", id: peer.peer_id }); setScrollFocused(false); setEditingName(false) }} style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : unread ? "#304d3d" : undefined }}>
             <box style={{ width: "100%", flexDirection: "row" }}><text wrapMode="word" style={{ flexGrow: 1, flexShrink: 1 }} fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>{unread ? <b>{peerLabel}</b> : peerLabel}</text>{typingConversationKeys.has(`peer:${peer.peer_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
-            {peer.endpoints.length ? peer.endpoints.map((endpoint) => <text key={`${endpoint.transport}-${endpoint.endpoint}`} wrapMode="word" fg={endpoint.active ? "#7aa2d6" : "#718096"}>{endpoint.active ? "* " : "  "}{transportName(endpoint.transport)}{endpoint.transport === "remote_derp" ? "" : ` ${endpoint.endpoint}`}</text>) : <text fg="#718096">No known endpoint</text>}
+             <text fg="#718096">  {peerConnectionLabel(peer)}</text>
           </box>
         })}
       </scrollbox>
