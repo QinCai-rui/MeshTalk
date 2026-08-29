@@ -1,7 +1,7 @@
 import type { IPCClient } from "../../common/ipc-client"
 import type { Release } from "../../common/updater"
 import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, UPDATE_RESTART_EXIT_CODE } from "../../common/updater"
-import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, Message, Peer, RoomStatus } from "./types"
+import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
 import { join, resolve } from "path"
 import { tmpdir } from "os"
@@ -23,7 +23,6 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
   "image/jpeg": ".jpg",
   "image/webp": ".webp",
   "image/gif": ".gif",
-  "image/bmp": ".bmp",
 }
 
 type ChatActionsDeps = {
@@ -74,6 +73,7 @@ type ChatActionsDeps = {
   setNotificationTestDelivery: React.Dispatch<React.SetStateAction<Exclude<NotificationDelivery, "disabled"> | null>>
   flashingEnabled: boolean
   setFlashingEnabled: (b: boolean) => void
+  setImageProtocol: (protocol: ImageProtocol) => void
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
   setControlStatus: React.Dispatch<React.SetStateAction<{ connected: boolean; reconnect_attempts: number; control_url?: string | null }>>
   debugInfo: DebugInfo | null
@@ -104,7 +104,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
   const { mutedPeers, setMutedPeers, notificationPreferences, setNotificationPreferences } = deps
   const { notificationTestDelivery, setNotificationTestDelivery } = deps
-  const { flashingEnabled, setFlashingEnabled, controlStatus, setControlStatus } = deps
+  const { flashingEnabled, setFlashingEnabled, setImageProtocol, controlStatus, setControlStatus } = deps
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps
   const { statusResetRef, copyToastResetRef, dialogActionRef, dialogBusyRef, filePickerOpenRef, composerRef, selectionKey } = deps
@@ -337,6 +337,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("advanced_config", params)
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
+      setImageProtocol(response.image_protocol as ImageProtocol)
       showDialog({ kind: "advanced", config: response as AdvancedConfig })
       showStatus(message)
     } catch (error) { failDialogAction(action, error) }

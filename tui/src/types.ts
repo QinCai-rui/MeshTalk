@@ -35,7 +35,8 @@ export type FriendRequest = { request_id: string; sender_id: string; sender_name
 export type BlockedPeer = { peer_id: string; display_name: string; created_at: number }
 export type RoomStatus = { room_id: string; members: number; group_id?: string | null; name?: string | null }
 export type ControlStatus = { url?: string; connected: boolean; setup_dismissed: boolean; stun_server: string; reconnect_attempts: number; public_endpoint?: unknown[] }
-export type AdvancedConfig = { control_url?: string | null; control_pinned_ips: string[]; stun_server: string; stun_pinned_ips: string[] }
+export type ImageProtocol = "auto" | "kitty" | "sixel" | "blocks"
+export type AdvancedConfig = { control_url?: string | null; control_pinned_ips: string[]; stun_server: string; stun_pinned_ips: string[]; image_protocol: ImageProtocol }
 export type DebugInfo = { public_endpoint?: [string, number] | null; stun_server: string; local_tcp_port: number; rooms: RoomStatus[]; peers: Peer[] }
 export type FileTransfer = { file_id: string; filename: string; file_size: number; sender_id: string; recipient_id: string; group_id?: string | null; direction: string; status: string; file_path?: string | null; created_at: number; completed_at?: number | null; received_chunks?: number; total_chunks?: number }
 export type ConversationItem = { type: "message"; createdAt: number; message: Message } | { type: "file"; createdAt: number; file: FileTransfer }
@@ -44,7 +45,7 @@ export type ReplyTarget = { id: string; senderId: string; label: string; groupId
 export type Dialog =
   | { kind: "commands" } | { kind: "control"; firstRun?: boolean } | { kind: "control-custom"; firstRun?: boolean }
   | { kind: "control-status"; control: ControlStatus } | { kind: "advanced"; config: AdvancedConfig }
-  | { kind: "advanced-control"; config: AdvancedConfig } | { kind: "advanced-stun"; config: AdvancedConfig }
+  | { kind: "advanced-image-protocol"; config: AdvancedConfig } | { kind: "advanced-ip-pinning"; config: AdvancedConfig } | { kind: "advanced-control"; config: AdvancedConfig } | { kind: "advanced-stun"; config: AdvancedConfig }
   | { kind: "advanced-control-ip" } | { kind: "advanced-stun-ip" } | { kind: "rooms"; rooms: RoomStatus[] }
   | { kind: "room-create" } | { kind: "room-join" } | { kind: "room-created"; roomId: string; invite: string; copied: boolean; created?: boolean }
   | { kind: "room-detail"; room: RoomStatus } | { kind: "group-detail"; group: Group; members: GroupMember[] }

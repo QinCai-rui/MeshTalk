@@ -481,6 +481,14 @@ async def main(debug: bool = False) -> None:
 
     async def handle_advanced_config(req: dict) -> dict:
         changed = False
+        if "image_protocol" in req:
+            image_protocol = req["image_protocol"]
+            if not isinstance(image_protocol, str):
+                return {"error": "image_protocol must be a string"}
+            try:
+                settings.set_image_protocol(image_protocol)
+            except ValueError as exc:
+                return {"error": str(exc)}
         if req.get("clear_control_pinned_ip") is True:
             settings.clear_control_pinned_ips()
             changed = True
@@ -531,6 +539,9 @@ async def main(debug: bool = False) -> None:
             "stun_pinned_ips": list(settings.stun_pinned_ips),
             "control_url": settings.control_url or None,
             "stun_server": f"{stun_host}:{stun_port}",
+            "image_protocol": settings.image_protocol,
+            "splash_duration_ms": settings.splash_duration_ms,
+            "splash_phase_ms": settings.splash_phase_ms,
         }
 
     async def handle_room_create(req: dict) -> dict:

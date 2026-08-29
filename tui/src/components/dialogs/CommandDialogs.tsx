@@ -26,7 +26,7 @@ export function CommandsDialog({ dialogHeight, groups, peers, selectedGroup, sel
       { name: "Files", description: "View file transfer history and status", value: "files" },
       { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
       { name: "Accessibility", description: "Reduce motion and other accessibility options", value: "accessibility" },
-      { name: "Advanced Configuration", description: "Pin server IP addresses to bypass DNS", value: "advanced" },
+      { name: "Advanced Configuration", description: "Here be dragons. Not responsible for melted terminals.", value: "advanced" },
       { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
       { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
       { name: "★  ABOUT & UPDATES  ★", description: "Version, credits, and check for updates", value: "about" },

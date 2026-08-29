@@ -57,6 +57,19 @@ class SettingsControlSetupTest(unittest.TestCase):
 
         self.assertFalse(Settings(self.path).flashing_enabled)
 
+    def test_image_protocol_persists_and_validates(self):
+        settings = Settings(self.path)
+        settings.set_image_protocol("sixel")
+
+        self.assertEqual(Settings(self.path).image_protocol, "sixel")
+        with self.assertRaisesRegex(ValueError, "image_protocol"):
+            settings.set_image_protocol("iterm2")
+
+    def test_non_string_image_protocol_uses_default(self):
+        self.path.write_text(json.dumps({"version": 1, "image_protocol": []}))
+
+        self.assertEqual(Settings(self.path).image_protocol, "auto")
+
     def test_notification_preferences_persist_and_merge_events(self):
         settings = Settings(self.path)
         self.assertEqual(settings.notification_preferences["delivery"], "terminal")

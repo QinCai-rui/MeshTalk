@@ -23,6 +23,7 @@ import hashlib
 import logging
 import math
 import os
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -132,6 +133,38 @@ class FileTransferManager:
             attempt += 1
         return candidate
 
+    def _outgoing_path_for(self, file_id: str, filename: str) -> Path:
+        """Keep an immutable local copy so sent history and retries outlive the source file."""
+        return self.files_base / "sent" / file_id / sanitize_filename(filename)
+
+    def _snapshot_outgoing_file(self, source: Path, file_id: str, filename: str) -> Path:
+        destination = self._outgoing_path_for(file_id, filename)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with open(source, "rb") as input_file, open(
+                temporary, "xb", opener=lambda path, flags: os.open(path, flags, 0o600)
+            ) as output_file:
+                copied = 0
+                copy_limit = MAX_FILE_SIZE + 1
+                while copied < copy_limit:
+                    chunk = input_file.read(min(1024 * 1024, copy_limit - copied))
+                    if not chunk:
+                        break
+                    output_file.write(chunk)
+                    copied += len(chunk)
+                output_file.flush()
+                os.fsync(output_file.fileno())
+            if copied > MAX_FILE_SIZE:
+                temporary.unlink(missing_ok=True)
+                raise ValueError(f"File exceeds {MAX_FILE_SIZE // (1024*1024)} MiB limit")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, destination)
+        except OSError as exc:
+            temporary.unlink(missing_ok=True)
+            raise ValueError(f"Could not store a local copy of file: {exc}") from exc
+        return destination
+
     def _emit(self, event: dict) -> None:
         if self.on_event:
             asyncio.create_task(self.on_event(event))
@@ -163,8 +196,16 @@ class FileTransferManager:
             raise ValueError(f"File exceeds {MAX_FILE_SIZE // (1024*1024)} MiB limit")
         filename = sanitize_filename(p.name)
         chunk_size = MAX_FILE_CHUNK_SIZE
-        total_chunks = math.ceil(size / chunk_size)
         file_id = str(uuid.uuid4())
+        snapshot = self._snapshot_outgoing_file(p, file_id, filename)
+        size = snapshot.stat().st_size
+        if size == 0:
+            snapshot.unlink(missing_ok=True)
+            raise ValueError("File became empty while it was being copied")
+        if size > MAX_FILE_SIZE:
+            snapshot.unlink(missing_ok=True)
+            raise ValueError(f"File exceeds {MAX_FILE_SIZE // (1024*1024)} MiB limit")
+        total_chunks = math.ceil(size / chunk_size)
         created_at = time.time()
         # Save transfer record as outbound
         await self.db.save_file_transfer({
@@ -178,7 +219,7 @@ class FileTransferManager:
             "group_id": group_id,
             "direction": "outbound",
             "status": "pending",
-            "file_path": str(p),
+            "file_path": str(snapshot),
             "created_at": created_at,
             "received_chunks": 0,
         })
@@ -228,7 +269,7 @@ class FileTransferManager:
             logger.warning("Failed to send file offer %s: %s", file_id, exc)
             return file_id
         # Stream chunks
-        await self._send_chunks(p, file_id, recipient_id, group_id, chunk_size, total_chunks, encryption_key, peer)
+        await self._send_chunks(snapshot, file_id, recipient_id, group_id, chunk_size, total_chunks, encryption_key, peer)
         return file_id
 
     async def _send_chunks(self, path: Path, file_id: str, recipient_id: str, group_id: str | None, chunk_size: int, total_chunks: int, encryption_key: bytes, peer: PeerConnection) -> None:

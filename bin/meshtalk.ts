@@ -320,7 +320,6 @@ function startBackend(backend: Component, daemonise = true): ChildProcess {
         writeFileSync(`${DATA_DIR}/meshtalk.pid`, String(proc.pid));
       }
     }
-    log(`Starting backend${daemonise ? " daemon" : ""} (pid ${proc.pid}); logs: ${BACKEND_LOG_PATH}`);
     return proc;
   } finally {
     closeSync(logFile);
@@ -402,24 +401,23 @@ async function main() {
 
   const components = resolveComponents();
   let backendPid: number | undefined;
+  let backendProcess: ChildProcess | undefined;
 
   const alreadyRunning = await backendRunning();
   const launchTui = args.length === 0;
   let iStartedIt = false;
 
-  if (alreadyRunning) {
-    log("Connecting to existing backend...");
-  } else {
-    const backendProcess = startBackend(components.backend, !launchTui);
+  if (!alreadyRunning) {
+    backendProcess = startBackend(components.backend, !launchTui);
     backendPid = backendProcess.pid ?? undefined;
     iStartedIt = true;
-    log("Waiting for backend to be ready...");
-    const ready = await waitForBackend(backendProcess);
-    if (!ready) {
-      log("Backend did not start within timeout.");
-      backendProcess.kill();
-      log(`See ${BACKEND_LOG_PATH} for details.`);
-      process.exit(1);
+    if (!launchTui) {
+      const ready = await waitForBackend(backendProcess);
+      if (!ready) {
+        log("Backend did not start within timeout.");
+        log(`See ${BACKEND_LOG_PATH} for details.`);
+        process.exit(1);
+      }
     }
   }
 
@@ -441,6 +439,18 @@ async function main() {
       stdout: "inherit",
       stderr: "inherit",
     });
+    if (iStartedIt) {
+      // The TUI owns the visible startup state while the launcher waits silently.
+      const ready = await waitForBackend(backendProcess);
+      if (!ready) {
+        log("Backend did not start within timeout.");
+        tui.kill();
+        await tui.exited;
+        await cleanup();
+        log(`See ${BACKEND_LOG_PATH} for details.`);
+        process.exit(1);
+      }
+    }
     const tuiExit = await tui.exited;
     code = tuiExit;
     process.removeListener("SIGINT", handleSignal);

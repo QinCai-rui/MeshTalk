@@ -26,6 +26,8 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
     showDialog({ kind: "control" })
   } else if (dialog.kind === "advanced-control-ip" || dialog.kind === "advanced-stun-ip" || dialog.kind === "advanced-control" || dialog.kind === "advanced-stun") {
     void loadAdvancedConfig()
+  } else if (dialog.kind === "advanced-ip-pinning" || dialog.kind === "advanced-image-protocol") {
+    void loadAdvancedConfig()
   } else if (dialog.kind === "update-directory") {
     showDialog({ kind: "update", release: dialog.release })
   } else if (dialog.kind === "update-token") {
