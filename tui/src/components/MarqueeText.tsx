@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react"
+import type { SelectProps } from "@opentui/react"
 import { terminalWidth, clipTextToWidth } from "../utils"
 
 type MarqueeTextProps = {
   text: string
   width: number
-  fg?: string
+  fg?: SelectProps["selectedTextColor"]
 }
 
 export function MarqueeText({ text, width, fg }: MarqueeTextProps) {

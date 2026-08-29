@@ -767,7 +767,7 @@ function FileListDialogContent({ dialog, dialogHeight, dialogWidth, loadFiles, l
         { name: "Storage location", description: "View/change where received files are saved (e.g., E:\\ drive)", value: "storage" },
         { name: "Refresh", description: "Reload file list", value: "refresh" },
          { name: "Back", description: "Return to Commands", value: "back" },
-      ]} onSelect={(_, option) => {
+      ]} marqueeNames width={Math.max(1, dialogWidth - 4)} onSelect={(_, option) => {
         if (!option) return
         if (option.value === "refresh") void loadFiles()
         else if (option.value === "back") showDialog({ kind: "commands" })
@@ -801,8 +801,8 @@ function FilesDirDialogContent({ dialog, dialogWidth, dialogDraft, setDialogDraf
 function FileDownloadDialogContent({ dialog, dialogWidth, dialogDraft, setDialogDraft, downloadFile, defaultDownloadPath }: { dialog: Extract<Dialog, { kind: "file-download" }>; dialogWidth: number; dialogDraft: string; setDialogDraft: (v: string) => void; downloadFile: (fileId: string, destPath: string) => void; defaultDownloadPath: (filename: string) => string }) {
   return (
     <>
-      <text>Save <span fg="#66dd88">{dialog.filename}</span> to:</text>
-      <text fg="#888888">{dialog.filePath}</text>
+      <MarqueeText width={dialogWidth - 4} text={`Save ${dialog.filename} to:`} />
+      <MarqueeText width={dialogWidth - 4} fg="#888888" text={dialog.filePath} />
       <input focused value={dialogDraft} placeholder={defaultDownloadPath(dialog.filename)} onInput={setDialogDraft} onSubmit={(v) => void downloadFile(dialog.fileId, typeof v === "string" ? v : dialogDraft)} maxLength={4096} />
       <MarqueeText width={dialogWidth - 4} fg="#888888" text="Enter saves. Works on Linux/macOS/Windows. Path may be folder or file." />
     </>
