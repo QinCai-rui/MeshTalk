@@ -228,6 +228,26 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resent.chunk_index, 1)
         await sender_db.close()
 
+    async def test_outgoing_file_is_snapshotted_before_sending(self):
+        source = self.root / "source.bin"
+        source.write_bytes(self.content)
+        sender_db = Database(self.root / "sender.db")
+        await sender_db.connect()
+        sender_manager = FakePeerManager(self.recipient_peer)
+        sender_transfer = FileTransferManager(
+            self.sender, sender_manager, sender_db, self.root / "sender-files"
+        )
+
+        file_id = await sender_transfer.send_file(self.recipient.peer_id, str(source))
+        source.unlink()
+        transfer = await sender_db.get_file_transfer(file_id)
+        snapshot = Path(transfer["file_path"])
+
+        self.assertTrue(snapshot.exists())
+        self.assertEqual(snapshot.read_bytes(), self.content)
+        self.assertIn("sent", snapshot.parts)
+        await sender_db.close()
+
     async def test_duplicate_completed_ack_is_ignored(self):
         sender_db = Database(self.root / "sender.db")
         await sender_db.connect()

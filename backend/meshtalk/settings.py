@@ -145,6 +145,7 @@ class Settings:
         self.rooms: dict[str, Room] = {}
         self.muted_peers: dict[str, float] = {}
         self._files_dir: str | None = None
+        self._image_protocol = "auto"
         self._load()
 
     @property
@@ -183,6 +184,16 @@ class Settings:
     def clear_files_dir(self) -> None:
         """Reset files directory to default."""
         self._files_dir = None
+        self.save()
+
+    @property
+    def image_protocol(self) -> str:
+        return self._image_protocol
+
+    def set_image_protocol(self, protocol: str) -> None:
+        if protocol not in {"auto", "kitty", "sixel", "blocks"}:
+            raise ValueError("image_protocol must be auto, kitty, sixel, or blocks")
+        self._image_protocol = protocol
         self.save()
 
     @property
@@ -408,6 +419,7 @@ class Settings:
             ],
             "muted_peers": self.muted_peers,
             "files_dir": self._files_dir,
+            "image_protocol": self._image_protocol,
         }
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, indent=2))
@@ -484,3 +496,6 @@ class Settings:
         if isinstance(files_dir, str) and files_dir.strip():
             # Validate but don't fail load if old path no longer exists - keep stored value
             self._files_dir = files_dir.strip()
+        image_protocol = data.get("image_protocol", "auto")
+        if image_protocol in {"auto", "kitty", "sixel", "blocks"}:
+            self._image_protocol = image_protocol

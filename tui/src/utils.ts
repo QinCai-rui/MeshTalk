@@ -41,7 +41,7 @@ export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
   return details.join(" · ")
 }
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }
-export function isImageFile(filename: string): boolean { return ["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(filename.split(".").pop()?.toLowerCase() ?? "") }
+export function isImageFile(filename: string): boolean { return ["png", "jpg", "jpeg", "gif", "webp"].includes(filename.split(".").pop()?.toLowerCase() ?? "") }
 export function toFileUrl(path: string, version?: number | null): string { let normalized = path.replace(/\\/g, "/"); if (/^[a-zA-Z]:\//.test(normalized)) normalized = "/" + normalized; const encoded = normalized.split("/").map((segment) => encodeURIComponent(segment)).join("/"); return "file://" + encoded + (version != null ? `?v=${version}` : "") }
 export function terminalWidth(text: string): number {
   let width = 0

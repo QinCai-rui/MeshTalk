@@ -1,4 +1,4 @@
-import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, FriendRequest, Group, GroupDelivery, RoomStatus } from "../types"
+import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, FriendRequest, Group, GroupDelivery, ImageProtocol, RoomStatus } from "../types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "../notifications"
 import type { GroupMember, Peer } from "../types"
 import type { Release } from "../../../common/updater"
@@ -6,7 +6,8 @@ import { MouseSelect } from "./MouseSelect"
 import { MarqueeText } from "./MarqueeText"
 import { NotificationDialogs } from "./dialogs/NotificationDialogs"
 import { AboutDialog, CommandsDialog, UpdateDestinationDialog, UpdateDialog, UpdateTokenDialog } from "./dialogs/CommandDialogs"
-import { isImageFile, peerPresence, toFileUrl } from "../utils"
+import { isImageFile, peerPresence } from "../utils"
+import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
 
@@ -20,6 +21,7 @@ type DialogPanelProps = {
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
   debugInfo: DebugInfo | null
   flashingEnabled: boolean
+  imageProtocol: ImageProtocol
   groups: Group[]
   identity: { peer_id: string; display_name: string } | undefined
   mutedPeers: Record<string, number>
@@ -90,7 +92,7 @@ type DialogPanelProps = {
 }
 
 export function DialogPanel(props: DialogPanelProps) {
-  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
+  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
   const { runCommand, showDialog, closeDialog, goBack, setDialogDraft, setDialogError, setNameDraft } = props
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
@@ -150,6 +152,8 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "control-custom" && <ControlCustomDialogContent dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} configureControl={configureControl} />}
       {dialog.kind === "control-status" && <ControlStatusDialogContent dialog={dialog} showDialog={showDialog} />}
       {dialog.kind === "advanced" && <AdvancedDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
+      {dialog.kind === "advanced-image-protocol" && <ImageProtocolDialogContent dialog={dialog} dialogHeight={dialogHeight} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
+      {dialog.kind === "advanced-ip-pinning" && <IpPinningDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "advanced-control" && <AdvancedControlDialogContent dialog={dialog} dialogHeight={dialogHeight} setDialogDraft={setDialogDraft} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
       {dialog.kind === "advanced-stun" && <AdvancedStunDialogContent dialog={dialog} dialogHeight={dialogHeight} setDialogDraft={setDialogDraft} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
       {dialog.kind === "advanced-control-ip" && <AdvancedControlIpDialogContent dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} saveAdvancedConfig={saveAdvancedConfig} />}
@@ -178,10 +182,10 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "debug-endpoints" && <DebugEndpointsDialogContent debugInfo={debugInfo} showDialog={showDialog} />}
       {dialog.kind === "debug-peer" && <DebugPeerDialogContent dialog={dialog} debugInfo={debugInfo} showDialog={showDialog} />}
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
-      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidth} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} defaultDownloadPath={defaultDownloadPath} />}
+      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidth} imageProtocol={imageProtocol} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} defaultDownloadPath={defaultDownloadPath} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} />}
-      {dialog.kind === "image-view" && <ImageViewerDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} />}
+      {dialog.kind === "image-view" && <ImageViewerDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} />}
     </box>
     <box style={{ position: "absolute", right: 1, bottom: 0 }}>
@@ -190,12 +194,12 @@ export function DialogPanel(props: DialogPanelProps) {
   </box>
 }
 
-function ImageViewerDialogContent({ dialog, dialogWidth, dialogHeight }: { dialog: Extract<Dialog, { kind: "image-view" }>; dialogWidth: number; dialogHeight: number }) {
+function ImageViewerDialogContent({ dialog, dialogWidth, dialogHeight, imageProtocol }: { dialog: Extract<Dialog, { kind: "image-view" }>; dialogWidth: number; dialogHeight: number; imageProtocol: ImageProtocol }) {
   return (
     <>
       <text wrapMode="none"><span fg="#66dd88">{dialog.filename}</span></text>
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, alignItems: "center", justifyContent: "center" }}>
-        <image source={toFileUrl(dialog.filePath, dialog.version)} fit="fit" protocol="auto" style={{ width: Math.max(1, dialogWidth - 4), height: Math.max(1, dialogHeight - 5) }} onError={() => {}} />
+        <ImageAttachment filePath={dialog.filePath} filename={dialog.filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} />
       </box>
       <text fg="#888888">Esc returns.</text>
     </>
@@ -262,15 +266,41 @@ function ControlStatusDialogContent({ dialog, showDialog }: { dialog: Extract<Di
 function AdvancedDialogContent({ dialog, dialogHeight, showDialog }: { dialog: Extract<Dialog, { kind: "advanced" }>; dialogHeight: number; showDialog: (d: Dialog) => void }) {
   return (
     <MouseSelect focused height={Math.max(5, dialogHeight - 3)} options={[
-      { name: "Control server", description: dialog.config.control_pinned_ips.length ? `Pinned: ${dialog.config.control_pinned_ips.join(", ")}` : "No IP pin", value: "control" },
-      { name: "STUN server", description: dialog.config.stun_pinned_ips.length ? `Pinned: ${dialog.config.stun_pinned_ips.join(", ")}` : "No IP pin", value: "stun" },
+      { name: "Image protocol", description: `Current: ${dialog.config.image_protocol} (auto prefers Kitty, then Sixel, then blocks)`, value: "image-protocol" },
+      { name: "IP Pinning", description: "Pin control or STUN server addresses to bypass DNS", value: "ip-pinning" },
          { name: "Back to Commands", description: "Return to Commands", value: "back" },
     ]} onSelect={(_, option) => {
-      if (option?.value === "control") showDialog({ kind: "advanced-control", config: dialog.config })
-      else if (option?.value === "stun") showDialog({ kind: "advanced-stun", config: dialog.config })
+        if (option?.value === "image-protocol") showDialog({ kind: "advanced-image-protocol", config: dialog.config })
+       else if (option?.value === "ip-pinning") showDialog({ kind: "advanced-ip-pinning", config: dialog.config })
       else if (option?.value === "back") showDialog({ kind: "commands" })
     }} wrapSelection showDescription />
   )
+}
+
+function ImageProtocolDialogContent({ dialog, dialogHeight, saveAdvancedConfig, showDialog }: { dialog: Extract<Dialog, { kind: "advanced-image-protocol" }>; dialogHeight: number; saveAdvancedConfig: (p: Record<string, unknown>, m: string) => void; showDialog: (d: Dialog) => void }) {
+  return <MouseSelect focused height={Math.max(5, dialogHeight - 3)} options={[
+    { name: "Auto-detect", description: "Prefer Kitty, then Sixel, then portable blocks; use blocks in tmux", value: "auto" },
+    { name: "Kitty", description: "Force high-quality Kitty graphics where your terminal supports it", value: "kitty" },
+    { name: "Sixel", description: "Force Sixel graphics; falls back to blocks without pixel geometry", value: "sixel" },
+    { name: "Blocks", description: "Force portable Unicode blocks", value: "blocks" },
+    { name: "Back", description: "Return to Advanced Configuration", value: "back" },
+  ]} onSelect={(_, option) => {
+    if (!option) return
+    if (option.value === "back") showDialog({ kind: "advanced", config: dialog.config })
+    else void saveAdvancedConfig({ image_protocol: option.value }, `Image protocol set to ${option.value}.`)
+  }} wrapSelection showDescription />
+}
+
+function IpPinningDialogContent({ dialog, dialogHeight, showDialog }: { dialog: Extract<Dialog, { kind: "advanced-ip-pinning" }>; dialogHeight: number; showDialog: (d: Dialog) => void }) {
+  return <MouseSelect focused height={Math.max(5, dialogHeight - 3)} options={[
+    { name: "Control server", description: dialog.config.control_pinned_ips.length ? `Pinned: ${dialog.config.control_pinned_ips.join(", ")}` : "No IP pin", value: "control" },
+    { name: "STUN server", description: dialog.config.stun_pinned_ips.length ? `Pinned: ${dialog.config.stun_pinned_ips.join(", ")}` : "No IP pin", value: "stun" },
+    { name: "Back", description: "Return to Advanced Configuration", value: "back" },
+  ]} onSelect={(_, option) => {
+    if (option?.value === "control") showDialog({ kind: "advanced-control", config: dialog.config })
+    else if (option?.value === "stun") showDialog({ kind: "advanced-stun", config: dialog.config })
+    else if (option?.value === "back") showDialog({ kind: "advanced", config: dialog.config })
+  }} wrapSelection showDescription />
 }
 
 function AdvancedControlDialogContent({ dialog, dialogHeight, setDialogDraft, saveAdvancedConfig, showDialog }: { dialog: Extract<Dialog, { kind: "advanced-control" }>; dialogHeight: number; setDialogDraft: (v: string) => void; saveAdvancedConfig: (p: Record<string, unknown>, m: string) => void; showDialog: (d: Dialog) => void }) {
@@ -745,7 +775,7 @@ function FileSendDialogContent({ dialog, dialogWidth, selection, peers, groups, 
   )
 }
 
-function FileListDialogContent({ dialog, dialogHeight, dialogWidth, loadFiles, loadFilesDir, setDialogDraft, showDialog, defaultDownloadPath }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; defaultDownloadPath: (filename: string) => string }) {
+function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, loadFiles, loadFilesDir, setDialogDraft, showDialog, defaultDownloadPath }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; defaultDownloadPath: (filename: string) => string }) {
   return (
     <>
       <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
@@ -754,9 +784,8 @@ function FileListDialogContent({ dialog, dialogHeight, dialogWidth, loadFiles, l
           <box key={f.file_id} style={{ flexDirection: "column", paddingBottom: 1 }}>
             <text><span fg={f.direction === "inbound" ? "#66dd88" : "#65a9ff"}>{f.direction === "inbound" ? "\u2193" : "\u2191"}</span> {f.filename} ({(f.file_size / 1024).toFixed(1)} KiB) <span fg="#888888">{f.status}</span></text>
             <text fg="#888888">  {f.file_id.slice(0, 8)} {f.direction === "inbound" ? `from ${f.sender_id.slice(0, 8)}` : `to ${f.recipient_id.slice(0, 8)}`} {f.file_path ?? ""} {isImageFile(f.filename) ? "(image)" : ""}</text>
-            {f.status === "completed" && f.file_path && isImageFile(f.filename) && (
-              <image source={toFileUrl(f.file_path, f.completed_at)} fit="fit" protocol="auto" style={{ width: 20, height: 6 }} onMouseDown={(event) => { if (event.button === 0) { event.preventDefault(); event.stopPropagation(); showDialog({ kind: "image-view", filePath: f.file_path!, filename: f.filename, version: f.completed_at, returnTo: "files" }) } }} onError={() => {}} />
-            )}
+            {["completed", "sent"].includes(f.status) && isLocalFileMissing(f.file_path) ? <text fg="#ff7777">  File unavailable: not found or deleted locally</text> : null}
+            {f.status === "completed" && f.file_path && !isLocalFileMissing(f.file_path) ? <ImageAttachment filePath={f.file_path} filename={f.filename} protocol={imageProtocol} expectedImage={isImageFile(f.filename)} maxWidth={Math.max(12, dialogWidth - 4)} maxHeight={Math.max(4, Math.floor(dialogHeight / 2))} onOpen={() => showDialog({ kind: "image-view", filePath: f.file_path!, filename: f.filename, version: f.completed_at, returnTo: "files" })} /> : null}
           </box>
         ))}
       </scrollbox>

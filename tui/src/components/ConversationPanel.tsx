@@ -1,8 +1,9 @@
 import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useEffect, useMemo, useRef, type ReactNode, type RefObject } from "react"
-import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, Peer, ReplyTarget, UnreadMessageState } from "../types"
+import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { MarqueeText } from "./MarqueeText"
-import { dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, toFileUrl, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
+import { dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
+import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 
 type ConversationPanelProps = {
   compact: boolean
@@ -18,6 +19,7 @@ type ConversationPanelProps = {
   composerRef: RefObject<TextareaRenderable | null>
   groupMembers: Record<string, GroupMember[]>
   identity: { peer_id: string; display_name: string } | undefined
+  imageProtocol: ImageProtocol
   limitedGroupMembers: GroupMember[]
   capabilityGapMessage: string
   isSending: boolean
@@ -76,7 +78,7 @@ const MESSAGE_MARKDOWN_STYLES = {
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, onComposerChange, send } = props
+  const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, onComposerChange, send } = props
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
   const messageSyntaxStyle = useMemo(() => SyntaxStyle.fromStyles(MESSAGE_MARKDOWN_STYLES), [])
   const typingText = typingNames.length === 1 ? `${typingNames[0]} is typing` : typingNames.length === 2 ? `${typingNames[0]} and ${typingNames[1]} are typing...` : typingNames.length > 2 ? "Multiple people are typing..." : undefined
@@ -133,8 +135,9 @@ export function ConversationPanel(props: ConversationPanelProps) {
               </box>
             )
           }
-          if (item.type === "file") {
-            const file = item.file
+            if (item.type === "file") {
+              const file = item.file
+              const fileUnavailable = ["completed", "sent"].includes(file.status) && isLocalFileMissing(file.file_path)
             const isLocal = file.sender_id === identity?.peer_id
             const senderName = peers.find((peer) => peer.peer_id === file.sender_id)?.display_name
               ?? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === file.sender_id)?.display_name
@@ -147,9 +150,8 @@ export function ConversationPanel(props: ConversationPanelProps) {
                   <span fg="#888888"> shared an attachment</span>
                 </text>
                 <text wrapMode="word"><span fg="#7aa2d6">{file.filename}</span><span fg="#888888"> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
-                {isImageFile(file.filename) && (
-                 <image source={toFileUrl(file.file_path!, file.completed_at)} fit="fit" protocol="auto" style={{ width: 40, height: 12 }} onMouseDown={(event) => { if (event.button === 0) { event.preventDefault(); event.stopPropagation(); openImage(file) } }} onError={() => {}} />
-                )}
+                {fileUnavailable ? <text fg="#ff7777">File unavailable: not found or deleted locally</text> : null}
+                {!fileUnavailable && file.file_path ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage={isImageFile(file.filename)} scrollboxRef={scrollboxRef} maxWidth={Math.max(12, (scrollboxRef.current?.viewport.width ?? width - (compact ? 28 : 38)) - 4)} maxHeight={Math.min(16, Math.max(4, (scrollboxRef.current?.viewport.height ?? 16) - 4))} onOpen={() => openImage(file)} /> : null}
               </box>
             )
             return rows
