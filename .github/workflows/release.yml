@@ -106,8 +106,20 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=dev" >> "$GITHUB_OUTPUT"
+            SHORT_SHA="${GITHUB_SHA::7}"
+            LATEST_TAG="$(gh release view --json tagName --jq .tagName 2>/dev/null || echo 'v0.0.0')"
+            LATEST_TAG="${LATEST_TAG#v}"
+            if [[ "$LATEST_TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+              X="${BASH_REMATCH[1]}"
+              Y="${BASH_REMATCH[2]}"
+              Z=$((10#${BASH_REMATCH[3]} + 1))
+            else
+              X=0; Y=1; Z=0
+            fi
+            echo "version=${X}.${Y}.${Z}-SNAPSHOT+${{ github.run_number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
