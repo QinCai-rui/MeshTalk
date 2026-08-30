@@ -139,6 +139,9 @@ class PeerManager:
     async def stop(self) -> None:
         self._running = False
         await self.udp.stop()
+        receive_tasks = list(self._receive_tasks)
+        for task in receive_tasks:
+            task.cancel()
         writers = {
             peer.writer for peer in [*self.peers.values(), *self._udp_peers.values()] if peer.writer
         }
@@ -146,8 +149,8 @@ class PeerManager:
             writer.close()
         if writers:
             await asyncio.gather(*(writer.wait_closed() for writer in writers), return_exceptions=True)
-        if self._receive_tasks:
-            await asyncio.gather(*self._receive_tasks, return_exceptions=True)
+        if receive_tasks:
+            await asyncio.gather(*receive_tasks, return_exceptions=True)
         if self._server:
             self._server.close()
             await self._server.wait_closed()

@@ -22,6 +22,7 @@ const MESHTALK_WORDMARK = [
 ] as const;
 const MESHTALK_WORDMARK_COLORS = ["#d7e3ff", "#becff5", "#a4bbed", "#8aa6df", "#718fcf", "#5d7abd"] as const;
 
+const STARTUP_PHASES = ["GRAPHICS", "BACKEND", "CONTACTS", "READY"] as const;
 const STARTUP_BURST = [
   ["", "", "                                    ·", "", "", ""],
   ["", "                    ·     ✦     ·", "             ·   ╲     ◈     ╱   ·", "                    ·     ✦     ·", "", ""],
@@ -104,6 +105,10 @@ export function StartupSplash({ message, width, height }: { message: string; wid
         <box style={{ width: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
           <text><span fg="#60708d">{phaseNumber} / 04  </span><span fg="#d5deed"><b>{message}</b></span></text>
         </box>
+
+        {!compact ? <box style={{ width: "100%", flexDirection: "row", justifyContent: "space-between" }}>
+          {STARTUP_PHASES.map((label, index) => <text key={label}><span fg={index < phase ? "#65d6b4" : index === phase ? "#a997ff" : "#35445d"}>{index <= phase ? "●" : "○"}</span><span fg={index === phase ? "#c7d3e8" : "#526078"}> {label}</span></text>)}
+        </box> : null}
 
       </box>
 
