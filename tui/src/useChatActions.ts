@@ -1,7 +1,7 @@
 import type { IPCClient } from "../../common/ipc-client"
 import type { Release } from "../../common/updater"
 import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, UPDATE_RESTART_EXIT_CODE } from "../../common/updater"
-import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus } from "./types"
+import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus, SplashPreference } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
 import { join, resolve } from "path"
 import { tmpdir } from "os"
@@ -74,6 +74,7 @@ type ChatActionsDeps = {
   flashingEnabled: boolean
   setFlashingEnabled: (b: boolean) => void
   setImageProtocol: (protocol: ImageProtocol) => void
+  setSplashStyle: (style: SplashPreference) => void
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
   setControlStatus: React.Dispatch<React.SetStateAction<{ connected: boolean; reconnect_attempts: number; control_url?: string | null }>>
   debugInfo: DebugInfo | null
@@ -104,7 +105,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
   const { mutedPeers, setMutedPeers, notificationPreferences, setNotificationPreferences } = deps
   const { notificationTestDelivery, setNotificationTestDelivery } = deps
-  const { flashingEnabled, setFlashingEnabled, setImageProtocol, controlStatus, setControlStatus } = deps
+  const { flashingEnabled, setFlashingEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps
   const { statusResetRef, copyToastResetRef, dialogActionRef, dialogBusyRef, filePickerOpenRef, composerRef, selectionKey } = deps
@@ -338,7 +339,14 @@ export function useChatActions(deps: ChatActionsDeps) {
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
       setImageProtocol(response.image_protocol as ImageProtocol)
-      showDialog({ kind: "advanced", config: response as AdvancedConfig })
+      if (response.splash_style === "card" || response.splash_style === "boot-log" || response.splash_style === "off")
+        setSplashStyle(response.splash_style as SplashPreference)
+      if (dialog?.kind === "customisation-splash") {
+        const splashStyle = response.splash_style as SplashPreference
+        showDialog({ kind: "customisation-splash", splashStyle })
+      } else {
+        showDialog({ kind: "advanced", config: response as AdvancedConfig })
+      }
       showStatus(message)
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -915,7 +923,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       groups, groupMembers, identity, mutedPeers, peers, selectedGroupId, selectedPeerId, selection,
       showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft,
       setRenameDialog: () => showDialog({ kind: "rename" }),
-      loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms,
+       loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms,
     })
   }
 

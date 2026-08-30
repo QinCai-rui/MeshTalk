@@ -1,4 +1,4 @@
-import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, FriendRequest, Group, GroupDelivery, ImageProtocol, RoomStatus } from "../types"
+import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, FriendRequest, Group, GroupDelivery, ImageProtocol, RoomStatus, SplashPreference } from "../types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "../notifications"
 import type { GroupMember, Peer } from "../types"
 import type { Release } from "../../../common/updater"
@@ -22,6 +22,7 @@ type DialogPanelProps = {
   debugInfo: DebugInfo | null
   flashingEnabled: boolean
   imageProtocol: ImageProtocol
+  splashStyle: SplashPreference
   groups: Group[]
   identity: { peer_id: string; display_name: string } | undefined
   mutedPeers: Record<string, number>
@@ -92,7 +93,7 @@ type DialogPanelProps = {
 }
 
 export function DialogPanel(props: DialogPanelProps) {
-  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
+  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
   const { runCommand, showDialog, closeDialog, goBack, setDialogDraft, setDialogError, setNameDraft } = props
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
@@ -107,7 +108,8 @@ export function DialogPanel(props: DialogPanelProps) {
     <box
       title={dialog.kind === "commands" ? "Commands"
         : dialog.kind.startsWith("control") ? "Control server"
-        : dialog.kind.startsWith("advanced") ? "Advanced Configuration"
+         : dialog.kind === "customisation" || dialog.kind === "customisation-splash" ? "Customisation"
+         : dialog.kind.startsWith("advanced") ? "Advanced Configuration"
         : dialog.kind === "rename" ? "Display name"
         : dialog.kind === "mute-timeout" ? "Mute peer"
         : dialog.kind === "unmute-confirm" ? "Unmute peer"
@@ -151,8 +153,10 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "control" && <ControlDialogContent dialog={dialog} dialogHeight={dialogHeight} configureControl={configureControl} dismissControlSetup={dismissControlSetup} loadControlStatus={loadControlStatus} showDialog={showDialog} />}
       {dialog.kind === "control-custom" && <ControlCustomDialogContent dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} configureControl={configureControl} />}
       {dialog.kind === "control-status" && <ControlStatusDialogContent dialog={dialog} showDialog={showDialog} />}
-      {dialog.kind === "advanced" && <AdvancedDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
-      {dialog.kind === "advanced-image-protocol" && <ImageProtocolDialogContent dialog={dialog} dialogHeight={dialogHeight} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
+       {dialog.kind === "advanced" && <AdvancedDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
+       {dialog.kind === "advanced-image-protocol" && <ImageProtocolDialogContent dialog={dialog} dialogHeight={dialogHeight} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
+       {dialog.kind === "customisation" && <CustomisationDialogContent splashStyle={splashStyle} dialogHeight={dialogHeight} showDialog={showDialog} />}
+       {dialog.kind === "customisation-splash" && <SplashStyleDialogContent splashStyle={splashStyle} dialogHeight={dialogHeight} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
       {dialog.kind === "advanced-ip-pinning" && <IpPinningDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "advanced-control" && <AdvancedControlDialogContent dialog={dialog} dialogHeight={dialogHeight} setDialogDraft={setDialogDraft} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
       {dialog.kind === "advanced-stun" && <AdvancedStunDialogContent dialog={dialog} dialogHeight={dialogHeight} setDialogDraft={setDialogDraft} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
@@ -270,11 +274,38 @@ function AdvancedDialogContent({ dialog, dialogHeight, showDialog }: { dialog: E
       { name: "IP Pinning", description: "Pin control or STUN server addresses to bypass DNS", value: "ip-pinning" },
          { name: "Back to Commands", description: "Return to Commands", value: "back" },
     ]} onSelect={(_, option) => {
-        if (option?.value === "image-protocol") showDialog({ kind: "advanced-image-protocol", config: dialog.config })
+         if (option?.value === "image-protocol") showDialog({ kind: "advanced-image-protocol", config: dialog.config })
        else if (option?.value === "ip-pinning") showDialog({ kind: "advanced-ip-pinning", config: dialog.config })
       else if (option?.value === "back") showDialog({ kind: "commands" })
     }} wrapSelection showDescription />
   )
+}
+
+function CustomisationDialogContent({ splashStyle, dialogHeight, showDialog }: { splashStyle: SplashPreference; dialogHeight: number; showDialog: (d: Dialog) => void }) {
+  return <MouseSelect focused height={Math.max(5, dialogHeight - 3)} options={[
+    { name: "Splash screen", description: "Choose the startup presentation", value: "splash" },
+    { name: "Back", description: "Return to Commands", value: "back" },
+  ]} onSelect={(_, option) => {
+    if (option?.value === "splash") showDialog({ kind: "customisation-splash", splashStyle })
+    else if (option?.value === "back") showDialog({ kind: "commands" })
+  }} wrapSelection showDescription />
+}
+
+function SplashStyleDialogContent({ splashStyle, dialogHeight, saveAdvancedConfig, showDialog }: { splashStyle: SplashPreference; dialogHeight: number; saveAdvancedConfig: (p: Record<string, unknown>, m: string) => void; showDialog: (d: Dialog) => void }) {
+  const current = splashStyle === "boot-log" ? "Boot log" : splashStyle === "card" ? "Animated card" : "Off"
+  return <>
+    <text><span fg="#888888">Current: </span>{current}</text>
+    <MouseSelect focused height={Math.max(5, dialogHeight - 5)} options={[
+      { name: "Boot log", description: "Show real startup operations as a terminal boot log", value: "boot-log" },
+      { name: "Animated card", description: "Show the animated MeshTalk card with live startup status", value: "card" },
+      { name: "Off", description: "Skip splash artwork and open the chat as soon as startup finishes", value: "off" },
+      { name: "Back", description: "Return to Customisation", value: "back" },
+    ]} onSelect={(_, option) => {
+    if (!option) return
+    if (option.value === "back") showDialog({ kind: "customisation" })
+    else void saveAdvancedConfig({ splash_style: option.value }, `Splash screen set to ${option.value}.`)
+    }} wrapSelection showDescription />
+  </>
 }
 
 function ImageProtocolDialogContent({ dialog, dialogHeight, saveAdvancedConfig, showDialog }: { dialog: Extract<Dialog, { kind: "advanced-image-protocol" }>; dialogHeight: number; saveAdvancedConfig: (p: Record<string, unknown>, m: string) => void; showDialog: (d: Dialog) => void }) {

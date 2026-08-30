@@ -70,6 +70,25 @@ class SettingsControlSetupTest(unittest.TestCase):
 
         self.assertEqual(Settings(self.path).image_protocol, "auto")
 
+    def test_splash_style_persists_and_validates(self):
+        settings = Settings(self.path)
+        settings.set_splash_style("card")
+
+        self.assertEqual(Settings(self.path).splash_style, "card")
+        with self.assertRaisesRegex(ValueError, "splash_style"):
+            settings.set_splash_style("matrix")
+
+    def test_splash_timing_defaults(self):
+        settings = Settings(self.path)
+
+        self.assertEqual(settings.splash_duration_ms, 3000)
+        self.assertEqual(settings.splash_phase_ms, 300)
+
+    def test_invalid_splash_style_uses_default(self):
+        self.path.write_text(json.dumps({"version": 1, "splash_style": []}))
+
+        self.assertEqual(Settings(self.path).splash_style, "card")
+
     def test_notification_preferences_persist_and_merge_events(self):
         settings = Settings(self.path)
         self.assertEqual(settings.notification_preferences["delivery"], "terminal")

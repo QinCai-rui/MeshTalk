@@ -33,7 +33,9 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
   } else if (dialog.kind === "update-token") {
     if (dialog.release) showDialog({ kind: "update", release: dialog.release })
     else closeDialog()
-  } else if (dialog.kind === "advanced" || dialog.kind === "about") {
+  } else if (dialog.kind === "customisation-splash") {
+    showDialog({ kind: "customisation" })
+  } else if (dialog.kind === "customisation" || dialog.kind === "advanced" || dialog.kind === "about") {
     showDialog({ kind: "commands" })
   } else if (["room-create", "room-join", "room-created", "room-detail"].includes(dialog.kind)) {
     showDialog({ kind: "rooms", rooms: [] })
@@ -110,6 +112,7 @@ export function runCommand(command: string, dependencies: CommandDependencies) {
   } else if (command === "friends") showDialog({ kind: "friends" })
   else if (command === "notifications") showDialog({ kind: "notifications" })
   else if (command === "accessibility") showDialog({ kind: "accessibility" })
+  else if (command === "customisation") showDialog({ kind: "customisation" })
   else if (command === "advanced") void loadAdvancedConfig()
   else if (command === "rename") { const displayName = identity?.display_name ?? ""; setNameDraft(displayName); setDialogDraft(displayName); setDialogError(""); setRenameDialog() }
   else if (command === "mute" || command === "unmute") {
