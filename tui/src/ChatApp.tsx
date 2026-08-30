@@ -61,6 +61,7 @@ import {
   APP_RELEASE_VERSION,
   IS_RELEASE_BUILD,
   MIN_SPLASH_PHASE_MS,
+  MIN_SPLASH_WELCOME_MS,
   StartupPhase,
   StartupSplash,
   type StartupOutcome,
@@ -156,6 +157,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const [appReady, setAppReady] = useState(false);
   const [configuredSplashStyle, setConfiguredSplashStyle] = useState<SplashPreference>("card");
   const [splashPhaseMs, setSplashPhaseMs] = useState(MIN_SPLASH_PHASE_MS);
+  const [splashWelcomeMs, setSplashWelcomeMs] = useState(MIN_SPLASH_WELCOME_MS);
   const [copyToast, setCopyToast] = useState(false);
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({});
   const [notificationPreferences, setNotificationPreferences] =
@@ -446,7 +448,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         if (Date.now() >= deadline) throw error;
         attempt += 1;
         const delay = Math.min(1_000, 100 * 2 ** Math.min(attempt, 4));
-        await setPhase(StartupPhase.IpcRetry);
         await Bun.sleep(delay);
       }
     }
@@ -500,6 +501,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     const advanced = await ipc.send("advanced_config");
     let durationMs: number | undefined;
     let phaseDurationMs: number | undefined;
+    let welcomeDurationMs: number | undefined;
     if (!advanced.error) {
       setImageProtocol(advanced.image_protocol as ImageProtocol);
       if (advanced.splash_style === "card" || advanced.splash_style === "boot-log" || advanced.splash_style === "off")
@@ -510,16 +512,19 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         phaseDurationMs = advanced.splash_phase_ms;
         setSplashPhaseMs(advanced.splash_phase_ms);
       }
+      if (typeof advanced.splash_welcome_ms === "number" && advanced.splash_welcome_ms >= 0) {
+        welcomeDurationMs = advanced.splash_welcome_ms;
+        setSplashWelcomeMs(advanced.splash_welcome_ms);
+      }
     }
 
-    const layoutSettled = Promise.race([renderer.idle(), Bun.sleep(250)]);
+    await Promise.race([renderer.idle(), Bun.sleep(250)]);
     ensureActive();
-    await setPhase(StartupPhase.Finalise);
-    await layoutSettled;
 
     return {
       durationMs,
       phaseDurationMs,
+      welcomeDurationMs,
       result: {
         setupDismissed: response.setup_dismissed as boolean,
         preferences,
@@ -1622,6 +1627,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         height={height}
         variant={splashStyle !== undefined ? splashStyle : configuredSplashStyle === "off" ? false : configuredSplashStyle}
         phaseDurationMs={splashPhaseMs}
+        welcomeDurationMs={splashWelcomeMs}
         start={runStartup}
         onReady={finishStartup}
         onError={(error) => {

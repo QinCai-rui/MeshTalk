@@ -83,6 +83,7 @@ class SettingsControlSetupTest(unittest.TestCase):
 
         self.assertEqual(settings.splash_duration_ms, 3000)
         self.assertEqual(settings.splash_phase_ms, 300)
+        self.assertEqual(settings.splash_welcome_ms, 200)
 
     def test_invalid_splash_style_uses_default(self):
         self.path.write_text(json.dumps({"version": 1, "splash_style": []}))
