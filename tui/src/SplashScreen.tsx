@@ -8,7 +8,7 @@ declare const MESHTALK_RELEASE: boolean;
 export const IS_RELEASE_BUILD =
   typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE;
 export const APP_RELEASE_VERSION =
-  typeof APP_VERSION !== "undefined" && APP_VERSION ? "dev" : "dev";
+  typeof APP_VERSION !== "undefined" && APP_VERSION ? APP_VERSION : "dev";
 export const MIN_SPLASH_PHASE_MS = 500;
 export const MIN_SPLASH_DURATION_MS = 4000;
 
