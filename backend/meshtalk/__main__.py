@@ -551,6 +551,7 @@ async def main(debug: bool = False) -> None:
             "splash_style": settings.splash_style,
             "splash_duration_ms": settings.splash_duration_ms,
             "splash_phase_ms": settings.splash_phase_ms,
+            "splash_welcome_ms": settings.splash_welcome_ms,
         }
 
     async def handle_room_create(req: dict) -> dict:

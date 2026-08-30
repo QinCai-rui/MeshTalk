@@ -1,6 +1,6 @@
 import { type BoxRenderable } from "@opentui/core";
 import { useTimeline } from "@opentui/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -11,31 +11,30 @@ export const APP_RELEASE_VERSION =
   typeof APP_VERSION !== "undefined" && APP_VERSION ? APP_VERSION : "dev";
 export const MIN_SPLASH_PHASE_MS = 300;
 export const MIN_SPLASH_DURATION_MS = 3000;
+export const MIN_SPLASH_WELCOME_MS = 200;
 
 export type SplashStyle = "card" | "boot-log";
 
 export enum StartupPhase {
   Renderer = "renderer",
   IpcConnect = "ipc_connect",
-  IpcRetry = "ipc_retry",
   Authenticate = "authenticate",
   LoadIdentity = "load_identity",
   AnnouncePresence = "announce_presence",
   LoadData = "load_data",
-  Finalise = "finalise",
   Ready = "ready",
 }
 
-const PHASE_LABELS: Record<StartupPhase, string> = {
-  [StartupPhase.Renderer]: "terminal renderer initialised",
-  [StartupPhase.IpcConnect]: "ipc socket connected",
-  [StartupPhase.IpcRetry]: "connecting to backend",
-  [StartupPhase.Authenticate]: "ipc token authenticated",
-  [StartupPhase.LoadIdentity]: "local identity loaded",
-  [StartupPhase.AnnouncePresence]: "presence announced to mesh",
-  [StartupPhase.LoadData]: "contacts, groups, and settings loaded",
-  [StartupPhase.Finalise]: "terminal layout settled",
-  [StartupPhase.Ready]: "mesh established",
+const PHASE_LABELS: Partial<Record<StartupPhase, string>> = {
+  [StartupPhase.Renderer]: "graphics: terminal renderer initialized",
+  [StartupPhase.IpcConnect]: "ipc: connecting to MeshTalk backend",
+  [StartupPhase.Authenticate]: "security: IPC session authenticated",
+  [StartupPhase.LoadIdentity]: "identity: local node identity loaded",
+  [StartupPhase.AnnouncePresence]: "mesh: local presence announced",
+  [StartupPhase.LoadData]: "state: conversations and contacts loaded",
+};
+const PHASE_COMPLETION_LABELS: Partial<Record<StartupPhase, string>> = {
+  [StartupPhase.IpcConnect]: "ipc: connected to MeshTalk backend",
 };
 
 const MESHTALK_WORDMARK = [
@@ -74,18 +73,25 @@ function formatKernelTimestamp(elapsedMs: number): string {
 }
 
 function phaseIndex(phase: StartupPhase | null): number {
-  if (phase === StartupPhase.Finalise || phase === StartupPhase.Ready) return 3;
+  if (phase === StartupPhase.Ready) return 3;
   if (phase === StartupPhase.LoadData) return 2;
   if (phase && phase !== StartupPhase.Renderer) return 1;
   return 0;
 }
 
-type LogEntry = { id: number; ts: string; text: string; kind: "phase" | "final" };
+type LogEntry = {
+  id: number;
+  startedAt: number;
+  finishedAt?: number;
+  text: string;
+  kind: "phase" | "final" | "welcome";
+};
 
 export type StartupOutcome<T> = {
   result: T;
   durationMs?: number;
   phaseDurationMs?: number;
+  welcomeDurationMs?: number;
 };
 
 type StartupSplashProps<T> = {
@@ -94,39 +100,40 @@ type StartupSplashProps<T> = {
   onError: (error: unknown) => void;
   variant: SplashStyle | false;
   phaseDurationMs?: number;
+  welcomeDurationMs?: number;
   width: number;
   height: number;
 };
 
 type SplashState = {
   activePhaseId: number | null;
-  countdown: "loading" | "starting" | null;
+  countdown: "loading" | "welcome" | "starting" | null;
   currentPhase: StartupPhase | null;
   cursorVisible: boolean;
   log: LogEntry[];
   mountTime: number;
   ready: boolean;
   spinnerChar: string;
-  cardStatus: "graphics" | "connecting" | "waiting" | "loading" | "rendering" | "ready";
+  welcomeMessage: string;
+  cardStatus: "graphics" | "connecting" | "waiting" | "loading" | "ready";
 };
 
-function useSplashStartup<T>({ start, onReady, onError, phaseDurationMs }: StartupSplashProps<T>): SplashState {
+function useSplashStartup<T>({ start, onReady, onError, phaseDurationMs, welcomeDurationMs }: StartupSplashProps<T>): SplashState {
   const mountTimeRef = useRef(performance.now());
   const [log, setLog] = useState<LogEntry[]>([]);
   const [spinnerTick, setSpinnerTick] = useState(0);
   const currentPhase = useRef<StartupPhase | null>(null);
+  const activeLogId = useRef<number | null>(null);
   const phaseLogged = useRef(new Set<StartupPhase>());
-  const [countdown, setCountdown] = useState<"loading" | "starting" | null>(null);
+  const [countdown, setCountdown] = useState<"loading" | "welcome" | "starting" | null>(null);
   const onReadyCalled = useRef(false);
   const phaseDurationRef = useRef(MIN_SPLASH_PHASE_MS);
 
   phaseDurationRef.current = Math.max(0, phaseDurationMs ?? MIN_SPLASH_PHASE_MS);
 
   function cardStatusFor(phase: StartupPhase): SplashState["cardStatus"] {
-    if (phase === StartupPhase.Finalise) return "rendering";
     if (phase === StartupPhase.Ready) return "ready";
     if (phase === StartupPhase.LoadIdentity || phase === StartupPhase.AnnouncePresence || phase === StartupPhase.LoadData) return "loading";
-    if (phase === StartupPhase.IpcRetry) return "waiting";
     if (phase === StartupPhase.IpcConnect || phase === StartupPhase.Authenticate) return "connecting";
     return "graphics";
   }
@@ -136,12 +143,26 @@ function useSplashStartup<T>({ start, onReady, onError, phaseDurationMs }: Start
 
   function setPhase(phase: StartupPhase): Promise<void> {
     if (currentPhase.current === phase) return Promise.resolve();
+    const startedAt = performance.now();
+    const previousLogId = activeLogId.current;
+    const previousPhase = currentPhase.current;
     currentPhase.current = phase;
-    const ts = formatKernelTimestamp(performance.now() - mountTimeRef.current);
-    setLog((previous) => {
-      if (phaseLogged.current.has(phase)) return previous;
+    const text = PHASE_LABELS[phase] ?? "";
+    if (!text) return Promise.resolve();
+    const alreadyLogged = phaseLogged.current.has(phase);
+    const id = alreadyLogged ? null : nextLogId();
+    if (!alreadyLogged) {
       phaseLogged.current.add(phase);
-      return [...previous, { id: nextLogId(), ts, text: PHASE_LABELS[phase], kind: "phase" }];
+      activeLogId.current = id;
+    }
+    setLog((previous) => {
+      const completed = previousLogId === null
+        ? previous
+        : previous.map((entry) => entry.id === previousLogId && entry.finishedAt === undefined
+          ? { ...entry, finishedAt: startedAt, text: (previousPhase && PHASE_COMPLETION_LABELS[previousPhase]) ?? entry.text }
+          : entry);
+      if (alreadyLogged || id === null) return completed;
+      return [...completed, { id, startedAt, text, kind: "phase" }];
     });
     const nextStage = stage(phase);
     if (nextStage === stageRef.current) return Promise.resolve();
@@ -149,37 +170,54 @@ function useSplashStartup<T>({ start, onReady, onError, phaseDurationMs }: Start
     return new Promise((resolve) => setTimeout(resolve, phaseDurationRef.current));
   }
 
+  const welcomeMessage = `Welcome to MeshTalk ${APP_RELEASE_VERSION} (${IS_RELEASE_BUILD ? "stable" : "dev"}, ${process.platform ?? "unknown"})`;
+
   useEffect(() => {
     let cancelled = false;
     let readyTimer: ReturnType<typeof setTimeout> | undefined;
     let startingTimer: ReturnType<typeof setTimeout> | undefined;
 
     void start(setPhase)
-      .then(({ result, durationMs, phaseDurationMs }) => {
+      .then(({ result, durationMs, phaseDurationMs, welcomeDurationMs: configuredWelcomeDurationMs }) => {
         if (cancelled) return;
         if (phaseDurationMs !== undefined)
           phaseDurationRef.current = Math.max(0, phaseDurationMs);
-        const duration = Math.max(0, durationMs ?? MIN_SPLASH_DURATION_MS);
-        const startsAt = mountTimeRef.current + duration - 100;
+        const welcomeDuration = Math.max(0, configuredWelcomeDurationMs ?? welcomeDurationMs ?? MIN_SPLASH_WELCOME_MS);
+        const duration = Math.max(welcomeDuration + 100, durationMs ?? MIN_SPLASH_DURATION_MS);
+        const startsAt = mountTimeRef.current + duration - welcomeDuration - 100;
 
+        const finalPhaseId = activeLogId.current;
+        activeLogId.current = null;
+        setLog((previous) => previous.map((entry) =>
+          entry.id === finalPhaseId && entry.finishedAt === undefined
+            ? { ...entry, finishedAt: performance.now() }
+            : entry,
+        ));
+
+        currentPhase.current = StartupPhase.Ready;
         setCountdown("loading");
         readyTimer = setTimeout(() => {
           if (cancelled || onReadyCalled.current) return;
-          setPhase(StartupPhase.Ready);
-          setCountdown("starting");
+          const startedAt = performance.now();
+          setLog((previous) => [...previous, { id: nextLogId(), startedAt, finishedAt: startedAt, text: welcomeMessage, kind: "welcome" }]);
+          setCountdown("welcome");
           startingTimer = setTimeout(() => {
             if (cancelled || onReadyCalled.current) return;
-            onReadyCalled.current = true;
-            onReady(result);
-          }, 100);
+            setCountdown("starting");
+            startingTimer = setTimeout(() => {
+              if (cancelled || onReadyCalled.current) return;
+              onReadyCalled.current = true;
+              onReady(result);
+            }, 100);
+          }, welcomeDuration);
         }, Math.max(0, startsAt - performance.now()));
       })
       .catch((error) => {
         if (cancelled || onReadyCalled.current) return;
         onReadyCalled.current = true;
-        const ts = formatKernelTimestamp(performance.now() - mountTimeRef.current);
+        const now = performance.now();
         const text = `startup error: ${error instanceof Error ? error.message : String(error)}`;
-        setLog((previous) => [...previous, { id: nextLogId(), ts, text, kind: "final" }]);
+        setLog((previous) => [...previous, { id: nextLogId(), startedAt: now, finishedAt: now, text, kind: "final" }]);
         onError(error);
       });
 
@@ -210,6 +248,7 @@ function useSplashStartup<T>({ start, onReady, onError, phaseDurationMs }: Start
     ready: currentPhase.current === StartupPhase.Ready,
     spinnerChar: BRAILLE_SPINNER[spinnerTick % BRAILLE_SPINNER.length],
     cardStatus: cardStatusFor(currentPhase.current ?? StartupPhase.Renderer),
+    welcomeMessage,
   };
 }
 
@@ -264,8 +303,10 @@ function CardSplash({ width, height, startup }: { width: number; height: number;
   const phaseNumber = String(phase + 1).padStart(2, "0");
   const status = startup.countdown === "starting"
     ? "starting..."
+    : startup.countdown === "welcome"
+      ? "ready"
     : startup.countdown === "loading"
-      ? "loading..."
+      ? startup.ready ? "ready" : "loading..."
       : startup.cardStatus === "graphics"
         ? "Preparing terminal graphics..."
         : startup.cardStatus === "connecting"
@@ -274,9 +315,7 @@ function CardSplash({ width, height, startup }: { width: number; height: number;
             ? "Waiting for MeshTalk backend..."
             : startup.cardStatus === "loading"
               ? "Loading conversations and contacts..."
-              : startup.cardStatus === "rendering"
-                ? "Rendering terminal layout..."
-                : "starting...";
+              : "starting...";
 
   useEffect(() => {
     const sweep = sweepRef.current;
@@ -375,13 +414,18 @@ function BootLogSplash({ width, height, startup }: { width: number; height: numb
       <box style={{ height: 1 }} />
 
       {startup.log.map((entry) => {
-        const active = entry.kind === "phase" && entry.id === startup.activePhaseId && !startup.ready;
-        const tag = entry.kind === "final" ? <span fg="#65d6b4">[ OK ] </span> : active ? <span fg="#a997ff">[ {startup.spinnerChar} ] </span> : <span fg="#3ddc97">[ OK ] </span>;
-        const color = entry.kind === "final" ? "#65d6b4" : active ? "#d5deed" : "#4a5773";
-        return <text key={entry.id}><span fg="#2e3a52">[{entry.ts}] </span>{tag}<span fg={color}><b>{entry.text}</b></span>{active && startup.cursorVisible ? <span fg="#65d6b4"> ▊</span> : null}</text>;
+        const isWelcome = entry.kind === "welcome";
+        const active = entry.kind === "phase" && entry.id === startup.activePhaseId && entry.finishedAt === undefined && !startup.ready;
+        const tag = isWelcome ? null : entry.kind === "final" ? <span fg="#65d6b4">[ OK ] </span> : active ? <span fg="#a997ff">[ {startup.spinnerChar} ] </span> : <span fg="#3ddc97">[ OK ] </span>;
+        const color = isWelcome ? "#f0d7ff" : entry.kind === "final" ? "#65d6b4" : active ? "#d5deed" : "#4a5773";
+        const elapsedMs = (entry.finishedAt ?? performance.now()) - startup.mountTime;
+        return <Fragment key={entry.id}>
+          {isWelcome ? <text key={`${entry.id}-gap`}> </text> : null}
+          <text><span fg="#2e3a52">[{formatKernelTimestamp(elapsedMs)}] </span>{tag}<span fg={color}><b>{entry.text}</b></span>{active && startup.cursorVisible ? <span fg="#65d6b4"> ▊</span> : null}</text>
+        </Fragment>;
       })}
 
-      {startup.countdown ? <text>
+      {startup.countdown && startup.countdown !== "welcome" ? <text>
         <span fg="#2e3a52">[{formatKernelTimestamp(performance.now() - startup.mountTime)}] </span>
         <span fg={startup.countdown === "starting" ? "#65d6b4" : "#a997ff"}>[{startup.countdown === "starting" ? " OK " : ` ${startup.spinnerChar} `}] </span>
         <span fg={startup.countdown === "starting" ? "#65d6b4" : "#d5deed"}><b>{startup.countdown === "starting" ? "starting..." : "loading..."}</b></span>
