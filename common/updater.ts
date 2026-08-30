@@ -308,6 +308,8 @@ export async function installRelease(release: Release, installDir: string, onPro
     const archiveFile = await open(archivePath, "w")
     const hasher = new Bun.CryptoHasher("sha256")
     let receivedBytes = 0
+    let lastProgressTime = 0
+    const progressThrottleMs = 100
     try {
       while (true) {
         const { done, value } = await reader.read()
@@ -315,8 +317,13 @@ export async function installRelease(release: Release, installDir: string, onPro
         await archiveFile.write(value)
         hasher.update(value)
         receivedBytes += value.length
-        onProgress?.({ current: 1, total: 6, step: downloadStep, receivedBytes, totalBytes })
+        const now = Date.now()
+        if (now - lastProgressTime >= progressThrottleMs) {
+          lastProgressTime = now
+          onProgress?.({ current: 1, total: 6, step: downloadStep, receivedBytes, totalBytes })
+        }
       }
+      onProgress?.({ current: 1, total: 6, step: downloadStep, receivedBytes, totalBytes })
     } finally {
       await archiveFile.close()
     }
