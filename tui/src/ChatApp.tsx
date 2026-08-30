@@ -637,7 +637,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     deleteConfirmationTimer.current = setTimeout(() => {
       setDeleteConfirmation(undefined);
       actions.showStatus("Message deletion timed out.");
-    }, 5_000);
+    }, 3_000);
     return () => {
       if (deleteConfirmationTimer.current)
         clearTimeout(deleteConfirmationTimer.current);
@@ -1605,11 +1605,11 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const limitColor = composerLimitColor(draftLength);
   const dialogWidth = Math.min(68, Math.max(1, width - 4));
   const dialogHeight =
-    dialog?.kind === "image-view"
+    dialog?.kind === "image-view" || dialog?.kind === "file-list" || dialog?.kind === "files-dir" || dialog?.kind === "file-download"
       ? Math.max(1, height - 2)
       : Math.min(20, Math.max(1, height - 4));
   function dialogWidthFor(kind: Dialog["kind"]): number {
-    if (kind === "image-view") return Math.max(1, width - 2);
+    if (kind === "image-view" || kind === "file-list" || kind === "files-dir" || kind === "file-download") return Math.max(1, width - 2);
     if (kind === "room-detail" || kind === "group-detail")
       return Math.min(78, Math.max(1, width - 2));
     return dialogWidth;
@@ -1830,6 +1830,14 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           sendFile={actions.sendFile}
           downloadFile={actions.downloadFile}
           defaultDownloadPath={actions.defaultDownloadPath}
+          onDeleteFile={(file) => {
+            void ipc.send("delete_message", { message_id: file.file_id, group_id: file.group_id ?? undefined, file: true }).then((response: any) => {
+              if (response?.error) { setStatus(`Delete failed: ${response.error}`); return }
+              setFileTransfers((cur) => cur.filter((f) => f.file_id !== file.file_id))
+              setDialog((prev) => prev?.kind === "file-list" ? { kind: "file-list", files: prev.files.filter((f) => f.file_id !== file.file_id) } : prev)
+              setStatus(`Deleted ${file.filename} locally.`)
+            }).catch((e: unknown) => setStatus(`Delete failed: ${e instanceof Error ? e.message : String(e)}`))
+          }}
           testNotificationDelivery={actions.testNotificationDelivery}
           disableNotifications={actions.disableNotifications}
           confirmNotificationDelivery={actions.confirmNotificationDelivery}
