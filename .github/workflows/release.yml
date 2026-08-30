@@ -114,8 +114,26 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Configure static OpenSSL build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
+          echo "UV_NO_BINARY_PACKAGE=cryptography" >> "$GITHUB_ENV"
+
       - name: Build backend binary
         run: uv run --project backend --with nuitka python -m nuitka --mode=onefile --onefile-tempdir-spec='{CACHE_DIR}/MeshTalk/meshtalk-backend' --onefile-cache-mode=cached --output-dir=build/nuitka --output-filename=meshtalk-backend --assume-yes-for-downloads backend/meshtalk_launcher.py
+
+      - name: Verify static OpenSSL linkage (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          RUST_SO="$(uv run --project backend python -c 'import cryptography.hazmat.bindings._rust as module; print(module.__file__)')"
+          otool -L "$RUST_SO"
+          if otool -L "$RUST_SO" | grep -Eq 'lib(ssl|crypto)\.[0-9]+\.dylib'; then
+            echo "cryptography was linked dynamically against OpenSSL."
+            exit 1
+          fi
 
       - name: Create release directory
         run: mkdir -p dist/release
