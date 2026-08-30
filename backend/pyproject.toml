@@ -1,6 +1,6 @@
 [project]
 name = "meshtalk-backend"
-version = "0.20.1-1"
+version = "0.20.1-2"
 description = "MeshTalk peer-to-peer messaging backend"
 requires-python = ">=3.12"
 license = "GPL-3.0-only"
