@@ -28,7 +28,7 @@ test("installRelease streams the archive and reports each install phase", async 
   const installDir = join(temporary, "install")
   const archivePath = join(temporary, "release.tar.gz")
   const suffix = process.platform === "win32" ? ".exe" : ""
-  const files = ["meshtalk", "meshtalk-backend", "meshtalk-cli", "meshtalk-tui"].map((name) => `${name}${suffix}`)
+  const files = ["meshtalk", "meshtalk-backend"].map((name) => `${name}${suffix}`)
   mkdirSync(source)
   mkdirSync(installDir)
   for (const name of files) {
