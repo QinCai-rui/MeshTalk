@@ -284,7 +284,7 @@ async function stopBackend(pid?: number, daemonise = true): Promise<void> {
     try { pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim()); } catch {}
   }
   if (!pid || !Number.isInteger(pid)) return;
-  const useGroup = daemonise && process.platform !== "win32";
+  const useGroup = process.platform !== "win32" && (daemonise || process.platform === "darwin");
   if (!signalBackend(pid, useGroup, "SIGTERM")) return;
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -308,9 +308,10 @@ function signalBackend(pid: number, useGroup: boolean, signal: NodeJS.Signal): b
 function startBackend(backend: Component, daemonise = true): ChildProcess {
   const logFile = openSync(BACKEND_LOG_PATH, "a");
   try {
+    const detached = daemonise || process.platform === "darwin";
     const proc = spawnProcess(backend.command[0], backend.command.slice(1), {
       cwd: backend.cwd,
-      detached: daemonise,
+      detached,
       stdio: ["ignore", logFile, logFile],
       windowsHide: true,
     });
