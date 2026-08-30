@@ -324,6 +324,17 @@ target, add a target such as `--target=bun-linux-arm64` to the `bun build`
 command. The Nuitka backend must be compiled on the target operating system and
 CPU architecture.
 
+On macOS, build `cryptography` with a statically linked OpenSSL before running
+the backend command so the produced binary does not depend on a Homebrew
+installation at runtime:
+
+```bash
+brew install openssl@3
+export OPENSSL_DIR="$(brew --prefix openssl@3)"
+export OPENSSL_STATIC=1
+export UV_NO_BINARY_PACKAGE=cryptography
+```
+
 On Linux, the compiled backend uses the glibc version available on the build
 system. Building on an older Linux distribution generally provides broader
 compatibility with newer distributions; it cannot run on a system with an

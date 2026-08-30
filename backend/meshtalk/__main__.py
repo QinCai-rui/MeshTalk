@@ -923,14 +923,15 @@ async def main(debug: bool = False) -> None:
 
     asyncio.create_task(periodic_cleanup())
 
-    await stop_event.wait()
-
-    await ipc.stop()
-    await rendezvous.stop()
-    await peer_manager.stop()
-    await discovery.stop()
-    await db.close()
-    logger.info("MeshTalk backend stopped")
+    try:
+        await stop_event.wait()
+    finally:
+        await ipc.stop()
+        await rendezvous.stop()
+        await peer_manager.stop()
+        await discovery.stop()
+        await db.close()
+        logger.info("MeshTalk backend stopped")
 
 
 def run() -> None:
