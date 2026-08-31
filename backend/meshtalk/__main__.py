@@ -906,12 +906,15 @@ async def main(debug: bool = False) -> None:
     friend_manager.on_message_blocked = lambda event: ipc.broadcast_event({"event": "message_blocked", **event})
     file_manager.on_event = ipc.broadcast_event
 
+    # Start IPC first so the TUI/CLI can connect quickly even if network
+    # discovery or rendezvous is slow on Windows. This avoids the splash
+    # screen hanging at "Connecting to backend" for 60s before timing out.
+    await ipc.start()
     await peer_manager.start()
     await peer_manager.load_endpoints()
     await group_router.sync_groups()
     await discovery.start()
     await rendezvous.start()
-    await ipc.start()
 
     logger.info("MeshTalk backend running")
 

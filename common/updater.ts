@@ -190,7 +190,10 @@ export async function checkForUpdate(currentVersion: string): Promise<Release | 
 
 function expectedFiles(): string[] {
   const suffix = process.platform === "win32" ? ".exe" : ""
-  return ["meshtalk", "meshtalk-backend"].map((name) => `${name}${suffix}`)
+  // Keep 4-file layout compatible with pre-0.19 releases (meshtalk, meshtalk-backend,
+  // meshtalk-cli, meshtalk-tui) so the in-app updater can validate and replace
+  // all bundled binaries regardless of which version installed the directory.
+  return ["meshtalk", "meshtalk-backend", "meshtalk-cli", "meshtalk-tui"].map((name) => `${name}${suffix}`)
 }
 
 type PendingUpdate = {

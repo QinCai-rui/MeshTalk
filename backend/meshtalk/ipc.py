@@ -33,7 +33,7 @@ MAX_IPC_LINE_SIZE = 256 * 1024
 
 def _unix_sockets_supported() -> bool:
     if sys.platform == "win32":
-        return hasattr(asyncio, "start_unix_server")
+        return False
     return True
 
 
