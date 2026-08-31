@@ -153,6 +153,12 @@ jobs:
       - name: Move backend binary to release directory
         run: cp build/nuitka/meshtalk-backend${{ matrix.suffix }} dist/release/meshtalk-backend${{ matrix.suffix }}
 
+      - name: Build CLI binary
+        run: bun build ./cli/src/index.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --outfile dist/release/meshtalk-cli${{ matrix.suffix }}
+
+      - name: Build TUI binary
+        run: bun build ./tui/src/index.tsx --compile --target=${{ matrix.target }} --define 'process.env.OPENTUI_LIBC="glibc"' --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --outfile dist/release/meshtalk-tui${{ matrix.suffix }}
+
       - name: Build launcher binary
         run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --outfile dist/release/meshtalk${{ matrix.suffix }}
 
