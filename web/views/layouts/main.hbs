@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{title}}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            mesh: {
+              bg: '#0a0e14',
+              surface: '#111820',
+              card: '#151d28',
+              border: '#1e2a3a',
+              accent: '#00d4ff',
+              accentDim: '#00a8cc',
+              green: '#00ff88',
+              purple: '#a855f7',
+              muted: '#6b7a8d',
+              text: '#c8d6e5',
+            }
+          },
+          fontFamily: {
+            mono: ['"JetBrains Mono"', '"Fira Code"', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+    @keyframes pulse-glow {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+    .glow-pulse { animation: pulse-glow 3s ease-in-out infinite; }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-10px); }
+    }
+    .float { animation: float 6s ease-in-out infinite; }
+
+    @keyframes scan-line {
+      0% { transform: translateY(-100%); }
+      100% { transform: translateY(100vh); }
+    }
+    .scan-line {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(0, 212, 255, 0.15), transparent);
+      animation: scan-line 8s linear infinite;
+      pointer-events: none;
+      z-index: 50;
+    }
+
+    .mesh-grid {
+      background-image:
+        linear-gradient(rgba(0, 212, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 212, 255, 0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+    }
+
+    .gradient-text {
+      background: linear-gradient(135deg, #00d4ff, #00ff88);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-glow {
+      position: absolute;
+      width: 600px; height: 600px;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: 0.15;
+    }
+
+    a, button { transition: all 0.2s ease; }
+  </style>
+</head>
+<body class="bg-mesh-bg text-mesh-text mesh-grid min-h-screen">
+  <div class="scan-line"></div>
+  {{> nav}}
+  <main>
+    {{{body}}}
+  </main>
+  {{> footer}}
+</body>
+</html>

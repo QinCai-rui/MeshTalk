@@ -1,0 +1,169 @@
+<!-- Docs page -->
+<section class="pt-28 pb-24">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="max-w-2xl mb-16">
+      <p class="text-mesh-accent font-mono text-sm mb-3">GETTING STARTED</p>
+      <h1 class="text-4xl md:text-5xl font-bold text-white mb-4">Up and running<br>in seconds.</h1>
+      <p class="text-lg text-mesh-muted">One command to install. One command to launch. Start chatting on your LAN immediately.</p>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+      <!-- Sidebar nav -->
+      <nav class="lg:col-span-1">
+        <div class="lg:sticky lg:top-24 space-y-1">
+          <a href="#install" class="block px-4 py-2 text-sm rounded-lg text-mesh-accent bg-cyan-500/10 font-medium">Installation</a>
+          <a href="#quick-start" class="block px-4 py-2 text-sm rounded-lg text-mesh-muted hover:text-white hover:bg-white/5">Quick Start</a>
+          <a href="#remote" class="block px-4 py-2 text-sm rounded-lg text-mesh-muted hover:text-white hover:bg-white/5">Remote Setup</a>
+          <a href="#groups" class="block px-4 py-2 text-sm rounded-lg text-mesh-muted hover:text-white hover:bg-white/5">Group Chats</a>
+          <a href="#docker" class="block px-4 py-2 text-sm rounded-lg text-mesh-muted hover:text-white hover:bg-white/5">Docker</a>
+          <a href="#source" class="block px-4 py-2 text-sm rounded-lg text-mesh-muted hover:text-white hover:bg-white/5">Build from Source</a>
+          <a href="#update" class="block px-4 py-2 text-sm rounded-lg text-mesh-muted hover:text-white hover:bg-white/5">Updating</a>
+        </div>
+      </nav>
+
+      <!-- Content -->
+      <div class="lg:col-span-2 space-y-16">
+
+        <!-- Install -->
+        <section id="install">
+          <h2 class="text-2xl font-bold text-white mb-4">Installation</h2>
+
+          <h3 class="text-lg font-semibold text-white mb-3">Quick Install</h3>
+          <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-4 mb-4">
+            <code class="font-mono text-sm text-mesh-green">curl -fsSL https://go.qincai.xyz/getmeshtalk | bash</code>
+          </div>
+          <p class="text-sm text-mesh-muted mb-4">
+            Downloads the latest release for your platform and installs to <code class="font-mono text-mesh-accent">~/.local/bin</code> (Linux/macOS) or <code class="font-mono text-mesh-accent">%LOCALAPPDATA%\MeshTalk</code> (Windows).
+          </p>
+
+          <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-4 mb-6">
+            <p class="text-xs text-mesh-muted mb-2 font-medium">Options:</p>
+            <div class="font-mono text-xs text-mesh-muted space-y-1">
+              <div><span class="text-mesh-accent">--non-interactive</span> skip prompts, accept defaults</div>
+              <div><span class="text-mesh-accent">--version TAG</span> install a specific version</div>
+              <div><span class="text-mesh-accent">--install-dir DIR</span> custom install directory</div>
+              <div><span class="text-mesh-accent">--prerelease</span> include pre-release versions</div>
+              <div><span class="text-mesh-accent">--uninstall</span> remove MeshTalk</div>
+              <div><span class="text-mesh-accent">--dry-run</span> preview without installing</div>
+            </div>
+          </div>
+
+          <h3 class="text-lg font-semibold text-white mb-3">Manual Install</h3>
+          <p class="text-sm text-mesh-muted mb-3">
+            Download the <code class="font-mono text-mesh-accent">.tar.gz</code> for your platform from the
+            <a href="https://github.com/QinCai-rui/MeshTalk/releases/latest" target="_blank" rel="noopener" class="text-mesh-accent hover:underline">latest release</a>,
+            extract it, and run <code class="font-mono text-mesh-accent">./meshtalk</code>.
+            The archive contains everything — no Python, Bun, or package manager needed.
+          </p>
+
+          <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-4">
+            <p class="text-xs text-mesh-muted mb-2 font-medium">Supported platforms:</p>
+            <div class="grid grid-cols-2 gap-2 text-sm">
+              <div class="flex items-center gap-2"><span class="text-mesh-green">✓</span> macOS (Intel + Apple Silicon)</div>
+              <div class="flex items-center gap-2"><span class="text-mesh-green">✓</span> Linux x64 (glibc 2.38+)</div>
+              <div class="flex items-center gap-2"><span class="text-mesh-green">✓</span> Linux ARM64</div>
+              <div class="flex items-center gap-2"><span class="text-mesh-green">✓</span> Windows x64</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Quick start -->
+        <section id="quick-start">
+          <h2 class="text-2xl font-bold text-white mb-4">Quick Start</h2>
+          <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-5 font-mono text-sm space-y-1.5">
+            <div class="text-mesh-muted"># Launch the TUI</div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">./meshtalk</span></div>
+            <div class="text-mesh-muted mt-3"># The TUI starts an attached backend automatically.</div>
+            <div class="text-mesh-muted"># Press Ctrl+P for commands.</div>
+            <div class="text-mesh-muted"># Peers on your LAN appear automatically.</div>
+          </div>
+          <p class="text-sm text-mesh-muted mt-4">
+            MeshTalk creates fresh state in <code class="font-mono text-mesh-accent">~/.meshtalk</code>.
+            The TUI shows peers on the left sidebar and conversations on the right.
+          </p>
+        </section>
+
+        <!-- Remote -->
+        <section id="remote">
+          <h2 class="text-2xl font-bold text-white mb-4">Remote Setup</h2>
+          <p class="text-sm text-mesh-muted mb-4">
+            For peers on different networks, configure a control service. Press <code class="font-mono text-mesh-accent">Ctrl+P</code> in the TUI and select <strong class="text-white">Control server</strong>.
+          </p>
+          <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-5 font-mono text-sm space-y-1.5">
+            <div class="text-mesh-muted"># Via CLI</div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">meshtalk control set-url wss://control.example/v1/rendezvous</span></div>
+            <div class="text-muted mt-3"># The public server is pre-configured. Custom servers must use wss://.</div>
+          </div>
+          <div class="mt-4 rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-4">
+            <p class="text-sm text-yellow-200/80">
+              <strong>Note:</strong> Production control services must use <code class="font-mono">wss://</code>.
+              Plain <code class="font-mono">ws://</code> is accepted only for localhost development.
+            </p>
+          </div>
+        </section>
+
+        <!-- Groups -->
+        <section id="groups">
+          <h2 class="text-2xl font-bold text-white mb-4">Group Chats</h2>
+          <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-5 font-mono text-sm space-y-1.5">
+            <div class="text-mesh-muted"># Create a named group</div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">meshtalk room create "Project Team"</span></div>
+            <div class="text-mesh-green">✓ Invite copied to clipboard</div>
+            <div class="text-mesh-muted mt-3"># Share the invite through a trusted channel</div>
+            <div class="text-mesh-muted"># On the other end:</div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">meshtalk room join 'meshtalk-group:...'</span></div>
+            <div class="text-muted mt-3"># Send a message</div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">meshtalk group_send "Project Team" "Hello team!"</span></div>
+          </div>
+          <p class="text-sm text-mesh-muted mt-4">
+            Group messages are encrypted independently for each member. No shared group key. Offline members receive queued delivery.
+          </p>
+        </section>
+
+        <!-- Docker -->
+        <section id="docker">
+          <h2 class="text-2xl font-bold text-white mb-4">Docker</h2>
+          <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-5 font-mono text-sm space-y-1.5">
+            <div class="text-mesh-muted"># Pull images</div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">docker pull ghcr.io/qincai-rui/meshtalk/control:latest</span></div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">docker pull ghcr.io/qincai-rui/meshtalk/client:latest</span></div>
+            <div class="text-muted mt-3"># Run with docker compose</div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">docker compose up -d</span></div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">docker compose run -it client</span></div>
+          </div>
+        </section>
+
+        <!-- Build from source -->
+        <section id="source">
+          <h2 class="text-2xl font-bold text-white mb-4">Build from Source</h2>
+          <p class="text-sm text-mesh-muted mb-4">
+            Requires <a href="https://bun.sh" target="_blank" rel="noopener" class="text-mesh-accent hover:underline">Bun</a> and
+            <a href="https://docs.astral.sh/uv/" target="_blank" rel="noopener" class="text-mesh-accent hover:underline">uv</a>.
+          </p>
+          <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-5 font-mono text-sm space-y-1.5">
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">git clone https://github.com/QinCai-rui/MeshTalk.git</span></div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">cd meshtalk</span></div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">bun install</span></div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">bun run meshtalk</span></div>
+          </div>
+        </section>
+
+        <!-- Update -->
+        <section id="update">
+          <h2 class="text-2xl font-bold text-white mb-4">Updating</h2>
+          <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-5 font-mono text-sm space-y-1.5">
+            <div class="text-mesh-muted"># Update the current installation</div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">./meshtalk update --install</span></div>
+            <div class="text-muted mt-3"># Update a different installation</div>
+            <div><span class="text-mesh-accent">$</span> <span class="text-white">./meshtalk update --install --dir /path/to/MeshTalk</span></div>
+          </div>
+          <p class="text-sm text-mesh-muted mt-4">
+            Updates use <code class="font-mono text-mesh-accent">QinCai-rui/MeshTalk</code> by default. Configure another repo with <code class="font-mono text-mesh-accent">meshtalk update repo</code>.
+          </p>
+        </section>
+
+      </div>
+    </div>
+  </div>
+</section>

@@ -1,0 +1,263 @@
+<!-- Hero -->
+<section class="relative pt-32 pb-20 overflow-hidden">
+  <div class="hero-glow bg-cyan-500 top-0 left-1/2 -translate-x-1/2 -translate-y-1/2"></div>
+  <div class="hero-glow bg-emerald-500 top-20 right-0 translate-x-1/3"></div>
+
+  <div class="max-w-6xl mx-auto px-6 relative z-10">
+    <div class="max-w-3xl mx-auto text-center">
+      <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-mesh-border bg-mesh-surface/50 text-xs text-mesh-muted mb-8">
+        <span class="w-1.5 h-1.5 rounded-full bg-mesh-green animate-pulse"></span>
+        <span id="version-badge">v0.18.7</span> — Open source, GPLv3
+      </div>
+
+      <h1 class="text-5xl md:text-7xl font-bold tracking-tight text-white leading-[1.1] mb-6">
+        Private messaging,
+        <span class="gradient-text">peer to peer.</span>
+      </h1>
+
+      <p class="text-lg md:text-xl text-mesh-muted leading-relaxed mb-10 max-w-2xl mx-auto">
+        MeshTalk discovers peers on your LAN and punches through NATs for remote connections.
+        Messages are end-to-end encrypted. No servers store your data.
+      </p>
+
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+        <a href="/docs" class="w-full sm:w-auto px-8 py-3.5 bg-mesh-accent text-mesh-bg font-semibold rounded-xl hover:bg-cyan-300 transition-all text-center">
+          Get Started
+        </a>
+        <a href="https://github.com/QinCai-rui/MeshTalk" target="_blank" rel="noopener" class="w-full sm:w-auto px-8 py-3.5 border border-mesh-border text-white font-medium rounded-xl hover:bg-white/5 transition-all text-center flex items-center justify-center gap-2">
+          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+    </div>
+
+    <!-- Terminal preview -->
+    <div class="max-w-2xl mx-auto mt-16 float">
+      <div class="rounded-xl border border-mesh-border bg-mesh-surface/80 backdrop-blur-sm overflow-hidden shadow-2xl shadow-cyan-500/5">
+        <div class="flex items-center gap-2 px-4 py-3 border-b border-mesh-border bg-mesh-card/50">
+          <span class="w-3 h-3 rounded-full bg-red-500/80"></span>
+          <span class="w-3 h-3 rounded-full bg-yellow-500/80"></span>
+          <span class="w-3 h-3 rounded-full bg-green-500/80"></span>
+          <span class="ml-3 text-xs text-mesh-muted font-mono">meshtalk</span>
+        </div>
+        <div class="p-5 font-mono text-xs md:text-sm leading-relaxed overflow-x-auto">
+<pre class="m-0"><span class="text-mesh-muted">$</span> <span class="text-white">meshtalk</span>
+<span style="color:#9db4e8">  ███╗   ███╗███████╗███████╗██╗  ██╗████████╗ █████╗ ██╗     ██╗  ██╗</span>
+<span style="color:#9db4e8">  ████╗ ████║██╔════╝██╔════╝██║  ██║╚══██╔══╝██╔══██╗██║     ██║ ██╔╝</span>
+<span style="color:#9db4e8">  ██╔████╔██║█████╗  ███████╗███████║   ██║   ███████║██║     █████╔╝</span>
+<span style="color:#9db4e8">  ██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║   ██║   ██╔══██║██║     ██╔═██╗</span>
+<span style="color:#9db4e8">  ██║ ╚═╝ ██║███████╗███████║██║  ██║   ██║   ██║  ██║███████╗██║  ██╗</span>
+<span style="color:#9db4e8">  ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝</span>
+
+  <span class="text-mesh-muted">discover ›</span> <span class="text-white">3 peers found</span>
+
+<span class="text-mesh-green">you</span> <span class="text-mesh-muted">›</span>  <span class="text-white">Hey, the camp wifi internet connection is down</span>
+<span class="text-mesh-green">ami</span> <span class="text-mesh-muted">›</span>  <span class="text-white">MeshTalk still works, we're on LAN :)</span>
+<span class="text-mesh-green">you</span> <span class="text-mesh-muted">›</span>  <span class="text-white">sending the photos now</span>
+  <span class="text-mesh-muted">⤓</span>  <span class="text-white">sunset.jpg · 4.2 MiB</span> <span class="text-mesh-green">✓ delivered</span></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- How it works -->
+<section class="py-24 relative">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <p class="text-mesh-accent font-mono text-sm mb-3">ARCHITECTURE</p>
+      <h2 class="text-3xl md:text-4xl font-bold text-white mb-4">How MeshTalk connects you</h2>
+      <p class="text-mesh-muted max-w-xl mx-auto">LAN peers connect directly. Remote peers use STUN hole punching with a DERP relay fallback — all encrypted.</p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-6 hover:border-cyan-500/30 transition-colors group">
+        <div class="w-10 h-10 rounded-lg bg-cyan-500/10 flex items-center justify-center mb-4 group-hover:bg-cyan-500/20 transition-colors">
+          <svg class="w-5 h-5 text-mesh-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">LAN Discovery</h3>
+        <p class="text-mesh-muted text-sm leading-relaxed">UDP broadcast finds peers on your local network. No internet or server required. The lower peer ID opens an authenticated TCP connection.</p>
+      </div>
+
+      <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-6 hover:border-emerald-500/30 transition-colors group">
+        <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4 group-hover:bg-emerald-500/20 transition-colors">
+          <svg class="w-5 h-5 text-mesh-green" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">NAT Traversal</h3>
+        <p class="text-mesh-muted text-sm leading-relaxed">STUN-assisted UDP hole punching for direct remote connections. When direct fails, MeshTalk Relay carries encrypted frames through the control service.</p>
+      </div>
+
+      <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-6 hover:border-purple-500/30 transition-colors group">
+        <div class="w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center mb-4 group-hover:bg-purple-500/20 transition-colors">
+          <svg class="w-5 h-5 text-mesh-purple" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+        </div>
+        <h3 class="text-white font-semibold mb-2">End-to-End Encryption</h3>
+        <p class="text-mesh-muted text-sm leading-relaxed">X25519 key exchange, AES-256-GCM encryption, Ed25519 signatures. The control service never sees your messages or room secrets.</p>
+      </div>
+    </div>
+
+    <!-- Architecture diagram -->
+    <div class="mt-12 rounded-xl border border-mesh-border bg-mesh-card/30 p-6 md:p-8 overflow-x-auto">
+      <pre class="font-mono text-xs md:text-sm text-mesh-muted leading-relaxed"><code class="text-cyan-400">OpenTUI / CLI</code>
+      <span class="text-mesh-accent">│</span>
+  <span class="text-mesh-accent">local IPC</span>
+      <span class="text-mesh-accent">│</span>
+<span class="text-white">Python backend</span> ──── <span class="text-mesh-green">LAN broadcast + TCP</span> ──── <span class="text-mesh-green">LAN peers</span>
+      <span class="text-mesh-accent">│</span>
+      <span class="text-mesh-accent">├────</span> <span class="text-mesh-purple">encrypted endpoint cards</span> ──── <span class="text-mesh-purple">control service</span>
+      <span class="text-mesh-accent">│</span>
+      <span class="text-mesh-accent">├────</span> <span class="text-cyan-400">STUN + reliable encrypted UDP</span> ──── <span class="text-cyan-400">remote peers</span>
+      <span class="text-mesh-accent">│</span>
+      <span class="text-mesh-accent">└────</span> <span class="text-yellow-400">MeshTalk Relay (fallback)</span> ──── <span class="text-yellow-400">remote peers</span></code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- Features grid -->
+<section class="py-24 relative">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <p class="text-mesh-accent font-mono text-sm mb-3">CAPABILITIES</p>
+      <h2 class="text-3xl md:text-4xl font-bold text-white mb-4">Built for real communication</h2>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-6 hover:bg-mesh-card/60 transition-colors">
+        <div class="text-2xl mb-3">🔒</div>
+        <h3 class="text-white font-semibold mb-2">E2EE Messages</h3>
+        <p class="text-mesh-muted text-sm">Ephemeral X25519 keys and AES-256-GCM. Every message is encrypted for its recipient only.</p>
+      </div>
+
+      <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-6 hover:bg-mesh-card/60 transition-colors">
+        <div class="text-2xl mb-3">👥</div>
+        <h3 class="text-white font-semibold mb-2">Group Chats</h3>
+        <p class="text-mesh-muted text-sm">Named rooms with pairwise fan-out encryption. Offline members get queued delivery on reconnect.</p>
+      </div>
+
+      <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-6 hover:bg-mesh-card/60 transition-colors">
+        <div class="text-2xl mb-3">📁</div>
+        <h3 class="text-white font-semibold mb-2">File Transfer</h3>
+        <p class="text-mesh-muted text-sm">Send files up to 50 MiB directly. Each chunk gets its own ephemeral key for forward secrecy.</p>
+      </div>
+
+      <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-6 hover:bg-mesh-card/60 transition-colors">
+        <div class="text-2xl mb-3">🖥️</div>
+        <h3 class="text-white font-semibold mb-2">TUI &amp; CLI</h3>
+        <p class="text-mesh-muted text-sm">Terminal-native interfaces. Works over SSH, in tmux, or anywhere your terminal goes.</p>
+      </div>
+
+      <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-6 hover:bg-mesh-card/60 transition-colors">
+        <div class="text-2xl mb-3">🐳</div>
+        <h3 class="text-white font-semibold mb-2">Docker Support</h3>
+        <p class="text-mesh-muted text-sm">Pre-built multi-arch images. Docker Compose setup for the control service and client.</p>
+      </div>
+
+      <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-6 hover:bg-mesh-card/60 transition-colors">
+        <div class="text-2xl mb-3">🔄</div>
+        <h3 class="text-white font-semibold mb-2">Self-Updates</h3>
+        <p class="text-mesh-muted text-sm">Built-in update mechanism. Run <code class="font-mono text-mesh-accent text-xs">meshtalk update --install</code> to stay current.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Download -->
+<section class="py-24 relative">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <p class="text-mesh-accent font-mono text-sm mb-3">DOWNLOAD</p>
+      <h2 class="text-3xl md:text-4xl font-bold text-white mb-4">Get MeshTalk</h2>
+      <p class="text-mesh-muted max-w-xl mx-auto">One-line install or manual download. Binaries include the backend, CLI, and TUI — no Python or Bun required at runtime.</p>
+    </div>
+
+    <!-- Quick install -->
+    <div class="max-w-2xl mx-auto mb-12">
+      <div class="rounded-xl border border-mesh-accent/30 bg-mesh-card/50 p-6">
+        <p class="text-sm text-mesh-muted mb-3 font-semibold">Quick Install</p>
+        <div class="flex items-center gap-3 bg-mesh-bg/80 rounded-lg px-4 py-3 font-mono text-sm overflow-x-auto">
+          <code class="text-mesh-green">curl -fsSL https://go.qincai.xyz/getmeshtalk | bash</code>
+        </div>
+        <p class="text-xs text-mesh-muted mt-3">Pass <code class="text-mesh-accent">--non-interactive</code> to skip prompts. Use <code class="text-mesh-accent">--help</code> for all options.</p>
+      </div>
+    </div>
+
+    <!-- Platform downloads -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 max-w-4xl mx-auto">
+      <a id="dl-macos" href="https://github.com/QinCai-rui/MeshTalk/releases/latest" target="_blank" rel="noopener" class="flex items-center gap-4 rounded-xl border border-mesh-border bg-mesh-card/30 p-5 hover:border-cyan-500/40 hover:bg-mesh-card/60 transition-all group">
+        <div class="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center text-xl group-hover:bg-blue-500/20 transition-colors">
+          🍎
+        </div>
+        <div>
+          <p class="text-white font-medium text-sm">macOS</p>
+          <p class="text-mesh-muted text-xs">Intel &amp; Apple Silicon</p>
+        </div>
+      </a>
+
+      <a id="dl-linux" href="https://github.com/QinCai-rui/MeshTalk/releases/latest" target="_blank" rel="noopener" class="flex items-center gap-4 rounded-xl border border-mesh-border bg-mesh-card/30 p-5 hover:border-cyan-500/40 hover:bg-mesh-card/60 transition-all group">
+        <div class="w-10 h-10 rounded-lg bg-orange-500/10 flex items-center justify-center text-xl group-hover:bg-orange-500/20 transition-colors">
+          🐧
+        </div>
+        <div>
+          <p class="text-white font-medium text-sm">Linux</p>
+          <p class="text-mesh-muted text-xs">x64 &amp; ARM64</p>
+        </div>
+      </a>
+
+      <a id="dl-windows" href="https://github.com/QinCai-rui/MeshTalk/releases/latest" target="_blank" rel="noopener" class="flex items-center gap-4 rounded-xl border border-mesh-border bg-mesh-card/30 p-5 hover:border-cyan-500/40 hover:bg-mesh-card/60 transition-all group">
+        <div class="w-10 h-10 rounded-lg bg-cyan-500/10 flex items-center justify-center text-xl group-hover:bg-cyan-500/20 transition-colors">
+          🪟
+        </div>
+        <div>
+          <p class="text-white font-medium text-sm">Windows</p>
+          <p class="text-mesh-muted text-xs">x64</p>
+        </div>
+      </a>
+    </div>
+
+    <p class="text-center text-xs text-mesh-muted/60 mt-8">
+      Linux requires glibc 2.38+ (Ubuntu 24.04+, Debian 13+, Fedora 39+).
+      <a href="/docs" class="text-mesh-accent hover:underline">Build from source</a> for older systems.
+    </p>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="py-24 relative">
+  <div class="max-w-3xl mx-auto px-6 text-center">
+    <div class="rounded-2xl border border-mesh-border bg-gradient-to-b from-mesh-card/50 to-mesh-surface/30 p-12 md:p-16">
+      <h2 class="text-3xl md:text-4xl font-bold text-white mb-4">Start meshing.</h2>
+      <p class="text-mesh-muted mb-8 max-w-md mx-auto">Download MeshTalk, share a room invite, and talk privately. No accounts, no servers, no middlemen.</p>
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+        <a href="/docs" class="px-8 py-3.5 bg-mesh-accent text-mesh-bg font-semibold rounded-xl hover:bg-cyan-300 transition-all">
+          Read the Docs
+        </a>
+        <a href="https://github.com/QinCai-rui/MeshTalk" target="_blank" rel="noopener" class="px-8 py-3.5 border border-mesh-border text-white font-medium rounded-xl hover:bg-white/5 transition-all">
+          Star on GitHub
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  (async () => {
+    const REPO_URL = "https://api.github.com/repos/QinCai-rui/MeshTalk/releases/latest";
+    const RELEASES_BASE = "https://github.com/QinCai-rui/MeshTalk/releases/tag";
+
+    try {
+      const res = await fetch(REPO_URL);
+      if (!res.ok) return;
+      const data = await res.json();
+      const tag = data.tag_name;
+      if (!tag) return;
+
+      const badge = document.getElementById("version-badge");
+      if (badge) badge.textContent = tag;
+
+      const releaseUrl = `${RELEASES_BASE}/${tag}`;
+      document.getElementById("dl-macos")?.setAttribute("href", releaseUrl);
+      document.getElementById("dl-linux")?.setAttribute("href", releaseUrl);
+      document.getElementById("dl-windows")?.setAttribute("href", releaseUrl);
+    } catch {}
+  })();
+</script>
