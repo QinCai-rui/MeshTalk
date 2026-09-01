@@ -33,29 +33,25 @@
 
     <!-- Terminal preview -->
     <div class="max-w-2xl mx-auto mt-16 float">
-      <div class="rounded-xl border border-mesh-border bg-mesh-surface/80 backdrop-blur-sm overflow-hidden shadow-2xl shadow-cyan-500/5">
-        <div class="flex items-center gap-2 px-4 py-3 border-b border-mesh-border bg-mesh-card/50">
-          <span class="w-3 h-3 rounded-full bg-red-500/80"></span>
-          <span class="w-3 h-3 rounded-full bg-yellow-500/80"></span>
-          <span class="w-3 h-3 rounded-full bg-green-500/80"></span>
-          <span class="ml-3 text-xs text-mesh-muted font-mono">meshtalk</span>
+      <div style="background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);border-radius:20px;border:1px solid rgba(255,255,255,0.08);overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,0.6);">
+        <div style="display:flex;align-items:center;gap:7px;padding:10px 14px;background:rgba(255,255,255,0.04);border-bottom:1px solid rgba(255,255,255,0.06);">
+          <span style="width:11px;height:11px;border-radius:50%;background:#ff5f57;"></span>
+          <span style="width:11px;height:11px;border-radius:50%;background:#febc2e;"></span>
+          <span style="width:11px;height:11px;border-radius:50%;background:#28c840;"></span>
+          <span style="color:rgba(255,255,255,0.4);font-size:.78rem;margin-left:6px;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;">~/meshtalk</span>
         </div>
-        <div class="p-5 font-mono text-xs md:text-sm leading-relaxed overflow-x-auto">
-<pre class="m-0"><span class="text-mesh-muted">$</span> <span class="text-white">meshtalk</span>
-<span style="color:#9db4e8">  ███╗   ███╗███████╗███████╗██╗  ██╗████████╗ █████╗ ██╗     ██╗  ██╗</span>
-<span style="color:#9db4e8">  ████╗ ████║██╔════╝██╔════╝██║  ██║╚══██╔══╝██╔══██╗██║     ██║ ██╔╝</span>
-<span style="color:#9db4e8">  ██╔████╔██║█████╗  ███████╗███████║   ██║   ███████║██║     █████╔╝</span>
-<span style="color:#9db4e8">  ██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║   ██║   ██╔══██║██║     ██╔═██╗</span>
-<span style="color:#9db4e8">  ██║ ╚═╝ ██║███████╗███████║██║  ██║   ██║   ██║  ██║███████╗██║  ██╗</span>
-<span style="color:#9db4e8">  ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝</span>
+        <div style="padding:18px 20px;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:.85rem;line-height:1.7;white-space:pre-wrap;color:#e2e8f0;"><span style="color:#4ade80;">$</span> meshtalk
+<pre style="margin:0;padding:0;font:inherit;line-height:1;white-space:pre;color:#9db4e8;font-weight:bold;">  ███╗   ███╗███████╗███████╗██╗  ██╗████████╗ █████╗ ██╗     ██╗  ██╗
+  ████╗ ████║██╔════╝██╔════╝██║  ██║╚══██╔══╝██╔══██╗██║     ██║ ██╔╝
+  ██╔████╔██║█████╗  ███████╗███████║   ██║   ███████║██║     █████╔╝
+  ██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║   ██║   ██╔══██║██║     ██╔═██╗
+  ██║ ╚═╝ ██║███████╗███████║██║  ██║   ██║   ██║  ██║███████╗██║  ██╗
+  ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝</pre><span style="color:rgba(255,255,255,0.4);">  discover › 3 peers found</span>
 
-  <span class="text-mesh-muted">discover ›</span> <span class="text-white">3 peers found</span>
-
-<span class="text-mesh-green">you</span> <span class="text-mesh-muted">›</span>  <span class="text-white">Hey, the camp wifi internet connection is down</span>
-<span class="text-mesh-green">ami</span> <span class="text-mesh-muted">›</span>  <span class="text-white">MeshTalk still works, we're on LAN :)</span>
-<span class="text-mesh-green">you</span> <span class="text-mesh-muted">›</span>  <span class="text-white">sending the photos now</span>
-  <span class="text-mesh-muted">⤓</span>  <span class="text-white">sunset.jpg · 4.2 MiB</span> <span class="text-mesh-green">✓ delivered</span></pre>
-        </div>
+<span style="color:#7dd3fc;">you</span> ›  Hey, the camp wifi is down
+<span style="color:#7dd3fc;">ami</span> ›  MeshTalk still works — we're on LAN :)
+<span style="color:#7dd3fc;">you</span> ›  sending the photos now
+<span style="color:rgba(255,255,255,0.4);">  ⤓  sunset.jpg · 4.2 MiB ✓ delivered</span></div>
       </div>
     </div>
   </div>
