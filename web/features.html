@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MeshTalk — Features</title>
+  <meta name="description" content="MeshTalk features: encrypted messaging, LAN discovery, private rooms, group chats, file transfer, friend requests, and more." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='8' cy='16' r='6' fill='%23e8451e'/%3E%3Ccircle cx='24' cy='16' r='6' fill='%23e8451e'/%3E%3Ccircle cx='16' cy='8' r='6' fill='%23e8451e'/%3E%3Ccircle cx='16' cy='24' r='6' fill='%23e8451e'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+  <nav class="nav" aria-label="Main navigation">
+    <div class="container nav-inner">
+      <a href="index.html" class="brand">
+        <svg width="28" height="28" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="16" r="5" />
+          <circle cx="24" cy="16" r="5" />
+          <circle cx="16" cy="8" r="5" />
+          <circle cx="16" cy="24" r="5" />
+          <line x1="12" y1="10" x2="20" y2="14" />
+          <line x1="12" y1="22" x2="20" y2="18" />
+          <line x1="20" y1="10" x2="12" y2="14" />
+          <line x1="20" y1="22" x2="12" y2="18" />
+        </svg>
+        MeshTalk
+      </a>
+      <div class="nav-links">
+        <a href="features.html" aria-current="page">Features</a>
+        <a href="install.html">Install</a>
+        <a href="docs.html">Docs</a>
+        <a href="security.html">Security</a>
+      </div>
+      <div class="nav-actions">
+        <a href="install.html" class="btn btn-primary btn-sm">Get MeshTalk</a>
+        <button class="icon-btn hamburger" aria-label="Toggle menu" aria-expanded="false">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="2" y1="5" x2="18" y2="5" />
+            <line x1="2" y1="10" x2="18" y2="10" />
+            <line x1="2" y1="15" x2="18" y2="15" />
+          </svg>
+        </button>
+        <button class="icon-btn" id="themeToggle" aria-label="Toggle theme">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <section class="pagehead">
+      <div class="container">
+        <h1>Features</h1>
+        <p class="lead">Everything you need for private, direct, and reliable communication — no cloud required.</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container">
+        <div class="grid grid-2">
+          <div class="card reveal">
+            <div class="badge coral">📡</div>
+            <h3>LAN discovery &amp; TCP</h3>
+            <p>UDP broadcast finds peers automatically on the same network. TCP carries authenticated messages when you're offline — no internet needed.</p>
+          </div>
+          <div class="card reveal">
+            <div class="badge teal">🌍</div>
+            <h3>Remote UDP with STUN</h3>
+            <p>Public STUN lets peers discover each other's endpoints. Direct encrypted UDP tunnels punch through NATs for low-latency global communication.</p>
+          </div>
+          <div class="card reveal">
+            <div class="badge violet">🔄</div>
+            <h3>DERP relay fallback</h3>
+            <p>If direct UDP fails, MeshTalk Relay forwards encrypted frames through the control connection — no extra servers, just a fallback path.</p>
+          </div>
+          <div class="card reveal">
+            <div class="badge green">🏠</div>
+            <h3>Private rooms &amp; groups</h3>
+            <p>Create invite-only rooms and named group chats. Every message is encrypted separately for each recipient. Offline members get queued delivery.</p>
+          </div>
+          <div class="card reveal">
+            <div class="badge coral">📎</div>
+            <h3>File transfer &amp; preview</h3>
+            <p>Send files up to 50 MiB directly between peers. Each chunk is encrypted with a fresh ephemeral key. Images appear inline; save received files anywhere.</p>
+          </div>
+          <div class="card reveal">
+            <div class="badge teal">👥</div>
+            <h3>Friend requests &amp; blocking</h3>
+            <p>Friend-based social graph: accept messages only from friends. Block unwanted peers; friend requests are verified and cryptographically signed.</p>
+          </div>
+          <div class="card reveal">
+            <div class="badge violet">🖥️</div>
+            <h3>OpenTUI &amp; CLI</h3>
+            <p>Full-featured terminal UI (React-powered) for chat, groups, and file management. CLI for automation, scripting, and status checks.</p>
+          </div>
+          <div class="card reveal">
+            <div class="badge green">🔐</div>
+            <h3>End‑to‑end encryption</h3>
+            <p>X25519 key agreement, AES-256-GCM, Ed25519 signatures. Each message and file chunk uses a fresh ephemeral key for forward secrecy.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="container">
+        <div class="reveal" style="text-align:center;">
+          <h2>Ready to mesh?</h2>
+          <p style="color:var(--ink-soft); max-width:50ch; margin:0 auto 24px;">Install MeshTalk in seconds and start sending encrypted messages today.</p>
+          <a href="install.html" class="btn btn-primary btn-lg">Get MeshTalk</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-inner">
+        <div>
+          <a href="index.html" class="brand">
+            <svg width="24" height="24" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="8" cy="16" r="5" />
+              <circle cx="24" cy="16" r="5" />
+              <circle cx="16" cy="8" r="5" />
+              <circle cx="16" cy="24" r="5" />
+              <line x1="12" y1="10" x2="20" y2="14" />
+              <line x1="12" y1="22" x2="20" y2="18" />
+              <line x1="20" y1="10" x2="12" y2="14" />
+              <line x1="20" y1="22" x2="12" y2="18" />
+            </svg>
+            MeshTalk
+          </a>
+          <p>Message your people. Not a server.</p>
+        </div>
+        <div>
+          <h5>Site</h5>
+          <ul>
+            <li><a href="features.html">Features</a></li>
+            <li><a href="install.html">Install</a></li>
+            <li><a href="docs.html">Docs</a></li>
+            <li><a href="security.html">Security</a></li>
+          </ul>
+        </div>
+        <div>
+          <h5>Project</h5>
+          <ul>
+            <li><a href="https://github.com/QinCai-rui/MeshTalk">GitHub</a></li>
+            <li><a href="https://github.com/QinCai-rui/MeshTalk/blob/main/LICENSE">License (GPLv3)</a></li>
+            <li><a href="https://github.com/QinCai-rui/MeshTalk/issues">Issues</a></li>
+          </ul>
+        </div>
+        <div>
+          <h5>Honest note</h5>
+          <p style="font-size:0.8rem; opacity:0.7;">MeshTalk uses X25519 key exchange, which is <strong>not quantum-resistant</strong>. Do not use for messages that must remain confidential against a future quantum adversary.</p>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>&copy; <span class="year"></span> MeshTalk contributors</span>
+        <span>Built with ❤️ and encryption</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="assets/app.js" defer></script>
+</body>
+</html>
