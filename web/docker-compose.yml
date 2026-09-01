@@ -1,0 +1,11 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${WEB_PORT:-6060}:6060"
+    environment:
+      PORT: 6060
+      NODE_ENV: production
+    restart: unless-stopped
