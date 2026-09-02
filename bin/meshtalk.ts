@@ -370,6 +370,11 @@ async function main() {
     process.exit(0);
   }
 
+  if (args.length === 1 && ["--version", "-V"].includes(args[0])) {
+    console.log(APP_RELEASE_VERSION);
+    process.exit(0);
+  }
+
   if (args[0] === "backend") {
     const command = args[1] || "status";
     if (command === "status") {
