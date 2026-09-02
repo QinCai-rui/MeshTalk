@@ -6,7 +6,7 @@ set -Eeuo pipefail
 REPOSITORY="QinCai-rui/MeshTalk"
 RELEASES_URL="https://github.com/${REPOSITORY}/releases"
 API_URL="https://api.github.com/repos/${REPOSITORY}"
-METADATA_NAME=".meshtalk-installer"
+
 
 ACTION="install"
 DRY_RUN=0
@@ -274,9 +274,6 @@ detect_platform() {
     EXECUTABLE_SUFFIX=""
     DEFAULT_INSTALL_DIR="${HOME}/.local/bin"
   fi
-  DATA_DIR="${HOME}/.meshtalk"
-  METADATA_FILE="${DATA_DIR}/${METADATA_NAME}"
-
   ASSET_ARCH=$ARCH
   WINDOWS_ARM64_EMULATION=0
   if [[ $PLATFORM == windows && $ARCH == arm64 ]]; then
@@ -851,27 +848,17 @@ install_meshtalk() {
   if [[ -e $INSTALL_DIR && ! -d $INSTALL_DIR ]]; then
     die "Installation path exists but is not a directory: ${INSTALL_DIR}"
   fi
-  if [[ -f $METADATA_FILE ]]; then
-    local existing_version
-    existing_version=$(sed -n 's/^version=//p' "$METADATA_FILE")
-    if ! confirm "MeshTalk ${existing_version:-from this installer} is already installed in ${INSTALL_DIR}. Replace it?" n 1; then
-      [[ $NON_INTERACTIVE -eq 0 ]] || die "MeshTalk is already installed. Re-run with --yes to replace."
-      info "Installation cancelled."
-      return
+  local existing_file=""
+  for file in "${EXPECTED_FILES[@]}"; do
+    if [[ -e $INSTALL_DIR/$file || -L $INSTALL_DIR/$file ]]; then
+      existing_file=$file
+      break
     fi
-  else
-    local existing_file=""
-    for file in "${EXPECTED_FILES[@]}"; do
-      if [[ -e $INSTALL_DIR/$file || -L $INSTALL_DIR/$file ]]; then
-        existing_file=$file
-        break
-      fi
-    done
-    if [[ -n $existing_file ]] && ! confirm "${INSTALL_DIR}/${existing_file} already exists. Replace the MeshTalk installation?" n 1; then
-      [[ $NON_INTERACTIVE -eq 0 ]] || die "${INSTALL_DIR}/${existing_file} already exists. Re-run with --yes to replace."
-      info "Installation cancelled."
-      return
-    fi
+  done
+  if [[ -n $existing_file ]] && ! confirm "${INSTALL_DIR}/${existing_file} already exists. Replace the MeshTalk installation?" n 1; then
+    [[ $NON_INTERACTIVE -eq 0 ]] || die "${INSTALL_DIR}/${existing_file} already exists. Re-run with --yes to replace."
+    info "Installation cancelled."
+    return
   fi
 
   # Verify dependencies
@@ -938,12 +925,6 @@ install_meshtalk() {
     cp "$extract_dir/$file" "$INSTALL_DIR/$file"
     chmod u+rx "$INSTALL_DIR/$file"
   done
-  mkdir -p "$DATA_DIR"
-  {
-    printf 'version=%s\n' "$RELEASE_TAG"
-    printf 'asset=%s\n' "$ASSET_NAME"
-    printf 'files=%s\n' "$(IFS=,; printf '%s' "${EXPECTED_FILES[*]}")"
-  } > "$METADATA_FILE"
   step_done "${TICK}"
 
   configure_path
@@ -975,37 +956,34 @@ uninstall_meshtalk() {
 
   if [[ $DRY_RUN -eq 1 ]]; then
     panel_start "Uninstall preview"
-    panel_kv "Metadata" "${METADATA_FILE}"
+    panel_kv "Directory" "${INSTALL_DIR}"
     panel_end
     return
   fi
 
-  local metadata_file=$METADATA_FILE
-  [[ -f $metadata_file ]] || die "No MeshTalk installer metadata found in ${metadata_file}."
+  local found=0
+  for file in "${EXPECTED_FILES[@]}"; do
+    if [[ -e "$INSTALL_DIR/$file" || -L "$INSTALL_DIR/$file" ]]; then
+      found=1
+      break
+    fi
+  done
+  if [[ $found -eq 0 ]]; then
+    die "No MeshTalk binaries found in ${INSTALL_DIR}."
+  fi
 
-  local version files file
-  version=$(sed -n 's/^version=//p' "$metadata_file")
-  files=$(sed -n 's/^files=//p' "$metadata_file")
-  [[ -n $files ]] || die "Installer metadata is incomplete: ${metadata_file}"
-
-  panel_start "Remove MeshTalk ${version:-installation}"
+  panel_start "Remove MeshTalk installation"
   panel_line "${DIM}${INSTALL_DIR}${RESET}"
   panel_end
-  if ! confirm "Remove MeshTalk ${version:-installation} from ${INSTALL_DIR}?" n 1; then
+  if ! confirm "Remove MeshTalk from ${INSTALL_DIR}?" n 1; then
     info "Uninstall cancelled."
     return
   fi
 
   task_start "Removing MeshTalk from ${INSTALL_DIR}"
-  IFS=',' read -r -a installed_files <<< "$files"
-  for file in "${installed_files[@]}"; do
-    case $file in
-      meshtalk|meshtalk-backend|meshtalk.exe|meshtalk-backend.exe) ;;
-      *) die "Refusing to remove an unsafe metadata path." ;;
-    esac
+  for file in "${EXPECTED_FILES[@]}"; do
     rm -f -- "$INSTALL_DIR/$file"
   done
-  rm -f -- "$metadata_file"
   task_finish "" "Removed MeshTalk from ${INSTALL_DIR}"
   success "MeshTalk was uninstalled from ${INSTALL_DIR}."
 }
