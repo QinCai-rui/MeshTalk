@@ -137,18 +137,55 @@ export function ConversationPanel(props: ConversationPanelProps) {
           }
             if (item.type === "file") {
               const file = item.file
-              const fileUnavailable = ["completed", "sent"].includes(file.status) && isLocalFileMissing(file.file_path)
+              const allFiles = item.allFiles
+              const fileUnavailable = isLocalFileMissing(file.file_path) && file.status !== "queued" && file.status !== "transferring" && file.status !== "receiving"
             const isLocal = file.sender_id === identity?.peer_id
             const senderName = peers.find((peer) => peer.peer_id === file.sender_id)?.display_name
               ?? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === file.sender_id)?.display_name
               ?? "Unknown member"
+            const fileStatusColor = (s: string) => {
+              if (s === "completed") return "#66dd88"
+              if (s === "sent") return "#7aa2d6"
+              if (s === "queued") return "#e0a34a"
+              if (s === "failed" || s === "unavailable") return "#ff7777"
+              if (s === "receiving" || s === "transferring") return "#e0a34a"
+              return "#888888"
+            }
+            const fileStatusLabel = (s: string) => {
+              if (s === "completed") return " delivered"
+              if (s === "sent") return " sent"
+              if (s === "queued") return " stored and queued"
+              if (s === "failed") return " failed"
+              if (s === "unavailable") return " unavailable"
+              if (s === "receiving") return " receiving"
+              if (s === "transferring") return " sending"
+              return ""
+            }
+            const fileGroupDeliveryLabel = (files: FileTransfer[]) => {
+              if (files.length <= 1) return null
+              const total = files.length
+              const delivered = files.filter((f) => f.status === "completed").length
+              const sent = files.filter((f) => f.status === "sent").length
+              const queued = files.filter((f) => f.status === "queued").length
+              const failed = files.filter((f) => f.status === "failed" || f.status === "unavailable").length
+              const transferring = files.filter((f) => f.status === "transferring" || f.status === "receiving").length
+              const details = [`delivered ${delivered}/${total}`]
+              if (sent) details.push(`sent ${sent}`)
+              if (queued) details.push(`queued ${queued}`)
+              if (failed) details.push(`failed ${failed}`)
+              if (transferring) details.push(`sending ${transferring}`)
+              return details.join(" · ")
+            }
+            const groupLabel = fileGroupDeliveryLabel(allFiles)
             rows.push(
               <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { messageRefs.current[file.file_id] = node }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ flexDirection: "column", marginBottom: 1, backgroundColor: selectedReplyTargetId === file.file_id ? "#25354d" : undefined }}>
                 <text>
                   <span fg="#888888">{formatTime(file.created_at)} </span>
                   <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
                   <span fg="#888888"> shared an attachment</span>
+                  {isLocal && !selectedGroup && <span fg={fileStatusColor(file.status)}>{fileStatusLabel(file.status)}</span>}
                 </text>
+                {isLocal && selectedGroup && groupLabel && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(allFiles.map((f) => ({ recipient_id: f.recipient_id, display_name: peers.find((p) => p.peer_id === f.recipient_id)?.display_name ?? f.recipient_id.slice(0, 8), status: f.status === "completed" ? "delivered" : f.status, updated_at: f.completed_at ?? f.created_at }))) } }}><text fg="#888888">{groupLabel} <u>(click for details)</u></text></box>}
                 <text wrapMode="word"><span fg="#7aa2d6">{file.filename}</span><span fg="#888888"> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
                 {fileUnavailable ? <text fg="#ff7777">File unavailable: not found or deleted locally</text> : null}
                 {!fileUnavailable && file.file_path ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage={isImageFile(file.filename)} scrollboxRef={scrollboxRef} maxWidth={Math.max(12, (scrollboxRef.current?.viewport.width ?? width - (compact ? 28 : 38)) - 4)} maxHeight={Math.min(16, Math.max(4, (scrollboxRef.current?.viewport.height ?? 16) - 4))} onOpen={() => openImage(file)} /> : null}

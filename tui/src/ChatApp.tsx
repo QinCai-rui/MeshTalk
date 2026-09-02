@@ -1564,22 +1564,40 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       .filter(([, peers]) => Object.values(peers).some((peer) => peer.isTyping))
       .map(([conversation]) => conversation),
   );
-  const conversationFiles = useMemo(
-    () =>
-      fileTransfers
-        .filter((f) => {
-          if (f.status !== "completed" && f.status !== "sent") return false;
-          if (selection?.kind === "peer")
-            return (
-              !f.group_id &&
-              (f.sender_id === selection.id || f.recipient_id === selection.id)
-            );
-          if (selection?.kind === "group") return f.group_id === selection.id;
-          return false;
-        })
-        .sort((a, b) => a.created_at - b.created_at),
-    [fileTransfers, selection],
-  );
+  const conversationFiles = useMemo(() => {
+    const matched = fileTransfers.filter((f) => {
+      if (selection?.kind === "peer")
+        return (
+          !f.group_id &&
+          (f.sender_id === selection.id || f.recipient_id === selection.id)
+        );
+      if (selection?.kind === "group") return f.group_id === selection.id;
+      return false;
+    });
+    const grouped = new Map<string, FileTransfer[]>();
+    for (const f of matched) {
+      const key = `${f.filename}|${f.sender_id}|${f.group_id ?? ""}|${Math.round(f.created_at)}`;
+      const list = grouped.get(key);
+      if (list) list.push(f);
+      else grouped.set(key, [f]);
+    }
+    const statusPriority: Record<string, number> = {
+      completed: 0,
+      sent: 1,
+      failed: 2,
+      queued: 3,
+      receiving: 4,
+      transferring: 5,
+      unavailable: 6,
+    };
+    const best = (list: FileTransfer[]) =>
+      list.reduce((a, b) =>
+        (statusPriority[a.status] ?? 99) <= (statusPriority[b.status] ?? 99) ? a : b,
+      );
+    return [...grouped.values()]
+      .map((list) => ({ file: best(list), all: list }))
+      .sort((a, b) => a.file.created_at - b.file.created_at);
+  }, [fileTransfers, selection]);
   const conversationItems = useMemo<ConversationItem[]>(
     () =>
       [
@@ -1588,10 +1606,11 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           createdAt: message.created_at,
           message,
         })),
-        ...conversationFiles.map((file) => ({
+        ...conversationFiles.map(({ file, all }) => ({
           type: "file" as const,
           createdAt: file.created_at,
           file,
+          allFiles: all,
         })),
       ].sort(
         (a, b) =>
