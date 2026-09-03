@@ -26,6 +26,7 @@ export function CommandsDialog({ dialogHeight, groups, peers, selectedGroup, sel
       { name: "Files", description: "View file transfer history and status", value: "files" },
       { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
       { name: "Accessibility", description: "Reduce motion and other accessibility options", value: "accessibility" },
+      { name: "Customisation", description: "Make the terminal yours", value: "customisation" },
       { name: "Advanced Configuration", description: "Here be dragons. Not responsible for melted terminals.", value: "advanced" },
       { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
       { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
@@ -50,8 +51,8 @@ export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeig
     <text><span fg="#b9a7ff"><b>MeshTalk</b></span> <span fg="#77718f">terminal messenger</span></text>
     <text><span fg="#8fa7ff">Version </span><span fg="#66ddaa"><b>{appReleaseVersion}</b></span></text>
     <text><span fg="#e0a34a">Made with love</span> <span fg="#bbbbbb">by </span><span fg="#ff8fa3">Raymont</span><span fg="#bbbbbb">, </span><span fg="#8fa7ff">Kaesar, </span>and contributors.</text>
-    <text>Fully decentralised</text>
-    <text>Private by architecture • Not by policy</text>
+     <text fg="#687386">Fully decentralised</text>
+     <text fg="#687386">Private by architecture • Not by policy</text>
     {dialog.checked && <MarqueeText width={dialogWidth - 4} fg={isReleaseBuild ? "#66dd88" : "#ff5555"} text={isReleaseBuild ? "You are up to date, or release metadata is unavailable." : "Updates are available only in compiled MeshTalk releases."} />}
     {dialogError && <text fg="#ff7777">{dialogError}</text>}
     <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={[

@@ -10,6 +10,7 @@ import { homedir } from "os";
 import { applyPendingWindowsReplacement, checkForUpdate, githubRepository, installRelease, isReleaseInstallDir, releaseInstallDir, saveGithubRepository, saveGithubToken, spawnWindowsReplacementHelper, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
 import { main as cliMain } from "../cli/src/index";
 import { runTui } from "./tui-entry";
+import type { SplashStyle } from "../tui/src/SplashScreen";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -45,8 +46,32 @@ type Components = {
   backend: Component;
 };
 
+type SplashOption = SplashStyle | false;
+
 function log(msg: string) {
   console.error(`[meshtalk] ${msg}`);
+}
+
+function savedSplashStyle(): SplashOption {
+  try {
+    const settings = JSON.parse(readFileSync(`${DATA_DIR}/settings.json`, "utf-8"));
+    if (settings.splash_style === "card" || settings.splash_style === "boot-log")
+      return settings.splash_style;
+    if (settings.splash_style === "off") return false;
+  } catch {}
+  return "card";
+}
+
+function splashOption(args: string[]): SplashOption | undefined {
+  const value = args.length === 1 && args[0].startsWith("--splash=")
+    ? args[0].slice("--splash=".length)
+    : args.length === 2 && args[0] === "--splash"
+      ? args[1]
+      : undefined;
+  if (value === undefined) return undefined;
+  if (value === "false" || value === "off") return false;
+  if (value === "card" || value === "boot-log") return value;
+  throw new Error(`Usage: ${PROGRAM} [--splash=false|card|boot-log]`);
 }
 
 async function readConfirmation(): Promise<boolean> {
@@ -345,6 +370,11 @@ async function main() {
     process.exit(0);
   }
 
+  if (args.length === 1 && ["--version", "-V"].includes(args[0])) {
+    console.log(APP_RELEASE_VERSION);
+    process.exit(0);
+  }
+
   if (args[0] === "backend") {
     const command = args[1] || "status";
     if (command === "status") {
@@ -394,12 +424,13 @@ async function main() {
     throw new Error(`Usage: ${PROGRAM} backend [status|stop|start --daemonise]`);
   }
 
+  const splash = splashOption(args);
   const components = resolveComponents();
   let backendPid: number | undefined;
   let backendProcess: ChildProcess | undefined;
 
   const alreadyRunning = await backendRunning();
-  const launchTui = args.length === 0;
+  const launchTui = args.length === 0 || splash !== undefined;
   let iStartedIt = false;
 
   if (!alreadyRunning) {
@@ -417,13 +448,13 @@ async function main() {
   }
 
   let code = 0;
-  if (args.length === 0) {
+  if (launchTui) {
     let cleanupPromise: Promise<void> | undefined;
     const cleanup = () => {
       if (!iStartedIt) return Promise.resolve();
       return (cleanupPromise ??= stopBackend(backendPid, false));
     };
-    const tui = await runTui();
+    const tui = await runTui({ splashStyle: splash ?? savedSplashStyle() });
     if (iStartedIt) {
       // The TUI owns the visible startup state while the launcher waits silently.
       const ready = await waitForBackend(backendProcess);

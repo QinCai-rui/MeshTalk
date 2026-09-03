@@ -1,4 +1,4 @@
-import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, FriendRequest, Group, GroupDelivery, ImageProtocol, RoomStatus } from "../types"
+import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, FriendRequest, Group, GroupDelivery, ImageProtocol, RoomStatus, SplashPreference } from "../types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "../notifications"
 import type { GroupMember, Peer } from "../types"
 import type { Release } from "../../../common/updater"
@@ -6,6 +6,9 @@ import { MouseSelect } from "./MouseSelect"
 import { MarqueeText } from "./MarqueeText"
 import { NotificationDialogs } from "./dialogs/NotificationDialogs"
 import { AboutDialog, CommandsDialog, UpdateDestinationDialog, UpdateDialog, UpdateTokenDialog } from "./dialogs/CommandDialogs"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { useKeyboard } from "@opentui/react"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import { isImageFile, peerPresence } from "../utils"
 import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 
@@ -22,6 +25,7 @@ type DialogPanelProps = {
   debugInfo: DebugInfo | null
   flashingEnabled: boolean
   imageProtocol: ImageProtocol
+  splashStyle: SplashPreference
   groups: Group[]
   identity: { peer_id: string; display_name: string } | undefined
   mutedPeers: Record<string, number>
@@ -78,6 +82,7 @@ type DialogPanelProps = {
   sendFile: (filePath: string) => void
   downloadFile: (fileId: string, destPath: string) => void
   defaultDownloadPath: (filename: string) => string
+  onDeleteFile?: (file: FileTransfer) => void
 
   testNotificationDelivery: (delivery: Exclude<NotificationDelivery, "disabled">, firstRun?: boolean) => void
   disableNotifications: (firstRun?: boolean) => void
@@ -92,12 +97,12 @@ type DialogPanelProps = {
 }
 
 export function DialogPanel(props: DialogPanelProps) {
-  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
+  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
   const { runCommand, showDialog, closeDialog, goBack, setDialogDraft, setDialogError, setNameDraft } = props
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
   const { mutePeer, unmutePeer, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
-  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, downloadFile, defaultDownloadPath } = props
+  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, downloadFile, defaultDownloadPath, onDeleteFile } = props
   const { testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent } = props
   const { saveDisplayName, checkForUpdatesFromAbout, installUpdate, saveUpdateToken, restartUpdate } = props
 
@@ -107,7 +112,8 @@ export function DialogPanel(props: DialogPanelProps) {
     <box
       title={dialog.kind === "commands" ? "Commands"
         : dialog.kind.startsWith("control") ? "Control server"
-        : dialog.kind.startsWith("advanced") ? "Advanced Configuration"
+         : dialog.kind === "customisation" || dialog.kind === "customisation-splash" ? "Customisation"
+         : dialog.kind.startsWith("advanced") ? "Advanced Configuration"
         : dialog.kind === "rename" ? "Display name"
         : dialog.kind === "mute-timeout" ? "Mute peer"
         : dialog.kind === "unmute-confirm" ? "Unmute peer"
@@ -134,8 +140,8 @@ export function DialogPanel(props: DialogPanelProps) {
         : dialog.kind === "about" ? "About MeshTalk"
         : dialog.kind === "group-detail" ? "Group details"
         : dialog.kind === "file-send" ? "Upload file"
-        : dialog.kind === "file-list" ? "Files"
-        : dialog.kind === "file-download" ? "Save file"
+        : dialog.kind === "file-list" ? "File Manager"
+        : dialog.kind === "file-download" ? "Save File"
          : dialog.kind === "files-dir" ? "File storage"
          : dialog.kind === "image-view" ? "Image preview"
          : dialog.kind === "delivery-details" ? "Delivery details"
@@ -151,8 +157,10 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "control" && <ControlDialogContent dialog={dialog} dialogHeight={dialogHeight} configureControl={configureControl} dismissControlSetup={dismissControlSetup} loadControlStatus={loadControlStatus} showDialog={showDialog} />}
       {dialog.kind === "control-custom" && <ControlCustomDialogContent dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} configureControl={configureControl} />}
       {dialog.kind === "control-status" && <ControlStatusDialogContent dialog={dialog} showDialog={showDialog} />}
-      {dialog.kind === "advanced" && <AdvancedDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
-      {dialog.kind === "advanced-image-protocol" && <ImageProtocolDialogContent dialog={dialog} dialogHeight={dialogHeight} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
+       {dialog.kind === "advanced" && <AdvancedDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
+       {dialog.kind === "advanced-image-protocol" && <ImageProtocolDialogContent dialog={dialog} dialogHeight={dialogHeight} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
+       {dialog.kind === "customisation" && <CustomisationDialogContent splashStyle={splashStyle} dialogHeight={dialogHeight} showDialog={showDialog} />}
+       {dialog.kind === "customisation-splash" && <SplashStyleDialogContent splashStyle={splashStyle} dialogHeight={dialogHeight} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
       {dialog.kind === "advanced-ip-pinning" && <IpPinningDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "advanced-control" && <AdvancedControlDialogContent dialog={dialog} dialogHeight={dialogHeight} setDialogDraft={setDialogDraft} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
       {dialog.kind === "advanced-stun" && <AdvancedStunDialogContent dialog={dialog} dialogHeight={dialogHeight} setDialogDraft={setDialogDraft} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
@@ -182,9 +190,9 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "debug-endpoints" && <DebugEndpointsDialogContent debugInfo={debugInfo} showDialog={showDialog} />}
       {dialog.kind === "debug-peer" && <DebugPeerDialogContent dialog={dialog} debugInfo={debugInfo} showDialog={showDialog} />}
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
-      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidth} imageProtocol={imageProtocol} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} defaultDownloadPath={defaultDownloadPath} />}
+      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidth} imageProtocol={imageProtocol} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
-      {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} />}
+      {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
       {dialog.kind === "image-view" && <ImageViewerDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} />}
     </box>
@@ -270,11 +278,38 @@ function AdvancedDialogContent({ dialog, dialogHeight, showDialog }: { dialog: E
       { name: "IP Pinning", description: "Pin control or STUN server addresses to bypass DNS", value: "ip-pinning" },
          { name: "Back to Commands", description: "Return to Commands", value: "back" },
     ]} onSelect={(_, option) => {
-        if (option?.value === "image-protocol") showDialog({ kind: "advanced-image-protocol", config: dialog.config })
+         if (option?.value === "image-protocol") showDialog({ kind: "advanced-image-protocol", config: dialog.config })
        else if (option?.value === "ip-pinning") showDialog({ kind: "advanced-ip-pinning", config: dialog.config })
       else if (option?.value === "back") showDialog({ kind: "commands" })
     }} wrapSelection showDescription />
   )
+}
+
+function CustomisationDialogContent({ splashStyle, dialogHeight, showDialog }: { splashStyle: SplashPreference; dialogHeight: number; showDialog: (d: Dialog) => void }) {
+  return <MouseSelect focused height={Math.max(5, dialogHeight - 3)} options={[
+    { name: "Splash screen", description: "Choose the startup presentation", value: "splash" },
+    { name: "Back", description: "Return to Commands", value: "back" },
+  ]} onSelect={(_, option) => {
+    if (option?.value === "splash") showDialog({ kind: "customisation-splash", splashStyle })
+    else if (option?.value === "back") showDialog({ kind: "commands" })
+  }} wrapSelection showDescription />
+}
+
+function SplashStyleDialogContent({ splashStyle, dialogHeight, saveAdvancedConfig, showDialog }: { splashStyle: SplashPreference; dialogHeight: number; saveAdvancedConfig: (p: Record<string, unknown>, m: string) => void; showDialog: (d: Dialog) => void }) {
+  const current = splashStyle === "boot-log" ? "Boot log" : splashStyle === "card" ? "Animated card" : "Off"
+  return <>
+    <text><span fg="#888888">Current: </span>{current}</text>
+    <MouseSelect focused height={Math.max(5, dialogHeight - 5)} options={[
+      { name: "Boot log", description: "Show real startup operations as a terminal boot log", value: "boot-log" },
+      { name: "Animated card", description: "Show the animated MeshTalk card with live startup status", value: "card" },
+      { name: "Off", description: "Skip splash artwork and open the chat as soon as startup finishes", value: "off" },
+      { name: "Back", description: "Return to Customisation", value: "back" },
+    ]} onSelect={(_, option) => {
+    if (!option) return
+    if (option.value === "back") showDialog({ kind: "customisation" })
+    else void saveAdvancedConfig({ splash_style: option.value }, `Splash screen set to ${option.value}.`)
+    }} wrapSelection showDescription />
+  </>
 }
 
 function ImageProtocolDialogContent({ dialog, dialogHeight, saveAdvancedConfig, showDialog }: { dialog: Extract<Dialog, { kind: "advanced-image-protocol" }>; dialogHeight: number; saveAdvancedConfig: (p: Record<string, unknown>, m: string) => void; showDialog: (d: Dialog) => void }) {
@@ -775,65 +810,196 @@ function FileSendDialogContent({ dialog, dialogWidth, selection, peers, groups, 
   )
 }
 
-function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, loadFiles, loadFilesDir, setDialogDraft, showDialog, defaultDownloadPath }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; defaultDownloadPath: (filename: string) => string }) {
-  return (
-    <>
-      <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
-        {!dialog.files.length && <text fg="#888888">No file transfers yet.</text>}
-        {dialog.files.map((f) => (
-          <box key={f.file_id} style={{ flexDirection: "column", paddingBottom: 1 }}>
-            <text><span fg={f.direction === "inbound" ? "#66dd88" : "#65a9ff"}>{f.direction === "inbound" ? "\u2193" : "\u2191"}</span> {f.filename} ({(f.file_size / 1024).toFixed(1)} KiB) <span fg="#888888">{f.status}</span></text>
-            <text fg="#888888">  {f.file_id.slice(0, 8)} {f.direction === "inbound" ? `from ${f.sender_id.slice(0, 8)}` : `to ${f.recipient_id.slice(0, 8)}`} {f.file_path ?? ""} {isImageFile(f.filename) ? "(image)" : ""}</text>
-            {["completed", "sent"].includes(f.status) && isLocalFileMissing(f.file_path) ? <text fg="#ff7777">  File unavailable: not found or deleted locally</text> : null}
-            {f.status === "completed" && f.file_path && !isLocalFileMissing(f.file_path) ? <ImageAttachment filePath={f.file_path} filename={f.filename} protocol={imageProtocol} expectedImage={isImageFile(f.filename)} lazy={false} maxWidth={Math.max(12, dialogWidth - 4)} maxHeight={Math.max(4, Math.floor(dialogHeight / 2))} onOpen={() => showDialog({ kind: "image-view", filePath: f.file_path!, filename: f.filename, version: f.completed_at, returnTo: "files" })} /> : null}
+function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, loadFiles, loadFilesDir, setDialogDraft, showDialog, defaultDownloadPath, onDeleteFile }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; defaultDownloadPath: (filename: string) => string; onDeleteFile?: (file: FileTransfer) => void }) {
+  const [filter, setFilter] = useState<"all" | "inbound" | "outbound" | "images" | "other">("all")
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<FileTransfer | null>(null)
+  const pendingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const scrollboxRef = useRef<ScrollBoxRenderable | null>(null)
+  const filtered = useMemo(() => {
+    let files = [...dialog.files].sort((a, b) => (b.completed_at ?? b.created_at) - (a.completed_at ?? a.created_at))
+    if (filter === "inbound") files = files.filter((f) => f.direction === "inbound")
+    if (filter === "outbound") files = files.filter((f) => f.direction === "outbound")
+    if (filter === "images") files = files.filter((f) => isImageFile(f.filename))
+    if (filter === "other") files = files.filter((f) => !isImageFile(f.filename))
+    return files
+  }, [dialog.files, filter])
+  const counts = useMemo(() => ({
+    all: dialog.files.length,
+    inbound: dialog.files.filter((f) => f.direction === "inbound").length,
+    outbound: dialog.files.filter((f) => f.direction === "outbound").length,
+    images: dialog.files.filter((f) => isImageFile(f.filename)).length,
+    other: dialog.files.filter((f) => !isImageFile(f.filename)).length,
+  }), [dialog.files])
+  useEffect(() => {
+    if (!filtered.length) { setSelectedId(null); return }
+    if (!selectedId || !filtered.some((f) => f.file_id === selectedId)) setSelectedId(filtered[0].file_id)
+  }, [filtered, selectedId])
+  useEffect(() => {
+    if (selectedId) scrollboxRef.current?.scrollChildIntoView(selectedId)
+  }, [selectedId])
+  useEffect(() => {
+    if (pendingTimer.current) clearTimeout(pendingTimer.current)
+    if (!pendingDelete) { pendingTimer.current = undefined; return }
+    pendingTimer.current = setTimeout(() => setPendingDelete(null), 3_000)
+    return () => { if (pendingTimer.current) clearTimeout(pendingTimer.current); pendingTimer.current = undefined }
+  }, [pendingDelete])
+  const selectedFile = filtered.find((f) => f.file_id === selectedId) ?? null
+  const canSaveSelected = !!selectedFile && ["completed", "sent"].includes(selectedFile.status) && !isLocalFileMissing(selectedFile.file_path)
+  const saveSelected = () => {
+    if (!selectedFile || !canSaveSelected) return
+    setDialogDraft(defaultDownloadPath(selectedFile.filename))
+    showDialog({ kind: "file-download", fileId: selectedFile.file_id, filename: selectedFile.filename, filePath: selectedFile.file_path ?? "" })
+  }
+  const requestDelete = () => { if (selectedFile) setPendingDelete(selectedFile) }
+  const confirmDelete = () => {
+    if (!pendingDelete) return
+    const target = pendingDelete
+    setPendingDelete(null)
+    if (onDeleteFile) onDeleteFile(target)
+    else loadFiles()
+  }
+  useKeyboard((key) => {
+    if (pendingDelete) {
+      if (key.name === "escape") setPendingDelete(null)
+      else if (key.name === "return" || key.name === "enter") void confirmDelete()
+      return
+    }
+    const index = filtered.findIndex((f) => f.file_id === selectedId)
+    if (key.name === "up" || key.name === "k") { if (index > 0) setSelectedId(filtered[index - 1].file_id) }
+    else if (key.name === "down" || key.name === "j") { if (index >= 0 && index < filtered.length - 1) setSelectedId(filtered[index + 1].file_id) }
+    else if (key.name === "return" || key.name === "enter" || key.name === "s") saveSelected()
+    else if (key.name === "r") loadFiles()
+    else if (key.name === "l") loadFilesDir()
+    else if (key.name === "d") requestDelete()
+  })
+  const formatSize = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+  const statusStyle = (status: string) => {
+    if (status === "completed") return { color: "#66dd88", bg: "#1a3320", label: "done" }
+    if (status === "sent") return { color: "#65a9ff", bg: "#1a2740", label: "sent" }
+    if (status === "receiving" || status === "sending") return { color: "#e0a34a", bg: "#33260a", label: status }
+    if (status === "failed" || status === "error") return { color: "#ff7777", bg: "#331a1a", label: "failed" }
+    return { color: "#888888", bg: "#222222", label: status }
+  }
+  const chips: { id: typeof filter; label: string; count: number }[] = [
+    { id: "all", label: "All", count: counts.all }, { id: "inbound", label: "↓ In", count: counts.inbound },
+    { id: "outbound", label: "↑ Out", count: counts.outbound }, { id: "images", label: "Images", count: counts.images }, { id: "other", label: "Other", count: counts.other },
+  ]
+  return <>
+    <box style={{ flexDirection: "row", alignItems: "center", paddingBottom: 1 }}>
+      <text><span fg="#6ea8fe"><b>Transfer history</b></span> <span fg="#888888">· {counts.all} files</span></text>
+    </box>
+    <box style={{ flexDirection: "row", gap: 1, paddingBottom: 1, minHeight: 3, flexShrink: 0 }}>
+      {chips.map((chip) => <box key={chip.id} onMouseDown={() => setFilter(chip.id)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: filter === chip.id ? "#1d3a5f" : "#1a2332", border: true, borderColor: filter === chip.id ? "#6ea8fe" : "#24344d" }}>
+        <text fg={filter === chip.id ? "#c8dfff" : "#888888"}>{chip.label}{chip.count ? ` · ${chip.count}` : ""}</text>
+      </box>)}
+    </box>
+    <scrollbox ref={scrollboxRef} focused style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", gap: 1, paddingRight: 1 }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" }, arrowOptions: { foregroundColor: "#6ea8fe" } }}>
+      {!filtered.length ? <box style={{ alignItems: "center", justifyContent: "center", flexDirection: "column", padding: 2, gap: 1 }}><text fg="#6ea8fe"><b>No {filter === "all" ? "file transfers" : filter} yet</b></text><text fg="#888888">Send a file with /file or receive one from a peer.</text></box> : null}
+      {filtered.map((f) => {
+        const status = statusStyle(f.status)
+        const missing = ["completed", "sent"].includes(f.status) && isLocalFileMissing(f.file_path)
+        const selected = f.file_id === selectedId
+        const isImage = isImageFile(f.filename)
+        const progress = f.total_chunks && f.received_chunks !== undefined ? Math.round(f.received_chunks / f.total_chunks * 100) : undefined
+        return <box key={f.file_id} id={f.file_id} onMouseDown={() => setSelectedId(f.file_id)} style={{ flexDirection: "column", padding: 1, border: true, borderColor: selected ? "#6ea8fe" : missing ? "#4a2a2a" : "#1e2e4a", backgroundColor: selected ? "#1d2e4a" : "#111d2e" }}>
+          <box style={{ flexDirection: "row", justifyContent: "space-between", gap: 1 }}>
+            <text><span fg={selected ? "#6ea8fe" : f.direction === "inbound" ? "#66dd88" : "#65a9ff"}>{selected ? "›" : f.direction === "inbound" ? "↓" : "↑"}</span> <b fg={selected ? "#c8dfff" : "#e8edf5"}>{f.filename}</b>{isImage ? <span fg="#e0a34a"> ◉</span> : null}</text>
+            <text><span fg="#888888">{formatSize(f.file_size)} </span><span fg={status.color} bg={status.bg}>{` ${status.label} `}</span></text>
           </box>
-        ))}
-      </scrollbox>
-      <MouseSelect focused height={Math.max(0, Math.min(8, dialogHeight - 4))} options={[
-        ...dialog.files.filter((f) => f.status === "completed" || f.status === "sent").map((f) => ({
-          name: `Save ${f.filename} to...`, description: `${f.file_id.slice(0, 8)} -> choose destination`, value: `dl:${f.file_id}`,
-        })),
-        { name: "Storage location", description: "View/change where received files are saved (e.g., E:\\ drive)", value: "storage" },
-        { name: "Refresh", description: "Reload file list", value: "refresh" },
-         { name: "Back", description: "Return to Commands", value: "back" },
-      ]} marqueeNames width={Math.max(1, dialogWidth - 4)} onSelect={(_, option) => {
-        if (!option) return
-        if (option.value === "refresh") void loadFiles()
-        else if (option.value === "back") showDialog({ kind: "commands" })
-        else if (option.value === "storage") void loadFilesDir()
-        else if (option.value.startsWith("dl:")) {
-          const fid = option.value.slice(3)
-          const f = dialog.files.find((x) => x.file_id === fid)
-          if (f) { setDialogDraft(defaultDownloadPath(f.filename)); showDialog({ kind: "file-download", fileId: f.file_id, filename: f.filename, filePath: f.file_path ?? "" }) }
-        }
-      }} wrapSelection showDescription />
-    </>
-  )
+          <text fg="#888888">{f.direction === "inbound" ? `from ${f.sender_id.slice(0, 8)}` : `to ${f.recipient_id.slice(0, 8)}`}{f.group_id ? " · group" : ""} <span fg="#5a6b86">· {f.file_id.slice(0, 8)}</span>{progress !== undefined && !["completed", "sent"].includes(f.status) ? ` · ${progress}%` : ""}</text>
+          {f.file_path ? <text fg="#5a6b86" wrapMode="none">{f.file_path}</text> : null}
+          {missing ? <text fg="#ff7777">File unavailable — moved or deleted locally</text> : null}
+          {progress !== undefined && !["completed", "sent"].includes(f.status) ? <box style={{ width: "100%", height: 1, backgroundColor: "#1a2332", marginTop: 1 }}><box style={{ width: `${Math.min(100, progress)}%`, height: 1, backgroundColor: "#e0a34a" }} /></box> : null}
+          {selected && isImage && f.status === "completed" && f.file_path && !missing ? <box style={{ paddingTop: 1 }}><ImageAttachment filePath={f.file_path} filename={f.filename} protocol={imageProtocol} expectedImage lazy={false} maxWidth={Math.max(12, dialogWidth - 8)} maxHeight={Math.max(4, Math.min(12, Math.floor(dialogHeight / 3)))} onOpen={() => showDialog({ kind: "image-view", filePath: f.file_path!, filename: f.filename, version: f.completed_at, returnTo: "files" })} /></box> : null}
+        </box>
+      })}
+    </scrollbox>
+    <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end", minHeight: 3, flexShrink: 0 }}>
+      <box onMouseDown={saveSelected} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: canSaveSelected ? "#1d3a5f" : "#1a2332", border: true, borderColor: canSaveSelected ? "#6ea8fe" : "#24344d" }}><text fg={canSaveSelected ? "#c8dfff" : "#5a6b86"}><u>S</u>ave</text></box>
+      <box onMouseDown={requestDelete} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#2d1818", border: true, borderColor: "#4a2a2a" }}><text fg="#ff7777"><u>D</u>elete</text></box>
+      <box onMouseDown={() => void loadFilesDir()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff"><u>L</u>ocation</text></box>
+      <box onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff"><u>R</u>efresh</text></box>
+      <box onMouseDown={() => showDialog({ kind: "commands" })} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff">Back</text></box>
+    </box>
+    {pendingDelete ? <box style={{ position: "absolute", left: 2, right: 2, top: Math.max(1, Math.floor(dialogHeight / 2) - 3), border: true, borderColor: "#ff7777", backgroundColor: "#2d1818", padding: 1, flexDirection: "column", gap: 1 }}>
+      <text fg="#ff7777"><b>Delete {pendingDelete.filename} locally?</b></text>
+      <text fg="#bbbbbb">Enter confirms · Esc cancels. File + history removed.</text>
+      <box style={{ flexDirection: "row", gap: 1 }}>
+        <box onMouseDown={() => void confirmDelete()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#4a1a1a", border: true, borderColor: "#ff7777" }}><text fg="#ffbbbb">Delete</text></box>
+        <box onMouseDown={() => setPendingDelete(null)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff">Cancel</text></box>
+      </box>
+    </box> : null}
+  </>
 }
 
 function FilesDirDialogContent({ dialog, dialogWidth, dialogDraft, setDialogDraft, setFilesDir, loadFiles }: { dialog: Extract<Dialog, { kind: "files-dir" }>; dialogWidth: number; dialogDraft: string; setDialogDraft: (v: string) => void; setFilesDir: (path: string) => void; loadFiles: () => void }) {
-  return (
-    <>
-      <text>Files storage directory (cross-platform):</text>
-      <text fg="#66dd88" wrapMode="word">{dialog.filesDir}</text>
-      {dialog.env && <MarqueeText width={dialogWidth - 4} fg="#e0a34a" text={`Overridden by MESHTALK_FILES_DIR=${dialog.env} (env var takes precedence)`} />}
-      {dialog.configured && !dialog.env && <text fg="#888888">Custom (from settings.json)</text>}
-      {!dialog.configured && !dialog.env && <text fg="#888888">Default: {dialog.dataDir}/files</text>}
-      <MarqueeText width={dialogWidth - 4} fg="#888888" text="Examples: Windows E:\\MeshTalkFiles  Linux /mnt/e/MeshTalkFiles  macOS /Volumes/E/MeshTalkFiles" />
-      <input focused value={dialogDraft} placeholder="E:\MeshTalkFiles" onInput={setDialogDraft} onSubmit={(v) => void setFilesDir(typeof v === "string" ? v : dialogDraft)} maxLength={4096} />
-      <text fg="#888888">Enter saves. New files go there; existing files stay in old location.</text>
-      <MouseSelect focused={false} height={3} options={[{ name: "Back to files", description: "Return to file list", value: "back" }]} onSelect={() => void loadFiles()} />
-    </>
-  )
+  const isEnv = !!dialog.env
+  const isCustom = !!dialog.configured && !isEnv
+  const state = isEnv ? { label: "env override", color: "#e0a34a", background: "#33260a" } : isCustom ? { label: "custom", color: "#66dd88", background: "#1a3320" } : { label: "default", color: "#888888", background: "#1a2332" }
+  return <>
+    <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingBottom: 1, flexShrink: 0 }}>
+      <text><span fg="#6ea8fe"><b>File storage</b></span> <span fg="#888888">· received files</span></text>
+      <text fg="#5a6b86">Enter saves · Esc returns</text>
+    </box>
+    <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
+      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: "#24344d", backgroundColor: "#0f1826" }}>
+        <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <text fg="#c8dfff"><b>Current location</b></text>
+          <box style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: state.background, border: true, borderColor: "#24344d" }}><text fg={state.color}>{state.label}</text></box>
+        </box>
+        <box style={{ minHeight: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", border: true, borderColor: "#1e2e4a", backgroundColor: "#111d2e" }}>
+          <text fg="#c8dfff" wrapMode="word"><b>{dialog.filesDir}</b></text>
+        </box>
+        {isEnv ? <text fg="#e0a34a">MESHTALK_FILES_DIR={dialog.env} takes precedence over this setting.</text> : isCustom ? <text fg="#888888">Custom path saved in settings.json.</text> : <text fg="#888888">Default location: {dialog.dataDir}/files</text>}
+      </box>
+      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: "#24344d", backgroundColor: "#111923" }}>
+        <text fg="#c8dfff"><b>Change location</b></text>
+        <text fg="#888888">New incoming files will be saved here. Existing files stay where they are.</text>
+        <input focused value={dialogDraft} placeholder={dialog.filesDir} onInput={setDialogDraft} onSubmit={(value) => void setFilesDir(typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
+        <text fg="#5a6b86">Examples: E:\MeshTalkFiles · /mnt/e/MeshTalkFiles · /Volumes/E/MeshTalkFiles</text>
+      </box>
+    </box>
+    <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end", minHeight: 3, flexShrink: 0 }}>
+      <box onMouseDown={() => void setFilesDir(dialogDraft)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1d3a5f", border: true, borderColor: "#6ea8fe" }}><text fg="#c8dfff">Save location</text></box>
+      <box onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff">Back to files</text></box>
+    </box>
+  </>
 }
 
-function FileDownloadDialogContent({ dialog, dialogWidth, dialogDraft, setDialogDraft, downloadFile, defaultDownloadPath }: { dialog: Extract<Dialog, { kind: "file-download" }>; dialogWidth: number; dialogDraft: string; setDialogDraft: (v: string) => void; downloadFile: (fileId: string, destPath: string) => void; defaultDownloadPath: (filename: string) => string }) {
-  return (
-    <>
-      <MarqueeText width={dialogWidth - 4} text={`Save ${dialog.filename} to:`} />
-      <MarqueeText width={dialogWidth - 4} fg="#888888" text={dialog.filePath} />
-      <input focused value={dialogDraft} placeholder={defaultDownloadPath(dialog.filename)} onInput={setDialogDraft} onSubmit={(v) => void downloadFile(dialog.fileId, typeof v === "string" ? v : dialogDraft)} maxLength={4096} />
-      <MarqueeText width={dialogWidth - 4} fg="#888888" text="Enter saves. Works on Linux/macOS/Windows. Path may be folder or file." />
-    </>
-  )
+function FileDownloadDialogContent({ dialog, dialogWidth, dialogHeight, dialogDraft, setDialogDraft, downloadFile, defaultDownloadPath, loadFiles }: { dialog: Extract<Dialog, { kind: "file-download" }>; dialogWidth: number; dialogHeight: number; dialogDraft: string; setDialogDraft: (v: string) => void; downloadFile: (fileId: string, destPath: string) => void; defaultDownloadPath: (filename: string) => string; loadFiles: () => void }) {
+  const isImage = isImageFile(dialog.filename)
+  const suggested = defaultDownloadPath(dialog.filename)
+  const sourceMissing = !dialog.filePath || isLocalFileMissing(dialog.filePath)
+  useKeyboard((key) => { if (key.name === "s") void downloadFile(dialog.fileId, dialogDraft || suggested) })
+  return <>
+    <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingBottom: 1, flexShrink: 0 }}>
+      <text><span fg="#6ea8fe"><b>Save File</b></span> <span fg="#888888">· {dialog.filename}</span></text>
+      <text fg="#5a6b86">Enter saves · Esc back</text>
+    </box>
+    <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
+      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: "#24344d", backgroundColor: "#0f1826" }}>
+        <text fg="#c8dfff"><b>Source</b></text>
+        <box style={{ flexDirection: "column", padding: 1, border: true, borderColor: "#1e2e4a", backgroundColor: "#111d2e" }}>
+          <box style={{ flexDirection: "row", gap: 1 }}>
+            <text fg={isImage ? "#e0a34a" : "#6ea8fe"}>{isImage ? "◉" : "▭"}</text>
+            <text><b fg="#e8edf5">{dialog.filename}</b> <span fg="#5a6b86">· {dialog.fileId.slice(0, 8)}</span></text>
+          </box>
+          {dialog.filePath ? <text fg="#5a6b86" wrapMode="word">{dialog.filePath}</text> : <text fg="#888888">No local path</text>}
+          {sourceMissing ? <text fg="#ff7777">Source unavailable — file was moved or deleted locally</text> : null}
+        </box>
+        <text fg="#888888">Saving copies the file; the original stays in File Manager.</text>
+      </box>
+      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: "#24344d", backgroundColor: "#111923" }}>
+        <text fg="#c8dfff"><b>Destination</b></text>
+        <text fg="#888888">Folder or full file path. Works on Windows, macOS and Linux.</text>
+        <input focused value={dialogDraft} placeholder={suggested} onInput={setDialogDraft} onSubmit={(value) => void downloadFile(dialog.fileId, typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
+        <text fg="#5a6b86">Suggested: {suggested}</text>
+      </box>
+    </box>
+    <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end", minHeight: 3, flexShrink: 0 }}>
+      <box onMouseDown={() => void downloadFile(dialog.fileId, dialogDraft || suggested)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1d3a5f", border: true, borderColor: "#6ea8fe" }}><text fg="#c8dfff"><u>S</u>ave</text></box>
+      <box onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff">Back</text></box>
+    </box>
+  </>
 }

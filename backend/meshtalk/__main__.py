@@ -489,6 +489,14 @@ async def main(debug: bool = False) -> None:
                 settings.set_image_protocol(image_protocol)
             except ValueError as exc:
                 return {"error": str(exc)}
+        if "splash_style" in req:
+            splash_style = req["splash_style"]
+            if not isinstance(splash_style, str):
+                return {"error": "splash_style must be a string"}
+            try:
+                settings.set_splash_style(splash_style)
+            except ValueError as exc:
+                return {"error": str(exc)}
         if req.get("clear_control_pinned_ip") is True:
             settings.clear_control_pinned_ips()
             changed = True
@@ -540,8 +548,10 @@ async def main(debug: bool = False) -> None:
             "control_url": settings.control_url or None,
             "stun_server": f"{stun_host}:{stun_port}",
             "image_protocol": settings.image_protocol,
+            "splash_style": settings.splash_style,
             "splash_duration_ms": settings.splash_duration_ms,
             "splash_phase_ms": settings.splash_phase_ms,
+            "splash_welcome_ms": settings.splash_welcome_ms,
         }
 
     async def handle_room_create(req: dict) -> dict:

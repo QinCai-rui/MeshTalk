@@ -40,6 +40,23 @@ export function isFullyWithinViewport(node: Pick<BoxRenderable, "screenY" | "hei
   return node.screenY >= viewport.screenY && node.screenY + node.height <= viewport.screenY + viewport.height
 }
 
+function isImageDisposed(image: NativeImage): boolean {
+  try {
+    void image.width
+    return false
+  } catch {
+    return true
+  }
+}
+
+function retainImage(image: NativeImage): NativeImage {
+  try {
+    return image.retain()
+  } catch {
+    return image
+  }
+}
+
 function opaqueImage(image: NativeImage): NativeImage {
   if (!image.info().hasAlpha) return image.retain()
   const pixels = new Uint8Array(image.width * image.height * 4)
@@ -152,7 +169,13 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
     void cachedImage(filePath).then((loaded) => {
       if (cancelled) return
       if (loaded) {
-        setImage(fullSize ? loaded.original : loaded.thumbnail)
+        const source = fullSize ? loaded.original : loaded.thumbnail
+        if (isImageDisposed(source)) {
+          setLoadFailed(true)
+          if (loadAttempt < MAX_LOAD_RETRIES) retryTimer = setTimeout(() => setLoadAttempt(loadAttempt + 1), LOAD_RETRY_DELAY_MS)
+          return
+        }
+        setImage(retainImage(source))
         return
       }
       setLoadFailed(true)
@@ -168,12 +191,30 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
     }
   }, [filePath, fullSize, nearViewport, loadAttempt])
 
-  const displayed = image ? fittedImageSize(image.width, image.height, maxWidth, maxHeight) : undefined
+  useEffect(() => {
+    return () => {
+      if (image) {
+        try {
+          if (!isImageDisposed(image)) image.dispose()
+        } catch {}
+      }
+    }
+  }, [image])
+
+  const safeImage = image && !isImageDisposed(image) ? image : undefined
+  const displayed = (() => {
+    if (!safeImage) return undefined
+    try {
+      return fittedImageSize(safeImage.width, safeImage.height, maxWidth, maxHeight)
+    } catch {
+      return undefined
+    }
+  })()
   // Kitty and Sixel placements are terminal overlays and cannot be scroll-clipped reliably.
   const displayProtocol = scrollboxRef && !fullyVisible && protocol !== "blocks" ? "blocks" : protocol
   return <box ref={containerRef} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={{ flexDirection: "column", width: displayed?.width, height: displayed?.height }}>
     {!nearViewport && expectedImage ? <text fg="#888888">{filename} (image preview loads nearby)</text> : null}
-    {nearViewport && !image && expectedImage ? <text fg="#888888">{loadFailed ? `${filename} (image unavailable)` : "Loading image..."}</text> : null}
-    {image && displayed ? <image source={image} fit="fit" protocol={displayProtocol} style={displayed} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} /> : null}
+    {nearViewport && !safeImage && expectedImage ? <text fg="#888888">{loadFailed ? `${filename} (image unavailable)` : "Loading image..."}</text> : null}
+    {safeImage && displayed ? <image source={safeImage} fit="fit" protocol={displayProtocol} style={displayed} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} /> : null}
   </box>
 }

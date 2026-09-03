@@ -34,6 +34,7 @@ import type {
   Message,
   Peer,
   ReplyTarget,
+  SplashPreference,
   TypingPeer,
   UnreadMessageState,
 } from "./types";
@@ -56,7 +57,16 @@ import {
   type NotificationPreferences,
 } from "./notifications";
 import { useChatActions } from "./useChatActions";
-import { StartupSplash, IS_RELEASE_BUILD, APP_RELEASE_VERSION, MIN_SPLASH_PHASE_MS, MIN_SPLASH_DURATION_MS } from "./SplashScreen";
+import {
+  APP_RELEASE_VERSION,
+  IS_RELEASE_BUILD,
+  MIN_SPLASH_PHASE_MS,
+  MIN_SPLASH_WELCOME_MS,
+  StartupPhase,
+  StartupSplash,
+  type StartupOutcome,
+  type SplashStyle,
+} from "./SplashScreen";
 
 declare const APP_VERSION: string;
 
@@ -99,7 +109,18 @@ function detectImageMime(bytes: Uint8Array): string | undefined {
   return undefined;
 }
 
-export function ChatApp() {
+type StartupResult = {
+  setupDismissed: boolean;
+  preferences: NotificationPreferences;
+  control: {
+    connected: boolean;
+    reconnect_attempts: number;
+    control_url?: string | null;
+    setup_dismissed?: boolean;
+  };
+};
+
+export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } = {}) {
   const renderer = useRenderer();
   const { width, height } = useTerminalDimensions();
   const [ipc] = useState(() => new IPCClient());
@@ -133,16 +154,10 @@ export function ChatApp() {
     () => new Set(),
   );
   const [status, setStatus] = useState("Connecting to backend...");
-  const [startupMessage, setStartupMessage] = useState("Preparing terminal graphics...");
-  const [rendererReady, setRendererReady] = useState(false);
   const [appReady, setAppReady] = useState(false);
-  const [splashDurationMs, setSplashDurationMs] = useState(MIN_SPLASH_DURATION_MS);
+  const [configuredSplashStyle, setConfiguredSplashStyle] = useState<SplashPreference>("card");
   const [splashPhaseMs, setSplashPhaseMs] = useState(MIN_SPLASH_PHASE_MS);
-  const startupPhase = useRef({
-    message: "Preparing terminal graphics...",
-    startedAt: Date.now(),
-  });
-  const splashStartedAt = useRef(Date.now());
+  const [splashWelcomeMs, setSplashWelcomeMs] = useState(MIN_SPLASH_WELCOME_MS);
   const [copyToast, setCopyToast] = useState(false);
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({});
   const [notificationPreferences, setNotificationPreferences] =
@@ -171,6 +186,7 @@ export function ChatApp() {
   const scrollboxRef = useRef<ScrollBoxRenderable>(null);
   const composerRef = useRef<TextareaRenderable>(null);
   const backendDisconnected = useRef(false);
+  const startupCancelled = useRef(false);
   const statusReset = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -203,15 +219,6 @@ export function ChatApp() {
   const selectionKey = selection
     ? `${selection.kind}:${selection.id}`
     : undefined;
-
-  async function showStartupPhase(message: string) {
-    if (startupPhase.current.message === message) return;
-    const elapsed = Date.now() - startupPhase.current.startedAt;
-    if (elapsed < splashPhaseMs)
-      await Bun.sleep(splashPhaseMs - elapsed);
-    startupPhase.current = { message, startedAt: Date.now() };
-    setStartupMessage(message);
-  }
 
   function rememberUnreadMessage(
     conversationKey: string,
@@ -384,6 +391,7 @@ export function ChatApp() {
     flashingEnabled,
     setFlashingEnabled,
     setImageProtocol,
+    setSplashStyle: setConfiguredSplashStyle,
     controlStatus,
     setControlStatus,
     debugInfo,
@@ -405,131 +413,159 @@ export function ChatApp() {
   });
 
   useEffect(() => {
-    let cancelled = false;
-    void Promise.race([renderer.idle(), Bun.sleep(250)])
-      .then(() => Bun.sleep(50))
-      .then(() => showStartupPhase("Connecting to MeshTalk backend..."))
-      .then(() => {
-        if (!cancelled) setRendererReady(true);
-      })
-      .catch(() => {
-        if (!cancelled) setRendererReady(true);
-      });
+    startupCancelled.current = false;
     return () => {
-      cancelled = true;
-    };
-  }, [renderer]);
-
-  useEffect(() => {
-    if (!rendererReady) return;
-    let cancelled = false;
-    async function connectWithRetry() {
-      const deadline = Date.now() + 60_000;
-      let attempt = 0;
-      while (!cancelled) {
-        try {
-          await ipc.connect();
-          return;
-        } catch (error) {
-          ipc.close();
-          if (Date.now() >= deadline) throw error;
-          attempt += 1;
-          const delay = Math.min(1_000, 100 * 2 ** Math.min(attempt, 4));
-          await showStartupPhase("Waiting for MeshTalk backend...");
-          await Bun.sleep(delay);
-        }
-      }
-      throw new Error("MeshTalk startup was cancelled");
-    }
-    connectWithRetry()
-      .then(async () => {
-        const response = await ipc.send("identity");
-        if (response.error) throw new Error(response.error);
-        const nextIdentity = {
-          peer_id: response.peer_id as string,
-          display_name: response.display_name as string,
-        };
-        setIdentity(nextIdentity);
-        setFlashingEnabled(response.flashing_enabled as boolean);
-        setNameDraft(nextIdentity.display_name);
-        const presence = await ipc.send("tui_presence", {
-          client_id: tuiClientId,
-          active: true,
-        });
-        if (presence.error) throw new Error(presence.error);
-        await showStartupPhase("Loading conversations and contacts...");
-        await actions.refreshPeers();
-        await actions.refreshGroups();
-        void actions.refreshFiles();
-        const mutedResp = await ipc.send("muted_peers");
-        if (!mutedResp.error)
-          setMutedPeers(mutedResp.muted_peers as Record<string, number>);
-        const notificationResponse = await ipc.send("notifications");
-        if (notificationResponse.error)
-          throw new Error(notificationResponse.error);
-        const preferences = notificationResponse as NotificationPreferences;
-        setNotificationPreferences(preferences);
-        const control = await ipc.send("control");
-        if (control.error) throw new Error(control.error);
-        setControlStatus({
-          connected: control.connected as boolean,
-          reconnect_attempts: control.reconnect_attempts as number,
-          control_url: control.url as string | null | undefined,
-        });
-        const advanced = await ipc.send("advanced_config");
-        if (!advanced.error) {
-          setImageProtocol(advanced.image_protocol as ImageProtocol);
-          if (typeof advanced.splash_duration_ms === "number" && advanced.splash_duration_ms >= 0)
-            setSplashDurationMs(advanced.splash_duration_ms);
-          if (typeof advanced.splash_phase_ms === "number" && advanced.splash_phase_ms >= 0)
-            setSplashPhaseMs(advanced.splash_phase_ms);
-        }
-        await showStartupPhase("Finalising terminal layout...");
-        await Promise.race([renderer.idle(), Bun.sleep(250)]);
-        await Bun.sleep(50);
-        await Bun.sleep(Math.max(0, splashDurationMs - (Date.now() - splashStartedAt.current)));
-        if (!(response.setup_dismissed as boolean)) {
-          setDialog({ kind: "rename", firstRun: true });
-        } else if (!control.url && !control.setup_dismissed) {
-          setDialog({ kind: "control", firstRun: true });
-        } else if (!preferences.setup_dismissed) {
-          setDialog({ kind: "notification-enable", firstRun: true });
-        }
-        if (IS_RELEASE_BUILD) {
-          void checkForUpdate(APP_RELEASE_VERSION)
-            .then((release) => {
-              if (
-                release &&
-                (response.setup_dismissed as boolean) &&
-                (control.url || control.setup_dismissed)
-              ) {
-                actions.showDialog({ kind: "update", release });
-              }
-            })
-            .catch((error) => {
-              if (error instanceof GitHubAuthenticationError)
-                actions.showDialog({ kind: "update-token" });
-            });
-        }
-        setStatus(DEFAULT_STATUS);
-        setAppReady(true);
-      })
-      .catch((error) => {
-        if (!cancelled && !backendDisconnected.current) {
-          const message = `Backend error: ${error instanceof Error ? error.message : String(error)}`;
-          setStatus(message);
-          setStartupMessage(message);
-        }
-      });
-    return () => {
-      cancelled = true;
+      startupCancelled.current = true;
       void ipc
         .send("tui_presence", { client_id: tuiClientId, active: false })
-        .finally(() => {
-          ipc.close();
-        });
+        .catch(() => {})
+        .finally(() => ipc.close());
     };
-  }, [rendererReady, tuiClientId]);
+  }, [ipc, tuiClientId]);
+
+  async function runStartup(
+    setPhase: (phase: StartupPhase) => Promise<void>,
+  ): Promise<StartupOutcome<StartupResult>> {
+    const ensureActive = () => {
+      if (startupCancelled.current) throw new Error("MeshTalk startup was cancelled");
+    };
+
+    const rendererSettled = Promise.race([renderer.idle(), Bun.sleep(250)]);
+    await setPhase(StartupPhase.Renderer);
+    await rendererSettled;
+    ensureActive();
+
+    await setPhase(StartupPhase.IpcConnect);
+    const deadline = Date.now() + 60_000;
+    let attempt = 0;
+    while (true) {
+      ensureActive();
+      try {
+        await ipc.connect();
+        break;
+      } catch (error) {
+        ipc.close();
+        if (Date.now() >= deadline) throw error;
+        attempt += 1;
+        const delay = Math.min(1_000, 100 * 2 ** Math.min(attempt, 4));
+        await Bun.sleep(delay);
+      }
+    }
+
+    ensureActive();
+    await setPhase(StartupPhase.Authenticate);
+
+    await setPhase(StartupPhase.LoadIdentity);
+    const response = await ipc.send("identity");
+    if (response.error) throw new Error(response.error);
+    const nextIdentity = {
+      peer_id: response.peer_id as string,
+      display_name: response.display_name as string,
+    };
+    setIdentity(nextIdentity);
+    setFlashingEnabled(response.flashing_enabled as boolean);
+    setNameDraft(nextIdentity.display_name);
+
+    await setPhase(StartupPhase.AnnouncePresence);
+    const presence = await ipc.send("tui_presence", {
+      client_id: tuiClientId,
+      active: true,
+    });
+    if (presence.error) throw new Error(presence.error);
+
+    await setPhase(StartupPhase.LoadData);
+    await actions.refreshPeers();
+    await actions.refreshGroups();
+    void actions.refreshFiles();
+
+    const mutedResp = await ipc.send("muted_peers");
+    if (!mutedResp.error)
+      setMutedPeers(mutedResp.muted_peers as Record<string, number>);
+
+    const notificationResponse = await ipc.send("notifications");
+    if (notificationResponse.error)
+      throw new Error(notificationResponse.error);
+    const preferences = notificationResponse as NotificationPreferences;
+    setNotificationPreferences(preferences);
+
+    const controlResponse = await ipc.send("control");
+    if (controlResponse.error) throw new Error(controlResponse.error);
+    const control = {
+      connected: controlResponse.connected as boolean,
+      reconnect_attempts: controlResponse.reconnect_attempts as number,
+      control_url: controlResponse.url as string | null | undefined,
+      setup_dismissed: controlResponse.setup_dismissed as boolean | undefined,
+    };
+    setControlStatus(control);
+
+    const advanced = await ipc.send("advanced_config");
+    let durationMs: number | undefined;
+    let phaseDurationMs: number | undefined;
+    let welcomeDurationMs: number | undefined;
+    if (!advanced.error) {
+      setImageProtocol(advanced.image_protocol as ImageProtocol);
+      if (advanced.splash_style === "card" || advanced.splash_style === "boot-log" || advanced.splash_style === "off")
+        setConfiguredSplashStyle(advanced.splash_style as SplashPreference);
+      if (typeof advanced.splash_duration_ms === "number" && advanced.splash_duration_ms >= 0)
+        durationMs = advanced.splash_duration_ms;
+      if (typeof advanced.splash_phase_ms === "number" && advanced.splash_phase_ms >= 0) {
+        phaseDurationMs = advanced.splash_phase_ms;
+        setSplashPhaseMs(advanced.splash_phase_ms);
+      }
+      if (typeof advanced.splash_welcome_ms === "number" && advanced.splash_welcome_ms >= 0) {
+        welcomeDurationMs = advanced.splash_welcome_ms;
+        setSplashWelcomeMs(advanced.splash_welcome_ms);
+      }
+    }
+
+    await Promise.race([renderer.idle(), Bun.sleep(250)]);
+    ensureActive();
+
+    return {
+      durationMs,
+      phaseDurationMs,
+      welcomeDurationMs,
+      result: {
+        setupDismissed: response.setup_dismissed as boolean,
+        preferences,
+        control,
+      },
+    };
+  }
+
+  function finishStartup({
+    setupDismissed,
+    control,
+    preferences,
+  }: StartupResult) {
+    if (!setupDismissed) {
+      setDialog({ kind: "rename", firstRun: true });
+    } else if (!control.control_url && !control.setup_dismissed) {
+      setDialog({ kind: "control", firstRun: true });
+    } else if (!preferences.setup_dismissed) {
+      setDialog({ kind: "notification-enable", firstRun: true });
+    }
+
+    if (IS_RELEASE_BUILD) {
+      void checkForUpdate(APP_RELEASE_VERSION)
+        .then((release) => {
+          if (
+            release &&
+            setupDismissed &&
+            (control.control_url || control.setup_dismissed)
+          ) {
+            actions.showDialog({ kind: "update", release });
+          }
+        })
+        .catch((error) => {
+          if (error instanceof GitHubAuthenticationError)
+            actions.showDialog({ kind: "update-token" });
+        });
+    }
+
+    setStatus(DEFAULT_STATUS);
+    setAppReady(true);
+  }
 
   useEffect(
     () => () => {
@@ -606,7 +642,7 @@ export function ChatApp() {
     deleteConfirmationTimer.current = setTimeout(() => {
       setDeleteConfirmation(undefined);
       actions.showStatus("Message deletion timed out.");
-    }, 5_000);
+    }, 3_000);
     return () => {
       if (deleteConfirmationTimer.current)
         clearTimeout(deleteConfirmationTimer.current);
@@ -1528,22 +1564,40 @@ export function ChatApp() {
       .filter(([, peers]) => Object.values(peers).some((peer) => peer.isTyping))
       .map(([conversation]) => conversation),
   );
-  const conversationFiles = useMemo(
-    () =>
-      fileTransfers
-        .filter((f) => {
-          if (f.status !== "completed" && f.status !== "sent") return false;
-          if (selection?.kind === "peer")
-            return (
-              !f.group_id &&
-              (f.sender_id === selection.id || f.recipient_id === selection.id)
-            );
-          if (selection?.kind === "group") return f.group_id === selection.id;
-          return false;
-        })
-        .sort((a, b) => a.created_at - b.created_at),
-    [fileTransfers, selection],
-  );
+  const conversationFiles = useMemo(() => {
+    const matched = fileTransfers.filter((f) => {
+      if (selection?.kind === "peer")
+        return (
+          !f.group_id &&
+          (f.sender_id === selection.id || f.recipient_id === selection.id)
+        );
+      if (selection?.kind === "group") return f.group_id === selection.id;
+      return false;
+    });
+    const grouped = new Map<string, FileTransfer[]>();
+    for (const f of matched) {
+      const key = `${f.filename}|${f.sender_id}|${f.group_id ?? ""}|${Math.round(f.created_at)}`;
+      const list = grouped.get(key);
+      if (list) list.push(f);
+      else grouped.set(key, [f]);
+    }
+    const statusPriority: Record<string, number> = {
+      completed: 0,
+      sent: 1,
+      failed: 2,
+      queued: 3,
+      receiving: 4,
+      transferring: 5,
+      unavailable: 6,
+    };
+    const best = (list: FileTransfer[]) =>
+      list.reduce((a, b) =>
+        (statusPriority[a.status] ?? 99) <= (statusPriority[b.status] ?? 99) ? a : b,
+      );
+    return [...grouped.values()]
+      .map((list) => ({ file: best(list), all: list }))
+      .sort((a, b) => a.file.created_at - b.file.created_at);
+  }, [fileTransfers, selection]);
   const conversationItems = useMemo<ConversationItem[]>(
     () =>
       [
@@ -1552,10 +1606,11 @@ export function ChatApp() {
           createdAt: message.created_at,
           message,
         })),
-        ...conversationFiles.map((file) => ({
+        ...conversationFiles.map(({ file, all }) => ({
           type: "file" as const,
           createdAt: file.created_at,
           file,
+          allFiles: all,
         })),
       ].sort(
         (a, b) =>
@@ -1574,17 +1629,33 @@ export function ChatApp() {
   const limitColor = composerLimitColor(draftLength);
   const dialogWidth = Math.min(68, Math.max(1, width - 4));
   const dialogHeight =
-    dialog?.kind === "image-view"
+    dialog?.kind === "image-view" || dialog?.kind === "file-list" || dialog?.kind === "files-dir" || dialog?.kind === "file-download"
       ? Math.max(1, height - 2)
       : Math.min(20, Math.max(1, height - 4));
   function dialogWidthFor(kind: Dialog["kind"]): number {
-    if (kind === "image-view") return Math.max(1, width - 2);
+    if (kind === "image-view" || kind === "file-list" || kind === "files-dir" || kind === "file-download") return Math.max(1, width - 2);
     if (kind === "room-detail" || kind === "group-detail")
       return Math.min(78, Math.max(1, width - 2));
     return dialogWidth;
   }
 
-  if (!appReady) return <StartupSplash message={startupMessage} width={width} height={height} />;
+  if (!appReady)
+    return (
+      <StartupSplash
+        width={width}
+        height={height}
+        variant={splashStyle !== undefined ? splashStyle : configuredSplashStyle === "off" ? false : configuredSplashStyle}
+        phaseDurationMs={splashPhaseMs}
+        welcomeDurationMs={splashWelcomeMs}
+        start={runStartup}
+        onReady={finishStartup}
+        onError={(error) => {
+          if (backendDisconnected.current) return;
+          const message = `Backend error: ${error instanceof Error ? error.message : String(error)}`;
+          setStatus(message);
+        }}
+      />
+    );
 
   return (
     <box
@@ -1732,6 +1803,7 @@ export function ChatApp() {
           debugInfo={debugInfo}
           flashingEnabled={flashingEnabled}
           imageProtocol={imageProtocol}
+          splashStyle={configuredSplashStyle}
           groups={groups}
           identity={identity}
           mutedPeers={mutedPeers}
@@ -1783,6 +1855,14 @@ export function ChatApp() {
           sendFile={actions.sendFile}
           downloadFile={actions.downloadFile}
           defaultDownloadPath={actions.defaultDownloadPath}
+          onDeleteFile={(file) => {
+            void ipc.send("delete_message", { message_id: file.file_id, group_id: file.group_id ?? undefined, file: true }).then((response: any) => {
+              if (response?.error) { setStatus(`Delete failed: ${response.error}`); return }
+              setFileTransfers((cur) => cur.filter((f) => f.file_id !== file.file_id))
+              setDialog((prev) => prev?.kind === "file-list" ? { kind: "file-list", files: prev.files.filter((f) => f.file_id !== file.file_id) } : prev)
+              setStatus(`Deleted ${file.filename} locally.`)
+            }).catch((e: unknown) => setStatus(`Delete failed: ${e instanceof Error ? e.message : String(e)}`))
+          }}
           testNotificationDelivery={actions.testNotificationDelivery}
           disableNotifications={actions.disableNotifications}
           confirmNotificationDelivery={actions.confirmNotificationDelivery}

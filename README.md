@@ -324,7 +324,7 @@ mkdir -p dist/local
 bun build ./bin/meshtalk.ts --compile --outfile dist/local/meshtalk
 
 # Compile the Python backend into a standalone executable.
-uv run --project backend --with nuitka python -m nuitka \
+uv run --project backend --with 'nuitka[onefile]' python -m nuitka \
   --mode=onefile --onefile-tempdir-spec='{CACHE_DIR}/MeshTalk/meshtalk-backend' \
   --onefile-cache-mode=cached --output-dir=build/nuitka \
   --output-filename=meshtalk-backend \

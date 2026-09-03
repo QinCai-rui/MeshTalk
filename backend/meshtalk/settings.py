@@ -19,6 +19,9 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 DEFAULT_STUN_HOST = "stun.l.google.com"
 DEFAULT_STUN_PORT = 19302
+DEFAULT_SPLASH_DURATION_MS = 3000
+DEFAULT_SPLASH_PHASE_MS = 300
+DEFAULT_SPLASH_WELCOME_MS = 200
 INVITE_PREFIX = "meshtalk:"
 GROUP_INVITE_PREFIX = "meshtalk-group:"
 MAX_GROUP_NAME_LENGTH = 64
@@ -146,8 +149,10 @@ class Settings:
         self.muted_peers: dict[str, float] = {}
         self._files_dir: str | None = None
         self._image_protocol = "auto"
-        self._splash_duration_ms = 4000
-        self._splash_phase_ms = 500
+        self._splash_style = "card"
+        self._splash_duration_ms = DEFAULT_SPLASH_DURATION_MS
+        self._splash_phase_ms = DEFAULT_SPLASH_PHASE_MS
+        self._splash_welcome_ms = DEFAULT_SPLASH_WELCOME_MS
         self._load()
 
     @property
@@ -199,6 +204,16 @@ class Settings:
         self.save()
 
     @property
+    def splash_style(self) -> str:
+        return self._splash_style
+
+    def set_splash_style(self, style: str) -> None:
+        if style not in {"card", "boot-log", "off"}:
+            raise ValueError("splash_style must be card, boot-log, or off")
+        self._splash_style = style
+        self.save()
+
+    @property
     def splash_duration_ms(self) -> int:
         return self._splash_duration_ms
 
@@ -216,6 +231,16 @@ class Settings:
         if not isinstance(ms, (int, float)) or ms < 0:
             raise ValueError("splash_phase_ms must be a non-negative number")
         self._splash_phase_ms = int(ms)
+        self.save()
+
+    @property
+    def splash_welcome_ms(self) -> int:
+        return self._splash_welcome_ms
+
+    def set_splash_welcome_ms(self, ms: int) -> None:
+        if not isinstance(ms, (int, float)) or ms < 0:
+            raise ValueError("splash_welcome_ms must be a non-negative number")
+        self._splash_welcome_ms = int(ms)
         self.save()
 
     @property
@@ -442,8 +467,10 @@ class Settings:
             "muted_peers": self.muted_peers,
             "files_dir": self._files_dir,
             "image_protocol": self._image_protocol,
+            "splash_style": self._splash_style,
             "splash_duration_ms": self._splash_duration_ms,
             "splash_phase_ms": self._splash_phase_ms,
+            "splash_welcome_ms": self._splash_welcome_ms,
         }
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, indent=2))
@@ -523,9 +550,15 @@ class Settings:
         image_protocol = data.get("image_protocol", "auto")
         if isinstance(image_protocol, str) and image_protocol in {"auto", "kitty", "sixel", "blocks"}:
             self._image_protocol = image_protocol
-        splash_duration_ms = data.get("splash_duration_ms", 4000)
+        splash_style = data.get("splash_style", "card")
+        if isinstance(splash_style, str) and splash_style in {"card", "boot-log", "off"}:
+            self._splash_style = splash_style
+        splash_duration_ms = data.get("splash_duration_ms", DEFAULT_SPLASH_DURATION_MS)
         if isinstance(splash_duration_ms, (int, float)) and splash_duration_ms >= 0:
             self._splash_duration_ms = int(splash_duration_ms)
-        splash_phase_ms = data.get("splash_phase_ms", 500)
+        splash_phase_ms = data.get("splash_phase_ms", DEFAULT_SPLASH_PHASE_MS)
         if isinstance(splash_phase_ms, (int, float)) and splash_phase_ms >= 0:
             self._splash_phase_ms = int(splash_phase_ms)
+        splash_welcome_ms = data.get("splash_welcome_ms", DEFAULT_SPLASH_WELCOME_MS)
+        if isinstance(splash_welcome_ms, (int, float)) and splash_welcome_ms >= 0:
+            self._splash_welcome_ms = int(splash_welcome_ms)
