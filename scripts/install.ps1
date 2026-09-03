@@ -126,10 +126,10 @@ function Initialize-Colors {
         $script:BLUE = $script:CYAN = $script:GREEN = $script:YELLOW = ''
         $script:RED = $script:GRAY = $script:PURPLE = $script:WHITE = ''
     }
-    $script:TICK  = "$($script:GREEN)v$($script:RESET)"
-    $script:CROSS = "$($script:RED)x$($script:RESET)"
-    $script:INFO  = "$($script:CYAN)>$($script:RESET)"
-    $script:ARROW = "$($script:GREEN)->$($script:RESET)"
+    $script:TICK  = "$($script:GREEN)✓$($script:RESET)"
+    $script:CROSS = "$($script:RED)✗$($script:RESET)"
+    $script:INFO  = "$($script:CYAN)▸$($script:RESET)"
+    $script:ARROW = "$($script:GREEN)→$($script:RESET)"
 }
 
 # ─── UI Helpers ──────────────────────────────────────────────────────────────
@@ -140,22 +140,22 @@ function Write-Divider {
 function Start-Panel {
     param([string]$Title)
     Write-Host ''
-    Write-Host "  $($script:CYAN)+- $($script:BOLD)$Title$($script:RESET)"
+    Write-Host "  $($script:CYAN)╭─ $($script:BOLD)$Title$($script:RESET)"
 }
 
 function Write-PanelLine {
     param([string]$Line)
-    Write-Host "  $($script:CYAN)|$($script:RESET) $Line"
+    Write-Host "  $($script:CYAN)│$($script:RESET) $Line"
 }
 
 function Stop-Panel {
-    Write-Host "  $($script:CYAN)+----------------------------------------------------------$($script:RESET)"
+    Write-Host "  $($script:CYAN)╰────────────────────────────────────────────────────────$($script:RESET)"
 }
 
 function Write-PanelKv {
     param([string]$Key, [string]$Value)
     $paddedKey = $Key.PadRight(10)
-    Write-Host "  $($script:CYAN)|$($script:RESET) $($script:DIM_BOLD)$paddedKey$($script:RESET) $Value"
+    Write-Host "  $($script:CYAN)│$($script:RESET) $($script:DIM_BOLD)$paddedKey$($script:RESET) $Value"
 }
 
 function Clear-PromptPanel {
