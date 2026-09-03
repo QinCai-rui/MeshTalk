@@ -19,7 +19,7 @@
           <h2 class="text-2xl font-bold text-white mb-3">End-to-End Encryption</h2>
           <p class="text-mesh-muted leading-relaxed mb-4">
             Every message is encrypted with ephemeral X25519 keys and AES-256-GCM. The transport layer adds its own authenticated encryption on top.
-            After handshake confirmation, interceptors can see only connection timing and record sizes, not message contents or routing metadata. Handshake identity metadata remains visible.
+            After handshake confirmation, passive LAN observers can see IP addresses, TCP ports, traffic direction, TCP headers, record sequence numbers, timing, and record sizes, while AES-GCM protects message contents and in-record routing metadata.
           </p>
           <ul class="space-y-2 text-sm text-mesh-muted">
             <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Ed25519 identity signing for all peer authentication</li>
