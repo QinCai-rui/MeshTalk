@@ -23,13 +23,31 @@ app.get("/", (_req, res) => {
   });
 });
 
+app.get("/index.html", (_req, res) => {
+  res.render("home", {
+    title: "MeshTalk — Peer-to-Peer Encrypted Messaging",
+  });
+});
+
 app.get("/features", (_req, res) => {
   res.render("features", {
     title: "Features — MeshTalk",
   });
 });
 
+app.get("/features.html", (_req, res) => {
+  res.render("features", {
+    title: "Features — MeshTalk",
+  });
+});
+
 app.get("/docs", (_req, res) => {
+  res.render("docs", {
+    title: "Getting Started — MeshTalk",
+  });
+});
+
+app.get("/docs.html", (_req, res) => {
   res.render("docs", {
     title: "Getting Started — MeshTalk",
   });
