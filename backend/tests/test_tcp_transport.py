@@ -26,6 +26,7 @@ from meshtalk.tcp_transport import (
 
 
 def _public_bytes(private_key: X25519PrivateKey) -> bytes:
+    """Extract the raw 32-byte public key from an X25519 private key."""
     return private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
 
 
@@ -35,6 +36,7 @@ def _signed_handshake(
     nonce: bytes,
     challenge: bytes = b"",
 ) -> HandshakePayload:
+    """Create and sign a handshake payload with the given identity, session key, and nonce."""
     payload = HandshakePayload(
         peer_id=identity.peer_id,
         signing_public_key=identity.signing_public_key_bytes(),

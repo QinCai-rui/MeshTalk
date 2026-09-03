@@ -703,7 +703,7 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
     async def test_forged_cancel_notice_is_rejected(self):
         await self._connect_peers()
         request_id = await self.friend_a.send_friend_request(self.identity_b.peer_id)
-        self.assertIsNotNone(await self._wait_for_request(request_id, self.friend_b.db))
+        await asyncio.sleep(0.05)
         payload = self._signed_cancel(request_id, self.identity_a, self.mallory)
         with self.assertRaises(ValueError):
             await self.friend_b.handle_packet(

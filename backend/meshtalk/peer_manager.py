@@ -192,6 +192,7 @@ class PeerManager:
 
     @staticmethod
     async def _close_writer(writer: asyncio.StreamWriter) -> None:
+        """Close a TCP stream writer with a timeout, ignoring errors."""
         writer.close()
         try:
             await asyncio.wait_for(writer.wait_closed(), 1)
@@ -529,6 +530,7 @@ class PeerManager:
         )
 
     def _establish_tcp_session(self, peer: PeerConnection) -> None:
+        """Derive and attach a TCP session from exchanged handshake materials, then clear ephemeral keys."""
         if (
             peer.tcp_handshake_private_key is None
             or peer.tcp_local_handshake is None
@@ -551,12 +553,14 @@ class PeerManager:
 
     @staticmethod
     def _validate_tcp_confirmation(peer: PeerConnection, packet: Packet | None) -> None:
+        """Verify that a received packet is a valid encrypted handshake confirmation token."""
         if packet is None or packet.type != PacketType.HANDSHAKE_CONFIRM:
             raise ValueError("Expected encrypted TCP handshake confirmation")
         if peer.tcp_session is None or packet.payload != peer.tcp_session.confirmation_token:
             raise ValueError("Invalid encrypted TCP handshake confirmation")
 
     async def _send_tcp_confirmation(self, peer: PeerConnection) -> None:
+        """Send an encrypted handshake confirmation token to the peer."""
         if peer.tcp_session is None:
             raise ValueError("TCP session is not established")
         await self._send_encrypted_packet(
@@ -676,6 +680,7 @@ class PeerManager:
             await self.udp.send_packet(peer.peer_id, packet)
 
     async def _send_clear_packet(self, peer: PeerConnection, packet: Packet) -> None:
+        """Send an unencrypted application packet over TCP during the handshake phase."""
         if peer.writer is None:
             raise ConnectionError("Peer is not connected")
         async with peer.tcp_send_lock:
@@ -683,6 +688,7 @@ class PeerManager:
             await peer.writer.drain()
 
     async def _send_encrypted_packet(self, peer: PeerConnection, packet: Packet) -> None:
+        """Send an encrypted application packet over an established TCP session."""
         if peer.writer is None or peer.tcp_session is None:
             raise ConnectionError("TCP transport session is not established")
         async with peer.tcp_send_lock:
@@ -690,6 +696,7 @@ class PeerManager:
             await peer.writer.drain()
 
     async def _recv_clear_packet(self, peer: PeerConnection) -> Packet | None:
+        """Receive an unencrypted application packet from TCP during the handshake phase."""
         if peer.reader is None:
             return None
         try:
@@ -700,6 +707,7 @@ class PeerManager:
             return None
 
     async def _recv_encrypted_packet(self, peer: PeerConnection) -> Packet | None:
+        """Receive and decrypt an application packet from an established TCP session."""
         if peer.reader is None or peer.tcp_session is None:
             raise ConnectionError("TCP transport session is not established")
         try:

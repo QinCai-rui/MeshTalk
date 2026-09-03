@@ -40,16 +40,19 @@ class TcpTransportError(ValueError):
 
 
 def _length_prefixed(value: bytes) -> bytes:
+    """Encode a byte string as a 4-byte big-endian length prefix followed by the value."""
     return struct.pack("!I", len(value)) + value
 
 
 def _authenticated_handshake_payload(payload: HandshakePayload) -> bytes:
+    """Serialize a handshake payload as its signed bytes and signature, both length-prefixed."""
     return _length_prefixed(payload.signed_bytes()) + _length_prefixed(payload.signature)
 
 
 def _handshake_transcript(
     first: HandshakePayload, second: HandshakePayload
 ) -> bytes:
+    """Compute a cryptographic binding hash over both ordered handshake payloads."""
     return hashlib.sha256(
         TCP_TRANSCRIPT_DOMAIN
         + _length_prefixed(_authenticated_handshake_payload(first))
@@ -143,6 +146,7 @@ class TcpSession:
 
     @staticmethod
     def validate_record_header(header: bytes) -> tuple[int, int]:
+        """Parse and validate a TCP record header, returning ciphertext length and sequence number."""
         if len(header) != TCP_RECORD_HEADER_SIZE:
             raise TcpTransportError("TCP record header is truncated")
         try:
@@ -158,9 +162,11 @@ class TcpSession:
         return length, sequence
 
     def _nonce(self, prefix: bytes, sequence: int) -> bytes:
+        """Construct a 12-byte AES-GCM nonce from a 4-byte prefix and 8-byte sequence number."""
         return prefix + struct.pack("!Q", sequence)
 
     def encrypt_packet(self, packet: Packet) -> bytes:
+        """Encrypt an application packet as an authenticated TCP record and increment send sequence."""
         if self.send_sequence >= TCP_MAX_SEQUENCE:
             raise TcpTransportError("TCP send sequence is exhausted")
         plaintext = packet.encode()
@@ -176,6 +182,7 @@ class TcpSession:
         return header + ciphertext
 
     def decrypt_record(self, header: bytes, ciphertext: bytes) -> Packet:
+        """Decrypt and authenticate a TCP record, returning the application packet and incrementing receive sequence."""
         length, sequence = self.validate_record_header(header)
         if len(ciphertext) != length:
             raise TcpTransportError("TCP record length mismatch")
