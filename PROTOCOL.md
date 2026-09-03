@@ -20,7 +20,7 @@ MeshTalk is a peer-to-peer encrypted messenger. Chat never traverses any
 central server. There are two independent data paths between two peers:
 
 1. LAN path - offline, zero-infrastructure. UDP broadcast discovers peers; an
-   authenticated TCP connection carries traffic.
+   authenticated and transport-encrypted TCP connection carries traffic.
 2. Remote path - when peers are not on the same LAN, an *opaque* control
    service relays only encrypted "endpoint cards" for discovery, and STUN is
    used to learn public NAT mappings. The peers then punch a direct, encrypted
@@ -132,37 +132,87 @@ Fresh state lives in ~/.meshtalk:
   opens the connection (_should_initiate => self.peer_id < remote_peer_id).
   Because discovery IDs are anonymous, both sides may dial; once authenticated,
   only the lower-ID direction is retained to deduplicate.
-- Framing (shared with the UDP-carried application protocol):
+- The first handshake frames use the application packet framing below. Once the
+  handshake is confirmed, application packets are carried only in encrypted TCP
+  records. The application packet framing is not used as the outer record frame.
+
+- Encrypted record framing:
 
   ```
-  [ 4-byte big-endian length ][ 1-byte type ][ payload ]
-  HEADER = "!IB"   # length: uint32 BE, type: uint8
-  MAX_PACKET_SIZE = 64 KiB
+  [ 4-byte big-endian ciphertext length ]
+  [ 8-byte big-endian sequence number ]
+  [ AES-GCM ciphertext || 16-byte authentication tag ]
+  RECORD_HEADER = "!IQ"
   ```
+
+  The encrypted plaintext is the existing application packet:
+  `[4-byte payload length][1-byte type][payload]`. The record ciphertext length
+  is the plaintext length plus the 16-byte AES-GCM tag and is bounded before
+  reading. The maximum plaintext is `HEADER_SIZE + MAX_PACKET_SIZE`; the
+  maximum record ciphertext is that value plus the tag (`65557` bytes with the
+  current constants). The record header is
+  authenticated as associated data together with the domain
+  `meshtalk-tcp-record-v1`.
+
+  Each direction starts at sequence number zero and accepts exactly the next
+  sequence number. A direction-specific 4-byte nonce prefix is concatenated
+  with the 8-byte sequence number to form the 12-byte AES-GCM nonce. Sequence
+  exhaustion, replay, gaps, reordering, truncation, invalid authentication,
+  and oversized records close the TCP connection before an application handler
+  is invoked. The outer length and sequence are visible; packet types and
+  packet payloads are not.
 
 ### 4.3 LAN TCP Handshake
 
-Authenticates identity with signed HandshakePayloads (no transport encryption
-on the link - see caveat below).
+Authenticates identity with signed HandshakePayloads and establishes a fresh
+forward-secret transport session.
 
 ```
 Outbound (initiator)                        Inbound (responder)
 --------------------------------           --------------------------------
-HANDSHAKE      (nonce=rand32, challenge="") --> 
-                              <-- HANDSHAKE_ACK (nonce=rand32, challenge=initiator.nonce)
-HANDSHAKE_CONFIRM (challenge=ack.nonce)    --> 
+HANDSHAKE      (nonce=rand32, ephemeral X25519 public key) -->
+                              <-- HANDSHAKE_ACK (nonce=rand32, ephemeral key,
+                                  challenge=initiator.nonce)
+encrypted HANDSHAKE_CONFIRM ------------------------------>
+                              <-- encrypted HANDSHAKE_CONFIRM
 ```
 
 - Each HandshakePayload carries: peer_id, signing_public_key (32 B),
   encryption_public_key (32 B), display_name, nonce (32 B), challenge,
-  capabilities (string list), and an Ed25519 signature over the canonical
+  capabilities (string list), `transport_version` (currently 1),
+  `session_public_key` (32 B), and an Ed25519 signature over the canonical
   (sorted, compact) JSON of every non-signature field.
 - _apply_handshake verifies:
   1. peer_id == SHA-256(signing_public_key) (binds ID to key),
   2. challenge matches the expected value from the prior step (prevents a
      reflected/relay handshake from confirming a session),
   3. the capability list is well formed,
-  4. the Ed25519 signature is valid.
+  4. the transport version and ephemeral public key are supported,
+  5. the Ed25519 signature is valid.
+- Each side derives an X25519 shared secret from its connection-only ephemeral
+  private key and the remote `session_public_key`. Let `first` and `second` be
+  the authenticated handshake payloads ordered by peer ID. The exact derivation
+  is `transcript_hash = SHA256("meshtalk-tcp-handshake-transcript-v1" ||
+  LP(authenticated(first)) || LP(authenticated(second)))`,
+  `salt = SHA256("meshtalk-tcp-kdf-salt-v1" || first.nonce || second.nonce)`,
+  and `material = HKDF-SHA256(shared_secret, salt, info=
+  "meshtalk-tcp-session-v1" || transcript_hash, length=72)`. `LP` is a
+  big-endian uint32 length prefix and `authenticated(payload)` is
+  `LP(payload.signed_bytes()) || LP(payload.signature)`.
+- The first 36 bytes of `material` are the lower-ID-to-higher-ID AES key (32 B)
+  and nonce prefix (4 B); the next 36 bytes are the reverse direction. The
+  session ID is the first 16 bytes of
+  `SHA256("meshtalk-tcp-session-id-v1" || transcript_hash || material)`. The
+  confirmation token is
+  `SHA256("meshtalk-tcp-confirm-v1" || session_id || transcript_hash)`.
+- The handshake transcript and derived session are confirmed by an encrypted
+  `HANDSHAKE_CONFIRM` record containing a transcript-bound key-possession token.
+  The record is consumed by the handshake code and never reaches an application
+  handler. A peer is not marked `CONNECTED` until both confirmation records
+  succeed.
+- `transport_version` is mandatory protocol negotiation, not an optional
+  capability. A missing or unsupported version, a legacy handshake, or any
+  failed confirmation closes the connection. There is no plaintext fallback.
 - Timeouts: HANDSHAKE_TIMEOUT = 10 s, MAX_PENDING_HANDSHAKES = 64,
   MAX_CONNECTED_PEERS = 256.
 
@@ -184,15 +234,12 @@ retained for diagnostics but remain disabled locally. Each side reports both
 directions of a capability gap, flashes a warning, and continues using every
 shared capability.
 
-TRANSPORT-SECURITY CAVEAT (important). On the LAN TCP path, the link itself is
-NOT encrypted by a separate transport layer. The handshake and every
-application packet are authenticated (signed by Ed25519), and message content
-is end-to-end encrypted (section 7). However, routing metadata (peer IDs,
-packet types) on the LAN TCP link is visible in cleartext to an on-link
-observer. Per TODO.md, "Transport/session encryption for every TCP connection"
-is NOT yet implemented; the remote UDP path DOES add a full
-authenticated-encryption transport (section 6). Treat the LAN path as
-authenticated-but-not-link-encrypted until that work lands.
+LAN TCP transport security. After the signed handshake and encrypted key
+confirmation, every LAN TCP application packet has an independent AES-GCM
+transport layer. On-link observers can see only the record lengths and
+sequence numbers in addition to the clear handshake metadata; application
+packet types and payloads are confidential. Message and file E2EE remains
+necessary because transport encryption protects only this connection.
 
 ## 5. Remote Path - Control, STUN, and Encrypted UDP
 
@@ -532,8 +579,8 @@ active one via IPC (get_network_info).
 
 ## 7. End-to-End Message Envelope (backend/meshtalk/encryption.py, protocol.py)
 
-Message content is encrypted independently of the transport, so it is
-confidential even on the (currently un-link-encrypted) LAN TCP path.
+Message content is encrypted independently of the transport, so it remains
+confidential if a transport session is terminated or a message is relayed.
 
 ### 7.1 Encryption (encrypt_for_recipient)
 
@@ -742,19 +789,21 @@ Group file transfers use the same protocol but with `group_id` set in all packet
 
 ## 8. Application Packet Types
 
-TCP and UDP carry the same Packet type byte (backend/meshtalk/protocol.py):
+TCP and UDP carry the same application Packet types (backend/meshtalk/protocol.py).
+TCP handshake packets use the clear bootstrap framing described in section 4.3;
+after key confirmation, all application packets use encrypted TCP records.
 
 | Type | Hex | Name | Purpose |
 |------|-----|------|---------|
 | HANDSHAKE | 0x01 | Handshake | LAN TCP identity exchange (initiator to responder). |
-| HANDSHAKE_ACK | 0x02 | Handshake ACK | Responder acknowledges + returns nonce. |
+| HANDSHAKE_ACK | 0x02 | Handshake ACK | Clear bootstrap response with nonce and ephemeral key. |
 | MESSAGE | 0x03 | Message | E2EE message envelope. |
 | MESSAGE_ACK | 0x04 | Message ACK | Acknowledges a message_id. |
 | PING | 0x05 | Ping | Liveness probe. |
 | PONG | 0x06 | Pong | Ping reply. |
 | GOODBYE | 0x07 | Goodbye | Graceful disconnect. |
 | PROFILE | 0x08 | Profile | Signed display-name / TUI-active update. |
-| HANDSHAKE_CONFIRM | 0x09 | Handshake Confirm | Initiator proves challenge. |
+| HANDSHAKE_CONFIRM | 0x09 | Handshake Confirm | Encrypted TCP key-possession confirmation. |
 | FRIEND_REQUEST | 0x0A | Friend Request | Signed request to become friends. |
 | FRIEND_REQUEST_RESPONSE | 0x0B | Friend Response | Signed accept/decline. |
 | MESSAGE_BLOCKED | 0x0C | Message Blocked | Signed notice that a message was dropped (not a friend). |
@@ -890,9 +939,10 @@ counts, and summarizes per-member delivery states.
 
 What an adversary on the LAN / network path sees:
 - LAN UDP discovery broadcasts (anonymous discovery_id, TCP port).
-- LAN TCP bytes in cleartext EXCEPT message content (which is E2EE) and all
-  signatures. On-link observers see peer IDs and packet types on the LAN TCP
-  link (see section 4.3 caveat).
+- LAN TCP handshake metadata and encrypted record lengths/sequence numbers.
+  After key confirmation, packet types, routing metadata, and payloads are
+  protected by the TCP AES-GCM record layer. Handshake public keys, peer IDs,
+  display names, capabilities, and nonces remain visible by design.
 - Public UDP datagrams: only encrypted fragments + authenticated control frames;
   nothing about message content or routing metadata is recoverable without
   session keys.
@@ -946,13 +996,10 @@ the current code (per TODO.md):
   Sender-side direct and group delivery on reconnect is active, but queue rows
   are only retried up to five failed flush attempts and no 500-message or
   24-hour age bound is enforced.
-- LAN TCP transport encryption. DESIGN claims "an additional independent
-  authenticated encryption layer" from the transport; only the remote UDP
-  transport implements this today. LAN TCP links are authenticated (signed) but
-  not link-encrypted (see section 4.3).
 - Transport forward secrecy persistence, OS secure-storage of private keys, full
-  input/peer validation hardening, and Noise-protocol handshake are listed as
-  outstanding in TODO.md.
+  input/peer validation hardening, and a Noise-protocol handshake remain outside
+  the current protocol. LAN TCP transport encryption uses the repository's
+  signed ephemeral X25519 session design documented in section 4.3.
 - Post-quantum KEM (e.g., ML-KEM/Kyber hybrid) is not implemented.
 
 ## 13. Constants Quick Reference

@@ -371,6 +371,9 @@ older glibc than the build system.
   key derived from the room secret. The secret never reaches the control server.
 - Remote UDP links use signed ephemeral X25519 key exchange. Transport fragments,
   acknowledgements, and keepalives are authenticated; transport data is encrypted.
+- LAN TCP links use signed ephemeral X25519 session keys and AES-GCM records;
+  packet types, routing metadata, and application payloads are encrypted after
+  handshake confirmation.
 - Message content and file chunks have a separate end-to-end encrypted envelope and
   are never sent through the control service.
 - The control service can observe connection IPs, timing, opaque room IDs, and
@@ -398,7 +401,7 @@ both IPv4 and IPv6.
 
 ## Features
 
-- Offline LAN discovery and authenticated TCP peer connections
+- Offline LAN discovery and authenticated, encrypted TCP peer connections
 - Encrypted multi-peer room rendezvous through a configurable control service
 - Named room-backed group chats with pairwise per-recipient E2EE and offline queueing
 - Cross-platform file transfer with image preview and download

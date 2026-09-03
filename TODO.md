@@ -71,7 +71,7 @@ Status reflects verified implementation, not planned code.
 - [x] PING/PONG packet types and periodic ping transmission
 - [x] Packet length validation on reception
 - [ ] Complete connection state transitions
-- [ ] Simultaneous-connection deduplication
+- [x] Simultaneous-connection deduplication
 - [ ] PONG deadlines and dead-connection detection
 - [ ] Exponential reconnect backoff for known peers
 - [ ] Connection and packet rate limits
@@ -86,12 +86,12 @@ Status reflects verified implementation, not planned code.
 - [x] Authenticated cryptographic handshake
 - [x] Peer identity binding in handshake
 - [ ] Noise Protocol handshake implementation using an established library/protocol
-- [ ] Transport/session encryption for every TCP connection
-- [ ] Forward secrecy for transport sessions
-- [ ] Replay protection and nonce/session management
+- [x] Transport/session encryption for every TCP connection
+- [x] Forward secrecy for transport sessions
+- [x] Replay protection and nonce/session management
 - [x] Authenticated message metadata and tamper detection
 - [x] Key confirmation and handshake failure handling
-- [ ] Cryptographic test vectors and negative tests
+- [x] Cryptographic test vectors and negative tests
 
 ## Direct Messaging
 
