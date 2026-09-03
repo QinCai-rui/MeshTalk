@@ -55,6 +55,20 @@ curl -fsSL https://go.qincai.xyz/getmeshtalk | bash -s -- --non-interactive --ye
 
 Other options: `--version TAG`, `--install-dir DIR`, `--prerelease`, `--uninstall`, `--dry-run`. Run with `--help` for the full list.
 
+On Windows (PowerShell):
+
+```powershell
+irm https://go.qincai.xyz/getmeshtalk | iex
+```
+
+Pass `-Simple` to accept defaults; `-NonInteractive` to skip prompts:
+
+```powershell
+irm https://go.qincai.xyz/getmeshtalk | iex - -NonInteractive -Simple
+```
+
+Other options: `-Version TAG`, `-InstallDir DIR`, `-Prerelease`, `-Uninstall`, `-DryRun`, `-Method auto|gh|webrequest`. Run with `-Help` for the full list.
+
 ### Manual Install
 
 Download the `.tar.gz` archive for your platform from the [latest release](../../releases/latest),
