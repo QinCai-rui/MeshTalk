@@ -49,7 +49,7 @@ $ErrorActionPreference = 'Stop'
 $Repository     = 'QinCai-rui/MeshTalk'
 $ReleasesUrl    = "https://github.com/$Repository/releases"
 $ApiUrl         = "https://api.github.com/repos/$Repository"
-$MetadataName   = '.meshtalk-installer'
+
 
 $script:Action         = if ($Uninstall) { 'uninstall' } else { 'install' }
 $script:DryRunFlag      = [bool]$DryRun
@@ -207,7 +207,7 @@ function Invoke-Die {
 
 function Write-WarnMsg {
     param([string]$Message)
-    Write-Host "  $($script:YELLOW)$($script:BOLD)WARNING$($script:RESET) $Message"
+    Write-Host "  $($script:YELLOW)$($script:BOLD)⚠ WARNING$($script:RESET) $Message"
 }
 
 function Write-Info {
@@ -338,9 +338,6 @@ function Get-PlatformInfo {
         $script:ExecutableSuffix = ''
         $script:DefaultInstallDir = Join-Path $HOME '.local/bin'
     }
-    $script:DataDir = Join-Path $HOME '.meshtalk'
-    $script:MetadataFile = Join-Path $script:DataDir $MetadataName
-
     $script:AssetArch = $script:Arch
     $script:WindowsArm64Emulation = $false
     if ($script:PlatformName -eq 'windows' -and $script:Arch -eq 'arm64') {
@@ -842,27 +839,17 @@ function Install-MeshTalk {
         Invoke-Die "Installation path exists but is not a directory: $($script:InstallDirSel)"
     }
 
-    if (Test-Path $script:MetadataFile) {
-        $existingVersion = (Get-Content $script:MetadataFile | Where-Object { $_ -match '^version=' }) -replace '^version=', ''
-        $existingVersionLabel = if ($existingVersion) { $existingVersion } else { 'from this installer' }
-        if (-not (Read-Confirmation -Prompt "MeshTalk $existingVersionLabel is already installed in $($script:InstallDirSel). Replace it?" -Default 'n' -ForcePrompt $true)) {
-            if (-not $script:NonInteractive) { Invoke-Die "MeshTalk is already installed. Re-run with -Yes to replace." }
+    $existingFile = ''
+    foreach ($file in $script:ExpectedFiles) {
+        $candidate = Join-Path $script:InstallDirSel $file
+        if (Test-Path $candidate) { $existingFile = $file; break }
+    }
+    if ($existingFile) {
+        $existingPath = Join-Path $script:InstallDirSel $existingFile
+        if (-not (Read-Confirmation -Prompt "$existingPath already exists. Replace the MeshTalk installation?" -Default 'n' -ForcePrompt $true)) {
+            if (-not $script:NonInteractive) { Invoke-Die "$existingPath already exists. Re-run with -Yes to replace." }
             Write-Info "Installation cancelled."
             return
-        }
-    } else {
-        $existingFile = ''
-        foreach ($file in $script:ExpectedFiles) {
-            $candidate = Join-Path $script:InstallDirSel $file
-            if (Test-Path $candidate) { $existingFile = $file; break }
-        }
-        if ($existingFile) {
-            $existingPath = Join-Path $script:InstallDirSel $existingFile
-            if (-not (Read-Confirmation -Prompt "$existingPath already exists. Replace the MeshTalk installation?" -Default 'n' -ForcePrompt $true)) {
-                if (-not $script:NonInteractive) { Invoke-Die "$existingPath already exists. Re-run with -Yes to replace." }
-                Write-Info "Installation cancelled."
-                return
-            }
         }
     }
 
@@ -928,13 +915,6 @@ function Install-MeshTalk {
         foreach ($file in $script:ExpectedFiles) {
             Copy-Item -Path (Join-Path $extractDir $file) -Destination (Join-Path $script:InstallDirSel $file) -Force
         }
-        New-Item -ItemType Directory -Path $script:DataDir -Force | Out-Null
-        $metadataContent = @(
-            "version=$($script:ReleaseTag)"
-            "asset=$($script:AssetName)"
-            "files=$($script:ExpectedFiles -join ',')"
-        ) -join "`n"
-        Set-Content -Path $script:MetadataFile -Value $metadataContent
         Complete-Step -Marker $script:TICK
 
         Set-InstallPath
@@ -966,40 +946,33 @@ function Uninstall-MeshTalk {
 
     if ($script:DryRunFlag) {
         Start-Panel "Uninstall preview"
-        Write-PanelKv "Metadata" "$($script:MetadataFile)"
+        Write-PanelKv "Directory" "$($script:InstallDirSel)"
         Stop-Panel
         return
     }
 
-    if (-not (Test-Path $script:MetadataFile)) {
-        Invoke-Die "No MeshTalk installer metadata found in $($script:MetadataFile)."
+    $found = $false
+    foreach ($file in $script:ExpectedFiles) {
+        $candidate = Join-Path $script:InstallDirSel $file
+        if (Test-Path $candidate) { $found = $true; break }
+    }
+    if (-not $found) {
+        Invoke-Die "No MeshTalk binaries found in $($script:InstallDirSel)."
     }
 
-    $metadataLines = Get-Content $script:MetadataFile
-    $version = ($metadataLines | Where-Object { $_ -match '^version=' }) -replace '^version=', ''
-    $filesLine = ($metadataLines | Where-Object { $_ -match '^files=' }) -replace '^files=', ''
-    if (-not $filesLine) { Invoke-Die "Installer metadata is incomplete: $($script:MetadataFile)" }
-
-    $versionLabel = if ($version) { $version } else { 'installation' }
-    Start-Panel "Remove MeshTalk $versionLabel"
+    Start-Panel "Remove MeshTalk installation"
     Write-PanelLine "$($script:DIM)$($script:InstallDirSel)$($script:RESET)"
     Stop-Panel
-    if (-not (Read-Confirmation -Prompt "Remove MeshTalk $versionLabel from $($script:InstallDirSel)?" -Default 'n' -ForcePrompt $true)) {
+    if (-not (Read-Confirmation -Prompt "Remove MeshTalk from $($script:InstallDirSel)?" -Default 'n' -ForcePrompt $true)) {
         Write-Info "Uninstall cancelled."
         return
     }
 
     Start-Task "Removing MeshTalk from $($script:InstallDirSel)"
-    $installedFiles = $filesLine -split ','
-    foreach ($file in $installedFiles) {
-        switch ($file) {
-            { $_ -in @('meshtalk', 'meshtalk-backend', 'meshtalk.exe', 'meshtalk-backend.exe') } { }
-            default { Invoke-Die "Refusing to remove an unsafe metadata path." }
-        }
+    foreach ($file in $script:ExpectedFiles) {
         $target = Join-Path $script:InstallDirSel $file
         Remove-Item -Path $target -Force -ErrorAction SilentlyContinue
     }
-    Remove-Item -Path $script:MetadataFile -Force -ErrorAction SilentlyContinue
     Complete-Task -Marker '' -CompletedLabel "Removed MeshTalk from $($script:InstallDirSel)"
     Write-Success "MeshTalk was uninstalled from $($script:InstallDirSel)."
 }
