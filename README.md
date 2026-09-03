@@ -58,13 +58,13 @@ Other options: `--version TAG`, `--install-dir DIR`, `--prerelease`, `--uninstal
 On Windows (PowerShell):
 
 ```powershell
-irm https://go.qincai.xyz/getmeshtalk | iex
+irm https://go.qincai.xyz/getmeshtalk.ps1 | iex
 ```
 
 Pass `-Simple` to accept defaults; `-NonInteractive` to skip prompts:
 
 ```powershell
-irm https://go.qincai.xyz/getmeshtalk | iex - -NonInteractive -Simple
+irm https://go.qincai.xyz/getmeshtalk.ps1 | iex - -NonInteractive -Simple
 ```
 
 Other options: `-Version TAG`, `-InstallDir DIR`, `-Prerelease`, `-Uninstall`, `-DryRun`, `-Method auto|gh|webrequest`. Run with `-Help` for the full list.
