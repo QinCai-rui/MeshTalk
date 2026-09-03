@@ -160,10 +160,11 @@ function Write-PanelKv {
 
 function Clear-PromptPanel {
     param([int]$Lines = 8)
-    if ([Console]::IsOutputRedirected) { return }
+    if ([Console]::IsOutputRedirected -or -not $script:UseAnsi) { return }
+    $escape = [char]27
     for ($i = 0; $i -lt $Lines; $i++) {
         # Move cursor up one line and clear it
-        Write-Host -NoNewline "`e[1A`e[2K"
+        Write-Host -NoNewline "$($escape)[1A$($escape)[2K"
     }
     Write-Host -NoNewline "`r"
 }
@@ -314,7 +315,7 @@ function Show-Banner {
 function Get-PlatformInfo {
     # This script is intended to run under Windows PowerShell / pwsh on Windows,
     # but pwsh also runs on macOS/Linux, so detect accordingly.
-    if ($IsWindows -or $null -eq $IsWindows) {
+    if ($env:OS -eq 'Windows_NT') {
         $script:PlatformName = 'windows'
     } elseif ($IsMacOS) {
         $script:PlatformName = 'macos'
@@ -708,11 +709,26 @@ function Set-UnixShellPath {
         return
     }
 
-    $startupFile = $null
-    foreach ($candidate in @("$HOME/.bashrc", "$HOME/.bash_profile", "$HOME/.profile")) {
-        if (Test-Path $candidate) { $startupFile = $candidate; break }
+    $shellName = if ($env:SHELL) { (Split-Path -Leaf $env:SHELL).ToLowerInvariant() } else { '' }
+    if ($shellName -eq 'zsh') {
+        $startupFile = "$HOME/.zshrc"
+    } elseif ($shellName -eq 'bash') {
+        $startupFile = $null
+        foreach ($candidate in @("$HOME/.bashrc", "$HOME/.bash_profile", "$HOME/.profile")) {
+            if (Test-Path $candidate) { $startupFile = $candidate; break }
+        }
+        if (-not $startupFile) { $startupFile = "$HOME/.bashrc" }
+    } else {
+        $shellLabel = if ($shellName) { $shellName } else { 'active shell' }
+        $manualCommand = switch ($shellName) {
+            'fish' { "fish_add_path `"$($script:InstallDirSel)`"" }
+            { $_ -in @('csh', 'tcsh') } { "setenv PATH `"$($script:InstallDirSel):`$PATH`"" }
+            default { "export PATH=`"$($script:InstallDirSel):`$PATH`"" }
+        }
+        Write-WarnMsg "Automatic PATH configuration is unavailable for $shellLabel."
+        Write-Info "Configure it manually with: $manualCommand"
+        return
     }
-    if (-not $startupFile) { $startupFile = "$HOME/.bashrc" }
 
     if ((Test-Path $startupFile) -and (Select-String -Path $startupFile -SimpleMatch $script:InstallDirSel -Quiet)) {
         Write-Verbose2 "$($script:InstallDirSel) is already configured in $startupFile."
@@ -743,7 +759,6 @@ function Set-InstallPath {
 # ─── Install ─────────────────────────────────────────────────────────────────
 function Select-Action {
     if ($script:SimpleMode) {
-        $script:Action = 'install'
         return
     }
     if ($script:Action -ne 'install' -or $script:VersionSel -or $script:InstallDirSel -or $script:DryRunFlag -or $script:NonInteractive) {
