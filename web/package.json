@@ -5,9 +5,10 @@
   "description": "MeshTalk official website",
   "main": "server.js",
   "scripts": {
+    "build": "npm run build:css",
     "build:css": "tailwindcss -i public/css/src.css -o public/css/style.css --minify",
     "watch:css": "tailwindcss -i public/css/src.css -o public/css/style.css --watch",
-    "start": "npm run build:css && node server.js",
+    "start": "npm run build && node server.js",
     "dev": "concurrently \"npm run watch:css\" \"node server.js\""
   },
   "dependencies": {
