@@ -16,9 +16,9 @@ identity, networking, encryption, persistence, and transport selection.
 ### LAN path
 
 Every backend broadcasts its peer ID and TCP listener port on UDP port 24890.
-The lower peer ID deterministically opens an authenticated TCP connection to
-port 24891. This path remains available when the control service or internet is
-unavailable.
+The lower peer ID deterministically opens an authenticated and transport-
+encrypted TCP connection to port 24891. This path remains available when the
+control service or internet is unavailable.
 
 ### Remote path
 
@@ -158,8 +158,8 @@ receive authenticated acknowledgements. Missing acknowledgements trigger
 bounded retransmission; duplicate packet IDs are acknowledged but not delivered
 again. Authenticated keepalives preserve mappings and expire dead sessions.
 
-The existing packet protocol and end-to-end message envelope run above both TCP
-and reliable UDP transports.
+The existing packet protocol and end-to-end message envelope run above both
+TCP's encrypted record layer and reliable UDP's encrypted datagrams.
 
 ## Identity And Messages
 

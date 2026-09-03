@@ -6,11 +6,14 @@ import asyncio
 import enum
 import hashlib
 import logging
+import secrets
 import time
 from typing import Awaitable, Callable
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from .database import Database
 from .identity import Identity
@@ -21,11 +24,17 @@ from .protocol import (
     Packet,
     PacketType,
     ProfilePayload,
+    TCP_TRANSPORT_VERSION,
     TCP_PORT,
     DEFAULT_CAPABILITIES,
     capability_for_packet,
     intersect_capabilities,
     validate_capabilities,
+)
+from .tcp_transport import (
+    TCP_RECORD_HEADER_SIZE,
+    TcpSession,
+    TcpTransportError,
 )
 from .udp_transport import Endpoint, UdpTransport
 
@@ -77,6 +86,12 @@ class PeerConnection:
         self.remote_capabilities: list[str] | None = None
         self.peer_missing_capabilities: list[str] = []
         self.local_missing_capabilities: list[str] = []
+        self.tcp_handshake_private_key: X25519PrivateKey | None = None
+        self.tcp_handshake_nonce: bytes | None = None
+        self.tcp_local_handshake: HandshakePayload | None = None
+        self.tcp_remote_handshake: HandshakePayload | None = None
+        self.tcp_session: TcpSession | None = None
+        self.tcp_send_lock = asyncio.Lock()
         self.last_seen = time.time()
 
     @property
@@ -123,6 +138,9 @@ class PeerManager:
             list(DEFAULT_CAPABILITIES if capabilities is None else capabilities)
         )
         self._receive_tasks: set[asyncio.Task] = set()
+        self._connection_tasks: set[asyncio.Task] = set()
+        self._handshake_tasks: set[asyncio.Task] = set()
+        self._pending_writers: set[asyncio.StreamWriter] = set()
         self._incoming_handshakes = 0
         self.on_peer_changed: Callable[[str], Awaitable[None]] | None = None
         self.udp = UdpTransport(
@@ -140,23 +158,46 @@ class PeerManager:
         self._running = False
         await self.udp.stop()
         receive_tasks = list(self._receive_tasks)
-        for task in receive_tasks:
+        connection_tasks = list(self._connection_tasks)
+        handshake_tasks = list(self._handshake_tasks)
+        current_task = asyncio.current_task()
+        tasks_to_cancel = [
+            task
+            for task in [*receive_tasks, *connection_tasks, *handshake_tasks]
+            if task is not current_task
+        ]
+        for task in tasks_to_cancel:
             task.cancel()
         writers = {
             peer.writer for peer in [*self.peers.values(), *self._udp_peers.values()] if peer.writer
         }
-        for writer in writers:
-            writer.close()
+        writers.update(self._pending_writers)
         if writers:
-            await asyncio.gather(*(writer.wait_closed() for writer in writers), return_exceptions=True)
+            await asyncio.gather(*(self._close_writer(writer) for writer in writers), return_exceptions=True)
         if receive_tasks:
             await asyncio.gather(*receive_tasks, return_exceptions=True)
+        remaining_tasks = [
+            task
+            for task in [*connection_tasks, *handshake_tasks]
+            if task is not current_task
+        ]
+        if remaining_tasks:
+            await asyncio.gather(*remaining_tasks, return_exceptions=True)
         if self._server:
             self._server.close()
             await self._server.wait_closed()
 
     def _should_initiate(self, remote_peer_id: str) -> bool:
         return self.identity.peer_id < remote_peer_id
+
+    @staticmethod
+    async def _close_writer(writer: asyncio.StreamWriter) -> None:
+        """Close a TCP stream writer with a timeout, ignoring errors."""
+        writer.close()
+        try:
+            await asyncio.wait_for(writer.wait_closed(), 1)
+        except (asyncio.TimeoutError, ConnectionError, OSError):
+            pass
 
     async def _notify_peer_changed(self, peer_id: str) -> None:
         if self.on_peer_changed is not None:
@@ -212,9 +253,16 @@ class PeerManager:
             return
         self._connecting.add(connection_key)
         peer = PeerConnection(peer_id or "", address, tcp_port, PeerState.CONNECTING)
+        keep_open = False
+        connection_task = asyncio.current_task()
+        if connection_task:
+            self._connection_tasks.add(connection_task)
         try:
             peer.reader, peer.writer = await asyncio.open_connection(address, tcp_port)
+            self._pending_writers.add(peer.writer)
             await asyncio.wait_for(self._outbound_handshake(peer), HANDSHAKE_TIMEOUT)
+            if not self._running:
+                raise ConnectionError("Peer manager is stopped")
             if not self._should_initiate(peer.peer_id):
                 # Discovery identifiers are anonymous, so both peers may dial.
                 # Once authenticated, retain the deterministic lower-ID direction.
@@ -233,25 +281,39 @@ class PeerManager:
             self._start_receive_loop(peer)
             await self._send_profile_update(peer)
             await self._notify_peer_changed(peer.peer_id)
+            keep_open = True
             logger.info("Authenticated LAN connection to %s at %s", peer.peer_id, _format_endpoint(peer.endpoint))
         except Exception as exc:
             peer.state = PeerState.DISCONNECTED
-            if peer.writer:
-                peer.writer.close()
             logger.warning("LAN connection to %s failed: %s", peer_id or address, exc)
         finally:
+            if peer.writer:
+                self._pending_writers.discard(peer.writer)
+                if not keep_open:
+                    await self._close_writer(peer.writer)
             self._connecting.discard(connection_key)
+            if connection_task:
+                self._connection_tasks.discard(connection_task)
 
     async def _handle_incoming(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         if self._incoming_handshakes >= MAX_PENDING_HANDSHAKES:
-            writer.close()
+            await self._close_writer(writer)
             return
+        handshake_task = asyncio.current_task()
+        if handshake_task:
+            self._handshake_tasks.add(handshake_task)
         self._incoming_handshakes += 1
         address, port = writer.get_extra_info("peername")[:2]
         peer = PeerConnection("", str(address), int(port), PeerState.CONNECTING)
         peer.reader, peer.writer = reader, writer
+        self._pending_writers.add(writer)
+        keep_open = False
         try:
             await asyncio.wait_for(self._inbound_handshake(peer), HANDSHAKE_TIMEOUT)
+            if not self._running:
+                raise ConnectionError("Peer manager is stopped")
+            if self._should_initiate(peer.peer_id):
+                raise ValueError("Rejecting inbound TCP connection with wrong direction")
             peer.state = PeerState.CONNECTED
             old = self.peers.get(peer.peer_id)
             if old and old.state == PeerState.CONNECTED and old.transport == "lan_tcp":
@@ -264,12 +326,17 @@ class PeerManager:
             self._start_receive_loop(peer)
             await self._send_profile_update(peer)
             await self._notify_peer_changed(peer.peer_id)
+            keep_open = True
             logger.info("Authenticated incoming LAN connection from %s", peer.peer_id)
         except Exception as exc:
             logger.warning("Rejected incoming LAN connection from %s: %s", address, exc)
-            writer.close()
         finally:
+            self._pending_writers.discard(writer)
+            if not keep_open:
+                await self._close_writer(writer)
             self._incoming_handshakes -= 1
+            if handshake_task:
+                self._handshake_tasks.discard(handshake_task)
 
     async def _on_udp_connected(
         self,
@@ -333,16 +400,30 @@ class PeerManager:
             self.peers.pop(peer_id, None)
         await self._notify_peer_changed(peer_id)
 
-    def _handshake_payload(self, challenge: bytes = b"") -> HandshakePayload:
+    def _handshake_payload(
+        self, challenge: bytes = b"", peer: PeerConnection | None = None
+    ) -> HandshakePayload:
+        private_key = peer.tcp_handshake_private_key if peer else None
+        if private_key is None:
+            private_key = X25519PrivateKey.generate()
+            if peer:
+                peer.tcp_handshake_private_key = private_key
+        nonce = peer.tcp_handshake_nonce if peer else None
+        if nonce is None:
+            nonce = secrets.token_bytes(32)
+            if peer:
+                peer.tcp_handshake_nonce = nonce
         payload = HandshakePayload(
             peer_id=self.identity.peer_id,
             signing_public_key=self.identity.signing_public_key_bytes(),
             encryption_public_key=self.identity.encryption_public_key_bytes(),
             display_name=self.identity.display_name,
-            nonce=__import__("secrets").token_bytes(32),
+            nonce=nonce,
             challenge=challenge,
             signature=b"",
             capabilities=list(self.capabilities),
+            transport_version=TCP_TRANSPORT_VERSION,
+            session_public_key=private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw),
         )
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
         return payload
@@ -381,36 +462,37 @@ class PeerManager:
 
     async def _outbound_handshake(self, peer: PeerConnection) -> None:
         logger.debug("Starting authenticated LAN key exchange with %s at %s:%d", peer.peer_id, peer.address, peer.port)
-        initial = self._handshake_payload()
-        await self._send_packet(peer, Packet(PacketType.HANDSHAKE, initial.encode()))
-        packet = await self._recv_packet(peer)
+        initial = self._handshake_payload(peer=peer)
+        peer.tcp_local_handshake = initial
+        await self._send_clear_packet(peer, Packet(PacketType.HANDSHAKE, initial.encode()))
+        packet = await self._recv_clear_packet(peer)
         if packet is None or packet.type != PacketType.HANDSHAKE_ACK:
             raise ValueError("Expected handshake acknowledgement")
         acknowledgement = HandshakePayload.decode(packet.payload)
         self._apply_handshake(
             peer, acknowledgement, expected_peer_id=peer.peer_id or None, expected_challenge=initial.nonce
         )
-        confirmation = self._handshake_payload(acknowledgement.nonce)
-        await self._send_packet(peer, Packet(PacketType.HANDSHAKE_CONFIRM, confirmation.encode()))
+        self._establish_tcp_session(peer)
+        await self._send_tcp_confirmation(peer)
+        confirmation = await self._recv_encrypted_packet(peer)
+        self._validate_tcp_confirmation(peer, confirmation)
+        peer.tcp_session.confirmed = True
 
     async def _inbound_handshake(self, peer: PeerConnection) -> None:
         logger.debug("Waiting for authenticated LAN key exchange from %s:%d", peer.address, peer.port)
-        packet = await self._recv_packet(peer)
+        packet = await self._recv_clear_packet(peer)
         if packet is None or packet.type != PacketType.HANDSHAKE:
             raise ValueError("Expected handshake")
         initial = HandshakePayload.decode(packet.payload)
         self._apply_handshake(peer, initial, expected_challenge=b"")
-        acknowledgement = self._handshake_payload(initial.nonce)
-        await self._send_packet(peer, Packet(PacketType.HANDSHAKE_ACK, acknowledgement.encode()))
-        packet = await self._recv_packet(peer)
-        if packet is None or packet.type != PacketType.HANDSHAKE_CONFIRM:
-            raise ValueError("Expected handshake confirmation")
-        self._apply_handshake(
-            peer,
-            HandshakePayload.decode(packet.payload),
-            expected_peer_id=peer.peer_id,
-            expected_challenge=acknowledgement.nonce,
-        )
+        acknowledgement = self._handshake_payload(initial.nonce, peer=peer)
+        peer.tcp_local_handshake = acknowledgement
+        await self._send_clear_packet(peer, Packet(PacketType.HANDSHAKE_ACK, acknowledgement.encode()))
+        self._establish_tcp_session(peer)
+        confirmation = await self._recv_encrypted_packet(peer)
+        self._validate_tcp_confirmation(peer, confirmation)
+        await self._send_tcp_confirmation(peer)
+        peer.tcp_session.confirmed = True
 
     def _apply_handshake(
         self,
@@ -419,6 +501,8 @@ class PeerManager:
         expected_peer_id: str | None = None,
         expected_challenge: bytes | None = None,
     ) -> None:
+        if payload.transport_version != TCP_TRANSPORT_VERSION or len(payload.session_public_key) != 32:
+            raise ValueError("Unsupported TCP transport handshake")
         peer_id = hashlib.sha256(payload.signing_public_key).hexdigest()
         if payload.peer_id != peer_id or expected_peer_id and peer_id != expected_peer_id:
             raise ValueError("Handshake peer ID does not match signing key")
@@ -433,6 +517,7 @@ class PeerManager:
         peer.signing_public_key = payload.signing_public_key
         peer.encryption_public_key = payload.encryption_public_key
         peer.remote_capabilities = sorted(payload.capabilities)
+        peer.tcp_remote_handshake = payload
         peer.capabilities = intersect_capabilities(self.capabilities, payload.capabilities)
         peer.peer_missing_capabilities = sorted(set(self.capabilities) - set(payload.capabilities))
         peer.local_missing_capabilities = sorted(set(payload.capabilities) - set(self.capabilities))
@@ -444,6 +529,44 @@ class PeerManager:
             ",".join(peer.capabilities),
         )
 
+    def _establish_tcp_session(self, peer: PeerConnection) -> None:
+        """Derive and attach a TCP session from exchanged handshake materials, then clear ephemeral keys."""
+        if (
+            peer.tcp_handshake_private_key is None
+            or peer.tcp_local_handshake is None
+            or peer.tcp_remote_handshake is None
+        ):
+            raise ValueError("Incomplete TCP transport handshake")
+        try:
+            peer.tcp_session = TcpSession.derive(
+                self.identity.peer_id,
+                peer.peer_id,
+                peer.tcp_handshake_private_key,
+                peer.tcp_local_handshake,
+                peer.tcp_remote_handshake,
+            )
+        finally:
+            # The ephemeral private key is not needed after the session keys
+            # have been derived.
+            peer.tcp_handshake_private_key = None
+            peer.tcp_handshake_nonce = None
+
+    @staticmethod
+    def _validate_tcp_confirmation(peer: PeerConnection, packet: Packet | None) -> None:
+        """Verify that a received packet is a valid encrypted handshake confirmation token."""
+        if packet is None or packet.type != PacketType.HANDSHAKE_CONFIRM:
+            raise ValueError("Expected encrypted TCP handshake confirmation")
+        if peer.tcp_session is None or packet.payload != peer.tcp_session.confirmation_token:
+            raise ValueError("Invalid encrypted TCP handshake confirmation")
+
+    async def _send_tcp_confirmation(self, peer: PeerConnection) -> None:
+        """Send an encrypted handshake confirmation token to the peer."""
+        if peer.tcp_session is None:
+            raise ValueError("TCP session is not established")
+        await self._send_encrypted_packet(
+            peer, Packet(PacketType.HANDSHAKE_CONFIRM, peer.tcp_session.confirmation_token)
+        )
+
     def _start_receive_loop(self, peer: PeerConnection) -> None:
         task = asyncio.create_task(self._receive_loop(peer))
         self._receive_tasks.add(task)
@@ -452,10 +575,16 @@ class PeerManager:
     async def _receive_loop(self, peer: PeerConnection) -> None:
         try:
             while self._running and peer.state == PeerState.CONNECTED:
-                packet = await self._recv_packet(peer)
+                packet = await self._recv_encrypted_packet(peer)
                 if packet is None:
                     break
                 peer.last_seen = time.time()
+                if packet.type in (
+                    PacketType.HANDSHAKE,
+                    PacketType.HANDSHAKE_ACK,
+                    PacketType.HANDSHAKE_CONFIRM,
+                ):
+                    raise ValueError("Handshake packet received after TCP confirmation")
                 if not self._accept_packet(peer, packet):
                     continue
                 if packet.type == PacketType.PING:
@@ -466,6 +595,8 @@ class PeerManager:
                     await self._apply_profile_update(peer, packet)
                 else:
                     await self.on_packet(peer, packet)
+        except (TcpTransportError, ValueError, OSError) as exc:
+            logger.warning("Rejected TCP traffic from %s: %s", peer.peer_id, exc)
         finally:
             peer.state = PeerState.DISCONNECTED
             if peer.peer_id and self.peers.get(peer.peer_id) is peer:
@@ -477,7 +608,7 @@ class PeerManager:
                     self.peers.pop(peer.peer_id, None)
                 await self._notify_peer_changed(peer.peer_id)
             if peer.writer:
-                peer.writer.close()
+                await self._close_writer(peer.writer)
 
     def _accept_packet(self, peer: PeerConnection, packet: Packet) -> bool:
         required = capability_for_packet(packet.type)
@@ -531,9 +662,15 @@ class PeerManager:
             return
         if peer.writer is None:
             raise ConnectionError("Peer is not connected")
+        if peer.tcp_session is None or not peer.tcp_session.confirmed:
+            raise ConnectionError("TCP transport session is not confirmed")
         try:
-            peer.writer.write(packet.encode())
-            await peer.writer.drain()
+            await self._send_encrypted_packet(peer, packet)
+        except TcpTransportError:
+            peer.state = PeerState.DISCONNECTED
+            if peer.writer:
+                await self._close_writer(peer.writer)
+            raise
         except (ConnectionError, OSError):
             peer.state = PeerState.DISCONNECTED
             remote = self._udp_peers.get(peer.peer_id)
@@ -542,7 +679,24 @@ class PeerManager:
             self.peers[peer.peer_id] = remote
             await self.udp.send_packet(peer.peer_id, packet)
 
-    async def _recv_packet(self, peer: PeerConnection) -> Packet | None:
+    async def _send_clear_packet(self, peer: PeerConnection, packet: Packet) -> None:
+        """Send an unencrypted application packet over TCP during the handshake phase."""
+        if peer.writer is None:
+            raise ConnectionError("Peer is not connected")
+        async with peer.tcp_send_lock:
+            peer.writer.write(packet.encode())
+            await peer.writer.drain()
+
+    async def _send_encrypted_packet(self, peer: PeerConnection, packet: Packet) -> None:
+        """Send an encrypted application packet over an established TCP session."""
+        if peer.writer is None or peer.tcp_session is None:
+            raise ConnectionError("TCP transport session is not established")
+        async with peer.tcp_send_lock:
+            peer.writer.write(peer.tcp_session.encrypt_packet(packet))
+            await peer.writer.drain()
+
+    async def _recv_clear_packet(self, peer: PeerConnection) -> Packet | None:
+        """Receive an unencrypted application packet from TCP during the handshake phase."""
         if peer.reader is None:
             return None
         try:
@@ -551,6 +705,18 @@ class PeerManager:
             return Packet.decode(header, await peer.reader.readexactly(length))
         except (asyncio.IncompleteReadError, ConnectionError):
             return None
+
+    async def _recv_encrypted_packet(self, peer: PeerConnection) -> Packet | None:
+        """Receive and decrypt an application packet from an established TCP session."""
+        if peer.reader is None or peer.tcp_session is None:
+            raise ConnectionError("TCP transport session is not established")
+        try:
+            header = await peer.reader.readexactly(TCP_RECORD_HEADER_SIZE)
+            length, _ = TcpSession.validate_record_header(header)
+            ciphertext = await peer.reader.readexactly(length)
+        except (asyncio.IncompleteReadError, ConnectionError):
+            return None
+        return peer.tcp_session.decrypt_record(header, ciphertext)
 
     def get_connected_peer(self, peer_id: str) -> PeerConnection | None:
         peer = self.peers.get(peer_id)

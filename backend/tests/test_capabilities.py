@@ -23,6 +23,7 @@ from meshtalk.protocol import (
     intersect_capabilities,
     validate_capabilities,
 )
+from meshtalk.tcp_transport import TcpSession
 
 FUTURE_CAPABILITY = "CAP_ADASDASD_NEW_TEST"
 
@@ -90,7 +91,7 @@ class TypingPayloadTest(unittest.TestCase):
 
 
 class HandshakePayloadTest(unittest.TestCase):
-    def test_roundtrip_authenticates_capabilities_without_versions(self):
+    def test_roundtrip_authenticates_tcp_transport_fields(self):
         identity = Identity.generate("Alice")
         payload = HandshakePayload(
             peer_id=identity.peer_id,
@@ -101,14 +102,16 @@ class HandshakePayloadTest(unittest.TestCase):
             challenge=b"",
             signature=b"",
             capabilities=[CAP_TEXT_CHAT, FUTURE_CAPABILITY],
+            session_public_key=b"1" * 32,
         )
         payload.signature = identity.signing_private_key.sign(payload.signed_bytes())
         encoded = json.loads(payload.encode())
-        self.assertNotIn("protocol_version", encoded)
-        self.assertNotIn("min_protocol_version", encoded)
+        self.assertEqual(encoded["transport_version"], 1)
+        self.assertEqual(encoded["session_public_key"], (b"1" * 32).hex())
 
         decoded = HandshakePayload.decode(payload.encode())
         self.assertEqual(decoded.capabilities, [CAP_TEXT_CHAT, FUTURE_CAPABILITY])
+        self.assertEqual(decoded.session_public_key, b"1" * 32)
         Ed25519PublicKey.from_public_bytes(identity.signing_public_key_bytes()).verify(
             decoded.signature, decoded.signed_bytes()
         )
@@ -131,6 +134,30 @@ class HandshakePayloadTest(unittest.TestCase):
             Ed25519PublicKey.from_public_bytes(identity.signing_public_key_bytes()).verify(
                 payload.signature, payload.signed_bytes()
             )
+
+    def test_unsupported_or_missing_tcp_transport_version_is_rejected(self):
+        identity = Identity.generate("Alice")
+        payload = HandshakePayload(
+            identity.peer_id,
+            identity.signing_public_key_bytes(),
+            identity.encryption_public_key_bytes(),
+            identity.display_name,
+            b"2" * 32,
+            b"",
+            b"0" * 64,
+            [CAP_TEXT_CHAT],
+            session_public_key=b"3" * 32,
+        )
+        payload.signature = identity.signing_private_key.sign(payload.signed_bytes())
+        encoded = json.loads(payload.encode())
+        for version in (None, 2, True):
+            candidate = dict(encoded)
+            if version is None:
+                candidate.pop("transport_version")
+            else:
+                candidate["transport_version"] = version
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                HandshakePayload.decode(json.dumps(candidate).encode())
 
     def test_omitted_capabilities_are_rejected(self):
         identity = Identity.generate("Alice")
@@ -183,6 +210,7 @@ class CapabilityGapTest(unittest.TestCase):
             b"",
             b"",
             list(manager.capabilities),
+            session_public_key=b"5" * 32,
         )
         payload.signature = identity.signing_private_key.sign(payload.signed_bytes())
         return HandshakePayload.decode(payload.encode())
@@ -224,6 +252,17 @@ class CapabilityGapTest(unittest.TestCase):
                     pass
 
             peer.writer = Writer()
+            peer.tcp_session = TcpSession(
+                peer_id=peer.peer_id,
+                session_id=b"0" * 16,
+                transcript_hash=b"1" * 32,
+                confirmation_token=b"2" * 32,
+                transmit_encryption_key=b"3" * 32,
+                receive_encryption_key=b"4" * 32,
+                transmit_nonce_prefix=b"5" * 4,
+                receive_nonce_prefix=b"6" * 4,
+                confirmed=True,
+            )
             await manager.send_packet(peer, Packet(PacketType.MESSAGE, b"works"))
             with self.assertRaisesRegex(ValueError, CAP_FILE_TRANSFER):
                 await manager.send_packet(peer, Packet(PacketType.FILE_OFFER, b"blocked"))

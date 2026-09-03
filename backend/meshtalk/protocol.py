@@ -1,6 +1,7 @@
-"""Wire protocol types and packet framing.
+"""Wire protocol types and application packet framing.
 
-TCP framing: [4-byte length][1-byte type][payload]
+The application packet format is used inside the encrypted TCP record layer
+after the LAN handshake and directly inside reliable UDP data fragments.
 
 Packet types:
   HANDSHAKE            0x01
@@ -60,6 +61,7 @@ DEFAULT_CAPABILITIES = [
 UDP_PORT = 24890
 TCP_PORT = 24891
 MAX_PACKET_SIZE = 64 * 1024  # 64 KB
+TCP_TRANSPORT_VERSION = 1
 DISCOVERY_ID = re.compile(r"[a-f0-9]{32}")
 HEADER_FORMAT = "!IB"  # 4-byte big-endian length + 1-byte type
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
@@ -217,7 +219,7 @@ class DiscoveryPacket:
 
 @dataclass
 class HandshakePayload:
-    """Initial handshake containing peer identity, keys, and capabilities."""
+    """Signed handshake containing peer identity and ephemeral TCP key material."""
 
     peer_id: str
     signing_public_key: bytes
@@ -227,6 +229,8 @@ class HandshakePayload:
     challenge: bytes
     signature: bytes
     capabilities: list[str] = field(default_factory=lambda: list(DEFAULT_CAPABILITIES))
+    transport_version: int = TCP_TRANSPORT_VERSION
+    session_public_key: bytes = b""
 
     def signed_bytes(self) -> bytes:
         """Return canonical bytes that are signed by the peer's private key."""
@@ -238,6 +242,8 @@ class HandshakePayload:
             "nonce": self.nonce.hex(),
             "challenge": self.challenge.hex(),
             "capabilities": sorted(self.capabilities),
+            "transport_version": self.transport_version,
+            "session_public_key": self.session_public_key.hex(),
         }
         return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
@@ -252,6 +258,8 @@ class HandshakePayload:
             "challenge": self.challenge.hex(),
             "signature": self.signature.hex(),
             "capabilities": self.capabilities,
+            "transport_version": self.transport_version,
+            "session_public_key": self.session_public_key.hex(),
         }).encode()
 
     @classmethod
@@ -268,10 +276,20 @@ class HandshakePayload:
             challenge=bytes.fromhex(obj["challenge"]),
             signature=bytes.fromhex(obj["signature"]),
             capabilities=capabilities,
+            transport_version=obj.get("transport_version"),
+            session_public_key=bytes.fromhex(obj.get("session_public_key", "")),
         )
         if len(payload.signing_public_key) != 32 or len(payload.encryption_public_key) != 32:
             raise ValueError("Invalid handshake public key length")
-        if len(payload.nonce) != 32 or len(payload.challenge) not in (0, 32) or len(payload.signature) != 64:
+        if (
+            len(payload.nonce) != 32
+            or len(payload.challenge) not in (0, 32)
+            or len(payload.signature) != 64
+            or not isinstance(payload.transport_version, int)
+            or isinstance(payload.transport_version, bool)
+            or payload.transport_version != TCP_TRANSPORT_VERSION
+            or len(payload.session_public_key) != 32
+        ):
             raise ValueError("Invalid handshake nonce, challenge, or signature")
         return payload
 
