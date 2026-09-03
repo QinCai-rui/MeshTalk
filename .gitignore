@@ -44,3 +44,6 @@ Thumbs.db
 
 # env
 .env
+
+# opencode config
+opencode.json

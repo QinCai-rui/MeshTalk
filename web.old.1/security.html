@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MeshTalk — Security</title>
+  <meta name="description" content="MeshTalk security model: encryption, threat model, post-quantum warning, and best practices." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='8' cy='16' r='6' fill='%23e8451e'/%3E%3Ccircle cx='24' cy='16' r='6' fill='%23e8451e'/%3E%3Ccircle cx='16' cy='8' r='6' fill='%23e8451e'/%3E%3Ccircle cx='16' cy='24' r='6' fill='%23e8451e'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+  <nav class="nav" aria-label="Main navigation">
+    <div class="container nav-inner">
+      <a href="index.html" class="brand">
+        <svg width="28" height="28" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="16" r="5" />
+          <circle cx="24" cy="16" r="5" />
+          <circle cx="16" cy="8" r="5" />
+          <circle cx="16" cy="24" r="5" />
+          <line x1="12" y1="10" x2="20" y2="14" />
+          <line x1="12" y1="22" x2="20" y2="18" />
+          <line x1="20" y1="10" x2="12" y2="14" />
+          <line x1="20" y1="22" x2="12" y2="18" />
+        </svg>
+        MeshTalk
+      </a>
+      <div class="nav-links">
+        <a href="features.html">Features</a>
+        <a href="install.html">Install</a>
+        <a href="docs.html">Docs</a>
+        <a href="security.html" aria-current="page">Security</a>
+      </div>
+      <div class="nav-actions">
+        <a href="install.html" class="btn btn-primary btn-sm">Get MeshTalk</a>
+        <button class="icon-btn hamburger" aria-label="Toggle menu" aria-expanded="false">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="2" y1="5" x2="18" y2="5" />
+            <line x1="2" y1="10" x2="18" y2="10" />
+            <line x1="2" y1="15" x2="18" y2="15" />
+          </svg>
+        </button>
+        <button class="icon-btn" id="themeToggle" aria-label="Toggle theme">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <section class="pagehead">
+      <div class="container">
+        <h1>Security</h1>
+        <p class="lead">MeshTalk is built with privacy and encryption at its core. Here's exactly how it works — and its honest limitations.</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container">
+        <div class="callout warn reveal">
+          <strong>Post‑quantum warning</strong><br />
+          MeshTalk uses X25519 (Curve25519) for all key agreement. X25519 is <strong>not resistant to quantum computers</strong>. An adversary who records encrypted traffic today and later obtains a private key — or builds a fault-tolerant quantum computer — could decrypt past sessions. This is a <em>"store now, decrypt later"</em> risk. Do not use MeshTalk for messages that must remain confidential against nation‑state adversaries with long‑term storage capabilities.
+        </div>
+
+        <h2 class="reveal">Encryption model</h2>
+        <div class="reveal" style="display:grid; gap:12px;">
+          <div class="card">
+            <h3>Identity &amp; keys</h3>
+            <p style="color:var(--ink-soft);">Each installation has a persistent <strong>Ed25519</strong> signing identity and a separate <strong>X25519</strong> message-encryption key. The peer ID is SHA‑256 of the Ed25519 public key.</p>
+          </div>
+          <div class="card">
+            <h3>End‑to‑end encryption</h3>
+            <p style="color:var(--ink-soft);">Messages use a one‑time ephemeral X25519 key and <strong>AES‑256‑GCM</strong>. Immutable routing metadata is authenticated by both the encrypted envelope and the sender's Ed25519 signature. Each file chunk uses a fresh ephemeral key for forward secrecy.</p>
+          </div>
+          <div class="card">
+            <h3>Transport security</h3>
+            <p style="color:var(--ink-soft);">Direct UDP sessions use signed ephemeral X25519 key exchange. Transport fragments are authenticated; data is encrypted. LAN TCP connections are also authenticated.</p>
+          </div>
+          <div class="card">
+            <h3>Control service &amp; endpoint cards</h3>
+            <p style="color:var(--ink-soft);">Room invites contain a random 128‑bit routing ID and an independent 256‑bit room secret. Endpoint cards are signed with Ed25519 and encrypted with AES‑256‑GCM using a key derived from the room secret. The secret never reaches the control server.</p>
+          </div>
+        </div>
+
+        <hr style="border:1px solid var(--line); margin:48px 0;" />
+
+        <h2 class="reveal">What the control service can and cannot see</h2>
+        <div class="reveal" style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin:16px 0;">
+          <div style="background:var(--paper-2); padding:20px; border-radius:var(--radius); border:1px solid var(--line);">
+            <h4 style="font-family:var(--sans); color:var(--accent-deep);">🟢 Cannot</h4>
+            <ul style="color:var(--ink-soft); padding-left:18px;">
+              <li>Decrypt endpoint cards or messages</li>
+              <li>Forge signed peer identities</li>
+              <li>Read chat traffic (it never touches the service)</li>
+              <li>Access room secrets</li>
+              <li>Store messages</li>
+            </ul>
+          </div>
+          <div style="background:var(--paper-2); padding:20px; border-radius:var(--radius); border:1px solid var(--line);">
+            <h4 style="font-family:var(--sans); color:var(--ink-soft);">🟠 Can observe</h4>
+            <ul style="color:var(--ink-soft); padding-left:18px;">
+              <li>Connection IPs and timing</li>
+              <li>Opaque room IDs and room sizes</li>
+              <li>Relay frame sizes (not content)</li>
+              <li>Rate‑limit activity</li>
+              <li>Whether a peer is online</li>
+            </ul>
+          </div>
+        </div>
+
+        <hr style="border:1px solid var(--line); margin:48px 0;" />
+
+        <h2 class="reveal">Threat model &amp; limitations</h2>
+        <div class="reveal" style="display:grid; gap:16px;">
+          <div class="card">
+            <h3>Invite secrecy</h3>
+            <p style="color:var(--ink-soft);">Anyone holding a room invite can join that room. Treat invites as secrets. Send them only through trusted channels. If an invite leaks, create a new room.</p>
+          </div>
+          <div class="card">
+            <h3>Network visibility</h3>
+            <p style="color:var(--ink-soft);">Direct peers necessarily learn each other's public IP and UDP port. STUN providers learn the source address of STUN requests. This is inherent to peer‑to‑peer networking.</p>
+          </div>
+          <div class="card">
+            <h3>Group limitations</h3>
+            <p style="color:var(--ink-soft);">Groups have no administrators, member revocation, invite rotation, or synchronized history. Each member's roster is local. Missed messages are not replayed.</p>
+          </div>
+          <div class="card">
+            <h3>Relay trust</h3>
+            <p style="color:var(--ink-soft);">The DERP relay can observe registration, room IDs, peer IDs, timing, and encrypted frame sizes. It cannot decrypt the frames themselves. Rate limits and quotas bound abuse.</p>
+          </div>
+        </div>
+
+        <hr style="border:1px solid var(--line); margin:48px 0;" />
+
+        <h2 class="reveal">Best practices</h2>
+        <ul class="reveal" style="color:var(--ink-soft); padding-left:18px;">
+          <li><strong>Treat invites as passwords</strong> — keep them secret and share them securely.</li>
+          <li><strong>Create new rooms for each conversation</strong> — don't reuse invites.</li>
+          <li><strong>Run your own control server</strong> if you don't want to trust the public one.</li>
+          <li><strong>Use <code>--debug</code></strong> only for diagnostics; logs never include private keys or message content.</li>
+          <li><strong>Consider the post‑quantum risk</strong> — for highly sensitive data, use a hybrid PQ‑safe solution.</li>
+          <li><strong>Keep your MeshTalk installation updated</strong> — run <code>meshtalk update</code> regularly.</li>
+        </ul>
+
+        <div class="callout info reveal" style="margin-top:32px;">
+          <strong>Transparency</strong><br />
+          MeshTalk is open source. You can audit the code, build from source, and verify that it does what we say. The security model is documented in <a href="https://github.com/QinCai-rui/MeshTalk/blob/main/DESIGN.md">DESIGN.md</a> and <a href="https://github.com/QinCai-rui/MeshTalk/blob/main/PROTOCOL.md">PROTOCOL.md</a>.
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-inner">
+        <div>
+          <a href="index.html" class="brand">
+            <svg width="24" height="24" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="8" cy="16" r="5" />
+              <circle cx="24" cy="16" r="5" />
+              <circle cx="16" cy="8" r="5" />
+              <circle cx="16" cy="24" r="5" />
+              <line x1="12" y1="10" x2="20" y2="14" />
+              <line x1="12" y1="22" x2="20" y2="18" />
+              <line x1="20" y1="10" x2="12" y2="14" />
+              <line x1="20" y1="22" x2="12" y2="18" />
+            </svg>
+            MeshTalk
+          </a>
+          <p>Message your people. Not a server.</p>
+        </div>
+        <div>
+          <h5>Site</h5>
+          <ul>
+            <li><a href="features.html">Features</a></li>
+            <li><a href="install.html">Install</a></li>
+            <li><a href="docs.html">Docs</a></li>
+            <li><a href="security.html">Security</a></li>
+          </ul>
+        </div>
+        <div>
+          <h5>Project</h5>
+          <ul>
+            <li><a href="https://github.com/QinCai-rui/MeshTalk">GitHub</a></li>
+            <li><a href="https://github.com/QinCai-rui/MeshTalk/blob/main/LICENSE">License (GPLv3)</a></li>
+            <li><a href="https://github.com/QinCai-rui/MeshTalk/issues">Issues</a></li>
+          </ul>
+        </div>
+        <div>
+          <h5>Honest note</h5>
+          <p style="font-size:0.8rem; opacity:0.7;">MeshTalk uses X25519 key exchange, which is <strong>not quantum-resistant</strong>. Do not use for messages that must remain confidential against a future quantum adversary.</p>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>&copy; <span class="year"></span> MeshTalk contributors</span>
+        <span>Built with ❤️ and encryption</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="assets/app.js" defer></script>
+</body>
+</html>

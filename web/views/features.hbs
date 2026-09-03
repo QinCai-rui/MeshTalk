@@ -1,0 +1,155 @@
+<!-- Features page -->
+<section class="pt-28 pb-24">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="max-w-2xl mb-16">
+      <p class="text-mesh-accent font-mono text-sm mb-3">FEATURES</p>
+      <h1 class="text-4xl md:text-5xl font-bold text-white mb-4">Everything you need,<br>nothing you don't.</h1>
+      <p class="text-lg text-mesh-muted">MeshTalk does encrypted peer-to-peer messaging and not much else. That's the point.</p>
+    </div>
+
+    <!-- Feature sections -->
+    <div class="space-y-20">
+
+      <!-- E2EE -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+        <div>
+          <div class="w-12 h-12 rounded-xl bg-cyan-500/10 flex items-center justify-center mb-5">
+            <svg class="w-6 h-6 text-mesh-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+          </div>
+          <h2 class="text-2xl font-bold text-white mb-3">End-to-End Encryption</h2>
+          <p class="text-mesh-muted leading-relaxed mb-4">
+            Every message is encrypted with ephemeral X25519 keys and AES-256-GCM. The transport layer adds its own authenticated encryption on top.
+            Even if someone intercepts your traffic, they see nothing.
+          </p>
+          <ul class="space-y-2 text-sm text-mesh-muted">
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Ed25519 identity signing for all peer authentication</li>
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Per-chunk forward secrecy for file transfers</li>
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> The control service never sees plaintext</li>
+          </ul>
+        </div>
+        <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-6">
+          <div class="font-mono text-xs text-mesh-muted space-y-1">
+            <div><span class="text-cyan-400">peer_a</span> creates ephemeral X25519 keypair</div>
+            <div><span class="text-cyan-400">peer_a</span> signs handshake with Ed25519 identity</div>
+            <div><span class="text-cyan-400">peer_b</span> verifies signature, derives transport keys</div>
+            <div><span class="text-mesh-green">→</span> <span class="text-white">HKDF-SHA256 → directional AES keys</span></div>
+            <div><span class="text-mesh-green">→</span> <span class="text-white">session confirmed with key proof</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- LAN -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+        <div class="order-2 md:order-1 rounded-xl border border-mesh-border bg-mesh-card/30 p-6">
+          <div class="font-mono text-xs space-y-1.5">
+            <div class="text-mesh-muted">$ meshtalk</div>
+            <div class="text-mesh-green">✓ LAN peer discovered: Alice (a3f8...c12)</div>
+            <div class="text-mesh-green">✓ TCP connection established</div>
+            <div class="text-mesh-muted">$ <span class="text-white">Hello Alice!</span></div>
+            <div class="text-cyan-400">Alice: Hey! Connected via LAN, no internet needed.</div>
+          </div>
+        </div>
+        <div class="order-1 md:order-2">
+          <div class="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center mb-5">
+            <svg class="w-6 h-6 text-mesh-green" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/></svg>
+          </div>
+          <h2 class="text-2xl font-bold text-white mb-3">LAN-First Discovery</h2>
+          <p class="text-mesh-muted leading-relaxed mb-4">
+            MeshTalk broadcasts on UDP port 24890 to find peers on your local network. No router configuration, no STUN, no internet connection needed.
+            The lower peer ID opens an authenticated TCP connection to the higher.
+          </p>
+          <ul class="space-y-2 text-sm text-mesh-muted">
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Zero-configuration peer discovery</li>
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Works on air-gapped networks</li>
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Automatic path selection: LAN &gt; direct UDP &gt; relay</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Remote -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+        <div>
+          <div class="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center mb-5">
+            <svg class="w-6 h-6 text-mesh-purple" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"/></svg>
+          </div>
+          <h2 class="text-2xl font-bold text-white mb-3">Remote Connections</h2>
+          <p class="text-mesh-muted leading-relaxed mb-4">
+            When peers are on different networks, MeshTalk uses STUN to punch through NATs. Direct UDP is preferred; the embedded DERP relay is the fallback for restrictive networks.
+          </p>
+          <ul class="space-y-2 text-sm text-mesh-muted">
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> STUN-assisted NAT hole punching</li>
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Reliable, fragmented, authenticated UDP transport</li>
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Embedded DERP relay when direct fails</li>
+          </ul>
+        </div>
+        <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-6">
+          <div class="font-mono text-xs text-mesh-muted space-y-1">
+            <div><span class="text-mesh-purple">STUN</span> → discover public endpoint</div>
+            <div><span class="text-mesh-purple">UDP</span> → hole punch via NAT mapping</div>
+            <div><span class="text-mesh-purple">SIGN</span> → Ed25519 handshake proof</div>
+            <div><span class="text-cyan-400">HKDF</span> → derive transport keys</div>
+            <div><span class="text-mesh-green">→</span> <span class="text-white">authenticated encrypted channel</span></div>
+            <div class="text-mesh-muted/50 mt-2">fallback: DERP relay over wss://</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Group chats -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+        <div class="order-2 md:order-1 rounded-xl border border-mesh-border bg-mesh-card/30 p-6">
+          <div class="font-mono text-xs space-y-1.5">
+            <div class="text-mesh-muted">$ meshtalk room create "Project Team"</div>
+            <div class="text-mesh-green">✓ Room created. Invite copied to clipboard.</div>
+            <div class="text-mesh-accent">meshtalk-group:a3f8c12...b91.7e2d...f4a.encrypted_metadata</div>
+            <div class="text-mesh-muted mt-2">$ meshtalk group_send "Project Team" "Meeting at 3?"</div>
+            <div class="text-mesh-green">✓ Sent to Alice (delivered)</div>
+            <div class="text-mesh-green">✓ Queued for Bob (offline)</div>
+          </div>
+        </div>
+        <div class="order-1 md:order-2">
+          <div class="w-12 h-12 rounded-xl bg-yellow-500/10 flex items-center justify-center mb-5">
+            <svg class="w-6 h-6 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z"/></svg>
+          </div>
+          <h2 class="text-2xl font-bold text-white mb-3">Named Group Chats</h2>
+          <p class="text-mesh-muted leading-relaxed mb-4">
+            Create named rooms with invite links. Each message is encrypted independently for every group member — no shared group key.
+            Offline members get durable queue entries that flush on reconnect.
+          </p>
+          <ul class="space-y-2 text-sm text-mesh-muted">
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Per-recipient E2EE (no group key)</li>
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Offline message queuing with delivery status</li>
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Local-only history, no server-side replay</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- File transfer -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+        <div>
+          <div class="w-12 h-12 rounded-xl bg-pink-500/10 flex items-center justify-center mb-5">
+            <svg class="w-6 h-6 text-pink-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m6.75 12l-3-3m0 0l-3 3m3-3v6m-1.5-15H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+          </div>
+          <h2 class="text-2xl font-bold text-white mb-3">File Transfer</h2>
+          <p class="text-mesh-muted leading-relaxed mb-4">
+            Send files up to 50 MiB directly to peers. Each chunk is individually encrypted with a fresh ephemeral key.
+            Supports image preview, resume on partial transfers, and group file fan-out.
+          </p>
+          <ul class="space-y-2 text-sm text-mesh-muted">
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Up to 50 MiB per file, chunked E2EE</li>
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Image preview for received images</li>
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Clipboard paste to send (Ctrl+V)</li>
+          </ul>
+        </div>
+        <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-6">
+          <div class="font-mono text-xs text-mesh-muted space-y-1">
+            <div><span class="text-pink-400">OFFER</span> → file metadata (name, size, chunks)</div>
+            <div><span class="text-pink-400">CHUNK</span> → individually E2EE with ephemeral key</div>
+            <div><span class="text-pink-400">ACK</span> → completion status or missing ranges</div>
+            <div><span class="text-mesh-green">→</span> <span class="text-white">resume from where you left off</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>

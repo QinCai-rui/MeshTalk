@@ -1,0 +1,42 @@
+<nav class="fixed top-0 left-0 right-0 z-40 backdrop-blur-xl bg-mesh-bg/80 border-b border-mesh-border">
+  <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+    <a href="/" class="flex items-center gap-3 group">
+      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-400 to-emerald-400 flex items-center justify-center text-mesh-bg font-bold text-sm">
+        M
+      </div>
+      <span class="text-lg font-semibold tracking-tight text-white group-hover:text-mesh-accent transition-colors">
+        MeshTalk
+      </span>
+    </a>
+
+    <div class="hidden md:flex items-center gap-1">
+      <a href="/" class="px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5 transition-all">Home</a>
+      <a href="/features" class="px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5 transition-all">Features</a>
+      <a href="/docs" class="px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5 transition-all">Docs</a>
+      <a href="https://github.com/QinCai-rui/MeshTalk" target="_blank" rel="noopener" class="ml-2 px-4 py-2 text-sm font-medium text-mesh-bg bg-mesh-accent hover:bg-cyan-300 rounded-lg transition-all">
+        GitHub
+      </a>
+    </div>
+
+    <button id="mobile-menu-btn" class="md:hidden text-mesh-muted hover:text-white p-2">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+      </svg>
+    </button>
+  </div>
+
+  <div id="mobile-menu" class="hidden md:hidden border-t border-mesh-border bg-mesh-bg/95 backdrop-blur-xl">
+    <div class="px-6 py-4 space-y-1">
+      <a href="/" class="block px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5">Home</a>
+      <a href="/features" class="block px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5">Features</a>
+      <a href="/docs" class="block px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5">Docs</a>
+      <a href="https://github.com/QinCai-rui/MeshTalk" target="_blank" rel="noopener" class="block px-4 py-2 text-sm font-medium text-mesh-accent">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<script>
+  const btn = document.getElementById('mobile-menu-btn');
+  const menu = document.getElementById('mobile-menu');
+  btn?.addEventListener('click', () => menu?.classList.toggle('hidden'));
+</script>

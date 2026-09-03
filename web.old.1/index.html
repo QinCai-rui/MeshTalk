@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MeshTalk — peer-to-peer encrypted messaging</title>
+  <meta name="description" content="Message your people, not a server. MeshTalk sends encrypted messages directly between devices — over LAN or across the internet. No account, no cloud inbox." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='8' cy='16' r='6' fill='%23ff5a3a'/%3E%3Ccircle cx='24' cy='16' r='6' fill='%23ff5a3a'/%3E%3Ccircle cx='16' cy='8' r='6' fill='%23ff5a3a'/%3E%3Ccircle cx='16' cy='24' r='6' fill='%23ff5a3a'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+  <nav class="nav" aria-label="Main navigation">
+    <div class="nav-inner">
+      <a href="index.html" class="brand">
+        <svg width="28" height="28" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="16" r="5" />
+          <circle cx="24" cy="16" r="5" />
+          <circle cx="16" cy="8" r="5" />
+          <circle cx="16" cy="24" r="5" />
+          <line x1="12" y1="10" x2="20" y2="14" />
+          <line x1="12" y1="22" x2="20" y2="18" />
+          <line x1="20" y1="10" x2="12" y2="14" />
+          <line x1="20" y1="22" x2="12" y2="18" />
+        </svg>
+        MeshTalk
+      </a>
+      <div class="nav-links">
+        <a href="features.html">Features</a>
+        <a href="install.html">Install</a>
+        <a href="docs.html">Docs</a>
+        <a href="security.html">Security</a>
+      </div>
+      <div class="nav-actions">
+        <a href="install.html" class="btn btn-primary btn-sm">Get MeshTalk</a>
+        <button class="icon-btn hamburger" aria-label="Toggle menu" aria-expanded="false">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="2" y1="5" x2="18" y2="5" />
+            <line x1="2" y1="10" x2="18" y2="10" />
+            <line x1="2" y1="15" x2="18" y2="15" />
+          </svg>
+        </button>
+        <button class="icon-btn" id="themeToggle" aria-label="Toggle theme">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <section class="hero">
+      <div class="hero-bg"></div>
+      <div class="container">
+        <div class="hero-content">
+          <div class="eyebrow">Peer-to-peer encrypted messaging</div>
+          <h1>Message your people.<br /><em>Not a server.</em></h1>
+          <p class="lead">
+            MeshTalk sends encrypted messages directly between devices — over your
+            local network or across the internet. No account, no cloud inbox,
+            no one in the middle.
+          </p>
+          <div class="hero-cta">
+            <a href="install.html" class="btn btn-primary btn-lg">Get MeshTalk</a>
+            <a href="features.html" class="btn btn-ghost btn-lg" style="border-color:rgba(255,255,255,0.2);color:#fff;">See how it works</a>
+          </div>
+          <div class="trust-row">
+            <span><span class="dot"></span>Open source · GPLv3</span>
+            <span><span class="dot"></span>macOS / Linux / Windows</span>
+            <span><span class="dot"></span>Works offline on LAN</span>
+            <span><span class="dot"></span>No phone number required</span>
+          </div>
+        </div>
+        <div class="hero-visual">
+          <div class="hero-terminal">
+            <div class="term-bar">
+              <span class="t r"></span><span class="t y"></span><span class="t g"></span>
+              <span class="term-title">~/meshtalk</span>
+            </div>
+            <div class="term-body"><span class="p">$</span> meshtalk
+<pre class="term-banner">  ███╗   ███╗███████╗███████╗██╗  ██╗████████╗ █████╗ ██╗     ██╗  ██╗
+  ████╗ ████║██╔════╝██╔════╝██║  ██║╚══██╔══╝██╔══██╗██║     ██║ ██╔╝
+  ██╔████╔██║█████╗  ███████╗███████║   ██║   ███████║██║     █████╔╝
+  ██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║   ██║   ██╔══██║██║     ██╔═██╗
+  ██║ ╚═╝ ██║███████╗███████║██║  ██║   ██║   ██║  ██║███████╗██║  ██╗
+  ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝</pre>
+<span class="dim">  discover › 3 peers found</span>
+
+<span class="name">you</span> ›  Hey, the camp wifi is down
+<span class="name">ami</span> ›  MeshTalk still works — we're on LAN :)
+<span class="name">you</span> ›  sending the photos now
+<span class="dim">  ⤓  sunset.jpg · 4.2 MiB ✓ delivered</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="container">
+        <div style="text-align:center;margin-bottom:40px;">
+          <div class="eyebrow" style="justify-content:center;">Why MeshTalk</div>
+          <h2>Three reasons to switch</h2>
+        </div>
+        <div class="grid grid-3">
+          <div class="card reveal">
+            <div class="badge primary">🔒</div>
+            <h3>No server reads your messages</h3>
+            <p>The control service exchanges encrypted contact cards only. Your chat traffic travels peer-to-peer and is never stored anywhere but on your devices.</p>
+          </div>
+          <div class="card reveal">
+            <div class="badge secondary">🌐</div>
+            <h3>Works without internet</h3>
+            <p>LAN broadcast + TCP discovery means you can talk at a camp, conference, or airplane. If you can ping, you can chat.</p>
+          </div>
+          <div class="card reveal">
+            <div class="badge accent">🏴</div>
+            <h3>Yours to run</h3>
+            <p>Free and open source (GPLv3). Self-host the optional control/relay service or use the public one — you stay in control.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container">
+        <div style="text-align:center;margin-bottom:40px;">
+          <div class="eyebrow" style="justify-content:center;">Compare</div>
+          <h2>MeshTalk vs. typical messengers</h2>
+          <p class="lead" style="margin:0 auto;text-align:center;">No accounts, no cloud inboxes, no middlemen. Just direct encrypted connections.</p>
+        </div>
+        <div class="reveal" style="overflow-x:auto;">
+          <table class="compare">
+            <thead>
+              <tr><th></th><th>MeshTalk</th><th>Typical messenger</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Where messages live</td><td class="yes">On your devices and those you talk to</td><td>On company servers</td></tr>
+              <tr><td>Internet required</td><td class="yes">No — LAN works offline</td><td class="no">Yes, always</td></tr>
+              <tr><td>Account needed</td><td class="yes">None — a private key on your device</td><td>Phone number or email</td></tr>
+              <tr><td>Server can read messages</td><td class="yes">No — chat never touches it</td><td>Service-dependent</td></tr>
+              <tr><td>Group chats &amp; file sharing</td><td class="yes">End-to-end encrypted</td><td>Often cloud-stored</td></tr>
+              <tr><td>Open source</td><td class="yes">Yes, GPLv3</td><td>Usually proprietary</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="container">
+        <div style="text-align:center;max-width:640px;margin:0 auto;">
+          <div class="eyebrow" style="justify-content:center;">Ready to mesh?</div>
+          <h2>Let's get meshing.</h2>
+          <p class="lead" style="margin:0 auto 24px;">Install MeshTalk now and start sending encrypted messages the way they were meant to be sent.</p>
+          <a href="install.html" class="btn btn-primary btn-lg">Get MeshTalk</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-inner">
+        <div>
+          <a href="index.html" class="brand">
+            <svg width="24" height="24" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="8" cy="16" r="5" />
+              <circle cx="24" cy="16" r="5" />
+              <circle cx="16" cy="8" r="5" />
+              <circle cx="16" cy="24" r="5" />
+              <line x1="12" y1="10" x2="20" y2="14" />
+              <line x1="12" y1="22" x2="20" y2="18" />
+              <line x1="20" y1="10" x2="12" y2="14" />
+              <line x1="20" y1="22" x2="12" y2="18" />
+            </svg>
+            MeshTalk
+          </a>
+          <p>Message your people. Not a server.</p>
+        </div>
+        <div>
+          <h5>Site</h5>
+          <ul>
+            <li><a href="features.html">Features</a></li>
+            <li><a href="install.html">Install</a></li>
+            <li><a href="docs.html">Docs</a></li>
+            <li><a href="security.html">Security</a></li>
+          </ul>
+        </div>
+        <div>
+          <h5>Project</h5>
+          <ul>
+            <li><a href="https://github.com/QinCai-rui/MeshTalk">GitHub</a></li>
+            <li><a href="https://github.com/QinCai-rui/MeshTalk/blob/main/LICENSE">License (GPLv3)</a></li>
+            <li><a href="https://github.com/QinCai-rui/MeshTalk/issues">Issues</a></li>
+          </ul>
+        </div>
+        <div>
+          <h5>Limitations</h5>
+          <p style="font-size:0.8rem; opacity:0.7;">MeshTalk uses X25519 key exchange. It is secure against classical attacks but not quantum‑resistant. For long‑term confidentiality against future quantum adversaries, consider additional protections.</p>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>&copy; <span class="year"></span> MeshTalk contributors</span>
+        <span>Open source · GPLv3</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="assets/app.js" defer></script>
+</body>
+</html>
