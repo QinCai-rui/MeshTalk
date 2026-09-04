@@ -19,19 +19,25 @@ app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (_req, res) => {
   res.render("home", {
-    title: "MeshTalk — Peer-to-Peer Encrypted Messaging",
+    title: "Home | MeshTalk",
   });
 });
 
 app.get("/features", (_req, res) => {
   res.render("features", {
-    title: "Features — MeshTalk",
+    title: "Features | MeshTalk",
   });
 });
 
 app.get("/docs", (_req, res) => {
   res.render("docs", {
-    title: "Getting Started — MeshTalk",
+    title: "Documentation | MeshTalk",
+  });
+});
+
+app.use((_req, res) => {
+  res.status(404).render("404", {
+    title: "404 | MeshTalk",
   });
 });
 
