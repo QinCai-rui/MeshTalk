@@ -1,0 +1,53 @@
+name: Issue Triage
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Check account age
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const user = await github.rest.users.getByUsername({
+              username: context.payload.issue.user.login
+            });
+            const created = new Date(user.data.created_at);
+            const days = (Date.now() - created) / (1000 * 60 * 60 * 24);
+            return days >= 30;
+          result-encoding: string
+
+      - name: Checkout repository
+        if: steps.check.outputs.result == 'true'
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run opencode
+        if: steps.check.outputs.result == 'true'
+        uses: anomalyco/opencode/github@latest
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        with:
+          model: opencode/big-pickle
+          prompt: |
+            Triage this issue and leave a concise comment:
+
+            1. Is it needed? Check if the issue is valid, in-scope, and not a duplicate or already implemented. Explain why it should or should not be pursued. If unclear/invalid, state what info is missing.
+
+            2. If feature request: outline how it could be implemented — relevant areas/files, high-level approach, alternatives/trade-offs, and any docs to reference.
+
+            3. If bug report: outline how it could be fixed — likely root cause, reproduction steps, and suggested fix path with error-handling considerations.
+
+            4. If question/chore/other: give a direct helpful answer or next step.
+
+            Keep the comment short and actionable. If the issue is low-quality/spam and/or if no guidance can be given, do NOT comment.
