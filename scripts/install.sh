@@ -728,15 +728,49 @@ configure_path() {
     return
   fi
 
+  local shell_name=${SHELL:-}
+  shell_name=${shell_name##*/}
+
   local startup_file
-  if [[ -f ${HOME}/.bashrc ]]; then
-    startup_file=${HOME}/.bashrc
-  elif [[ -f ${HOME}/.bash_profile ]]; then
-    startup_file=${HOME}/.bash_profile
-  elif [[ -f ${HOME}/.profile ]]; then
-    startup_file=${HOME}/.profile
-  else
-    startup_file=${HOME}/.bashrc
+  case $shell_name in
+    zsh)
+      startup_file=${HOME}/.zshrc
+      ;;
+    bash)
+      if [[ -f ${HOME}/.bashrc ]]; then
+        startup_file=${HOME}/.bashrc
+      elif [[ -f ${HOME}/.bash_profile ]]; then
+        startup_file=${HOME}/.bash_profile
+      elif [[ -f ${HOME}/.profile ]]; then
+        startup_file=${HOME}/.profile
+      else
+        startup_file=${HOME}/.bashrc
+      fi
+      ;;
+    sh|dash|ash|ksh|mksh)
+      startup_file=${HOME}/.profile
+      ;;
+    fish|csh|tcsh|*)
+      startup_file=
+      ;;
+  esac
+
+  if [[ -z $startup_file ]]; then
+    local shell_manual
+    case $shell_name in
+      fish)
+        printf -v shell_manual 'fish_add_path %q' "$INSTALL_DIR"
+        ;;
+      csh|tcsh)
+        printf -v shell_manual 'setenv PATH "%s:$PATH"' "$INSTALL_DIR"
+        ;;
+      *)
+        printf -v shell_manual 'export PATH=%q:$PATH' "$INSTALL_DIR"
+        ;;
+    esac
+    warn "Automatic PATH configuration is unavailable for ${shell_name:-the current shell}."
+    info "Configure it manually with: ${shell_manual}"
+    return
   fi
 
   if [[ -f $startup_file ]] && grep -Fq -- "$INSTALL_DIR" "$startup_file"; then
