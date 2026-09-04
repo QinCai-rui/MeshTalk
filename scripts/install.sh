@@ -151,7 +151,7 @@ prompt_read() {
   if [[ -t 0 ]]; then
     echoes=1
     if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var"; else read -r -p "$prompt_str" "$__var"; fi
-  elif [[ -t 1 ]] && exec {input_fd}<>/dev/tty 2>/dev/null; then
+  elif [[ -t 1 ]] && { exec {input_fd}<>/dev/tty; } 2>/dev/null; then
     echoes=1
     if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var" <&$input_fd; else read -r -p "$prompt_str" "$__var" <&$input_fd; fi
     exec {input_fd}>&-
