@@ -91,6 +91,7 @@ class PeerConnection:
         self.tcp_local_handshake: HandshakePayload | None = None
         self.tcp_remote_handshake: HandshakePayload | None = None
         self.tcp_session: TcpSession | None = None
+        self.udp_session_id: bytes | None = None
         self.tcp_send_lock = asyncio.Lock()
         self.last_seen = time.time()
 
@@ -347,7 +348,20 @@ class PeerManager:
         encryption_public_key: bytes,
         signing_public_key: bytes,
         via_relay: bool,
+        session_id: bytes,
     ) -> None:
+        """Handle a new remote UDP or DERP connection from a peer.
+
+        Args:
+            peer_id: The peer identifier.
+            address: The IP address or DERP endpoint host.
+            port: The UDP port number.
+            display_name: The peer's display name.
+            encryption_public_key: The peer's X25519 public key for encryption.
+            signing_public_key: The peer's Ed25519 public key for signature verification.
+            via_relay: True if the connection is relayed through DERP, False for direct UDP.
+            session_id: The unique session identifier for this UDP connection.
+        """
         if peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
             logger.warning("Rejecting remote UDP peer %s: peer limit reached", peer_id)
             return
@@ -357,6 +371,7 @@ class PeerManager:
         peer.display_name = display_name
         peer.encryption_public_key = encryption_public_key
         peer.signing_public_key = signing_public_key
+        peer.udp_session_id = session_id
         peer.capabilities = self.udp.get_capabilities(peer_id)
         gaps = self.udp.get_capability_gaps(peer_id)
         if gaps is not None:
@@ -367,7 +382,10 @@ class PeerManager:
         if not active or active.state != PeerState.CONNECTED or active.transport != "lan_tcp":
             self.peers[peer_id] = peer
         await self.db.upsert_peer(peer_id, display_name, encryption_public_key, signing_public_key, capabilities=peer.remote_capabilities)
-        await self._send_profile_update(peer)
+        try:
+            await self._send_profile_update(peer)
+        except Exception:
+            logger.warning("Profile update failed for %s", peer_id, exc_info=True)
         await self._notify_peer_changed(peer_id)
         if old_endpoint and old_endpoint != peer.endpoint:
             logger.info("Remote UDP endpoint changed for %s: %s -> %s", peer_id, _format_endpoint(old_endpoint), _format_endpoint(peer.endpoint))
@@ -385,31 +403,45 @@ class PeerManager:
         if packet.type == PacketType.PING:
             await self._send_packet(peer, Packet(PacketType.PONG))
         elif packet.type == PacketType.GOODBYE:
-            await self._on_udp_disconnected(peer_id, peer)
+            await self._on_udp_disconnected(peer_id, peer.udp_session_id)
         elif packet.type == PacketType.PROFILE:
             await self._apply_profile_update(peer, packet)
         else:
             await self.on_packet(peer, packet)
 
     async def _on_udp_disconnected(
-        self, peer_id: str, expected_peer: PeerConnection | None = None
+        self, peer_id: str, expected_session_id: bytes | None = None
     ) -> None:
         """Handle UDP peer disconnection, optionally verifying the disconnecting session.
 
         Args:
             peer_id: The peer identifier.
-            expected_peer: If provided, only disconnect if this connection is still active.
+            expected_session_id: If provided, only disconnect if it matches the active UDP session.
         """
-        peer = self._udp_peers.get(peer_id)
-        if expected_peer is not None and peer is not expected_peer:
+        old_peer = self._udp_peers.get(peer_id)
+        if expected_session_id is not None and (
+            old_peer is None or old_peer.udp_session_id != expected_session_id
+        ):
             return
-        peer = self._udp_peers.pop(peer_id, None)
-        if peer:
-            peer.state = PeerState.DISCONNECTED
+        # Only remove from _udp_peers if it still points to the disconnecting peer.
+        # Prevents a stale disconnect from deleting a replacement that raced in.
+        if old_peer is not None:
+            if self._udp_peers.get(peer_id) is old_peer:
+                self._udp_peers.pop(peer_id, None)
+            old_peer.state = PeerState.DISCONNECTED
+            peer: PeerConnection | None = old_peer
+        else:
+            peer = None
         active = self.peers.get(peer_id)
-        if active is peer:
-            await self.db.set_peer_online(peer_id, False)
+        # Only clear the active peer entry if it still points to the disconnecting peer.
+        # Pop before the DB await to avoid deleting a replacement created during the yield.
+        if active is not None and active is peer:
             self.peers.pop(peer_id, None)
+            await self.db.set_peer_online(peer_id, False)
+            # If a replacement connection was established during the DB yield,
+            # restore the online status so the DB does not remain stale offline.
+            if self._udp_peers.get(peer_id) is not None or self.peers.get(peer_id) is not None:
+                await self.db.set_peer_online(peer_id, True)
         await self._notify_peer_changed(peer_id)
 
     def _handshake_payload(
@@ -616,8 +648,8 @@ class PeerManager:
                 if remote and remote.state == PeerState.CONNECTED:
                     self.peers[peer.peer_id] = remote
                 else:
-                    await self.db.set_peer_online(peer.peer_id, False)
                     self.peers.pop(peer.peer_id, None)
+                    await self.db.set_peer_online(peer.peer_id, False)
                 await self._notify_peer_changed(peer.peer_id)
             if peer.writer:
                 await self._close_writer(peer.writer)
@@ -663,7 +695,7 @@ class PeerManager:
             await self._send_packet(peer, packet)
         except ConnectionError:
             if peer.transport in ("remote_udp", "remote_derp"):
-                await self._on_udp_disconnected(peer.peer_id, peer)
+                await self._on_udp_disconnected(peer.peer_id, peer.udp_session_id)
             raise
 
     async def _send_packet(self, peer: PeerConnection, packet: Packet) -> None:
