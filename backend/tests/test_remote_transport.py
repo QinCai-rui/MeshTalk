@@ -77,6 +77,7 @@ class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(network["active_endpoint"], f"127.0.0.1:{endpoint_b[1]}")
 
     async def test_lan_tcp_takes_over_from_relay(self):
+        """Verify that LAN TCP replaces DERP relay even without direct route recovery capability."""
         # A peer without the new recovery capability still receives the
         # established LAN TCP takeover behavior.
         self.manager_b.capabilities = [CAP_TEXT_CHAT]
@@ -283,6 +284,7 @@ class CandidateValidationTest(unittest.IsolatedAsyncioTestCase):
 
 class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
     async def test_direct_udp_recovery_requires_shared_capability(self):
+        """Verify that direct UDP recovery from DERP only occurs when both peers support it."""
         local = Identity.generate("Local")
         remote = Identity.generate("Remote")
         local_endpoint = ("127.0.0.1", 45001)
@@ -333,6 +335,7 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         await remote_transport.stop()
 
     async def test_direct_udp_replaces_derp_without_disconnect(self):
+        """Verify seamless direct UDP route recovery from DERP relay without connection loss."""
         local = Identity.generate("Local")
         remote = Identity.generate("Remote")
         local_endpoint = ("127.0.0.1", 45001)
@@ -486,6 +489,7 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         await transport.stop()
 
     async def test_stale_peer_disconnect_does_not_remove_replacement(self):
+        """Verify that disconnecting a stale session does not remove its active replacement."""
         manager = PeerManager(Identity.generate("Local"), object(), lambda *_: None, tcp_port=0)
         old = PeerConnection("peer", "derp:peer", 0, PeerState.CONNECTED, "remote_derp")
         replacement = PeerConnection("peer", "127.0.0.1", 45002, PeerState.CONNECTED, "remote_udp")
@@ -498,6 +502,7 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(manager.peers["peer"], replacement)
 
     async def test_stale_goodbye_does_not_remove_replacement(self):
+        """Verify that a GOODBYE from a stale session does not remove the replacement connection."""
         manager = PeerManager(Identity.generate("Local"), object(), lambda *_: None, tcp_port=0)
         old = PeerConnection("peer", "derp:peer", 0, PeerState.CONNECTED, "remote_derp")
         replacement = PeerConnection("peer", "127.0.0.1", 45002, PeerState.CONNECTED, "remote_udp")

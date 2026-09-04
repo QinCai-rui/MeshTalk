@@ -31,6 +31,7 @@ FUTURE_CAPABILITY = "CAP_ADASDASD_NEW_TEST"
 
 class CapabilityTest(unittest.TestCase):
     def test_direct_route_recovery_is_advertised_by_default(self):
+        """Verify that CAP_DIRECT_ROUTE_RECOVERY is enabled by default."""
         self.assertIn(CAP_DIRECT_ROUTE_RECOVERY, DEFAULT_CAPABILITIES)
 
     def test_intersection_enables_only_shared_capabilities(self):

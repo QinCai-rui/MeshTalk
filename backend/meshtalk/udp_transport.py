@@ -248,6 +248,7 @@ class UdpTransport:
             self._start_attempt(peer_id, endpoint, via_relay=True)
 
     def clear_direct_candidate(self, peer_id: str) -> None:
+        """Remove direct UDP candidate and cancel any ongoing direct connection attempts."""
         self._direct_candidates.pop(peer_id, None)
         self._expected_endpoints.pop(peer_id, None)
         attempt = self._attempts.get(peer_id)
@@ -260,6 +261,7 @@ class UdpTransport:
                 self._remove_session(session)
 
     def expect_peer(self, peer_id: str, endpoint: Endpoint) -> None:
+        """Register a direct UDP endpoint candidate and initiate connection if appropriate."""
         if peer_id == self.identity.peer_id:
             return
         self._validate_peer_endpoint(peer_id, endpoint)
@@ -395,6 +397,7 @@ class UdpTransport:
         return MAGIC + bytes([HELLO]) + json.dumps(value, separators=(",", ":")).encode()
 
     async def _punch_loop(self, attempt: Attempt) -> None:
+        """Repeatedly send handshake packets to establish a UDP session, with relay fallback."""
         for _ in range(20):
             current = self._attempts.get(attempt.peer_id)
             session = self._sessions.get(attempt.peer_id)
@@ -416,9 +419,11 @@ class UdpTransport:
 
     @staticmethod
     def _route_key(session: Session) -> tuple[Endpoint, bool]:
+        """Return a unique key identifying the session's transport route."""
         return session.endpoint, session.via_relay
 
     def _remove_session(self, session: Session) -> None:
+        """Remove a session from all tracking dictionaries."""
         if self._sessions.get(session.peer_id) is session:
             self._sessions.pop(session.peer_id, None)
         self._sessions_by_id.pop(session.session_id, None)
@@ -432,6 +437,7 @@ class UdpTransport:
     def _session_for_route(
         self, peer_id: str, endpoint: Endpoint, via_relay: bool
     ) -> Session | None:
+        """Look up an active, pending, or retiring session matching the peer and route."""
         active = self._sessions.get(peer_id)
         if active and self._route_key(active) == (endpoint, via_relay):
             return active
@@ -449,6 +455,7 @@ class UdpTransport:
         )
 
     def _promote_session(self, session: Session) -> None:
+        """Make a session active, retiring or removing any existing active session."""
         active = self._sessions.get(session.peer_id)
         if active is session:
             return
@@ -467,6 +474,7 @@ class UdpTransport:
                 self._pending_sessions.pop(session.peer_id, None)
 
     def _handle_hello(self, payload: bytes, addr: Endpoint, via_relay: bool) -> None:
+        """Process a signed UDP handshake and establish or update a session."""
         if len(payload) > 1000:
             raise ValueError("Oversized UDP handshake")
         value = json.loads(payload)
@@ -614,6 +622,7 @@ class UdpTransport:
             event.set()
 
     def _handle_keepalive(self, data: bytes, addr: Endpoint, via_relay: bool) -> None:
+        """Process authenticated READY, PING, PONG, or GOODBYE messages."""
         if len(data) != AUTH_HEADER.size + 16:
             raise ValueError("Invalid UDP keepalive")
         _, message_type, session_id, token = AUTH_HEADER.unpack(data[:AUTH_HEADER.size])
@@ -688,6 +697,7 @@ class UdpTransport:
         return session
 
     async def _maintenance_loop(self) -> None:
+        """Periodic cleanup and health checks for UDP sessions and direct route recovery probes."""
         while True:
             await asyncio.sleep(5)
             now = time.monotonic()
