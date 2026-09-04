@@ -707,7 +707,10 @@ class UdpTransport:
                     continue
                 if now - session.last_seen > SESSION_TIMEOUT:
                     self._remove_session(session)
-                    await self.on_disconnected(session.peer_id)
+                    try:
+                        await self.on_disconnected(session.peer_id)
+                    except Exception:
+                        logger.exception("on_disconnected callback failed for %s", session.peer_id)
                     continue
                 if session.confirmed:
                     self._send_authenticated(session, PING, secrets.randbits(64))
@@ -786,7 +789,16 @@ class UdpTransport:
     def _spawn(self, awaitable: Awaitable[None]) -> asyncio.Task:
         task = asyncio.create_task(awaitable)
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+
+        def _done(t: asyncio.Task[None]) -> None:
+            self._tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.exception("Background UDP task failed", exc_info=exc)
+
+        task.add_done_callback(_done)
         return task
 
 

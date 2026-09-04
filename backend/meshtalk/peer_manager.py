@@ -367,7 +367,10 @@ class PeerManager:
         if not active or active.state != PeerState.CONNECTED or active.transport != "lan_tcp":
             self.peers[peer_id] = peer
         await self.db.upsert_peer(peer_id, display_name, encryption_public_key, signing_public_key, capabilities=peer.remote_capabilities)
-        await self._send_profile_update(peer)
+        try:
+            await self._send_profile_update(peer)
+        except Exception:
+            logger.warning("Profile update failed for %s", peer_id, exc_info=True)
         await self._notify_peer_changed(peer_id)
         if old_endpoint and old_endpoint != peer.endpoint:
             logger.info("Remote UDP endpoint changed for %s: %s -> %s", peer_id, _format_endpoint(old_endpoint), _format_endpoint(peer.endpoint))
@@ -400,16 +403,28 @@ class PeerManager:
             peer_id: The peer identifier.
             expected_peer: If provided, only disconnect if this connection is still active.
         """
-        peer = self._udp_peers.get(peer_id)
-        if expected_peer is not None and peer is not expected_peer:
+        old_peer = self._udp_peers.get(peer_id)
+        if expected_peer is not None and old_peer is not expected_peer:
             return
-        peer = self._udp_peers.pop(peer_id, None)
-        if peer:
-            peer.state = PeerState.DISCONNECTED
+        # Only remove from _udp_peers if it still points to the disconnecting peer.
+        # Prevents a stale disconnect from deleting a replacement that raced in.
+        if old_peer is not None:
+            if self._udp_peers.get(peer_id) is old_peer:
+                self._udp_peers.pop(peer_id, None)
+            old_peer.state = PeerState.DISCONNECTED
+            peer: PeerConnection | None = old_peer
+        else:
+            peer = None
         active = self.peers.get(peer_id)
-        if active is peer:
-            await self.db.set_peer_online(peer_id, False)
+        # Only clear the active peer entry if it still points to the disconnecting peer.
+        # Pop before the DB await to avoid deleting a replacement created during the yield.
+        if active is not None and active is peer:
             self.peers.pop(peer_id, None)
+            await self.db.set_peer_online(peer_id, False)
+            # If a replacement connection was established during the DB yield,
+            # restore the online status so the DB does not remain stale offline.
+            if self._udp_peers.get(peer_id) is not None or self.peers.get(peer_id) is not None:
+                await self.db.set_peer_online(peer_id, True)
         await self._notify_peer_changed(peer_id)
 
     def _handshake_payload(
@@ -616,8 +631,8 @@ class PeerManager:
                 if remote and remote.state == PeerState.CONNECTED:
                     self.peers[peer.peer_id] = remote
                 else:
-                    await self.db.set_peer_online(peer.peer_id, False)
                     self.peers.pop(peer.peer_id, None)
+                    await self.db.set_peer_online(peer.peer_id, False)
                 await self._notify_peer_changed(peer.peer_id)
             if peer.writer:
                 await self._close_writer(peer.writer)
