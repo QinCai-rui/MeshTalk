@@ -441,8 +441,14 @@ The route-selection policy is:
 1. LAN TCP when available.
 2. Direct UDP server-reflexive candidate.
 3. Embedded DERP relay candidate after direct HELLO/READY setup expires.
-4. Keep the confirmed relay for the session. Direct recovery is deferred until
-   route replacement can preserve the working session atomically.
+4. While DERP is active, periodically probe the retained direct candidate.
+5. Promote direct UDP only after the replacement session receives authenticated
+   READY confirmation. Keep the previous confirmed route for a bounded drain
+   period so in-flight packets are not interrupted.
+
+LAN TCP discovery and authentication can take over from DERP at any time. It is
+also retained as the highest-priority route when remote UDP is active. A failed
+replacement handshake leaves the current confirmed route unchanged.
 
 Relay unavailability is non-fatal. The peer remains available through any working
 LAN or direct route, and the client reports the relay failure in logs and diagnostics.
@@ -576,6 +582,16 @@ is the active transport and remote UDP is a fallback
 (peer_manager._on_udp_connected only promotes a UDP session to active if no LAN
 session is connected). The backend reports all known endpoints and marks the
 active one via IPC (get_network_info).
+
+When DERP is active and a direct candidate is retained, the transport probes the
+direct endpoint no more often than `DIRECT_PROBE_INTERVAL`. The confirmed DERP
+session remains active while this probe performs its independent HELLO/READY
+exchange. Once the direct session is confirmed, it is atomically promoted and
+the relay session enters a bounded drain period for in-flight packets. A failed
+or expired probe is discarded without firing a peer disconnect event. LAN TCP
+follows the same priority rule at the peer-manager layer: a confirmed LAN
+session supersedes remote routes, and remote UDP or DERP remains available as
+fallback if that TCP session closes.
 
 ## 7. End-to-End Message Envelope (backend/meshtalk/encryption.py, protocol.py)
 
@@ -1025,6 +1041,7 @@ the current code (per TODO.md):
 | UDP max datagram | 1200 B | udp_transport.MAX_DATAGRAM_SIZE |
 | UDP retry / max | 0.45 s / 10 | udp_transport.RETRY_INTERVAL/MAX_RETRIES |
 | UDP session timeout | 12 s | udp_transport.SESSION_TIMEOUT |
+| Direct route probe interval | 60 s | udp_transport.DIRECT_PROBE_INTERVAL |
 | Message max content | 30 KiB | message_router.MAX_MESSAGE_CONTENT_SIZE |
 | Message expiry | 86400 s | message_router.MESSAGE_EXPIRY |
 | Display name max | 48 chars | identity.normalize_display_name |

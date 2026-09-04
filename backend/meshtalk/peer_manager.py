@@ -390,7 +390,12 @@ class PeerManager:
         else:
             await self.on_packet(peer, packet)
 
-    async def _on_udp_disconnected(self, peer_id: str) -> None:
+    async def _on_udp_disconnected(
+        self, peer_id: str, expected_peer: PeerConnection | None = None
+    ) -> None:
+        peer = self._udp_peers.get(peer_id)
+        if expected_peer is not None and peer is not expected_peer:
+            return
         peer = self._udp_peers.pop(peer_id, None)
         if peer:
             peer.state = PeerState.DISCONNECTED
@@ -650,7 +655,7 @@ class PeerManager:
             await self._send_packet(peer, packet)
         except ConnectionError:
             if peer.transport in ("remote_udp", "remote_derp"):
-                await self._on_udp_disconnected(peer.peer_id)
+                await self._on_udp_disconnected(peer.peer_id, peer)
             raise
 
     async def _send_packet(self, peer: PeerConnection, packet: Packet) -> None:

@@ -13,7 +13,7 @@ from meshtalk.identity import Identity
 from meshtalk.friends import FriendManager
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
-from meshtalk.protocol import CAP_TEXT_CHAT
+from meshtalk.protocol import CAP_TEXT_CHAT, Packet, PacketType
 from meshtalk.rendezvous import RendezvousService, _encode, _room_key, decrypt_endpoint_card, encrypt_endpoint_card
 from meshtalk.settings import Room, Settings
 from meshtalk.udp_transport import Attempt, HELLO, MAGIC, READY, UdpTransport
@@ -75,6 +75,37 @@ class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
         network = self.manager_a.get_network_info(self.identity_b.peer_id)
         self.assertEqual(network["active_transport"], "remote_udp")
         self.assertEqual(network["active_endpoint"], f"127.0.0.1:{endpoint_b[1]}")
+
+    async def test_lan_tcp_takes_over_from_relay(self):
+        relay_a = PeerConnection(
+            self.identity_b.peer_id, "derp:" + self.identity_b.peer_id, 0,
+            PeerState.CONNECTED, "remote_derp"
+        )
+        relay_b = PeerConnection(
+            self.identity_a.peer_id, "derp:" + self.identity_a.peer_id, 0,
+            PeerState.CONNECTED, "remote_derp"
+        )
+        self.manager_a._udp_peers[self.identity_b.peer_id] = relay_a
+        self.manager_b._udp_peers[self.identity_a.peer_id] = relay_b
+        self.manager_a.peers[self.identity_b.peer_id] = relay_a
+        self.manager_b.peers[self.identity_a.peer_id] = relay_b
+
+        if self.identity_a.peer_id < self.identity_b.peer_id:
+            initiator, target, target_id = self.manager_a, self.manager_b, self.identity_b.peer_id
+        else:
+            initiator, target, target_id = self.manager_b, self.manager_a, self.identity_a.peer_id
+        target_port = target._server.sockets[0].getsockname()[1]
+        await initiator.connect_to_peer(None, "127.0.0.1", target_port)
+
+        async with asyncio.timeout(2):
+            while (
+                initiator.get_connected_peer(target_id) is None
+                or initiator.get_connected_peer(target_id).transport != "lan_tcp"
+            ):
+                await asyncio.sleep(0.01)
+
+        self.assertEqual(initiator.get_connected_peer(target_id).transport, "lan_tcp")
+        self.assertEqual(initiator._udp_peers[target_id].transport, "remote_derp")
 
     async def test_force_relay_does_not_start_direct_attempts(self):
         transport = UdpTransport(self.identity_a, lambda *_: None, lambda *_: None, lambda *_: None, force_relay=True)
@@ -247,6 +278,96 @@ class CandidateValidationTest(unittest.IsolatedAsyncioTestCase):
 
 
 class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_direct_udp_replaces_derp_without_disconnect(self):
+        local = Identity.generate("Local")
+        remote = Identity.generate("Remote")
+        local_endpoint = ("127.0.0.1", 45001)
+        remote_endpoint = ("127.0.0.1", 45002)
+        connected = {local.peer_id: [], remote.peer_id: []}
+        disconnected = []
+        received = asyncio.Queue()
+
+        async def on_local_connected(*args):
+            connected[local.peer_id].append(args)
+
+        async def on_remote_connected(*args):
+            connected[remote.peer_id].append(args)
+
+        async def on_disconnected(peer_id):
+            disconnected.append(peer_id)
+
+        async def on_local_packet(peer_id, packet):
+            await received.put((peer_id, packet))
+
+        async def ignore(*_):
+            pass
+
+        local_transport = UdpTransport(local, on_local_connected, on_local_packet, on_disconnected)
+        remote_transport = UdpTransport(remote, on_remote_connected, ignore, on_disconnected)
+
+        async def send_from_local(peer_id, data):
+            self.assertEqual(peer_id, remote.peer_id)
+            remote_transport.derp_datagram_received(local.peer_id, data)
+
+        async def send_from_remote(peer_id, data):
+            self.assertEqual(peer_id, local.peer_id)
+            local_transport.derp_datagram_received(remote.peer_id, data)
+
+        class DirectSocket:
+            def __init__(self, owner, peer, source):
+                self.owner = owner
+                self.peer = peer
+                self.source = source
+
+            def sendto(self, data, endpoint):
+                expected = remote_endpoint if self.owner is local_transport else local_endpoint
+                if endpoint != expected:
+                    raise AssertionError(endpoint)
+                asyncio.get_running_loop().call_soon(
+                    self.peer.datagram_received, data, self.source
+                )
+
+            def close(self):
+                pass
+
+        local_transport._transport = DirectSocket(local_transport, remote_transport, local_endpoint)
+        remote_transport._transport = DirectSocket(remote_transport, local_transport, remote_endpoint)
+        local_transport.configure_derp(send_from_local)
+        remote_transport.configure_derp(send_from_remote)
+        local_transport.expect_derp_peer(remote.peer_id)
+        remote_transport.expect_derp_peer(local.peer_id)
+
+        async with asyncio.timeout(2):
+            while not local_transport._sessions.get(remote.peer_id):
+                await asyncio.sleep(0.01)
+            while not remote_transport._sessions.get(local.peer_id):
+                await asyncio.sleep(0.01)
+
+        self.assertTrue(local_transport._sessions[remote.peer_id].via_relay)
+        self.assertTrue(remote_transport._sessions[local.peer_id].via_relay)
+
+        local_transport.expect_peer(remote.peer_id, remote_endpoint)
+        remote_transport.expect_peer(local.peer_id, local_endpoint)
+
+        async with asyncio.timeout(2):
+            while local_transport._sessions[remote.peer_id].via_relay:
+                await asyncio.sleep(0.01)
+            while remote_transport._sessions[local.peer_id].via_relay:
+                await asyncio.sleep(0.01)
+
+        await asyncio.sleep(0.05)
+        self.assertFalse(disconnected)
+        self.assertFalse(local_transport._sessions[remote.peer_id].via_relay)
+        self.assertFalse(remote_transport._sessions[local.peer_id].via_relay)
+        self.assertTrue(any(not args[-1] for args in connected[local.peer_id]))
+        self.assertTrue(any(not args[-1] for args in connected[remote.peer_id]))
+        await remote_transport.send_packet(local.peer_id, Packet(PacketType.MESSAGE, b"after handoff"))
+        peer_id, packet = await asyncio.wait_for(received.get(), 1)
+        self.assertEqual(peer_id, remote.peer_id)
+        self.assertEqual(packet.payload, b"after handoff")
+        await local_transport.stop()
+        await remote_transport.stop()
+
     async def test_two_derp_only_peers_connect(self):
         local = Identity.generate("Local")
         remote = Identity.generate("Remote")
@@ -309,6 +430,18 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
             (["CAP_ADASDASD_NEW_TEST", CAP_TEXT_CHAT], [], ["CAP_ADASDASD_NEW_TEST"]),
         )
         await transport.stop()
+
+    async def test_stale_peer_disconnect_does_not_remove_replacement(self):
+        manager = PeerManager(Identity.generate("Local"), object(), lambda *_: None, tcp_port=0)
+        old = PeerConnection("peer", "derp:peer", 0, PeerState.CONNECTED, "remote_derp")
+        replacement = PeerConnection("peer", "127.0.0.1", 45002, PeerState.CONNECTED, "remote_udp")
+        manager._udp_peers["peer"] = replacement
+        manager.peers["peer"] = replacement
+
+        await manager._on_udp_disconnected("peer", old)
+
+        self.assertIs(manager._udp_peers["peer"], replacement)
+        self.assertIs(manager.peers["peer"], replacement)
 
     async def test_reflected_ready_does_not_confirm_session(self):
         local = Identity.generate("Local")
