@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from .identity import Identity
 from .protocol import (
+    CAP_DIRECT_ROUTE_RECOVERY,
     HEADER_SIZE,
     MAX_PACKET_SIZE,
     DEFAULT_CAPABILITIES,
@@ -52,7 +53,7 @@ AUTH_HEADER = struct.Struct("!4sB8sQ")
 RETRY_INTERVAL = 0.45
 MAX_RETRIES = 10
 SESSION_TIMEOUT = 12.0
-DIRECT_PROBE_INTERVAL = 60.0
+DIRECT_PROBE_INTERVAL = 30.0
 EXPECTED_PEER_TIMEOUT = 600.0
 MAX_EXPECTED_PEERS = 512
 MAX_ATTEMPTS = 128
@@ -183,6 +184,8 @@ class UdpTransport:
         self._direct_candidates: dict[str, Endpoint] = {}
         self._last_direct_probe: dict[str, float] = {}
         self._sessions: dict[str, Session] = {}
+        self._pending_sessions: dict[str, dict[tuple[Endpoint, bool], Session]] = {}
+        self._retiring_sessions: dict[bytes, tuple[Session, float]] = {}
         self._sessions_by_id: dict[bytes, Session] = {}
         self._stun_waiters: dict[bytes, asyncio.Future[bytes]] = {}
         self._pending: dict[tuple[bytes, int], asyncio.Event] = {}
@@ -245,6 +248,7 @@ class UdpTransport:
             self._start_attempt(peer_id, endpoint, via_relay=True)
 
     def clear_direct_candidate(self, peer_id: str) -> None:
+        """Remove direct UDP candidate and cancel any ongoing direct connection attempts."""
         self._direct_candidates.pop(peer_id, None)
         self._expected_endpoints.pop(peer_id, None)
         attempt = self._attempts.get(peer_id)
@@ -252,11 +256,16 @@ class UdpTransport:
             if attempt.task:
                 attempt.task.cancel()
             self._attempts.pop(peer_id, None)
+        for session in list(self._pending_sessions.get(peer_id, {}).values()):
+            if not session.via_relay:
+                self._remove_session(session)
 
     def expect_peer(self, peer_id: str, endpoint: Endpoint) -> None:
+        """Register a direct UDP endpoint candidate and initiate connection if appropriate."""
         if peer_id == self.identity.peer_id:
             return
         self._validate_peer_endpoint(peer_id, endpoint)
+        previous_endpoint = self._direct_candidates.get(peer_id)
         self._direct_candidates[peer_id] = endpoint
         if peer_id not in self._expected_endpoints and len(self._expected_endpoints) >= MAX_EXPECTED_PEERS:
             raise ValueError("Too many expected UDP peers")
@@ -282,6 +291,15 @@ class UdpTransport:
         existing = self._attempts.get(peer_id)
         if existing and existing.endpoint == endpoint and existing.task and not existing.task.done():
             return
+        if session and session.confirmed and session.via_relay:
+            if CAP_DIRECT_ROUTE_RECOVERY not in session.capabilities:
+                return
+            if (
+                previous_endpoint == endpoint
+                and now - self._last_direct_probe.get(peer_id, 0) < DIRECT_PROBE_INTERVAL
+            ):
+                return
+            self._last_direct_probe[peer_id] = now
         if existing and existing.task:
             existing.task.cancel()
         self._start_attempt(peer_id, endpoint)
@@ -379,6 +397,7 @@ class UdpTransport:
         return MAGIC + bytes([HELLO]) + json.dumps(value, separators=(",", ":")).encode()
 
     async def _punch_loop(self, attempt: Attempt) -> None:
+        """Repeatedly send handshake packets to establish a UDP session, with relay fallback."""
         for _ in range(20):
             current = self._attempts.get(attempt.peer_id)
             session = self._sessions.get(attempt.peer_id)
@@ -392,14 +411,70 @@ class UdpTransport:
             self._attempts.pop(attempt.peer_id, None)
             session = self._sessions.get(attempt.peer_id)
             if session and not session.confirmed:
-                self._sessions.pop(attempt.peer_id, None)
-                self._sessions_by_id.pop(session.session_id, None)
+                self._remove_session(session)
             if not attempt.via_relay:
                 derp_endpoint = self._derp_candidates.get(attempt.peer_id)
-                if self._derp_sender and derp_endpoint:
+                if self._derp_sender and derp_endpoint and (session is None or not session.confirmed):
                     self._start_attempt(attempt.peer_id, derp_endpoint, via_relay=True)
 
+    @staticmethod
+    def _route_key(session: Session) -> tuple[Endpoint, bool]:
+        """Return a unique key identifying the session's transport route."""
+        return session.endpoint, session.via_relay
+
+    def _remove_session(self, session: Session) -> None:
+        """Remove a session from all tracking dictionaries."""
+        if self._sessions.get(session.peer_id) is session:
+            self._sessions.pop(session.peer_id, None)
+        self._sessions_by_id.pop(session.session_id, None)
+        pending = self._pending_sessions.get(session.peer_id)
+        if pending and pending.get(self._route_key(session)) is session:
+            pending.pop(self._route_key(session), None)
+            if not pending:
+                self._pending_sessions.pop(session.peer_id, None)
+        self._retiring_sessions.pop(session.session_id, None)
+
+    def _session_for_route(
+        self, peer_id: str, endpoint: Endpoint, via_relay: bool
+    ) -> Session | None:
+        """Look up an active, pending, or retiring session matching the peer and route."""
+        active = self._sessions.get(peer_id)
+        if active and self._route_key(active) == (endpoint, via_relay):
+            return active
+        pending = self._pending_sessions.get(peer_id, {}).get((endpoint, via_relay))
+        if pending:
+            return pending
+        return next(
+            (
+                session
+                for session, _ in self._retiring_sessions.values()
+                if session.peer_id == peer_id
+                and self._route_key(session) == (endpoint, via_relay)
+            ),
+            None,
+        )
+
+    def _promote_session(self, session: Session) -> None:
+        """Make a session active, retiring or removing any existing active session."""
+        active = self._sessions.get(session.peer_id)
+        if active is session:
+            return
+        if active and active.confirmed:
+            self._retiring_sessions[active.session_id] = (
+                active,
+                time.monotonic() + SESSION_TIMEOUT,
+            )
+        elif active:
+            self._remove_session(active)
+        self._sessions[session.peer_id] = session
+        pending = self._pending_sessions.get(session.peer_id)
+        if pending:
+            pending.pop(self._route_key(session), None)
+            if not pending:
+                self._pending_sessions.pop(session.peer_id, None)
+
     def _handle_hello(self, payload: bytes, addr: Endpoint, via_relay: bool) -> None:
+        """Process a signed UDP handshake and establish or update a session."""
         if len(payload) > 1000:
             raise ValueError("Oversized UDP handshake")
         value = json.loads(payload)
@@ -426,13 +501,22 @@ class UdpTransport:
             logger.debug("Accepting UDP handshake from %s without prior introduction", peer_id)
         if not via_relay and matches_direct:
             self._expected_endpoints[peer_id] = (addr, time.monotonic())
+        active = self._sessions.get(peer_id)
+        if (
+            not via_relay
+            and active
+            and active.confirmed
+            and active.via_relay
+            and CAP_DIRECT_ROUTE_RECOVERY not in intersect_capabilities(self.capabilities, remote_capabilities)
+        ):
+            raise ValueError("Direct route recovery is not jointly supported")
         try:
             Ed25519PublicKey.from_public_bytes(signing_key).verify(signature, _canonical(value))
         except InvalidSignature as exc:
             raise ValueError("Invalid UDP handshake signature") from exc
-        current = self._sessions.get(peer_id)
+        current = self._session_for_route(peer_id, addr, via_relay)
         if (
-            current and current.endpoint == addr and current.via_relay == via_relay and current.remote_nonce == nonce
+            current and current.remote_nonce == nonce
             and current.remote_session_public_key == session_key
         ):
             self._send_route(current.local_hello, addr, via_relay)
@@ -449,15 +533,13 @@ class UdpTransport:
             algorithm=SHA256(), length=128, salt=salt, info=b"meshtalk-udp-session-v1"
         ).derive(shared)
         session_id = hashlib.sha256(material + b"session-id").digest()[:8]
-        if current and current.session_id == session_id and current.endpoint == addr and current.via_relay == via_relay:
+        if current and current.session_id == session_id:
             self._send_authenticated(current, READY, 0)
             return
-        if not current and len(self._sessions) >= MAX_SESSIONS:
+        if not current and len(self._sessions_by_id) >= MAX_SESSIONS:
             raise ValueError("Too many UDP sessions")
         if current:
-            self._sessions_by_id.pop(current.session_id, None)
-            if current.confirmed:
-                self._spawn(self.on_disconnected(peer_id))
+            self._remove_session(current)
         first_to_second = material[:32], material[32:64]
         second_to_first = material[64:96], material[96:128]
         transmit, receive = (first_to_second, second_to_first) if local_first else (second_to_first, first_to_second)
@@ -470,7 +552,11 @@ class UdpTransport:
             sorted(set(self.capabilities) - set(remote_capabilities)),
             sorted(set(remote_capabilities) - set(self.capabilities)),
         )
-        self._sessions[peer_id] = session
+        active = self._sessions.get(peer_id)
+        if active and active.confirmed and self._route_key(active) != (addr, via_relay):
+            self._pending_sessions.setdefault(peer_id, {})[(addr, via_relay)] = session
+        else:
+            self._sessions[peer_id] = session
         self._sessions_by_id[session_id] = session
         self._send_authenticated(session, READY, 0)
 
@@ -536,6 +622,7 @@ class UdpTransport:
             event.set()
 
     def _handle_keepalive(self, data: bytes, addr: Endpoint, via_relay: bool) -> None:
+        """Process authenticated READY, PING, PONG, or GOODBYE messages."""
         if len(data) != AUTH_HEADER.size + 16:
             raise ValueError("Invalid UDP keepalive")
         _, message_type, session_id, token = AUTH_HEADER.unpack(data[:AUTH_HEADER.size])
@@ -552,6 +639,7 @@ class UdpTransport:
                 attempt = self._attempts.pop(session.peer_id, None)
                 if attempt and attempt.task:
                     attempt.task.cancel()
+                self._promote_session(session)
                 self._send_authenticated(session, READY, 0)
             if not session.connected_notified:
                 session.connected_notified = True
@@ -571,9 +659,10 @@ class UdpTransport:
         if message_type == PING:
             self._send_authenticated(session, PONG, token)
         elif message_type == GOODBYE:
-            self._sessions.pop(session.peer_id, None)
-            self._sessions_by_id.pop(session.session_id, None)
-            self._spawn(self.on_disconnected(session.peer_id))
+            active = self._sessions.get(session.peer_id) is session
+            self._remove_session(session)
+            if active:
+                self._spawn(self.on_disconnected(session.peer_id))
 
     def _send_authenticated(self, session: Session, message_type: int, token: int) -> None:
         header = AUTH_HEADER.pack(MAGIC, message_type, session.session_id, token)
@@ -608,21 +697,30 @@ class UdpTransport:
         return session
 
     async def _maintenance_loop(self) -> None:
+        """Periodic cleanup and health checks for UDP sessions and direct route recovery probes."""
         while True:
             await asyncio.sleep(5)
             now = time.monotonic()
             for session in list(self._sessions.values()):
                 if not session.confirmed and now - session.created_at > 10:
-                    self._sessions.pop(session.peer_id, None)
-                    self._sessions_by_id.pop(session.session_id, None)
+                    self._remove_session(session)
                     continue
                 if now - session.last_seen > SESSION_TIMEOUT:
-                    self._sessions.pop(session.peer_id, None)
-                    self._sessions_by_id.pop(session.session_id, None)
+                    self._remove_session(session)
                     await self.on_disconnected(session.peer_id)
                     continue
                 if session.confirmed:
                     self._send_authenticated(session, PING, secrets.randbits(64))
+                    if (
+                        session.via_relay
+                        and CAP_DIRECT_ROUTE_RECOVERY in session.capabilities
+                        and now - self._last_direct_probe.get(session.peer_id, 0) >= DIRECT_PROBE_INTERVAL
+                    ):
+                        direct = self._direct_candidates.get(session.peer_id)
+                        attempt = self._attempts.get(session.peer_id)
+                        if direct and not (attempt and not attempt.via_relay and attempt.task and not attempt.task.done()):
+                            self._last_direct_probe[session.peer_id] = now
+                            self._start_attempt(session.peer_id, direct)
                 session.seen = {
                     message_id: seen_at for message_id, seen_at in session.seen.items()
                     if now - seen_at < SESSION_TIMEOUT
@@ -631,6 +729,22 @@ class UdpTransport:
                     message_id: value for message_id, value in session.reassemblies.items()
                     if now - value.created_at < 10
                 }
+            for session, expires_at in list(self._retiring_sessions.values()):
+                if now >= expires_at:
+                    self._remove_session(session)
+                    continue
+                session.seen = {
+                    message_id: seen_at for message_id, seen_at in session.seen.items()
+                    if now - seen_at < SESSION_TIMEOUT
+                }
+                session.reassemblies = {
+                    message_id: value for message_id, value in session.reassemblies.items()
+                    if now - value.created_at < 10
+                }
+            for sessions in list(self._pending_sessions.values()):
+                for session in list(sessions.values()):
+                    if now - session.created_at > 10:
+                        self._remove_session(session)
             self._expected_endpoints = {
                 peer_id: value for peer_id, value in self._expected_endpoints.items()
                 if now - value[1] < EXPECTED_PEER_TIMEOUT or peer_id in self._sessions

@@ -56,6 +56,7 @@ Status reflects verified implementation, not planned code.
 - [x] UDP duplicate suppression, retransmission, and keepalives
 - [x] NAT endpoint refresh while connected to the control service
 - [x] LAN-first transport selection with remote UDP fallback
+- [x] Atomic DERP-to-direct route recovery during active sessions
 - [x] CLI room and control-service commands
 - [x] LAN and remote endpoint visibility in CLI and OpenTUI
 - [x] TURN fallback for symmetric NATs (intentionally not routed through control)

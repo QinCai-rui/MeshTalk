@@ -220,14 +220,19 @@ encrypted HANDSHAKE_CONFIRM ------------------------------>
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
-`file_transfer`, `typing_indicators`, `message_replies`). The agreed capability set is the **intersection** of both
-peers' advertised sets, and higher-level code gates behaviour on it:
+`file_transfer`, `typing_indicators`, `message_replies`,
+`direct_route_recovery`). The agreed capability set is the **intersection** of
+both peers' advertised sets, and higher-level code gates behaviour on it:
 `text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
 enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
 `friend_requests` enables the friend-request packet family, `group_chat` enables
 the group packet family, and `file_transfer` enables file offer/chunk/ack
 packets (section 7.6). `message_replies` enables reply references on message
-packets.
+packets. `direct_route_recovery` enables probing and promotion of an introduced
+direct UDP route while an established remote UDP session is using DERP. It does
+not gate the initial direct connection attempt or the existing LAN TCP takeover
+behavior, so older peers retain their established behavior; an older peer
+simply does not participate in DERP-to-direct UDP recovery.
 A peer that does not advertise a capability will not be sent the corresponding
 packets. Missing capability lists are rejected. Unknown remote capabilities are
 retained for diagnostics but remain disabled locally. Each side reports both
@@ -441,8 +446,14 @@ The route-selection policy is:
 1. LAN TCP when available.
 2. Direct UDP server-reflexive candidate.
 3. Embedded DERP relay candidate after direct HELLO/READY setup expires.
-4. Keep the confirmed relay for the session. Direct recovery is deferred until
-   route replacement can preserve the working session atomically.
+4. While DERP is active, periodically probe the retained direct candidate.
+5. Promote direct UDP only after the replacement session receives authenticated
+   READY confirmation. Keep the previous confirmed route for a bounded drain
+   period so in-flight packets are not interrupted.
+
+LAN TCP discovery and authentication can take over from DERP at any time. It is
+also retained as the highest-priority route when remote UDP is active. A failed
+replacement handshake leaves the current confirmed route unchanged.
 
 Relay unavailability is non-fatal. The peer remains available through any working
 LAN or direct route, and the client reports the relay failure in logs and diagnostics.
@@ -479,7 +490,7 @@ JSON hello (canonical, then Ed25519-signed):
 
 ```json
 {
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "typing_indicators", "message_replies"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "typing_indicators", "message_replies", "direct_route_recovery"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -506,10 +517,11 @@ During the handshake, peers exchange signed lists of supported capabilities.
   - `block_reports`: Report message blocking status (`MESSAGE_BLOCKED`).
   - `group_chat`: Exchange `GROUP_MESSAGE`, `GROUP_MESSAGE_ACK`, and
     `GROUP_LEAVE` packets for mutually joined named rooms.
-   - `file_transfer`: Exchange `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
-     packets for cross-platform file transfer with image preview and download.
-   - `typing_indicators`: Exchange encrypted, transient `TYPING` packets.
-   - `message_replies`: Exchange messages that reference an original message or attachment.
+  - `file_transfer`: Exchange `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
+    packets for cross-platform file transfer with image preview and download.
+  - `typing_indicators`: Exchange encrypted, transient `TYPING` packets.
+  - `message_replies`: Exchange messages that reference an original message or attachment.
+  - `direct_route_recovery`: Probe and promote a direct UDP route after a DERP session is established; enabled only for the negotiated intersection.
 
 ### 6.3 Session Key Derivation
 
@@ -576,6 +588,16 @@ is the active transport and remote UDP is a fallback
 (peer_manager._on_udp_connected only promotes a UDP session to active if no LAN
 session is connected). The backend reports all known endpoints and marks the
 active one via IPC (get_network_info).
+
+When DERP is active and a direct candidate is retained, the transport probes the
+direct endpoint no more often than `DIRECT_PROBE_INTERVAL`. The confirmed DERP
+session remains active while this probe performs its independent HELLO/READY
+exchange. Once the direct session is confirmed, it is atomically promoted and
+the relay session enters a bounded drain period for in-flight packets. A failed
+or expired probe is discarded without firing a peer disconnect event. LAN TCP
+follows the same priority rule at the peer-manager layer: a confirmed LAN
+session supersedes remote routes, and remote UDP or DERP remains available as
+fallback if that TCP session closes.
 
 ## 7. End-to-End Message Envelope (backend/meshtalk/encryption.py, protocol.py)
 
@@ -1008,7 +1030,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators, message_replies | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators, message_replies, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |
@@ -1025,6 +1047,7 @@ the current code (per TODO.md):
 | UDP max datagram | 1200 B | udp_transport.MAX_DATAGRAM_SIZE |
 | UDP retry / max | 0.45 s / 10 | udp_transport.RETRY_INTERVAL/MAX_RETRIES |
 | UDP session timeout | 12 s | udp_transport.SESSION_TIMEOUT |
+| Direct route probe interval | 30 s | udp_transport.DIRECT_PROBE_INTERVAL |
 | Message max content | 30 KiB | message_router.MAX_MESSAGE_CONTENT_SIZE |
 | Message expiry | 86400 s | message_router.MESSAGE_EXPIRY |
 | Display name max | 48 chars | identity.normalize_display_name |

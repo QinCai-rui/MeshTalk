@@ -375,6 +375,7 @@ class PeerManager:
             logger.info("Authenticated remote %s connection to %s at %s", "DERP" if via_relay else "UDP", peer_id, _format_endpoint(peer.endpoint))
 
     async def _on_udp_packet(self, peer_id: str, packet: Packet) -> None:
+        """Handle an application packet received from a UDP peer."""
         peer = self._udp_peers.get(peer_id)
         if not peer or peer.state != PeerState.CONNECTED:
             return
@@ -384,13 +385,24 @@ class PeerManager:
         if packet.type == PacketType.PING:
             await self._send_packet(peer, Packet(PacketType.PONG))
         elif packet.type == PacketType.GOODBYE:
-            await self._on_udp_disconnected(peer_id)
+            await self._on_udp_disconnected(peer_id, peer)
         elif packet.type == PacketType.PROFILE:
             await self._apply_profile_update(peer, packet)
         else:
             await self.on_packet(peer, packet)
 
-    async def _on_udp_disconnected(self, peer_id: str) -> None:
+    async def _on_udp_disconnected(
+        self, peer_id: str, expected_peer: PeerConnection | None = None
+    ) -> None:
+        """Handle UDP peer disconnection, optionally verifying the disconnecting session.
+
+        Args:
+            peer_id: The peer identifier.
+            expected_peer: If provided, only disconnect if this connection is still active.
+        """
+        peer = self._udp_peers.get(peer_id)
+        if expected_peer is not None and peer is not expected_peer:
+            return
         peer = self._udp_peers.pop(peer_id, None)
         if peer:
             peer.state = PeerState.DISCONNECTED
@@ -646,11 +658,12 @@ class PeerManager:
         await self._notify_peer_changed(peer.peer_id)
 
     async def send_packet(self, peer: PeerConnection, packet: Packet) -> None:
+        """Send a packet to a peer, handling UDP disconnection on failure."""
         try:
             await self._send_packet(peer, packet)
         except ConnectionError:
             if peer.transport in ("remote_udp", "remote_derp"):
-                await self._on_udp_disconnected(peer.peer_id)
+                await self._on_udp_disconnected(peer.peer_id, peer)
             raise
 
     async def _send_packet(self, peer: PeerConnection, packet: Packet) -> None:
