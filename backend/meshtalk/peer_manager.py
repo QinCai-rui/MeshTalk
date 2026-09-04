@@ -384,7 +384,7 @@ class PeerManager:
         if packet.type == PacketType.PING:
             await self._send_packet(peer, Packet(PacketType.PONG))
         elif packet.type == PacketType.GOODBYE:
-            await self._on_udp_disconnected(peer_id)
+            await self._on_udp_disconnected(peer_id, peer)
         elif packet.type == PacketType.PROFILE:
             await self._apply_profile_update(peer, packet)
         else:

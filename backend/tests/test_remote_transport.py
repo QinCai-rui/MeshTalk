@@ -497,6 +497,26 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(manager._udp_peers["peer"], replacement)
         self.assertIs(manager.peers["peer"], replacement)
 
+    async def test_stale_goodbye_does_not_remove_replacement(self):
+        manager = PeerManager(Identity.generate("Local"), object(), lambda *_: None, tcp_port=0)
+        old = PeerConnection("peer", "derp:peer", 0, PeerState.CONNECTED, "remote_derp")
+        replacement = PeerConnection("peer", "127.0.0.1", 45002, PeerState.CONNECTED, "remote_udp")
+        manager._udp_peers["peer"] = old
+        manager.peers["peer"] = old
+
+        async def disconnect(peer_id, expected_peer=None):
+            self.assertIs(peer_id, old.peer_id)
+            self.assertIs(expected_peer, old)
+            manager._udp_peers[peer_id] = replacement
+            manager.peers[peer_id] = replacement
+            await PeerManager._on_udp_disconnected(manager, peer_id, expected_peer)
+
+        manager._on_udp_disconnected = disconnect
+        await manager._on_udp_packet("peer", Packet(PacketType.GOODBYE))
+
+        self.assertIs(manager._udp_peers["peer"], replacement)
+        self.assertIs(manager.peers["peer"], replacement)
+
     async def test_reflected_ready_does_not_confirm_session(self):
         local = Identity.generate("Local")
         remote = Identity.generate("Remote")
