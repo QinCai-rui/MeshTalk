@@ -350,6 +350,18 @@ class PeerManager:
         via_relay: bool,
         session_id: bytes,
     ) -> None:
+        """Handle a new remote UDP or DERP connection from a peer.
+
+        Args:
+            peer_id: The peer identifier.
+            address: The IP address or DERP endpoint host.
+            port: The UDP port number.
+            display_name: The peer's display name.
+            encryption_public_key: The peer's X25519 public key for encryption.
+            signing_public_key: The peer's Ed25519 public key for signature verification.
+            via_relay: True if the connection is relayed through DERP, False for direct UDP.
+            session_id: The unique session identifier for this UDP connection.
+        """
         if peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
             logger.warning("Rejecting remote UDP peer %s: peer limit reached", peer_id)
             return
