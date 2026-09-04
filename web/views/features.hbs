@@ -74,12 +74,13 @@
           </div>
           <h2 class="text-2xl font-bold text-white mb-3">Remote Connections</h2>
           <p class="text-mesh-muted leading-relaxed mb-4">
-            When peers are on different networks, MeshTalk uses STUN to punch through NATs. Direct UDP is preferred; the embedded DERP relay is the fallback for restrictive networks.
+            When peers are on different networks, MeshTalk uses STUN to punch through NATs. Direct UDP is preferred; the embedded DERP relay is the fallback for restrictive networks. If direct connectivity returns, MeshTalk automatically authenticates and switches back without interrupting the active session.
           </p>
           <ul class="space-y-2 text-sm text-mesh-muted">
             <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> STUN-assisted NAT hole punching</li>
             <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Reliable, fragmented, authenticated UDP transport</li>
             <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Embedded DERP relay when direct fails</li>
+            <li class="flex items-start gap-2"><span class="text-mesh-green mt-0.5">→</span> Automatic recovery from relay to direct transport</li>
           </ul>
         </div>
         <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-6">

@@ -1041,7 +1041,7 @@ the current code (per TODO.md):
 | UDP max datagram | 1200 B | udp_transport.MAX_DATAGRAM_SIZE |
 | UDP retry / max | 0.45 s / 10 | udp_transport.RETRY_INTERVAL/MAX_RETRIES |
 | UDP session timeout | 12 s | udp_transport.SESSION_TIMEOUT |
-| Direct route probe interval | 60 s | udp_transport.DIRECT_PROBE_INTERVAL |
+| Direct route probe interval | 30 s | udp_transport.DIRECT_PROBE_INTERVAL |
 | Message max content | 30 KiB | message_router.MAX_MESSAGE_CONTENT_SIZE |
 | Message expiry | 86400 s | message_router.MESSAGE_EXPIRY |
 | Display name max | 48 chars | identity.normalize_display_name |
