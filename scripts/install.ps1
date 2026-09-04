@@ -5,10 +5,6 @@
 .DESCRIPTION
     Peer-to-peer encrypted messaging over LAN and UDP.
     PowerShell port of the original Bash installer for QinCai-rui/MeshTalk.
-.PARAMETER Simple
-    Accept defaults; only ask before replace/uninstall
-.PARAMETER LongOutput
-    Keep panels and completed progress visible
 .PARAMETER Version
     Install a specific release tag
 .PARAMETER Prerelease
@@ -29,8 +25,6 @@
 
 [CmdletBinding()]
 param(
-    [Alias('s')][switch]$Simple,
-    [switch]$LongOutput,
     [string]$Version,
     [switch]$Prerelease,
     [ValidateSet('auto', 'gh', 'webrequest')][string]$Method = 'auto',
@@ -55,14 +49,11 @@ $script:Action         = if ($Uninstall) { 'uninstall' } else { 'install' }
 $script:DryRunFlag      = [bool]$DryRun
 $script:NonInteractive  = [bool]$NonInteractive
 $script:AssumeYes       = [bool]$Yes
-$script:SimpleMode      = [bool]$Simple
-$script:LongOutputMode  = [bool]$LongOutput
-$script:VersionSel      = if ($Prerelease) { 'latest-prerelease' } elseif ($Version) { $Version } else { '' }
+$script:VersionSel      = if ($Prerelease) { 'latest-prerelease' } elseif ($Version) { $Version } else { 'latest' }
 $script:InstallDirSel   = $InstallDir
 $script:DownloadMethod  = $Method.ToLowerInvariant()
 $script:AuthToken       = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { '' }
 $script:CHECKSUM_NOTE   = ''
-$script:StepNum         = 0
 $script:TaskLabel       = ''
 
 if ($Help) {
@@ -73,8 +64,6 @@ Usage:
   install-meshtalk.ps1 [options]
 
 Options:
-  -Simple                 Accept defaults; only ask before replace/uninstall
-  -LongOutput              Keep panels and completed progress visible
   -Version <tag>           Install a specific release tag
   -Prerelease              Install the latest pre-release
   -Method <auto|gh|webrequest>  Download via auto, gh, or webrequest
@@ -138,18 +127,25 @@ function Write-Divider {
 }
 
 function Start-Panel {
-    param([string]$Title)
+    param(
+        [string]$Title,
+        [string]$Color = $script:CYAN
+    )
     Write-Host ''
-    Write-Host "  $($script:CYAN)╭─ $($script:BOLD)$Title$($script:RESET)"
+    Write-Host "  $Color╭─ $($script:BOLD)$Title$($script:RESET)"
 }
 
 function Write-PanelLine {
-    param([string]$Line)
-    Write-Host "  $($script:CYAN)│$($script:RESET) $Line"
+    param(
+        [string]$Line,
+        [string]$Color = $script:CYAN
+    )
+    Write-Host "  $Color│$($script:RESET)  $Line"
 }
 
 function Stop-Panel {
-    Write-Host "  $($script:CYAN)╰────────────────────────────────────────────────────────$($script:RESET)"
+    param([string]$Color = $script:CYAN)
+    Write-Host "  $Color╰────────────────────────────────────────────────────────$($script:RESET)"
 }
 
 function Write-PanelKv {
@@ -158,48 +154,11 @@ function Write-PanelKv {
     Write-Host "  $($script:CYAN)│$($script:RESET) $($script:DIM_BOLD)$paddedKey$($script:RESET) $Value"
 }
 
-function Clear-PromptPanel {
-    param([int]$Lines = 8)
-    if ([Console]::IsOutputRedirected -or -not $script:UseAnsi) { return }
-    $escape = [char]27
-    for ($i = 0; $i -lt $Lines; $i++) {
-        # Move cursor up one line and clear it
-        Write-Host -NoNewline "$($escape)[1A$($escape)[2K"
-    }
-    Write-Host -NoNewline "`r"
-}
-
-# Live single-line progress. Overwrites itself until Complete-Step is called.
-function Start-Step {
-    param([string]$Label)
-    $script:StepNum++
-    $script:TaskLabel = $Label
-    if ([Console]::IsOutputRedirected) { return }
-    if ($script:LongOutputMode) {
-        Write-Host -NoNewline "  $($script:CYAN)[$($script:StepNum)/5] $Label..."
-    } else {
-        Write-Host -NoNewline "`r`e[2K  $($script:INFO) $Label..."
-    }
-}
-
-# Resolve the overwriting line to a final status.
-function Complete-Step {
-    param(
-        [string]$Marker = $script:TICK,
-        [string]$CompletedLabel = $script:TaskLabel
-    )
-    if ($script:LongOutputMode -or [Console]::IsOutputRedirected) {
-        if (-not [Console]::IsOutputRedirected) { Write-Host -NoNewline "`e[2K`r" }
-        Write-Host "  $($script:CYAN)[$($script:StepNum)/5] $Marker $CompletedLabel"
-    } else {
-        Write-Host "`e[2K`r  $Marker $CompletedLabel"
-    }
-    $script:TaskLabel = ''
-}
-
 function Invoke-Die {
     param([string]$Message)
-    try { Complete-Step -Marker $script:CROSS } catch { }
+    if ($script:TaskLabel) {
+        try { Complete-Step -Marker $script:CROSS } catch { }
+    }
     Write-Host ''
     Write-Host "  $($script:RED)$($script:BOLD)ERROR$($script:RESET) $Message"
     Write-Divider
@@ -217,11 +176,8 @@ function Write-Info {
 }
 
 function Write-Verbose2 {
-    # Named distinctly from the built-in Write-Verbose to mirror bash `verbose()`
     param([string]$Message)
-    if ($script:SimpleMode -eq $false -and $script:LongOutputMode) {
-        Write-Host "  $($script:INFO) $Message"
-    }
+    Write-Host "  $($script:INFO) $Message"
 }
 
 function Write-Success {
@@ -229,44 +185,37 @@ function Write-Success {
     Write-Host "  $($script:TICK) $Message"
 }
 
-function Start-Task {
+function Start-Step {
     param([string]$Label)
     $script:TaskLabel = $Label
-    if ([Console]::IsOutputRedirected) { return }
-    Write-Host -NoNewline "`r`e[2K  $($script:INFO) $Label..."
+    if ([Console]::IsOutputRedirected -or -not $script:UseAnsi) {
+        Write-Host "  $($script:INFO)  $Label..."
+    } else {
+        Write-Host -NoNewline "  $($script:INFO)  $Label..."
+    }
 }
 
-function Complete-Task {
+function Complete-Step {
     param(
         [string]$Marker = $script:TICK,
-        [string]$CompletedLabel = $script:TaskLabel,
-        [int]$LinesToClear = 1
+        [string]$CompletedLabel = $script:TaskLabel
     )
-    if ([string]::IsNullOrEmpty($script:TaskLabel)) { return }
-    if (-not [Console]::IsOutputRedirected) {
-        for ($i = 0; $i -lt $LinesToClear; $i++) {
-            Write-Host -NoNewline "`e[2K"
-            if ($i + 1 -lt $LinesToClear) { Write-Host -NoNewline "`e[1A" }
-        }
-        Write-Host -NoNewline "`r"
+    if ([Console]::IsOutputRedirected -or -not $script:UseAnsi) {
+        Write-Host "  $Marker  $CompletedLabel"
+    } else {
+        Write-Host "`e[2K`r  $Marker  $CompletedLabel"
     }
-    Write-Host "  $Marker $CompletedLabel"
     $script:TaskLabel = ''
 }
 
 function Read-Confirmation {
     param(
         [string]$Prompt,
-        [string]$Default = 'n',
-        [bool]$ForcePrompt = $false
+        [string]$Default = 'n'
     )
 
     if ($script:AssumeYes) { return $true }
     if ($script:NonInteractive) { return $false }
-    if ($script:SimpleMode -and -not $ForcePrompt) {
-        return ($Default -eq 'y')
-    }
-
     Write-Host ''
     if ($Default -eq 'y') {
         $answer = Read-Host "  $($script:BOLD)$Prompt$($script:RESET) $($script:DIM)[Y/n]$($script:RESET)"
@@ -275,6 +224,50 @@ function Read-Confirmation {
         $answer = Read-Host "  $($script:BOLD)$Prompt$($script:RESET) $($script:DIM)[y/N]$($script:RESET)"
         return ($answer -match '^[Yy]([Ee][Ss])?$')
     }
+}
+
+function Read-BoxInput {
+    param(
+        [string]$Prompt,
+        [string]$Default,
+        [string]$Color = $script:CYAN
+    )
+
+    $hint = if ($Default) { "$($script:DIM)[$Default]$($script:RESET)" } else { '' }
+    Stop-Panel -Color $Color
+    Write-Host ''
+    return (Read-Host "  $($script:BOLD)$Prompt$($script:RESET) $hint")
+}
+
+function Read-BoxConfirmation {
+    param(
+        [string]$Prompt,
+        [string]$Default = 'n',
+        [string]$Color = $script:RED
+    )
+
+    if ($script:AssumeYes) {
+        Stop-Panel -Color $Color
+        return $true
+    }
+    if ($script:NonInteractive) {
+        Stop-Panel -Color $Color
+        return $false
+    }
+
+    $hint = if ($Default -eq 'y') {
+        "$($script:DIM)[Y/n]$($script:RESET)"
+    } else {
+        "$($script:DIM)[y/N]$($script:RESET)"
+    }
+    Stop-Panel -Color $Color
+    Write-Host ''
+    $answer = Read-Host "  $($script:BOLD)$Prompt$($script:RESET) $hint"
+
+    if ($Default -eq 'y') {
+        return ([string]::IsNullOrEmpty($answer) -or $answer -match '^[Yy]([Ee][Ss])?$')
+    }
+    return ($answer -match '^[Yy]([Ee][Ss])?$')
 }
 
 function Read-SecureLine {
@@ -436,8 +429,8 @@ function Invoke-Gh {
 
 function Request-Token {
     if ($script:AuthToken) { return $true }
-    if (-not ($script:NonInteractive -eq $false -and $script:SimpleMode -eq $false)) {
-        Invoke-Die "GitHub API access requires GITHUB_TOKEN or GH_TOKEN in simple or non-interactive mode."
+    if ($script:NonInteractive) {
+        Invoke-Die "GitHub API access requires GITHUB_TOKEN or GH_TOKEN in non-interactive mode."
     }
     Write-Host ''
     Write-WarnMsg "Anonymous GitHub release access was unavailable."
@@ -756,12 +749,8 @@ function Set-InstallPath {
     }
 }
 
-# ─── Install ─────────────────────────────────────────────────────────────────
 function Select-Action {
-    if ($script:SimpleMode) {
-        return
-    }
-    if ($script:Action -ne 'install' -or $script:VersionSel -or $script:InstallDirSel -or $script:DryRunFlag -or $script:NonInteractive) {
+    if ($script:Action -ne 'install' -or $script:VersionSel -ne 'latest' -or $script:InstallDirSel -or $script:DryRunFlag -or $script:NonInteractive) {
         return
     }
 
@@ -769,56 +758,45 @@ function Select-Action {
     Write-PanelLine "$($script:GREEN)1$($script:RESET)  Install or upgrade MeshTalk"
     Write-PanelLine "$($script:GREEN)2$($script:RESET)  Uninstall MeshTalk"
     Write-PanelLine "$($script:DIM)q$($script:RESET)  Quit"
-    Stop-Panel
-    Write-Host ''
-    $choice = Read-Host "  $($script:BOLD)Choose$($script:RESET) $($script:DIM)[1]$($script:RESET)"
-    if (-not $script:LongOutputMode) { Clear-PromptPanel -Lines 8 }
+    $choice = Read-BoxInput -Prompt 'Choose' -Default '1' -Color $script:CYAN
     switch ($choice) {
+        '' { $script:Action = 'install' }
         '1' { $script:Action = 'install' }
         '2' { $script:Action = 'uninstall' }
         { $_ -in @('q', 'Q') } { exit 0 }
-        '' { $script:Action = 'install' }
-        default { Invoke-Die "Invalid choice" }
+        default { Invoke-Die "Invalid choice. Choose 1, 2, or q." }
     }
 }
 
 function Select-Version {
-    if ($script:VersionSel) { return }
-    if ($script:NonInteractive) { $script:VersionSel = 'latest'; return }
-    if ($script:SimpleMode) { $script:VersionSel = 'latest'; return }
+    if ($script:VersionSel -ne 'latest') { return }
+    if ($script:NonInteractive) { return }
 
     Start-Panel "Choose a release channel"
     Write-PanelLine "$($script:GREEN)1$($script:RESET)  Latest stable release $($script:DIM)(recommended)$($script:RESET)"
     Write-PanelLine "$($script:GREEN)2$($script:RESET)  Latest pre-release"
     Write-PanelLine "$($script:GREEN)3$($script:RESET)  Specific release tag"
-    Stop-Panel
-    Write-Host ''
-    $choice = Read-Host "  $($script:BOLD)Channel$($script:RESET) $($script:DIM)[1]$($script:RESET)"
-    if (-not $script:LongOutputMode) { Clear-PromptPanel -Lines 8 }
+    $choice = Read-BoxInput -Prompt 'Channel' -Default '1' -Color $script:CYAN
     switch ($choice) {
+        '' { $script:VersionSel = 'latest' }
         '1' { $script:VersionSel = 'latest' }
         '2' { $script:VersionSel = 'latest-prerelease' }
         '3' {
-            $tag = Read-Host "  $($script:BOLD)Release tag$($script:RESET)"
-            if (-not $tag) { Invoke-Die "A release tag is required" }
+            Start-Panel "Release tag"
+            $tag = Read-BoxInput -Prompt 'Tag' -Default '' -Color $script:CYAN
+            if (-not $tag) { Invoke-Die "A release tag is required." }
             $script:VersionSel = $tag
         }
-        '' { $script:VersionSel = 'latest' }
-        default { Invoke-Die "Invalid release channel" }
+        default { Invoke-Die "Invalid release channel. Choose 1, 2, or 3." }
     }
 }
 
 function Select-InstallDir {
     if (-not $script:InstallDirSel) {
-        if (-not $script:SimpleMode -and -not $script:NonInteractive) {
-            if ($script:Action -eq 'uninstall') {
-                Write-Verbose2 "MeshTalk will be removed without elevated privileges."
-            } else {
-                Write-Verbose2 "MeshTalk will be installed without elevated privileges."
-            }
-        }
-        if (-not $script:NonInteractive -and -not $script:SimpleMode) {
-            $entered = Read-Host "  $($script:BOLD)Install directory$($script:RESET) $($script:DIM)[$($script:DefaultInstallDir)]$($script:RESET)"
+        if (-not $script:NonInteractive) {
+            Start-Panel "Installation directory"
+            Write-PanelLine "MeshTalk will be installed here. Press Enter to use the default."
+            $entered = Read-BoxInput -Prompt 'Directory' -Default $script:DefaultInstallDir -Color $script:CYAN
             if ($entered) { $script:InstallDirSel = $entered }
         }
         if (-not $script:InstallDirSel) { $script:InstallDirSel = $script:DefaultInstallDir }
@@ -861,7 +839,9 @@ function Install-MeshTalk {
     }
     if ($existingFile) {
         $existingPath = Join-Path $script:InstallDirSel $existingFile
-        if (-not (Read-Confirmation -Prompt "$existingPath already exists. Replace the MeshTalk installation?" -Default 'n' -ForcePrompt $true)) {
+        Start-Panel "File already exists" -Color $script:RED
+        Write-PanelLine "$($script:DIM)$existingPath$($script:RESET)" -Color $script:RED
+        if (-not (Read-BoxConfirmation -Prompt "Replace the MeshTalk installation?" -Default 'n' -Color $script:RED)) {
             if (-not $script:NonInteractive) { Invoke-Die "$existingPath already exists. Re-run with -Yes to replace." }
             Write-Info "Installation cancelled."
             return
@@ -879,32 +859,18 @@ function Install-MeshTalk {
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
     try {
-        # Step 1: Resolve release
-        Start-Step "Resolving release metadata"
+        Start-Step "Downloading and preparing MeshTalk $($script:VersionSel)"
         Import-Release -MetadataFile (Join-Path $tempDir 'release.json')
-        Complete-Step -Marker $script:TICK
-        Write-Verbose2 "  Release $($script:BOLD)$($script:ReleaseTag)$($script:RESET)  Asset $($script:DIM)$($script:AssetName)$($script:RESET)"
-        if ($script:CHECKSUM_NOTE) { Write-Verbose2 "  $($script:DIM)$($script:CHECKSUM_NOTE)$($script:RESET)" }
         Test-StableVsPrerelease
-
-        # Step 2: Download
         $archive = Join-Path $tempDir $script:AssetName
-        Start-Step "Downloading $($script:AssetName)"
         Save-Archive -Destination $archive
-        Complete-Step -Marker $script:TICK
-
-        # Step 3: Verify
         if ($script:ExpectedDigest) {
-            Start-Step "Verifying SHA-256 digest"
             Confirm-Archive -Archive $archive | Out-Null
-            Complete-Step -Marker $script:TICK
         } else {
-            Start-Step "Verifying download"
-            Complete-Step -Marker "$($script:YELLOW)!$($script:RESET)" -CompletedLabel "Checksum unavailable; continuing without verification"
+            Write-WarnMsg "Checksum unavailable; continuing without verification."
         }
+        Complete-Step -Marker $script:TICK -CompletedLabel "Download ready ($($script:ReleaseTag))."
 
-        # Step 4: Extract
-        Start-Step "Extracting binaries"
         $extractDir = Join-Path $tempDir 'extracted'
         New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
 
@@ -922,34 +888,22 @@ function Install-MeshTalk {
             $extractedFile = Join-Path $extractDir $file
             if (-not (Test-Path $extractedFile -PathType Leaf)) { Invoke-Die "The release archive is missing $file." }
         }
-        Complete-Step -Marker $script:TICK
 
-        # Step 5: Install
-        Start-Step "Installing to $($script:InstallDirSel)"
+        Start-Step "Installing MeshTalk to $($script:InstallDirSel)"
         New-Item -ItemType Directory -Path $script:InstallDirSel -Force | Out-Null
         foreach ($file in $script:ExpectedFiles) {
             Copy-Item -Path (Join-Path $extractDir $file) -Destination (Join-Path $script:InstallDirSel $file) -Force
         }
-        Complete-Step -Marker $script:TICK
+        Complete-Step -Marker $script:TICK -CompletedLabel "Installed MeshTalk to $($script:InstallDirSel)."
 
         Set-InstallPath
 
-        # Done!
-        Write-Host ''
-        if ($script:SimpleMode) {
-            Write-Success "MeshTalk $($script:ReleaseTag) is ready. Run $($script:LauncherName)."
-        } else {
-            Start-Panel "MeshTalk is ready"
-            Write-PanelKv "Status" "$($script:GREEN)$($script:BOLD)Installed$($script:RESET)"
-            Write-PanelKv "Version" "$($script:ReleaseTag)"
-            Write-PanelKv "Run" "$($script:BOLD)$($script:LauncherName)$($script:RESET)"
-            Write-PanelKv "Location" "$($script:InstallDirSel)"
-            Stop-Panel
-            Write-Host ''
-            Write-Success "Open a new terminal if you just added MeshTalk to your PATH."
-            Write-Divider
-        }
-        Write-Host ''
+        Start-Panel "MeshTalk is ready"
+        Write-PanelKv "Version" "$($script:ReleaseTag)"
+        Write-PanelKv "Run" "$($script:BOLD)$($script:LauncherName)$($script:RESET)"
+        Write-PanelKv "Location" "$($script:InstallDirSel)"
+        Stop-Panel
+        Write-Info "Open a new terminal if you just added MeshTalk to your PATH."
     } finally {
         Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -975,21 +929,20 @@ function Uninstall-MeshTalk {
         Invoke-Die "No MeshTalk binaries found in $($script:InstallDirSel)."
     }
 
-    Start-Panel "Remove MeshTalk installation"
-    Write-PanelLine "$($script:DIM)$($script:InstallDirSel)$($script:RESET)"
-    Stop-Panel
-    if (-not (Read-Confirmation -Prompt "Remove MeshTalk from $($script:InstallDirSel)?" -Default 'n' -ForcePrompt $true)) {
+    Start-Panel "Remove MeshTalk installation" -Color $script:RED
+    Write-PanelLine "$($script:DIM)$($script:InstallDirSel)$($script:RESET)" -Color $script:RED
+    Write-PanelLine 'This action cannot be undone.' -Color $script:RED
+    if (-not (Read-BoxConfirmation -Prompt "Remove MeshTalk from $($script:InstallDirSel)?" -Default 'n' -Color $script:RED)) {
         Write-Info "Uninstall cancelled."
         return
     }
 
-    Start-Task "Removing MeshTalk from $($script:InstallDirSel)"
+    Start-Step "Removing MeshTalk from $($script:InstallDirSel)"
     foreach ($file in $script:ExpectedFiles) {
         $target = Join-Path $script:InstallDirSel $file
         Remove-Item -Path $target -Force -ErrorAction SilentlyContinue
     }
-    Complete-Task -Marker '' -CompletedLabel "Removed MeshTalk from $($script:InstallDirSel)"
-    Write-Success "MeshTalk was uninstalled from $($script:InstallDirSel)."
+    Complete-Step -Marker $script:TICK -CompletedLabel "Removed MeshTalk from $($script:InstallDirSel)."
 }
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────

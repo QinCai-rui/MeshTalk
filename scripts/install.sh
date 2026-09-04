@@ -7,179 +7,139 @@ REPOSITORY="QinCai-rui/MeshTalk"
 RELEASES_URL="https://github.com/${REPOSITORY}/releases"
 API_URL="https://api.github.com/repos/${REPOSITORY}"
 
-
 ACTION="install"
 DRY_RUN=0
 AS_ROOT=0
 NON_INTERACTIVE=0
 ASSUME_YES=0
-SIMPLE_MODE=0
-LONG_OUTPUT=0
 VERSION=""
 INSTALL_DIR=""
 DOWNLOAD_METHOD=auto
 AUTH_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 
-# ─── Colors ──────────────────────────────────────────────────────────────────
-RESET="" BOLD="" DIM="" DIM_BOLD="" UNDERLINE=""
-BLUE="" CYAN="" GREEN="" YELLOW="" RED="" GRAY="" PURPLE="" WHITE=""
-TICK="" CROSS="" INFO="" OVER="" ARROW=""
-TASK_LABEL="" CHECKSUM_NOTE=""
+CHECKSUM_NOTE=""
+TASK_LABEL=""
+
+# ─── Colors & Glyphs ─────────────────────────────────────────────────────────
+RESET="" BOLD="" DIM="" UNDERLINE=""
+TEAL="" MINT="" GOLD="" CORAL="" SLATE="" LILAC="" WHITE=""
+TICK="" CROSS="" BULLET="" ARROW="" WARN_ICON=""
 
 init_colors() {
   if { [ -t 1 ] && [ "$(tput colors 2>/dev/null || printf 0)" -ge 8 ]; } || [ "${FORCE_COLOR:-}" ]; then
     RESET=$'\e[0m'
     BOLD=$'\e[1m'
     DIM=$'\e[2m'
-    DIM_BOLD=$'\e[2;1m'
     UNDERLINE=$'\e[4m'
-    BLUE=$'\e[94m'
-    CYAN=$'\e[96m'
-    GREEN=$'\e[32m'
-    YELLOW=$'\e[33m'
-    RED=$'\e[91m'
-    GRAY=$'\e[90m'
-    PURPLE=$'\e[95m'
+    TEAL=$'\e[38;5;80m'
+    MINT=$'\e[38;5;114m'
+    GOLD=$'\e[38;5;179m'
+    CORAL=$'\e[38;5;203m'
+    SLATE=$'\e[38;5;245m'
+    LILAC=$'\e[38;5;140m'
     WHITE=$'\e[97m'
-  else
-    RESET="" BOLD="" DIM="" DIM_BOLD="" UNDERLINE=""
-    BLUE="" CYAN="" GREEN="" YELLOW="" RED="" GRAY="" PURPLE="" WHITE=""
   fi
-  TICK="${GREEN}✓${RESET}"
-  CROSS="${RED}✗${RESET}"
-  INFO="${CYAN}▸${RESET}"
-  OVER=$'\r\e[K'
-  ARROW="${GREEN}→${RESET}"
+  TICK="${MINT}✓${RESET}"
+  CROSS="${CORAL}✗${RESET}"
+  BULLET="${TEAL}▸${RESET}"
+  ARROW="${MINT}→${RESET}"
+  WARN_ICON="${GOLD}!${RESET}"
 }
 
-# ─── UI Helpers ──────────────────────────────────────────────────────────────
-divider() {
-  printf '  %s────────────────────────────────────────────────────────%s\n' "$CYAN" "$RESET"
+# ─── UI Primitives ───────────────────────────────────────────────────────────
+# All panels/rules are sized to a fixed inner width so boxes always line up.
+BOX_WIDTH=60
+
+hr() {
+  printf '  %s%s%s\n' "$SLATE" "$(printf '─%.0s' $(seq 1 $BOX_WIDTH))" "$RESET"
 }
 
-panel_start() {
-  printf '\n  %s╭─ %s%s%s\n' "$CYAN" "$BOLD" "$1" "$RESET"
+box_top() {
+  printf '\n  %s╭─ %s%s%s\n' "$TEAL" "$BOLD" "$1" "$RESET"
 }
 
-panel_line() {
-  printf '  %s│%s %b\n' "$CYAN" "$RESET" "$1"
+box_line() {
+  printf '  %s│%s  %b\n' "$TEAL" "$RESET" "$1"
 }
 
-panel_end() {
-  printf '  %s╰────────────────────────────────────────────────────────%s\n' "$CYAN" "$RESET"
+box_kv() {
+  printf '  %s│%s  %s%-11s%s %b\n' "$TEAL" "$RESET" "$DIM" "$1" "$RESET" "$2"
 }
 
-panel_kv() {
-  printf '  %s│%s %s%-10s%s %b\n' "$CYAN" "$RESET" "$DIM_BOLD" "$1" "$RESET" "$2"
-}
-
-clear_prompt_panel() {
-  local lines=${1:-8}
-  [[ -t 1 ]] || return 0
-  local line
-  for ((line = 0; line < lines; line++)); do
-    printf '\033[1A\033[2K'
-  done
-  printf '\r'
-}
-
-# Live single-line progress. Overwrites itself until step_done is called.
-step() {
-  STEP_NUM=${STEP_NUM:-0}
-  STEP_NUM=$((STEP_NUM + 1))
-  TASK_LABEL=$1
-  [[ -t 1 ]] || return
-  if [[ $LONG_OUTPUT -eq 1 ]]; then
-    printf '  %s[%s/5] %s...' "$CYAN" "$STEP_NUM" "$1"
-  else
-    printf '\r\033[2K  %s%s...' "$INFO" "$1"
-  fi
-}
-
-# Resolve the overwriting line to a final status.
-step_done() {
-  local marker=${1:-"${GREEN}✓${RESET}"}
-  local completed_label=${2:-$TASK_LABEL}
-  if [[ $LONG_OUTPUT -eq 1 || ! -t 1 ]]; then
-    [[ -t 1 ]] && printf '\033[2K\r'
-    printf '  %s[%s/5] %s %s\n' "$CYAN" "$STEP_NUM" "$marker" "$completed_label"
-  else
-    printf '\033[2K\r  %s %s' "$marker" "$completed_label"
-  fi
-  TASK_LABEL=""
+box_bottom() {
+  printf '  %s╰%s%s\n\n' "$TEAL" "$(printf '─%.0s' $(seq 1 $((BOX_WIDTH - 1))))" "$RESET"
 }
 
 die() {
-  step_done "${CROSS}" 2>/dev/null || true
-  printf '\n  %sERROR%s %s\n' "${RED}${BOLD}" "$RESET" "$*" >&2
-  divider
+  if [[ -n $TASK_LABEL ]]; then
+    task_finish "$CROSS" "$TASK_LABEL"
+  fi
+  printf '\n  %s%s✗ ERROR%s  %s\n\n' "$CORAL" "$BOLD" "$RESET" "$*" >&2
   exit 1
 }
 
 warn() {
-  printf '  %s%sWARNING%s %s\n' "${YELLOW}${BOLD}" "⚠" "$RESET" "$*" >&2
+  printf '  %s%s%s  %s\n' "$GOLD" "$WARN_ICON" "$RESET" "$*" >&2
 }
 
 info() {
-  printf '  %s %s\n' "$INFO" "$*"
+  printf '  %s  %s\n' "$BULLET" "$*"
 }
 
 verbose() {
-  [[ $SIMPLE_MODE -eq 0 && $LONG_OUTPUT -eq 1 ]] || return 0
-  printf '  %s %s\n' "$INFO" "$*"
+  printf '  %s  %s\n' "$BULLET" "$*"
 }
 
 success() {
-  printf '  %s %s\n' "${TICK}" "$*"
+  printf '  %s  %s\n' "$TICK" "$*"
 }
 
 task_start() {
   TASK_LABEL=$1
-  [[ -t 1 ]] || return
-  printf '\r\033[2K  %s %s...' "$INFO" "$TASK_LABEL"
+  if [[ -t 1 ]]; then
+    printf '  %s  %s...' "$BULLET" "$TASK_LABEL"
+  else
+    printf '  %s  %s...\n' "$BULLET" "$TASK_LABEL"
+  fi
 }
 
 task_finish() {
-  local marker=${1:-"${GREEN}✓${RESET}"}
-  local completed_label=${2:-$TASK_LABEL}
-  local lines_to_clear=${3:-1}
-  [[ -n $TASK_LABEL ]] || return 0
+  local marker=${1:-$TICK}
+  local label=${2:-$TASK_LABEL}
   if [[ -t 1 ]]; then
-    local line
-    for ((line = 0; line < lines_to_clear; line++)); do
-      printf '\033[2K'
-      (( line + 1 < lines_to_clear )) && printf '\033[1A'
-    done
-    printf '\r'
+    printf '\r\033[2K  %s  %s\n' "$marker" "$label"
+  else
+    printf '  %s  %s\n' "$marker" "$label"
   fi
-  printf '  %s %s\n' "$marker" "$completed_label"
   TASK_LABEL=""
 }
 
 confirm() {
   local prompt=$1
   local default=${2:-n}
-  local force_prompt=${3:-0}
   local answer
+  local hint
 
   [[ $ASSUME_YES -eq 1 ]] && return 0
   [[ $NON_INTERACTIVE -eq 1 ]] && return 1
-  if [[ $SIMPLE_MODE -eq 1 && $force_prompt -eq 0 ]]; then
-    [[ $default == y ]]
-    return
-  fi
 
   if [[ $default == y ]]; then
-    prompt_read answer $'\n  '"${BOLD}${prompt}${RESET} ${DIM}[Y/n]${RESET} " || true
+    hint="${DIM}[${RESET}${MINT}Y${RESET}${DIM}/n]${RESET}"
+  else
+    hint="${DIM}[y/${RESET}${CORAL}N${RESET}${DIM}]${RESET}"
+  fi
+  prompt_read answer $'\n  '"${BOLD}${prompt}${RESET} ${hint} " || true
+  if [[ $default == y ]]; then
     [[ -z $answer || $answer =~ ^[Yy]([Ee][Ss])?$ ]]
   else
-    prompt_read answer $'\n  '"${BOLD}${prompt}${RESET} ${DIM}[y/N]${RESET} " || true
     [[ $answer =~ ^[Yy]([Ee][Ss])?$ ]]
   fi
 }
 
 prompt_read() {
   local silent=0
+  local input_fd=-1
+  local echoes=0
   if [[ ${1:-} == --silent ]]; then
     silent=1
     shift
@@ -189,11 +149,64 @@ prompt_read() {
   local prompt_str=$1
   shift
   if [[ -t 0 ]]; then
+    echoes=1
     if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var"; else read -r -p "$prompt_str" "$__var"; fi
-  elif [[ -e /dev/tty ]]; then
-    if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var" < /dev/tty; else read -r -p "$prompt_str" "$__var" < /dev/tty; fi
+  elif [[ -t 1 ]] && exec {input_fd}<>/dev/tty 2>/dev/null; then
+    echoes=1
+    if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var" <&$input_fd; else read -r -p "$prompt_str" "$__var" <&$input_fd; fi
+    exec {input_fd}>&-
   else
     if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var"; else read -r -p "$prompt_str" "$__var"; fi
+  fi
+  [[ $silent -eq 1 || $echoes -eq 0 ]] && printf '\n'
+  return 0
+}
+
+box_prompt() {
+  local __var=$1
+  shift
+  local prompt_str=$1
+  shift
+  local default=${1:-}
+  local color=${2:-$TEAL}
+  local hint
+  if [[ -n $default ]]; then
+    hint="${DIM}[${RESET}${MINT}${default}${RESET}${DIM}]${RESET}"
+  else
+    hint=""
+  fi
+
+  printf '  %s╰%s%s\n\n' "$color" "$(printf '─%.0s' $(seq 1 $((BOX_WIDTH - 1))))" "$RESET"
+  prompt_read "$__var" "  ${BOLD}${prompt_str}${RESET} ${hint}: " || true
+}
+
+box_confirm() {
+  local prompt=$1
+  local default=${2:-n}
+  local color=${3:-$TEAL}
+  local answer
+  if [[ $ASSUME_YES -eq 1 ]]; then
+    printf '  %s╰%s%s\n\n' "$color" "$(printf '─%.0s' $(seq 1 $((BOX_WIDTH - 1))))" "$RESET"
+    return 0
+  fi
+  if [[ $NON_INTERACTIVE -eq 1 ]]; then
+    printf '  %s╰%s%s\n\n' "$color" "$(printf '─%.0s' $(seq 1 $((BOX_WIDTH - 1))))" "$RESET"
+    return 1
+  fi
+
+  local hint
+  if [[ $default == y ]]; then
+    hint="${DIM}[${RESET}${MINT}Y${RESET}${DIM}/n]${RESET}"
+  else
+    hint="${DIM}[y/${RESET}${CORAL}N${RESET}${DIM}]${RESET}"
+  fi
+  printf '  %s╰%s%s\n\n' "$color" "$(printf '─%.0s' $(seq 1 $((BOX_WIDTH - 1))))" "$RESET"
+  prompt_read answer "  ${BOLD}${prompt}${RESET} ${hint}: " || true
+
+  if [[ $default == y ]]; then
+    [[ -z $answer || $answer =~ ^[Yy]([Ee][Ss])?$ ]]
+  else
+    [[ $answer =~ ^[Yy]([Ee][Ss])?$ ]]
   fi
 }
 
@@ -203,7 +216,7 @@ command_exists() {
 
 # ─── Banner ──────────────────────────────────────────────────────────────────
 show_banner() {
-  printf '\n%s' "$CYAN"
+  printf '\n%s' "$TEAL"
   cat <<'EOF'
 ███╗   ███╗███████╗███████╗██╗  ██╗████████╗ █████╗ ██╗     ██╗  ██╗
 ████╗ ████║██╔════╝██╔════╝██║  ██║╚══██╔══╝██╔══██╗██║     ██║ ██╔╝
@@ -213,9 +226,9 @@ show_banner() {
 ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
 EOF
   printf '%s\n' "$RESET"
-  divider
+  hr
   printf '  %sPeer-to-peer encrypted messaging over LAN and UDP.%s\n' "$DIM" "$RESET"
-  divider
+  hr
   printf '\n'
 }
 
@@ -224,26 +237,27 @@ print_help() {
   cat <<EOF
 ${BOLD}MeshTalk Installer${RESET}
 
-${UNDERLINE}Usage:${RESET}
+${UNDERLINE}Usage${RESET}
   $0 [options]
 
-${UNDERLINE}Options:${RESET}
-  ${GREEN}-s, --simple${RESET}            Accept defaults; only ask before replace/uninstall
-  ${GREEN}    --long${RESET}               Keep panels and completed progress visible
-  ${GREEN}    --version VERSION${RESET}    Install a specific release tag
-  ${GREEN}    --prerelease${RESET}         Install the latest pre-release
-  ${GREEN}    --method METHOD${RESET}      Download via auto, gh, curl, or wget
-  ${GREEN}-n, --non-interactive${RESET}   Disable prompts; use stable release and default dir
-  ${GREEN}-y, --yes${RESET}               Auto-answer yes to prompts
-  ${GREEN}    --install-dir DIR${RESET}   Use a specific installation directory
-  ${GREEN}    --uninstall${RESET}          Remove an existing installation
-  ${GREEN}    --dry-run${RESET}            Show planned actions without making changes
-  ${GREEN}    --i-understand-the-risks-of-running-as-root${RESET}
-                              Allow running as root (not recommended)
-  ${GREEN}    --help${RESET}               Show this help
+${UNDERLINE}Common options${RESET}
+  ${MINT}-y, --yes${RESET}               Auto-answer yes to prompts
+  ${MINT}-n, --non-interactive${RESET}   Disable prompts; use stable release and default dir
+  ${MINT}    --uninstall${RESET}          Remove an existing installation
+  ${MINT}    --dry-run${RESET}            Show planned actions without making changes
+  ${MINT}    --help${RESET}               Show this help
 
-${DIM}The installer is intended for Bash on POSIX systems, Git Bash, and WSL.
-It never requires root or sudo.${RESET}
+${UNDERLINE}Fine-tuning${RESET}
+  ${MINT}    --version VERSION${RESET}    Install a specific release tag
+  ${MINT}    --prerelease${RESET}         Install the latest pre-release
+  ${MINT}    --method METHOD${RESET}      Download via auto, gh, curl, or wget
+  ${MINT}    --install-dir DIR${RESET}   Use a specific installation directory
+  ${MINT}    --i-understand-the-risks-of-running-as-root${RESET}
+                              Allow running as root (not recommended)
+
+${DIM}Works with Bash on POSIX systems, Git Bash, and WSL.
+Never requires root or sudo.${RESET}
+
 EOF
 }
 
@@ -302,12 +316,6 @@ parse_arguments() {
         ;;
       --non-interactive|-n)
         NON_INTERACTIVE=1
-        ;;
-      --simple|-s)
-        SIMPLE_MODE=1
-        ;;
-      --long)
-        LONG_OUTPUT=1
         ;;
       --yes|-y)
         ASSUME_YES=1
@@ -403,17 +411,17 @@ download_url() {
   curl_args
   if [[ $DOWNLOAD_METHOD == wget ]]; then
     if [[ -n $AUTH_TOKEN ]]; then
-      wget --show-progress -O "$destination" --header="Authorization: Bearer ${AUTH_TOKEN}" "$url"
+      wget -q -O "$destination" --header="Authorization: Bearer ${AUTH_TOKEN}" "$url" 2>/dev/null
     else
-      wget --show-progress -O "$destination" "$url"
+      wget -q -O "$destination" "$url" 2>/dev/null
     fi
   elif command_exists curl; then
-    curl --progress-bar "${CURL_ARGS[@]}" -o "$destination" "$url"
+    curl -s "${CURL_ARGS[@]}" -o "$destination" "$url"
   elif command_exists wget; then
     if [[ -n $AUTH_TOKEN ]]; then
-      wget --show-progress -O "$destination" --header="Authorization: Bearer ${AUTH_TOKEN}" "$url"
+      wget -q -O "$destination" --header="Authorization: Bearer ${AUTH_TOKEN}" "$url" 2>/dev/null
     else
-      wget --show-progress -O "$destination" "$url"
+      wget -q -O "$destination" "$url" 2>/dev/null
     fi
   else
     return 1
@@ -430,13 +438,12 @@ run_gh() {
 
 prompt_for_token() {
   [[ -n $AUTH_TOKEN ]] && return 0
-  [[ $NON_INTERACTIVE -eq 0 && $SIMPLE_MODE -eq 0 ]] || die "GitHub API access requires GITHUB_TOKEN or GH_TOKEN in simple or non-interactive mode."
+  [[ $NON_INTERACTIVE -eq 0 ]] || die "GitHub API access requires GITHUB_TOKEN or GH_TOKEN in non-interactive mode."
   printf '\n'
   warn "Anonymous GitHub release access was unavailable."
   info "Provide a GitHub token, or press Enter to cancel."
-  prompt_read --silent AUTH_TOKEN "  GitHub token: " || true
+  prompt_read --silent AUTH_TOKEN "  Token: " || true
   AUTH_TOKEN=${AUTH_TOKEN:-}
-  printf '\n'
   [[ -n $AUTH_TOKEN ]]
 }
 
@@ -632,9 +639,8 @@ check_stable_vs_prerelease() {
 
   if [[ $warn_stable -eq 1 ]]; then
     printf '\n'
-    warn "A stable release ${BOLD}${stable_tag}${RESET}${YELLOW} is newer than pre-release ${BOLD}${prerelease_tag}${RESET}"
-    warn "The stable release may be more reliable for most users."
-    if ! confirm "Continue installing the older pre-release?" n; then
+    warn "Stable release ${BOLD}${stable_tag}${RESET} is newer than pre-release ${BOLD}${prerelease_tag}${RESET}"
+    if ! confirm "Continue installing the older pre-release anyway?" n; then
       die "Installation cancelled. Run without --prerelease to install the stable release."
     fi
   fi
@@ -651,7 +657,8 @@ download_archive() {
       --repo "$REPOSITORY" \
       --pattern "$ASSET_NAME" \
       --dir "$download_dir" \
-      --clobber
+      --clobber \
+      >/dev/null 2>&1
     [[ -f "$download_dir/$ASSET_NAME" ]] || die "gh did not download the expected asset."
     return
   fi
@@ -786,70 +793,13 @@ configure_path() {
   verbose "Run ${BOLD}source ${startup_file}${RESET} or open a new shell."
 }
 
-# ─── Install ─────────────────────────────────────────────────────────────────
-choose_action() {
-  if [[ $SIMPLE_MODE -eq 1 ]]; then
-    ACTION=install
-    return
-  fi
-  if [[ $ACTION != install || -n $VERSION || -n $INSTALL_DIR || $DRY_RUN -eq 1 || $NON_INTERACTIVE -eq 1 ]]; then
-    return
-  fi
-
-  panel_start "What would you like to do?"
-  panel_line "${GREEN}1${RESET}  Install or upgrade MeshTalk"
-  panel_line "${GREEN}2${RESET}  Uninstall MeshTalk"
-  panel_line "${DIM}q${RESET}  Quit"
-  panel_end
-  printf '\n'
-  local choice
-  prompt_read choice "  ${BOLD}Choose${RESET} ${DIM}[1]${RESET}: " || true
-  [[ $LONG_OUTPUT -eq 1 ]] || clear_prompt_panel 8
-  case ${choice:-1} in
-    1) ACTION=install ;;
-    2) ACTION=uninstall ;;
-    q|Q) exit 0 ;;
-    *) die "Invalid choice" ;;
-  esac
-}
-
-choose_version() {
-  [[ -n $VERSION ]] && return
-  [[ $NON_INTERACTIVE -eq 1 ]] && { VERSION=latest; return; }
-  [[ $SIMPLE_MODE -eq 1 ]] && { VERSION=latest; return; }
-
-  panel_start "Choose a release channel"
-  panel_line "${GREEN}1${RESET}  Latest stable release ${DIM}(recommended)${RESET}"
-  panel_line "${GREEN}2${RESET}  Latest pre-release"
-  panel_line "${GREEN}3${RESET}  Specific release tag"
-  panel_end
-  printf '\n'
-  local choice tag
-  prompt_read choice "  ${BOLD}Channel${RESET} ${DIM}[1]${RESET}: " || true
-  [[ $LONG_OUTPUT -eq 1 ]] || clear_prompt_panel 8
-  case ${choice:-1} in
-    1) VERSION=latest ;;
-    2) VERSION=latest-prerelease ;;
-    3)
-      prompt_read tag "  ${BOLD}Release tag${RESET}: " || true
-      [[ -n $tag ]] || die "A release tag is required"
-      VERSION=$tag
-      ;;
-    *) die "Invalid release channel" ;;
-  esac
-}
-
 choose_install_dir() {
   if [[ -z $INSTALL_DIR ]]; then
-    if [[ $SIMPLE_MODE -eq 0 && $NON_INTERACTIVE -eq 0 ]]; then
-      if [[ $ACTION == uninstall ]]; then
-        [[ ${EUID:-1} -eq 0 ]] && verbose "MeshTalk will be removed as root." || verbose "MeshTalk will be removed without root or sudo."
-      else
-        [[ ${EUID:-1} -eq 0 ]] && verbose "MeshTalk will be installed as root." || verbose "MeshTalk will be installed without root or sudo."
-      fi
-    fi
-    if [[ $NON_INTERACTIVE -eq 0 && $SIMPLE_MODE -eq 0 ]]; then
-      prompt_read INSTALL_DIR "  ${BOLD}Install directory${RESET} ${DIM}[${DEFAULT_INSTALL_DIR}]${RESET}: " || true
+    if [[ $NON_INTERACTIVE -eq 0 ]]; then
+      printf '\n'
+      printf '  %s╭─ %s%sInstallation directory%s\n' "$TEAL" "$BOLD" "$TEAL" "$RESET"
+      printf '  %s│%s  MeshTalk will be installed here. Press Enter to use the default.\n' "$TEAL" "$RESET"
+      box_prompt INSTALL_DIR "Directory" "$DEFAULT_INSTALL_DIR" "$TEAL"
     fi
     INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}
   fi
@@ -860,6 +810,52 @@ choose_install_dir() {
   esac
 }
 
+choose_action() {
+  if [[ $ACTION != install || -n $VERSION || -n $INSTALL_DIR || $DRY_RUN -eq 1 || $NON_INTERACTIVE -eq 1 ]]; then
+    return
+  fi
+
+  printf '\n'
+  printf '  %s╭─ %s%sWhat would you like to do?%s\n' "$TEAL" "$BOLD" "$TEAL" "$RESET"
+  printf '  %s│%s  %s1%s  Install or upgrade MeshTalk\n' "$TEAL" "$RESET" "$MINT" "$RESET"
+  printf '  %s│%s  %s2%s  Uninstall MeshTalk\n' "$TEAL" "$RESET" "$MINT" "$RESET"
+  printf '  %s│%s  %sq%s  Quit\n' "$TEAL" "$RESET" "$DIM" "$RESET"
+  local choice
+  box_prompt choice "Choose" "1" "$TEAL"
+  case ${choice:-1} in
+    1) ACTION=install ;;
+    2) ACTION=uninstall ;;
+    q|Q) exit 0 ;;
+    *) die "Invalid choice. Choose 1, 2, or q." ;;
+  esac
+}
+
+choose_version() {
+  [[ -n $VERSION ]] && return
+  [[ $NON_INTERACTIVE -eq 1 ]] && { VERSION=latest; return; }
+
+  printf '\n'
+  printf '  %s╭─ %s%sChoose a release channel%s\n' "$TEAL" "$BOLD" "$TEAL" "$RESET"
+  printf '  %s│%s  %s1%s  Latest stable release %s(recommended)%s\n' "$TEAL" "$RESET" "$MINT" "$RESET" "$DIM" "$RESET"
+  printf '  %s│%s  %s2%s  Latest pre-release\n' "$TEAL" "$RESET" "$MINT" "$RESET"
+  printf '  %s│%s  %s3%s  Specific release tag\n' "$TEAL" "$RESET" "$MINT" "$RESET"
+  local choice tag
+  box_prompt choice "Channel" "1" "$TEAL"
+  case ${choice:-1} in
+    1) VERSION=latest ;;
+    2) VERSION=latest-prerelease ;;
+    3)
+      printf '\n'
+      printf '  %s╭─ %s%sRelease tag%s\n' "$TEAL" "$BOLD" "$TEAL" "$RESET"
+      box_prompt tag "Tag" "" "$TEAL"
+      [[ -n $tag ]] || die "A release tag is required"
+      VERSION=$tag
+      ;;
+    *) die "Invalid release channel. Choose 1, 2, or 3." ;;
+  esac
+}
+
+# ─── Install ─────────────────────────────────────────────────────────────────
 install_meshtalk() {
   choose_version
   choose_install_dir
@@ -869,12 +865,12 @@ install_meshtalk() {
   fi
 
   if [[ $DRY_RUN -eq 1 ]]; then
-    panel_start "Install preview"
-    panel_kv "Platform" "${PLATFORM}/${ARCH}"
-    panel_kv "Release" "${VERSION}"
-    panel_kv "Asset" "${ASSET_NAME}"
-    panel_kv "Directory" "${INSTALL_DIR}"
-    panel_end
+    box_top "Install preview ${DIM}(dry run)${RESET}"
+    box_kv "Platform" "${PLATFORM}/${ARCH}"
+    box_kv "Release" "${VERSION}"
+    box_kv "Asset" "${ASSET_NAME}"
+    box_kv "Directory" "${INSTALL_DIR}"
+    box_bottom
     return
   fi
 
@@ -889,10 +885,15 @@ install_meshtalk() {
       break
     fi
   done
-  if [[ -n $existing_file ]] && ! confirm "${INSTALL_DIR}/${existing_file} already exists. Replace the MeshTalk installation?" n 1; then
-    [[ $NON_INTERACTIVE -eq 0 ]] || die "${INSTALL_DIR}/${existing_file} already exists. Re-run with --yes to replace."
-    info "Installation cancelled."
-    return
+  if [[ -n $existing_file ]]; then
+    printf '\n'
+    printf '  %s╭─ %s%sFile already exists%s\n' "$CORAL" "$BOLD" "$CORAL" "$RESET"
+    printf '  %s│%s  %s%s%s\n' "$CORAL" "$RESET" "$DIM" "${INSTALL_DIR}/${existing_file}" "$RESET"
+    if ! box_confirm "Replace the MeshTalk installation?" n "$CORAL"; then
+      [[ $NON_INTERACTIVE -eq 0 ]] || die "${INSTALL_DIR}/${existing_file} already exists. Re-run with --yes to replace."
+      info "Installation cancelled."
+      return
+    fi
   fi
 
   # Verify dependencies
@@ -906,38 +907,37 @@ install_meshtalk() {
     die "gh, curl, or wget is required to download releases."
   fi
 
-  # Set up temp directory
-  local temp_dir archive extract_dir file archive_listing archive_entry download_source
+  # Set up temp directory and signal handling.
+  local temp_dir archive extract_dir file archive_listing archive_entry
   temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/meshtalk-installer.XXXXXX")
-  cleanup_temp() { rm -rf "$temp_dir"; }
-  trap cleanup_temp EXIT
 
-  # Step 1: Resolve release
-  step "Resolving release metadata"
+  cleanup_on_signal() {
+    rm -rf "$temp_dir"
+    printf '\n'
+    die "Installation cancelled."
+  }
+
+  cleanup_on_exit() {
+    rm -rf "$temp_dir"
+  }
+
+  trap cleanup_on_exit EXIT
+  trap cleanup_on_signal SIGINT SIGTERM
+
+  printf '\n'
+
+  task_start "Downloading and preparing MeshTalk ${VERSION}"
   load_release "$temp_dir/release.json"
-  step_done "${TICK}"
-  verbose "  Release ${BOLD}${RELEASE_TAG}${RESET}  Asset ${DIM}${ASSET_NAME}${RESET}"
-  [[ -z $CHECKSUM_NOTE ]] || verbose "  ${DIM}${CHECKSUM_NOTE}${RESET}"
   check_stable_vs_prerelease
-
-  # Step 2: Download
   archive="$temp_dir/$ASSET_NAME"
-  step "Downloading ${ASSET_NAME}"
   download_archive "$archive"
-  step_done "${TICK}"
-
-  # Step 3: Verify
   if [[ -n ${EXPECTED_DIGEST:-} ]]; then
-    step "Verifying SHA-256 digest"
     verify_archive "$archive"
-    step_done "${TICK}"
   else
-    step "Verifying download"
-    step_done "${YELLOW}!${RESET}" "Checksum unavailable; continuing without verification"
+    warn "Checksum unavailable; continuing without verification."
   fi
+  task_finish "$TICK" "Download ready (${RELEASE_TAG})."
 
-  # Step 4: Extract
-  step "Extracting binaries"
   extract_dir="$temp_dir/extracted"
   mkdir -p "$extract_dir"
   archive_listing=$(tar -tzf "$archive") || die "Unable to inspect the release archive."
@@ -950,38 +950,24 @@ install_meshtalk() {
   for file in "${EXPECTED_FILES[@]}"; do
     [[ -f $extract_dir/$file && ! -L $extract_dir/$file ]] || die "The release archive is missing ${file}."
   done
-  step_done "${TICK}"
-
-  # Step 5: Install
-  step "Installing to ${INSTALL_DIR}"
+  task_start "Installing MeshTalk to ${INSTALL_DIR}"
   mkdir -p "$INSTALL_DIR"
   for file in "${EXPECTED_FILES[@]}"; do
     cp "$extract_dir/$file" "$INSTALL_DIR/$file"
     chmod u+rx "$INSTALL_DIR/$file"
   done
-  step_done "${TICK}"
+  task_finish "$TICK" "Installed MeshTalk to ${INSTALL_DIR}."
 
   configure_path
 
-  # Done!
-  printf '\n'
-  if [[ $SIMPLE_MODE -eq 1 ]]; then
-    success "MeshTalk ${RELEASE_TAG} is ready. Run ${LAUNCHER_NAME}."
-  else
-    panel_start "MeshTalk is ready"
-    panel_kv "Status" "${GREEN}${BOLD}Installed${RESET}"
-    panel_kv "Version" "${RELEASE_TAG}"
-    panel_kv "Run" "${BOLD}${LAUNCHER_NAME}${RESET}"
-    panel_kv "Location" "${INSTALL_DIR}"
-    panel_end
-    printf '\n'
-    success "Open a new terminal if you just added MeshTalk to your PATH."
-    divider
-  fi
-  printf '\n'
+  box_top "${MINT}${BOLD}MeshTalk is ready${RESET}"
+  box_kv "Version" "${RELEASE_TAG}"
+  box_kv "Run" "${BOLD}${LAUNCHER_NAME}${RESET}"
+  box_kv "Location" "${INSTALL_DIR}"
+  box_bottom
+  info "Open a new terminal if you just added MeshTalk to your PATH."
 
-  cleanup_temp
-  trap - EXIT
+  trap - EXIT SIGINT SIGTERM
 }
 
 # ─── Uninstall ───────────────────────────────────────────────────────────────
@@ -989,9 +975,10 @@ uninstall_meshtalk() {
   choose_install_dir
 
   if [[ $DRY_RUN -eq 1 ]]; then
-    panel_start "Uninstall preview"
-    panel_kv "Directory" "${INSTALL_DIR}"
-    panel_end
+    printf '\n'
+    printf '  %s╭─ %s%sUninstall preview %s(dry run)%s\n' "$TEAL" "$BOLD" "$CORAL" "$DIM" "$RESET"
+    printf '  %s│%s  %s%-11s%s %b\n' "$TEAL" "$RESET" "$DIM" "Directory" "$RESET" "${INSTALL_DIR}"
+    printf '  %s╰%s%s\n\n' "$TEAL" "$(printf '─%.0s' $(seq 1 $((BOX_WIDTH - 1))))" "$RESET"
     return
   fi
 
@@ -1006,20 +993,22 @@ uninstall_meshtalk() {
     die "No MeshTalk binaries found in ${INSTALL_DIR}."
   fi
 
-  panel_start "Remove MeshTalk installation"
-  panel_line "${DIM}${INSTALL_DIR}${RESET}"
-  panel_end
-  if ! confirm "Remove MeshTalk from ${INSTALL_DIR}?" n 1; then
+  printf '\n'
+  printf '  %s╭─ %s%sRemove MeshTalk installation%s\n' "$CORAL" "$BOLD" "$CORAL" "$RESET"
+  printf '  %s│%s  %s%s%s\n' "$CORAL" "$RESET" "$DIM" "${INSTALL_DIR}" "$RESET"
+  printf '  %s│%s\n' "$CORAL" "$RESET"
+  printf '  %s│%s  This action cannot be undone.\n' "$CORAL" "$RESET"
+  if ! box_confirm "Remove MeshTalk from ${INSTALL_DIR}?" n "$CORAL"; then
     info "Uninstall cancelled."
     return
   fi
 
+  printf '\n'
   task_start "Removing MeshTalk from ${INSTALL_DIR}"
   for file in "${EXPECTED_FILES[@]}"; do
     rm -f -- "$INSTALL_DIR/$file"
   done
-  task_finish "" "Removed MeshTalk from ${INSTALL_DIR}"
-  success "MeshTalk was uninstalled from ${INSTALL_DIR}."
+  task_finish "$TICK" "Removed MeshTalk from ${INSTALL_DIR}."
 }
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
