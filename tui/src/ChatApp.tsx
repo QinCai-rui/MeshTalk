@@ -320,6 +320,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       stopOutgoingTyping();
       return;
     }
+    if (content.endsWith("@") && !dialog) {
+      actions.showDialog({ kind: "mention-picker" });
+      return;
+    }
     const conversation = selection;
     const active = outgoingTypingConversation.current;
     if (
@@ -1535,10 +1539,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       setReplyTo(undefined);
       return;
     }
-    if (key.name === "2" && key.shift && !dialog && !scrollFocused && selection) {
-      actions.showDialog({ kind: "mention-picker" });
-      return;
-    }
     if (
       (key.name === "up" || key.name === "down") &&
       key.ctrl &&
@@ -1854,9 +1854,11 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           imageProtocol={imageProtocol}
           splashStyle={configuredSplashStyle}
           groups={groups}
+          groupMembers={groupMembers}
           identity={identity}
           mutedPeers={mutedPeers}
           mutedGroups={mutedGroups}
+          composerRef={composerRef}
           notificationPreferences={notificationPreferences}
           notificationTestDelivery={notificationTestDelivery}
           peers={peers}

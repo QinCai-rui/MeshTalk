@@ -27,9 +27,11 @@ type DialogPanelProps = {
   imageProtocol: ImageProtocol
   splashStyle: SplashPreference
   groups: Group[]
+  groupMembers: Record<string, import("./types").GroupMember[]>
   identity: { peer_id: string; display_name: string } | undefined
   mutedPeers: Record<string, number>
   mutedGroups: Record<string, number>
+  composerRef: { current: { plainText: string; selectAll: () => void; deleteSelection: () => void; insertText: (text: string) => void } | null }
   notificationPreferences: NotificationPreferences | null
   notificationTestDelivery: Exclude<NotificationDelivery, "disabled"> | null
   peers: Peer[]
@@ -100,7 +102,7 @@ type DialogPanelProps = {
 }
 
 export function DialogPanel(props: DialogPanelProps) {
-  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, mutedGroups, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
+  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, groupMembers, identity, mutedPeers, mutedGroups, composerRef, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
   const { runCommand, showDialog, closeDialog, goBack, setDialogDraft, setDialogError, setNameDraft } = props
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
@@ -183,7 +185,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "unmute-confirm" && <UnmuteConfirmDialogContent dialog={dialog} unmutePeer={unmutePeer} showDialog={showDialog} />}
       {dialog.kind === "mute-group-timeout" && <MuteGroupTimeoutDialogContent dialog={dialog} dialogHeight={dialogHeight} muteGroup={muteGroup} />}
       {dialog.kind === "unmute-group-confirm" && <UnmuteGroupConfirmDialogContent dialog={dialog} unmuteGroup={unmuteGroup} showDialog={showDialog} />}
-      {dialog.kind === "mention-picker" && <MentionPickerDialogContent peers={peers} groups={groups} groupMembers={groupMembers} selectedGroupId={selectedGroupId} selection={selection} showDialog={showDialog} closeDialog={closeDialog} />}
+      {dialog.kind === "mention-picker" && <MentionPickerDialogContent peers={peers} groups={groups} groupMembers={groupMembers} selectedGroupId={selectedGroupId} selection={selection} composerRef={composerRef} dialogHeight={dialogHeight} showDialog={showDialog} closeDialog={closeDialog} />}
       {dialog.kind === "add-friend" && <AddFriendDialogContent dialog={dialog} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFriendRequest={sendFriendRequest} />}
       {dialog.kind === "remove-friend" && <RemoveFriendDialogContent dialog={dialog} unfriendPeer={unfriendPeer} showDialog={showDialog} />}
       {dialog.kind === "friend-requests" && <FriendRequestsDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
@@ -577,7 +579,7 @@ function UnmuteGroupConfirmDialogContent({ dialog, unmuteGroup, showDialog }: { 
   )
 }
 
-function MentionPickerDialogContent({ peers, groups, groupMembers, selectedGroupId, selection, showDialog, closeDialog }: { peers: Peer[]; groups: Group[]; groupMembers: Record<string, GroupMember[]>; selectedGroupId: string | undefined; selection: { kind: "peer" | "group"; id: string } | undefined; showDialog: (d: Dialog) => void; closeDialog: () => void }) {
+function MentionPickerDialogContent({ peers, groups, groupMembers, selectedGroupId, selection, composerRef, dialogHeight, showDialog, closeDialog }: { peers: Peer[]; groups: Group[]; groupMembers: Record<string, GroupMember[]>; selectedGroupId: string | undefined; selection: { kind: "peer" | "group"; id: string } | undefined; composerRef: { current: { plainText: string; selectAll: () => void; deleteSelection: () => void; insertText: (text: string) => void } | null }; dialogHeight: number; showDialog: (d: Dialog) => void; closeDialog: () => void }) {
   const options = selection?.kind === "group" && selectedGroupId
     ? (groupMembers[selectedGroupId] ?? []).map((member) => ({
         name: member.display_name,
@@ -589,18 +591,36 @@ function MentionPickerDialogContent({ peers, groups, groupMembers, selectedGroup
         description: peer.peer_id,
         value: peer.display_name,
       }))
+  const allOptions = [
+    { name: "@all", description: "Mention everyone in this conversation", value: "all" },
+    ...options,
+  ]
+  function insertMention(name: string) {
+    const composer = composerRef.current
+    if (composer) {
+      const text = composer.plainText
+      const atIndex = text.lastIndexOf("@")
+      if (atIndex !== -1) {
+        composer.selectAll()
+        composer.deleteSelection()
+        composer.insertText(text.slice(0, atIndex) + `@${name} `)
+      } else {
+        composer.insertText(`@${name} `)
+      }
+    }
+    closeDialog()
+  }
   return (
     <>
       <text>Select someone to mention:</text>
       <text fg="#888888">Their name will be inserted as @Name in your message.</text>
-      {!options.length ? <text fg="#888888">No peers available to mention.</text> : (
-        <MouseSelect focused height={Math.max(5, 10)} options={options.length ? [
-          { name: "@all", description: "Mention everyone in this conversation", value: "all" },
-          ...options,
-        ] : options} onSelect={(_, option) => {
-          if (!option) return
-          closeDialog()
-        }} wrapSelection showDescription />
+      {!allOptions.length ? <text fg="#888888">No peers available to mention.</text> : (
+        <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
+          <MouseSelect focused height={Math.max(5, dialogHeight - 6)} options={allOptions} onSelect={(_, option) => {
+            if (!option) return
+            insertMention(option.value)
+          }} wrapSelection showDescription />
+        </scrollbox>
       )}
     </>
   )
