@@ -10,6 +10,7 @@ from meshtalk.encryption import decrypt_as_recipient, encrypt_for_recipient
 from meshtalk.identity import Identity
 from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
 from meshtalk.protocol import (
+    CAP_DIRECT_ROUTE_RECOVERY,
     CAP_FILE_TRANSFER,
     CAP_PROFILE_SYNC,
     CAP_TEXT_CHAT,
@@ -29,6 +30,9 @@ FUTURE_CAPABILITY = "CAP_ADASDASD_NEW_TEST"
 
 
 class CapabilityTest(unittest.TestCase):
+    def test_direct_route_recovery_is_advertised_by_default(self):
+        self.assertIn(CAP_DIRECT_ROUTE_RECOVERY, DEFAULT_CAPABILITIES)
+
     def test_intersection_enables_only_shared_capabilities(self):
         self.assertEqual(
             intersect_capabilities(

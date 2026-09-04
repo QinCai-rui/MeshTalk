@@ -13,7 +13,7 @@ from meshtalk.identity import Identity
 from meshtalk.friends import FriendManager
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
-from meshtalk.protocol import CAP_TEXT_CHAT, Packet, PacketType
+from meshtalk.protocol import CAP_DIRECT_ROUTE_RECOVERY, CAP_TEXT_CHAT, Packet, PacketType
 from meshtalk.rendezvous import RendezvousService, _encode, _room_key, decrypt_endpoint_card, encrypt_endpoint_card
 from meshtalk.settings import Room, Settings
 from meshtalk.udp_transport import Attempt, HELLO, MAGIC, READY, UdpTransport
@@ -77,6 +77,10 @@ class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(network["active_endpoint"], f"127.0.0.1:{endpoint_b[1]}")
 
     async def test_lan_tcp_takes_over_from_relay(self):
+        # A peer without the new recovery capability still receives the
+        # established LAN TCP takeover behavior.
+        self.manager_b.capabilities = [CAP_TEXT_CHAT]
+        self.manager_b.udp.capabilities = [CAP_TEXT_CHAT]
         relay_a = PeerConnection(
             self.identity_b.peer_id, "derp:" + self.identity_b.peer_id, 0,
             PeerState.CONNECTED, "remote_derp"
@@ -278,6 +282,56 @@ class CandidateValidationTest(unittest.IsolatedAsyncioTestCase):
 
 
 class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_direct_udp_recovery_requires_shared_capability(self):
+        local = Identity.generate("Local")
+        remote = Identity.generate("Remote")
+        local_endpoint = ("127.0.0.1", 45001)
+        remote_endpoint = ("127.0.0.1", 45002)
+
+        async def ignore(*_):
+            pass
+
+        local_transport = UdpTransport(local, ignore, ignore, ignore)
+        remote_transport = UdpTransport(
+            remote, ignore, ignore, ignore, capabilities=[CAP_TEXT_CHAT]
+        )
+
+        async def send_from_local(peer_id, data):
+            remote_transport.derp_datagram_received(local.peer_id, data)
+
+        async def send_from_remote(peer_id, data):
+            local_transport.derp_datagram_received(remote.peer_id, data)
+
+        local_transport.configure_derp(send_from_local)
+        remote_transport.configure_derp(send_from_remote)
+        local_transport.expect_derp_peer(remote.peer_id)
+        remote_transport.expect_derp_peer(local.peer_id)
+
+        async with asyncio.timeout(2):
+            while not local_transport._sessions.get(remote.peer_id):
+                await asyncio.sleep(0.01)
+            while not remote_transport._sessions.get(local.peer_id):
+                await asyncio.sleep(0.01)
+
+        self.assertNotIn(CAP_DIRECT_ROUTE_RECOVERY, local_transport.get_capabilities(remote.peer_id))
+        local_transport.expect_peer(remote.peer_id, remote_endpoint)
+        remote_transport.expect_peer(local.peer_id, local_endpoint)
+        await asyncio.sleep(0.05)
+
+        self.assertNotIn(remote.peer_id, local_transport._attempts)
+        self.assertNotIn(local.peer_id, remote_transport._attempts)
+        self.assertTrue(local_transport._sessions[remote.peer_id].via_relay)
+        self.assertTrue(remote_transport._sessions[local.peer_id].via_relay)
+        remote_attempt = Attempt(local.peer_id, local_endpoint)
+        local_transport.datagram_received(
+            remote_transport._make_hello(remote_attempt), remote_endpoint
+        )
+        self.assertNotIn(
+            (remote_endpoint, False), local_transport._pending_sessions.get(remote.peer_id, {})
+        )
+        await local_transport.stop()
+        await remote_transport.stop()
+
     async def test_direct_udp_replaces_derp_without_disconnect(self):
         local = Identity.generate("Local")
         remote = Identity.generate("Remote")

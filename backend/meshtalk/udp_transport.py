@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from .identity import Identity
 from .protocol import (
+    CAP_DIRECT_ROUTE_RECOVERY,
     HEADER_SIZE,
     MAX_PACKET_SIZE,
     DEFAULT_CAPABILITIES,
@@ -289,6 +290,8 @@ class UdpTransport:
         if existing and existing.endpoint == endpoint and existing.task and not existing.task.done():
             return
         if session and session.confirmed and session.via_relay:
+            if CAP_DIRECT_ROUTE_RECOVERY not in session.capabilities:
+                return
             if (
                 previous_endpoint == endpoint
                 and now - self._last_direct_probe.get(peer_id, 0) < DIRECT_PROBE_INTERVAL
@@ -490,6 +493,15 @@ class UdpTransport:
             logger.debug("Accepting UDP handshake from %s without prior introduction", peer_id)
         if not via_relay and matches_direct:
             self._expected_endpoints[peer_id] = (addr, time.monotonic())
+        active = self._sessions.get(peer_id)
+        if (
+            not via_relay
+            and active
+            and active.confirmed
+            and active.via_relay
+            and CAP_DIRECT_ROUTE_RECOVERY not in intersect_capabilities(self.capabilities, remote_capabilities)
+        ):
+            raise ValueError("Direct route recovery is not jointly supported")
         try:
             Ed25519PublicKey.from_public_bytes(signing_key).verify(signature, _canonical(value))
         except InvalidSignature as exc:
@@ -689,7 +701,11 @@ class UdpTransport:
                     continue
                 if session.confirmed:
                     self._send_authenticated(session, PING, secrets.randbits(64))
-                    if session.via_relay and now - self._last_direct_probe.get(session.peer_id, 0) >= DIRECT_PROBE_INTERVAL:
+                    if (
+                        session.via_relay
+                        and CAP_DIRECT_ROUTE_RECOVERY in session.capabilities
+                        and now - self._last_direct_probe.get(session.peer_id, 0) >= DIRECT_PROBE_INTERVAL
+                    ):
                         direct = self._direct_candidates.get(session.peer_id)
                         attempt = self._attempts.get(session.peer_id)
                         if direct and not (attempt and not attempt.via_relay and attempt.task and not attempt.task.done()):

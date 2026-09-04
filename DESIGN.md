@@ -65,6 +65,10 @@ enabled only when both peers advertise its capability. A missing or unknown
 capability disables only that feature; every shared capability continues to
 work. Both peers retain the directional difference and show a flashing limited-
 capabilities warning without changing connectivity or presence state.
+The `direct_route_recovery` capability follows the same intersection rule but
+gates only DERP-to-direct UDP recovery. It does not gate initial direct
+connection attempts or the established LAN TCP takeover path, preserving
+behavior with older peers that do not advertise it.
 
 ## Private Rooms And Named Groups
 
