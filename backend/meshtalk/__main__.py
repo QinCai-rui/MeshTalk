@@ -728,6 +728,7 @@ async def main(debug: bool = False) -> None:
 
     async def handle_debug_info(req: dict) -> dict:
         stun_host, stun_port = settings.stun_server
+        interaction_times = await db.get_peer_interaction_times(identity.peer_id)
         peers_info = []
         for peer in await db.get_all_peers():
             info = peer_manager.get_network_info(peer["peer_id"])
@@ -735,6 +736,7 @@ async def main(debug: bool = False) -> None:
             peers_info.append({
                 "peer_id": peer["peer_id"],
                 "display_name": peer["display_name"],
+                "last_interaction": interaction_times.get(peer["peer_id"], 0),
                 "is_online": connection is not None,
                 "capabilities": list(connection.capabilities) if connection else [],
                 "remote_capabilities": list(connection.remote_capabilities or []) if connection else [],
