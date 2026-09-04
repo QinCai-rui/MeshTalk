@@ -633,6 +633,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   }, [selectionKey]);
 
   useEffect(() => {
+    if (!scrollFocused) setSelectedReplyTarget(undefined);
+  }, [scrollFocused]);
+
+  useEffect(() => {
     if (deleteConfirmationTimer.current)
       clearTimeout(deleteConfirmationTimer.current);
     if (!deleteConfirmation) {

@@ -9,7 +9,7 @@ import { AboutDialog, CommandsDialog, UpdateDestinationDialog, UpdateDialog, Upd
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useKeyboard } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
-import { isImageFile, peerPresence } from "../utils"
+import { isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
 import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
@@ -744,6 +744,7 @@ function DebugDialogContent({ dialog, controlStatus, debugInfo, dialogHeight, re
 }
 
 function DebugEndpointsDialogContent({ debugInfo, showDialog }: { debugInfo: DebugInfo | null; showDialog: (d: Dialog) => void }) {
+  const sortedPeers = debugInfo ? sortPeersByInteraction(debugInfo.peers) : []
   return (
     <>
       {!debugInfo && <text fg="#888888">Loading debug info...</text>}
@@ -752,18 +753,10 @@ function DebugEndpointsDialogContent({ debugInfo, showDialog }: { debugInfo: Deb
           <text><span fg="#888888">My public endpoint: </span>{debugInfo.public_endpoint ? `${debugInfo.public_endpoint[0]}:${debugInfo.public_endpoint[1]}` : "None"}</text>
           <text><span fg="#888888">Local TCP port: </span>{debugInfo.local_tcp_port}</text>
           <text fg="#888888">{"─".repeat(40)}</text>
-          <text><span fg="#888888">Local</span></text>
-          {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).length === 0 && <text fg="#888888">  No local peers</text>}
-          {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "lan_tcp")).map((peer) => (
-            <box key={`lp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
-              <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>{"> "}{peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
-            </box>
-          ))}
-          <text fg="#888888">{"─".repeat(40)}</text>
-          <text><span fg="#888888">Remote</span></text>
-          {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).length === 0 && <text fg="#888888">  No remote peers</text>}
-          {debugInfo.peers.filter((p) => p.endpoints.some((e) => e.transport === "remote_udp")).map((peer) => (
-            <box key={`rp-${peer.peer_id}`} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
+          <text><span fg="#888888">Peers</span></text>
+          {sortedPeers.length === 0 && <text fg="#888888">  No peers</text>}
+          {sortedPeers.map((peer) => (
+            <box key={peer.peer_id} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
               <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>{"> "}{peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
             </box>
           ))}

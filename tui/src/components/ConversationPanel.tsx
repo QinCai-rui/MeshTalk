@@ -169,7 +169,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
               updated_at: f.completed_at ?? f.created_at,
             }))
             rows.push(
-              <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { messageRefs.current[file.file_id] = node }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ flexDirection: "column", marginBottom: 1, backgroundColor: selectedReplyTargetId === file.file_id ? "#25354d" : undefined }}>
+              <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { messageRefs.current[file.file_id] = node }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ flexDirection: "column", marginBottom: 1, backgroundColor: scrollFocused && selectedReplyTargetId === file.file_id ? "#25354d" : undefined }}>
                 <text>
                   <span fg="#888888">{formatTime(file.created_at)} </span>
                   <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
@@ -215,7 +215,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
             typeof message.received_at === "number" &&
             formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
           rows.push(
-              <box id={message.message_id} key={message.message_id} ref={(node) => { messageRefs.current[message.message_id] = node }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: selectedReplyTargetId === message.message_id ? "#25354d" : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
+              <box id={message.message_id} key={message.message_id} ref={(node) => { messageRefs.current[message.message_id] = node }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: scrollFocused && selectedReplyTargetId === message.message_id ? "#25354d" : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
               <text>
                 <span fg="#888888">{formatTime(message.created_at)} </span>
                 <span fg={isSystem ? "#e0a34a" : isLocal ? "#65a9ff" : "#66dd88"}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
