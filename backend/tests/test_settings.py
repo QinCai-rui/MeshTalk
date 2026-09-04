@@ -249,3 +249,90 @@ class MutePeerPersistenceTest(unittest.TestCase):
 
             self.assertFalse(settings.is_peer_muted("peer5"))
             self.assertNotIn("peer5", settings.muted_peers)
+
+
+class MuteGroupPersistenceTest(unittest.TestCase):
+    def test_permanent_mute_survives_reload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.mute_group("group1", 0)
+
+            loaded = Settings(path)
+
+            self.assertTrue(loaded.is_group_muted("group1"))
+            self.assertEqual(loaded.muted_groups["group1"], 0)
+
+    def test_timed_mute_survives_while_valid(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.mute_group("group2", time.time() + 3600)
+
+            loaded = Settings(path)
+
+            self.assertTrue(loaded.is_group_muted("group2"))
+
+    def test_expired_mute_is_cleared_on_load(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.mute_group("group3", time.time() - 10)
+
+            loaded = Settings(path)
+
+            self.assertFalse(loaded.is_group_muted("group3"))
+            self.assertNotIn("group3", loaded.muted_groups)
+
+    def test_unmute_removes_group(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.mute_group("group4", 0)
+            self.assertTrue(settings.is_group_muted("group4"))
+
+            settings.unmute_group("group4")
+
+            self.assertFalse(settings.is_group_muted("group4"))
+            self.assertNotIn("group4", settings.muted_groups)
+
+    def test_timed_mute_expires_at_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.mute_group("group5", time.time() + 0.1)
+            self.assertTrue(settings.is_group_muted("group5"))
+
+            time.sleep(0.2)
+
+            self.assertFalse(settings.is_group_muted("group5"))
+            self.assertNotIn("group5", settings.muted_groups)
+
+
+class DndPersistenceTest(unittest.TestCase):
+    def test_dnd_disabled_by_default(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            self.assertFalse(settings.dnd_enabled)
+
+    def test_dnd_enabled_survives_reload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.set_dnd_enabled(True)
+
+            loaded = Settings(path)
+
+            self.assertTrue(loaded.dnd_enabled)
+
+    def test_dnd_disabled_survives_reload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            settings.set_dnd_enabled(True)
+            settings.set_dnd_enabled(False)
+
+            loaded = Settings(path)
+
+            self.assertFalse(loaded.dnd_enabled)

@@ -29,6 +29,7 @@ type DialogPanelProps = {
   groups: Group[]
   identity: { peer_id: string; display_name: string } | undefined
   mutedPeers: Record<string, number>
+  mutedGroups: Record<string, number>
   notificationPreferences: NotificationPreferences | null
   notificationTestDelivery: Exclude<NotificationDelivery, "disabled"> | null
   peers: Peer[]
@@ -64,6 +65,8 @@ type DialogPanelProps = {
 
   mutePeer: (peerId: string, timeout: number) => void
   unmutePeer: (peerId: string) => void
+  muteGroup: (groupId: string, timeout: number) => void
+  unmuteGroup: (groupId: string) => void
   sendFriendRequest: (peerId: string, note: string) => void
   respondToFriendRequest: (request: FriendRequest, accept: boolean) => void
   cancelFriendRequest: (requestId: string) => void
@@ -97,11 +100,11 @@ type DialogPanelProps = {
 }
 
 export function DialogPanel(props: DialogPanelProps) {
-  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
+  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, mutedGroups, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
   const { runCommand, showDialog, closeDialog, goBack, setDialogDraft, setDialogError, setNameDraft } = props
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
-  const { mutePeer, unmutePeer, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
+  const { mutePeer, unmutePeer, muteGroup, unmuteGroup, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
   const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, downloadFile, defaultDownloadPath, onDeleteFile } = props
   const { testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent } = props
   const { saveDisplayName, checkForUpdatesFromAbout, installUpdate, saveUpdateToken, restartUpdate } = props
@@ -117,6 +120,9 @@ export function DialogPanel(props: DialogPanelProps) {
         : dialog.kind === "rename" ? "Display name"
         : dialog.kind === "mute-timeout" ? "Mute peer"
         : dialog.kind === "unmute-confirm" ? "Unmute peer"
+        : dialog.kind === "mute-group-timeout" ? "Mute group"
+        : dialog.kind === "unmute-group-confirm" ? "Unmute group"
+        : dialog.kind === "mention-picker" ? "Mention someone"
         : dialog.kind === "add-friend" ? "Add friend"
         : dialog.kind === "remove-friend" ? "Remove friend"
         : dialog.kind === "friend-requests" ? "Friend requests"
@@ -171,10 +177,13 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "room-join" && <RoomJoinDialogContent dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} joinRoom={joinRoom} />}
       {dialog.kind === "room-created" && <RoomCreatedDialogContent dialog={dialog} copyInvite={copyInvite} loadRooms={loadRooms} />}
       {dialog.kind === "room-detail" && <RoomDetailDialogContent dialog={dialog} groups={groups} leaveGroup={leaveGroup} leaveRoom={leaveRoom} loadRoomInvite={loadRoomInvite} loadRooms={loadRooms} />}
-       {dialog.kind === "group-detail" && <GroupDetailDialogContent dialog={dialog} identity={identity} peers={peers} closeDialog={closeDialog} leaveGroup={leaveGroup} />}
+       {dialog.kind === "group-detail" && <GroupDetailDialogContent dialog={dialog} identity={identity} peers={peers} mutedGroups={mutedGroups} closeDialog={closeDialog} leaveGroup={leaveGroup} showDialog={showDialog} />}
       {dialog.kind === "rename" && <RenameDialogContent dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setNameDraft={setNameDraft} saveDisplayName={saveDisplayName} />}
       {dialog.kind === "mute-timeout" && <MuteTimeoutDialogContent dialog={dialog} dialogHeight={dialogHeight} mutePeer={mutePeer} />}
       {dialog.kind === "unmute-confirm" && <UnmuteConfirmDialogContent dialog={dialog} unmutePeer={unmutePeer} showDialog={showDialog} />}
+      {dialog.kind === "mute-group-timeout" && <MuteGroupTimeoutDialogContent dialog={dialog} dialogHeight={dialogHeight} muteGroup={muteGroup} />}
+      {dialog.kind === "unmute-group-confirm" && <UnmuteGroupConfirmDialogContent dialog={dialog} unmuteGroup={unmuteGroup} showDialog={showDialog} />}
+      {dialog.kind === "mention-picker" && <MentionPickerDialogContent peers={peers} groups={groups} groupMembers={groupMembers} selectedGroupId={selectedGroupId} selection={selection} showDialog={showDialog} closeDialog={closeDialog} />}
       {dialog.kind === "add-friend" && <AddFriendDialogContent dialog={dialog} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFriendRequest={sendFriendRequest} />}
       {dialog.kind === "remove-friend" && <RemoveFriendDialogContent dialog={dialog} unfriendPeer={unfriendPeer} showDialog={showDialog} />}
       {dialog.kind === "friend-requests" && <FriendRequestsDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
@@ -468,7 +477,8 @@ function RoomDetailDialogContent({ dialog, groups, leaveGroup, leaveRoom, loadRo
   )
 }
 
-function GroupDetailDialogContent({ dialog, identity, peers, closeDialog, leaveGroup }: { dialog: Extract<Dialog, { kind: "group-detail" }>; identity: { peer_id: string; display_name: string } | undefined; peers: Peer[]; closeDialog: () => void; leaveGroup: (g: Group) => void }) {
+function GroupDetailDialogContent({ dialog, identity, peers, mutedGroups, closeDialog, leaveGroup, showDialog }: { dialog: Extract<Dialog, { kind: "group-detail" }>; identity: { peer_id: string; display_name: string } | undefined; peers: Peer[]; mutedGroups: Record<string, number>; closeDialog: () => void; leaveGroup: (g: Group) => void; showDialog: (d: Dialog) => void }) {
+  const isMuted = dialog.group.group_id in mutedGroups
   return (
     <>
       <text><span fg="#888888">Name: </span>{dialog.group.name}</text>
@@ -485,10 +495,18 @@ function GroupDetailDialogContent({ dialog, identity, peers, closeDialog, leaveG
           </text>
         })}
       </scrollbox>
-      <MouseSelect focused height={4} options={[
+      <MouseSelect focused height={5} options={[
         { name: "Close", description: "Return to the group chat", value: "close" },
+        { name: isMuted ? "Unmute group" : "Mute group", description: isMuted ? "Resume notifications from this group" : "Suppress notifications from this group", value: "mute" },
         { name: "Leave group", description: "Remove this group from this device", value: "leave" },
-      ]} onSelect={(_, option) => option?.value === "leave" ? void leaveGroup(dialog.group) : closeDialog()} wrapSelection showDescription />
+      ]} onSelect={(_, option) => {
+        if (option?.value === "leave") void leaveGroup(dialog.group)
+        else if (option?.value === "mute") {
+          if (isMuted) showDialog({ kind: "unmute-group-confirm", groupId: dialog.group.group_id, groupName: dialog.group.name })
+          else showDialog({ kind: "mute-group-timeout", groupId: dialog.group.group_id, groupName: dialog.group.name })
+        }
+        else closeDialog()
+      }} wrapSelection showDescription />
     </>
   )
 }
@@ -527,6 +545,63 @@ function UnmuteConfirmDialogContent({ dialog, unmutePeer, showDialog }: { dialog
         { name: "Yes, unmute", description: "Resume desktop notifications from this peer", value: "yes" },
         { name: "Cancel", description: "Keep muted", value: "no" },
       ]} onSelect={(_, option) => option?.value === "yes" ? void unmutePeer(dialog.peerId) : showDialog({ kind: "commands" })} wrapSelection showDescription />
+    </>
+  )
+}
+
+function MuteGroupTimeoutDialogContent({ dialog, dialogHeight, muteGroup }: { dialog: Extract<Dialog, { kind: "mute-group-timeout" }>; dialogHeight: number; muteGroup: (groupId: string, timeout: number) => void }) {
+  return (
+    <>
+      <text>Mute notifications from <span fg="#b69cff">{dialog.groupName}</span>.</text>
+      <text fg="#888888">Choose how long notifications will stay muted.</text>
+      <MouseSelect focused height={Math.max(5, dialogHeight - 6)} options={[
+        { name: "15 minutes", description: "Mute for a short break", value: String(15 * 60) },
+        { name: "1 hour", description: "Mute for a while", value: String(60 * 60) },
+        { name: "4 hours", description: "Mute for half a workday", value: String(4 * 60 * 60) },
+        { name: "8 hours", description: "Mute for a full workday", value: String(8 * 60 * 60) },
+        { name: "Permanent", description: "Mute until you manually unmute", value: "0" },
+      ]} onSelect={(_, option) => option && void muteGroup(dialog.groupId, Number(option.value))} wrapSelection showDescription />
+    </>
+  )
+}
+
+function UnmuteGroupConfirmDialogContent({ dialog, unmuteGroup, showDialog }: { dialog: Extract<Dialog, { kind: "unmute-group-confirm" }>; unmuteGroup: (groupId: string) => void; showDialog: (d: Dialog) => void }) {
+  return (
+    <>
+      <text>Unmute notifications from <span fg="#b69cff">{dialog.groupName}</span>?</text>
+      <MouseSelect focused height={4} options={[
+        { name: "Yes, unmute", description: "Resume desktop notifications from this group", value: "yes" },
+        { name: "Cancel", description: "Keep muted", value: "no" },
+      ]} onSelect={(_, option) => option?.value === "yes" ? void unmuteGroup(dialog.groupId) : showDialog({ kind: "commands" })} wrapSelection showDescription />
+    </>
+  )
+}
+
+function MentionPickerDialogContent({ peers, groups, groupMembers, selectedGroupId, selection, showDialog, closeDialog }: { peers: Peer[]; groups: Group[]; groupMembers: Record<string, GroupMember[]>; selectedGroupId: string | undefined; selection: { kind: "peer" | "group"; id: string } | undefined; showDialog: (d: Dialog) => void; closeDialog: () => void }) {
+  const options = selection?.kind === "group" && selectedGroupId
+    ? (groupMembers[selectedGroupId] ?? []).map((member) => ({
+        name: member.display_name,
+        description: member.peer_id ?? member.member_id ?? "",
+        value: member.display_name,
+      }))
+    : peers.map((peer) => ({
+        name: peer.display_name,
+        description: peer.peer_id,
+        value: peer.display_name,
+      }))
+  return (
+    <>
+      <text>Select someone to mention:</text>
+      <text fg="#888888">Their name will be inserted as @Name in your message.</text>
+      {!options.length ? <text fg="#888888">No peers available to mention.</text> : (
+        <MouseSelect focused height={Math.max(5, 10)} options={options.length ? [
+          { name: "@all", description: "Mention everyone in this conversation", value: "all" },
+          ...options,
+        ] : options} onSelect={(_, option) => {
+          if (!option) return
+          closeDialog()
+        }} wrapSelection showDescription />
+      )}
     </>
   )
 }

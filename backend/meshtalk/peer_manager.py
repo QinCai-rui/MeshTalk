@@ -86,6 +86,7 @@ class PeerConnection:
         self.remote_capabilities: list[str] | None = None
         self.peer_missing_capabilities: list[str] = []
         self.local_missing_capabilities: list[str] = []
+        self.dnd_enabled: bool = False
         self.tcp_handshake_private_key: X25519PrivateKey | None = None
         self.tcp_handshake_nonce: bytes | None = None
         self.tcp_local_handshake: HandshakePayload | None = None
@@ -134,6 +135,7 @@ class PeerManager:
         self._server: asyncio.Server | None = None
         self._running = False
         self.tui_active = False
+        self.dnd_enabled = False
         self.capabilities = validate_capabilities(
             list(DEFAULT_CAPABILITIES if capabilities is None else capabilities)
         )
@@ -429,7 +431,7 @@ class PeerManager:
         return payload
 
     def _profile_payload(self) -> ProfilePayload:
-        payload = ProfilePayload(self.identity.peer_id, self.identity.display_name, self.tui_active, b"")
+        payload = ProfilePayload(self.identity.peer_id, self.identity.display_name, self.tui_active, self.dnd_enabled, b"")
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
         return payload
 
@@ -437,6 +439,12 @@ class PeerManager:
         if self.tui_active == active:
             return
         self.tui_active = active
+        await self.broadcast_profile_update()
+
+    async def set_dnd_enabled(self, enabled: bool) -> None:
+        if self.dnd_enabled == enabled:
+            return
+        self.dnd_enabled = enabled
         await self.broadcast_profile_update()
 
     async def _send_profile_update(self, peer: PeerConnection) -> None:
@@ -636,10 +644,12 @@ class PeerManager:
             raise ValueError("Invalid profile signature") from exc
         peer.display_name = Identity.normalize_display_name(payload.display_name)
         peer.tui_active = payload.tui_active
+        peer.dnd_enabled = payload.dnd_enabled
         active = self.peers.get(peer.peer_id)
         if active:
             active.display_name = peer.display_name
             active.tui_active = peer.tui_active
+            active.dnd_enabled = peer.dnd_enabled
         await self.db.upsert_peer(
             peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, peer.tui_active, peer.remote_capabilities
         )

@@ -67,6 +67,10 @@ type ChatActionsDeps = {
   setCopyToast: (b: boolean) => void
   mutedPeers: Record<string, number>
   setMutedPeers: React.Dispatch<React.SetStateAction<Record<string, number>>>
+  mutedGroups: Record<string, number>
+  setMutedGroups: React.Dispatch<React.SetStateAction<Record<string, number>>>
+  dndEnabled: boolean
+  setDndEnabled: React.Dispatch<React.SetStateAction<boolean>>
   notificationPreferences: NotificationPreferences | null
   setNotificationPreferences: React.Dispatch<React.SetStateAction<NotificationPreferences | null>>
   notificationTestDelivery: Exclude<NotificationDelivery, "disabled"> | null
@@ -103,7 +107,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { draftLength, setDraftLength, composerHeight, setComposerHeight, isSending, setIsSending } = deps
   const { nameDraft, setNameDraft, editingName, setEditingName, scrollFocused, setScrollFocused } = deps
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
-  const { mutedPeers, setMutedPeers, notificationPreferences, setNotificationPreferences } = deps
+  const { mutedPeers, setMutedPeers, mutedGroups, setMutedGroups, dndEnabled, setDndEnabled, notificationPreferences, setNotificationPreferences } = deps
   const { notificationTestDelivery, setNotificationTestDelivery } = deps
   const { flashingEnabled, setFlashingEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
@@ -490,6 +494,51 @@ export function useChatActions(deps: ChatActionsDeps) {
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
+  }
+
+  async function muteGroup(groupId: string, timeout: number) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("mute_group", { group_id: groupId, timeout })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      const mutedResp = await ipc.send("muted_groups")
+      if (!mutedResp.error) setMutedGroups(mutedResp.muted_groups as Record<string, number>)
+      const until = response.until as number
+      const label = until <= 0 ? "permanently" : `until ${new Date(until * 1000).toLocaleTimeString()}`
+      const group = groups.find((g) => g.group_id === groupId)
+      showStatus(`Muted ${group?.name ?? groupId} ${label}.`)
+      closeDialog()
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  async function unmuteGroup(groupId: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("unmute_group", { group_id: groupId })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      const mutedResp = await ipc.send("muted_groups")
+      if (!mutedResp.error) setMutedGroups(mutedResp.muted_groups as Record<string, number>)
+      const group = groups.find((g) => g.group_id === groupId)
+      showStatus(`Unmuted ${group?.name ?? groupId}.`)
+      closeDialog()
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  async function toggleDnd() {
+    try {
+      const response = await ipc.send("dnd", { enabled: !dndEnabled })
+      if (response.error) throw new Error(response.error)
+      setDndEnabled(response.dnd_enabled as boolean)
+      showStatus((response.dnd_enabled as boolean) ? "Do Not Disturb enabled." : "Do Not Disturb disabled.")
+    } catch (error) {
+      if (!backendDisconnectedRef.current) setStatus(`DND error: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   async function loadFriendRequests() {
@@ -936,7 +985,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     loadAdvancedConfig, saveAdvancedConfig,
     loadRooms, createRoom, joinRoom, leaveRoom, loadRoomInvite,
     loadGroupDetails, leaveGroup, copyInvite,
-    mutePeer, unmutePeer,
+    mutePeer, unmutePeer, muteGroup, unmuteGroup, toggleDnd,
     loadFriendRequests, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer,
     loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest,
     reStun, loadDebugInfo, loadFiles,

@@ -301,6 +301,7 @@ class ProfilePayload:
     peer_id: str
     display_name: str
     tui_active: bool
+    dnd_enabled: bool
     signature: bytes
 
     def signed_bytes(self) -> bytes:
@@ -309,6 +310,7 @@ class ProfilePayload:
             "peer_id": self.peer_id,
             "display_name": self.display_name,
             "tui_active": self.tui_active,
+            "dnd_enabled": self.dnd_enabled,
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:
@@ -317,6 +319,7 @@ class ProfilePayload:
             "peer_id": self.peer_id,
             "display_name": self.display_name,
             "tui_active": self.tui_active,
+            "dnd_enabled": self.dnd_enabled,
             "signature": self.signature.hex(),
         }).encode()
 
@@ -328,6 +331,7 @@ class ProfilePayload:
             peer_id=obj["peer_id"],
             display_name=obj["display_name"],
             tui_active=obj["tui_active"],
+            dnd_enabled=bool(obj.get("dnd_enabled", False)),
             signature=bytes.fromhex(obj["signature"]),
         )
         if not isinstance(payload.tui_active, bool) or len(payload.signature) != 64:

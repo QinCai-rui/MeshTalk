@@ -9,6 +9,8 @@ type SidebarProps = {
   groupMembers: Record<string, GroupMember[]>
   identity: { peer_id: string; display_name: string } | undefined
   mutedPeers: Record<string, number>
+  mutedGroups: Record<string, number>
+  dndEnabled: boolean
   nameDraft: string
   peers: Peer[]
   selectedGroupId: string | undefined
@@ -23,10 +25,10 @@ type SidebarProps = {
   saveDisplayName: () => void
 }
 
-export function Sidebar({ compact, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
+export function Sidebar({ compact, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, mutedGroups, dndEnabled, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
   // Outer and section borders/padding consume eight columns; reserve one more for the scrollbar.
   const listContentOptions = { flexDirection: "column" as const, width: Math.max(1, sidebarWidth - 9) }
-  return <box title={`You: ${identity?.display_name ?? "..."}`} style={{ border: true, width: sidebarWidth, flexShrink: 0, flexDirection: "column", padding: 1, gap: 1 }}>
+  return <box title={`You: ${identity?.display_name ?? "..."}${dndEnabled ? " (DND)" : ""}`} style={{ border: true, width: sidebarWidth, flexShrink: 0, flexDirection: "column", padding: 1, gap: 1 }}>
     <box onMouseDown={() => setEditingName(true)}>
       {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <><text fg="#888888">Click to rename</text><text fg="#888888">{identity?.peer_id.slice(0, 12)}</text></>}
     </box>
@@ -38,7 +40,7 @@ export function Sidebar({ compact, dialogOpen, editingName, groups, groupMembers
           const limited = Boolean(peer.capability_gap)
           const muted = peer.peer_id in mutedPeers
           const unread = peer.unread_count > 0
-          const peerLabel = <>{peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name}{limited ? <span fg="#ff9f43"> LIMITED</span> : null}{unread ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}</>
+          const peerLabel = <>{peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name}{limited ? <span fg="#ff9f43"> LIMITED</span> : null}{peer.dnd_enabled ? <span fg="#9b8cff"> DND</span> : null}{unread ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}</>
           return <box key={peer.peer_id} onMouseDown={() => { setSelection({ kind: "peer", id: peer.peer_id }); setScrollFocused(false); setEditingName(false) }} style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : unread ? "#304d3d" : undefined }}>
             <box style={{ width: "100%", flexDirection: "row" }}><text wrapMode="word" style={{ flexGrow: 1, flexShrink: 1 }} fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>{unread ? <b>{peerLabel}</b> : peerLabel}</text>{typingConversationKeys.has(`peer:${peer.peer_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
              <text fg="#718096">  {peerConnectionLabel(peer)}</text>
@@ -51,11 +53,12 @@ export function Sidebar({ compact, dialogOpen, editingName, groups, groupMembers
         {!groups.length ? <text fg="#888888">No groups joined</text> : null}
         {groups.map((group) => {
           const unread = group.unread_count > 0
-          const groupLabel = <>{group.group_id === selectedGroupId ? "> " : "  "}{compact ? group.name.slice(0, 14) : group.name}{unread ? ` (${group.unread_count} new)` : ""}</>
+          const groupMuted = group.group_id in mutedGroups
+          const groupLabel = <>{group.group_id === selectedGroupId ? "> " : "  "}{compact ? group.name.slice(0, 14) : group.name}{groupMuted ? " M" : ""}{unread ? ` (${group.unread_count} new)` : ""}</>
           const members = groupMembers[group.group_id]
           const visibleMembers = members?.filter((member) => member.show_in_sidebar !== false) ?? []
           const memberLabel = members ? `${group.member_count} member${group.member_count === 1 ? "" : "s"} · showing ${visibleMembers.length}` : `${group.member_count} member${group.member_count === 1 ? "" : "s"}`
-          return <box key={group.group_id} onMouseDown={() => { setSelection({ kind: "group", id: group.group_id }); setScrollFocused(false); setEditingName(false) }} style={{ width: "100%", flexDirection: "column", backgroundColor: group.group_id === selectedGroupId ? "#25354d" : unread ? "#453c61" : undefined }}>
+          return <box key={group.group_id} onMouseDown={() => { setSelection({ kind: "group", id: group.group_id }); setScrollFocused(false); setEditingName(false) }} style={{ width: "100%", flexDirection: "column", backgroundColor: group.group_id === selectedGroupId ? "#25354d" : unread ? (groupMuted ? "#3a3545" : "#453c61") : undefined }}>
            <box style={{ width: "100%", flexDirection: "row" }}><text wrapMode="word" style={{ flexGrow: 1, flexShrink: 1 }} fg="#b69cff">{unread ? <b>{groupLabel}</b> : groupLabel}</text>{typingConversationKeys.has(`group:${group.group_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
            <text fg="#718096">  {memberLabel}</text>
            {group.group_id === selectedGroupId && visibleMembers.map((member, index) => {

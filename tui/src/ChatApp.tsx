@@ -160,6 +160,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const [splashWelcomeMs, setSplashWelcomeMs] = useState(MIN_SPLASH_WELCOME_MS);
   const [copyToast, setCopyToast] = useState(false);
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({});
+  const [mutedGroups, setMutedGroups] = useState<Record<string, number>>({});
+  const [dndEnabled, setDndEnabled] = useState(false);
   const [notificationPreferences, setNotificationPreferences] =
     useState<NotificationPreferences | null>(null);
   const [notificationTestDelivery, setNotificationTestDelivery] =
@@ -384,6 +386,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     setCopyToast,
     mutedPeers,
     setMutedPeers,
+    mutedGroups,
+    setMutedGroups,
+    dndEnabled,
+    setDndEnabled,
     notificationPreferences,
     setNotificationPreferences,
     notificationTestDelivery,
@@ -481,6 +487,14 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     const mutedResp = await ipc.send("muted_peers");
     if (!mutedResp.error)
       setMutedPeers(mutedResp.muted_peers as Record<string, number>);
+
+    const mutedGroupsResp = await ipc.send("muted_groups");
+    if (!mutedGroupsResp.error)
+      setMutedGroups(mutedGroupsResp.muted_groups as Record<string, number>);
+
+    const dndResp = await ipc.send("dnd");
+    if (!dndResp.error)
+      setDndEnabled(dndResp.dnd_enabled as boolean);
 
     const notificationResponse = await ipc.send("notifications");
     if (notificationResponse.error)
@@ -804,13 +818,26 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
               (member) => (member.peer_id ?? member.member_id) === senderId,
             )?.display_name ??
             "a member";
-          if (event.event === "group_message")
-            void notify(
-              notificationPreferences,
-              "messages",
-              renderer,
-              `New message from ${sender} in ${group?.name ?? "a group"}`,
+          if (event.event === "group_message") {
+            const groupMutedUntil = mutedGroups[groupId];
+            const isGroupMuted =
+              groupMutedUntil === undefined
+                ? false
+                : groupMutedUntil <= 0 || Date.now() / 1000 < groupMutedUntil;
+            const groupMsgContent = (event.content as string) ?? "";
+            const isGroupMentioned = identity && (
+              groupMsgContent.includes(`@${identity.display_name}`) ||
+              groupMsgContent.includes("@all")
             );
+            if (!isGroupMuted || isGroupMentioned)
+              void notify(
+                notificationPreferences,
+                "messages",
+                renderer,
+                `New message from ${sender} in ${group?.name ?? "a group"}`,
+                dndEnabled,
+              );
+          }
           if (groupId !== selectedGroupId) {
             if (event.event === "group_message")
               rememberUnreadMessage(
@@ -971,6 +998,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             "friend_requests",
             renderer,
             `Friend request from ${request.sender_name}`,
+            dndEnabled,
           );
           if (!dialog) setDialog({ kind: "friend-request-incoming", request });
           else
@@ -1015,6 +1043,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             "file_offers",
             renderer,
             `Incoming file ${filename} from ${sender}`,
+            dndEnabled,
           );
           void ipc
             .send("files")
@@ -1050,6 +1079,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             "file_completed",
             renderer,
             `File received: ${filename}`,
+            dndEnabled,
           );
           setFileTransfers((current) =>
             current.map((file) =>
@@ -1115,12 +1145,18 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           mutedUntil === undefined
             ? false
             : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil;
-        if (!isMuted)
+        const messageContent = (event.content as string) ?? "";
+        const isMentioned = identity && (
+          messageContent.includes(`@${identity.display_name}`) ||
+          messageContent.includes("@all")
+        );
+        if (!isMuted || isMentioned)
           void notify(
             notificationPreferences,
             "messages",
             renderer,
             `New message from ${sender}`,
+            dndEnabled,
           );
         updatePeerInteraction(senderId);
         if (senderId !== selectedPeerId) {
@@ -1163,6 +1199,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     [
       ipc,
       mutedPeers,
+      mutedGroups,
+      dndEnabled,
       peers,
       groups,
       groupMembers,
@@ -1411,6 +1449,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       return;
     }
     if (key.ctrl && key.name === "d") {
+      if (key.shift) {
+        void actions.toggleDnd();
+        return;
+      }
       void actions.removeSelectedPeer();
       return;
     }
@@ -1491,6 +1533,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     }
     if (key.name === "escape" && replyTo) {
       setReplyTo(undefined);
+      return;
+    }
+    if (key.name === "2" && key.shift && !dialog && !scrollFocused && selection) {
+      actions.showDialog({ kind: "mention-picker" });
       return;
     }
     if (
@@ -1676,6 +1722,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         groupMembers={groupMembers}
         identity={identity}
         mutedPeers={mutedPeers}
+        mutedGroups={mutedGroups}
+        dndEnabled={dndEnabled}
         nameDraft={nameDraft}
         peers={peers}
         selectedGroupId={selectedGroupId}
@@ -1697,6 +1745,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         dialogOpen={Boolean(dialog)}
         draftLength={draftLength}
         drafts={drafts}
+        dndEnabled={dndEnabled}
         flashingEnabled={flashingEnabled}
         blinkOn={blinkOn}
         composerHeight={composerHeight}
@@ -1807,6 +1856,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           groups={groups}
           identity={identity}
           mutedPeers={mutedPeers}
+          mutedGroups={mutedGroups}
           notificationPreferences={notificationPreferences}
           notificationTestDelivery={notificationTestDelivery}
           peers={peers}
@@ -1838,6 +1888,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           loadGroupDetails={actions.loadGroupDetails}
           mutePeer={actions.mutePeer}
           unmutePeer={actions.unmutePeer}
+          muteGroup={actions.muteGroup}
+          unmuteGroup={actions.unmuteGroup}
           sendFriendRequest={actions.sendFriendRequest}
           respondToFriendRequest={actions.respondToFriendRequest}
           cancelFriendRequest={actions.cancelFriendRequest}

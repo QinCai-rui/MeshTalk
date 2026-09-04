@@ -249,6 +249,7 @@ async def main(debug: bool = False) -> None:
                 "peer_missing_capabilities": list(connection.peer_missing_capabilities) if connection else [],
                 "local_missing_capabilities": list(connection.local_missing_capabilities) if connection else [],
                 "capability_gap": connection.has_capability_gap if connection else False,
+                "dnd_enabled": connection.dnd_enabled if connection else False,
                 **network_info,
             }
             for peer in peers
@@ -431,6 +432,7 @@ async def main(debug: bool = False) -> None:
                     "peer_missing_capabilities": list(peer.peer_missing_capabilities),
                     "local_missing_capabilities": list(peer.local_missing_capabilities),
                     "capability_gap": peer.has_capability_gap,
+                    "dnd_enabled": peer.dnd_enabled,
                     **network_info,
                 }
                 for peer in connected
@@ -699,6 +701,43 @@ async def main(debug: bool = False) -> None:
                 muted[peer_id] = until
         return {"muted_peers": muted}
 
+    async def handle_mute_group(req: dict) -> dict:
+        group_id = req.get("group_id")
+        if not isinstance(group_id, str) or not group_id:
+            return {"error": "group_id required"}
+        timeout = req.get("timeout")
+        if timeout is not None and not isinstance(timeout, (int, float)):
+            return {"error": "timeout must be a number (seconds) or 0 for permanent"}
+        if timeout is None:
+            timeout = 0
+        until = time.time() + float(timeout) if float(timeout) > 0 else 0
+        settings.mute_group(group_id, until)
+        return {"group_id": group_id, "until": until}
+
+    async def handle_unmute_group(req: dict) -> dict:
+        group_id = req.get("group_id")
+        if not isinstance(group_id, str) or not group_id:
+            return {"error": "group_id required"}
+        settings.unmute_group(group_id)
+        return {"group_id": group_id}
+
+    async def handle_muted_groups(req: dict) -> dict:
+        now = time.time()
+        muted = {}
+        for group_id, until in settings.muted_groups.items():
+            if until <= 0 or now < until:
+                muted[group_id] = until
+        return {"muted_groups": muted}
+
+    async def handle_dnd(req: dict) -> dict:
+        enabled = req.get("enabled")
+        if enabled is not None:
+            if not isinstance(enabled, bool):
+                return {"error": "enabled must be a boolean"}
+            settings.set_dnd_enabled(enabled)
+            await peer_manager.set_dnd_enabled(enabled)
+        return {"dnd_enabled": settings.dnd_enabled}
+
     async def handle_notifications(req: dict) -> dict:
         setup_dismissed = req.get("setup_dismissed")
         delivery = req.get("delivery")
@@ -880,6 +919,10 @@ async def main(debug: bool = False) -> None:
         "mute": handle_mute,
         "unmute": handle_unmute,
         "muted_peers": handle_muted_peers,
+        "mute_group": handle_mute_group,
+        "unmute_group": handle_unmute_group,
+        "muted_groups": handle_muted_groups,
+        "dnd": handle_dnd,
         "notifications": handle_notifications,
         "debug_re_stun": handle_debug_re_stun,
         "debug_info": handle_debug_info,
