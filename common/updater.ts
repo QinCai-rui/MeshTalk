@@ -199,6 +199,22 @@ type PendingUpdate = {
   files: string[]
 }
 
+export function parsePendingUpdate(value: unknown): PendingUpdate | null {
+  if (!value || typeof value !== "object") return null
+  const { staging, installDir, files } = value as Record<string, unknown>
+  if (typeof staging !== "string" || !staging || typeof installDir !== "string" || !installDir) return null
+  if (!Array.isArray(files) || files.length === 0 || files.some((name) => typeof name !== "string" || !name || name.includes("/") || name.includes("\\") || name.includes(".."))) return null
+  return { staging, installDir, files: [...files as string[]] }
+}
+
+function readPendingUpdate(): PendingUpdate | null {
+  try {
+    return parsePendingUpdate(JSON.parse(readFileSync(PENDING_UPDATE_PATH, "utf-8")))
+  } catch {
+    return null
+  }
+}
+
 function writePendingUpdate(pending: PendingUpdate): void {
   mkdirSync(DATA_DIR, { recursive: true })
   const temporary = `${PENDING_UPDATE_PATH}.tmp`
@@ -209,12 +225,8 @@ function writePendingUpdate(pending: PendingUpdate): void {
 }
 
 export function applyPendingWindowsReplacement(): boolean {
-  let pending: PendingUpdate
-  try {
-    pending = JSON.parse(readFileSync(PENDING_UPDATE_PATH, "utf-8"))
-  } catch {
-    return true
-  }
+  const pending = readPendingUpdate()
+  if (!pending) return true
   const remaining = [...pending.files]
   for (const name of pending.files) {
     const source = join(pending.staging, name)
@@ -235,53 +247,98 @@ export function applyPendingWindowsReplacement(): boolean {
   return false
 }
 
-export function spawnWindowsReplacementHelper(): boolean {
-  let pending: PendingUpdate
-  try {
-    pending = JSON.parse(readFileSync(PENDING_UPDATE_PATH, "utf-8"))
-  } catch {
-    return false
-  }
-  const launcherPath = join(pending.installDir, `meshtalk${process.platform === "win32" ? ".exe" : ""}`)
+function helperLabel(name: string, index: number): string {
+  return `copy_${index}_${name.replace(/[^A-Za-z0-9]/g, "_")}`
+}
+
+// Builds the Windows batch helper. Exported for testing. The script waits for
+// every PID holding the install directory (launcher and backend executables
+// are both locked on Windows), retries each copy so a slowly-exiting backend
+// cannot fail the update, and lives outside the staging directory so removing
+// the staging directory cannot fail on the running script itself.
+export function buildWindowsReplacementScript(pending: PendingUpdate, waitPids: number[], launcherPath: string, logPath: string): string {
   const lines = [
     "@echo off",
     "setlocal EnableExtensions EnableDelayedExpansion",
-    `set PID=${process.pid}`,
-    "set /a attempts=0",
-    ":wait",
-    `tasklist /fi "PID eq %PID%" 2>nul | find /i "%PID%" >nul`,
-    "if not errorlevel 1 (",
-    "    set /a attempts+=1",
-    "    if !attempts! GEQ 120 goto giveup",
-    "    timeout /t 1 /nobreak >nul",
-    "    goto wait",
-    ")",
-    ...pending.files.map((name) => `copy /y "${join(pending.staging, name)}" "${join(pending.installDir, name)}" >nul || goto failed`),
+  ]
+  for (let index = 0; index < waitPids.length; index++) {
+    lines.push(
+      `set WAIT_PID_${index}=${waitPids[index]}`,
+      `set /a attempts_${index}=0`,
+      `:wait_${index}`,
+      // The surrounding spaces make the PID match exact: PID 123 must not
+      // match a "1234" row (tasklist pads table columns with spaces).
+      `tasklist /fi "PID eq !WAIT_PID_${index}!" /fo table /nh 2>nul | findstr /R /C:" !WAIT_PID_${index}! " >nul`,
+      `if not errorlevel 1 (`,
+      `    set /a attempts_${index}+=1`,
+      `    if !attempts_${index}! GEQ 120 goto giveup`,
+      `    timeout /t 1 /nobreak >nul`,
+      `    goto wait_${index}`,
+      `)`,
+    )
+  }
+  pending.files.forEach((name, index) => {
+    const label = helperLabel(name, index)
+    lines.push(
+      `set /a copy_attempts_${index}=0`,
+      `:${label}`,
+      `copy /y "${join(pending.staging, name)}" "${join(pending.installDir, name)}" >nul 2>&1`,
+      `if errorlevel 1 (`,
+      `    set /a copy_attempts_${index}+=1`,
+      `    if !copy_attempts_${index}! GEQ 60 goto failed`,
+      `    timeout /t 1 /nobreak >nul`,
+      `    goto ${label}`,
+      `)`,
+    )
+  })
+  lines.push(
     `rmdir /s /q "${pending.staging}"`,
     `del "${PENDING_UPDATE_PATH}" >nul 2>&1`,
     `start "" "${launcherPath}"`,
+    `del "%~f0" >nul 2>&1`,
     "exit /b 0",
     ":giveup",
-    "echo MeshTalk update helper could not wait for the launcher to exit.",
+    `echo %DATE% %TIME% MeshTalk update helper timed out waiting for the old instance to exit.>> "${logPath}"`,
     "exit /b 1",
     ":failed",
-    "echo MeshTalk update helper could not replace all installed files.",
+    `echo %DATE% %TIME% MeshTalk update helper could not replace all installed files.>> "${logPath}"`,
     "exit /b 1",
-  ]
-  const script = join(pending.staging, "replace.cmd")
-  writeFileSync(script, lines.join("\r\n"))
+  )
+  return lines.join("\r\n")
+}
+
+export function spawnWindowsReplacementHelper(extraPids: number[] = []): boolean {
+  if (process.platform !== "win32") return false
+  const pending = readPendingUpdate()
+  if (!pending) return false
+  const waitPids = [...new Set([process.pid, ...extraPids])].filter((pid) => Number.isInteger(pid) && pid > 0)
+  if (waitPids.length === 0) return false
+  const launcherPath = join(pending.installDir, "meshtalk.exe")
+  const logPath = join(DATA_DIR, "update-helper.log")
+  // The script must not live inside the staging directory: it deletes that
+  // directory, and Windows cannot remove the running batch file's own folder.
+  const script = join(mkdtempSync(join(tmpdir(), "meshtalk-update-")), "replace.cmd")
   try {
+    writeFileSync(script, buildWindowsReplacementScript(pending, waitPids, launcherPath, logPath))
+  } catch {
+    return false
+  }
+  try {
+    // Fully detach so the helper outlives the exiting launcher. Shared
+    // (inherited) stdio handles would tie the helper's lifetime to the
+    // launcher's console and let it die before the copy runs.
     const helper = Bun.spawn(["cmd.exe", "/d", "/c", script], {
       detached: true,
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
       windowsHide: true,
     })
     if (!Number.isInteger(helper.pid) || helper.pid <= 0) throw new Error("Windows update helper process did not start")
     helper.unref()
     return true
   } catch {
+    try { rmSync(dirname(script), { recursive: true, force: true }) } catch {}
     return false
   }
 }

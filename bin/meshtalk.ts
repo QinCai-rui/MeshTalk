@@ -304,20 +304,41 @@ async function waitForBackend(backendProcess?: ChildProcess): Promise<boolean> {
   return false;
 }
 
-async function stopBackend(pid?: number, daemonise = true): Promise<void> {
+function readPidFile(): number | undefined {
+  try {
+    const pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch { return undefined; }
+}
+
+function backendPidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!backendPidAlive(pid)) return true;
+    await Bun.sleep(200);
+  }
+  return !backendPidAlive(pid);
+}
+
+async function stopBackend(pid?: number, daemonise = true, proc?: ChildProcess): Promise<boolean> {
   if (!pid && daemonise) {
     try { pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim()); } catch {}
   }
-  if (!pid || !Number.isInteger(pid)) return;
+  if (!pid || !Number.isInteger(pid)) return true;
+  if (!backendPidAlive(pid)) return true;
   const useGroup = process.platform !== "win32" && (daemonise || process.platform === "darwin");
-  if (!signalBackend(pid, useGroup, "SIGTERM")) return;
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    await Bun.sleep(200);
-    try { process.kill(pid!, 0); } catch { return; }
-  }
+  if (!signalBackend(pid, useGroup, "SIGTERM")) return true;
+  if (await waitForPidExit(pid, 5_000)) return true;
   log("Backend did not stop gracefully; sending SIGKILL.");
   signalBackend(pid, useGroup, "SIGKILL");
+  try { proc?.kill("SIGKILL"); } catch {}
+  // Wait for the kill to land so a lingering backend cannot keep its
+  // executable locked (blocking a Windows update) or pile up as an orphan.
+  return await waitForPidExit(pid, 3_000);
 }
 
 function signalBackend(pid: number, useGroup: boolean, signal: NodeJS.Signal): boolean {
@@ -449,10 +470,10 @@ async function main() {
 
   let code = 0;
   if (launchTui) {
-    let cleanupPromise: Promise<void> | undefined;
+    let cleanupPromise: Promise<boolean> | undefined;
     const cleanup = () => {
-      if (!iStartedIt) return Promise.resolve();
-      return (cleanupPromise ??= stopBackend(backendPid, false));
+      if (!iStartedIt) return Promise.resolve(true);
+      return (cleanupPromise ??= stopBackend(backendPid, false, backendProcess));
     };
     const tui = await runTui({ splashStyle: splash ?? savedSplashStyle() });
     if (iStartedIt) {
@@ -468,9 +489,18 @@ async function main() {
     }
     code = await tui.exited;
     if (code === UPDATE_RESTART_EXIT_CODE) {
-      if (!await requestBackendShutdown()) await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt);
+      if (!await requestBackendShutdown()) await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt, iStartedIt ? backendProcess : undefined);
+      try { backendProcess?.kill("SIGKILL"); } catch {}
+      try { backendProcess?.unref?.(); } catch {}
       if (isWindows) {
-    if (!spawnWindowsReplacementHelper()) throw new Error(`Unable to start the Windows update replacement process. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
+        // The backend executable is locked while the backend lives, so the
+        // replacement helper must wait for it too — otherwise the copy fails
+        // and a lingering backend piles up behind the restarted instance.
+        const backendPids: number[] = [];
+        for (const candidate of [iStartedIt ? backendPid : undefined, readPidFile()]) {
+          if (Number.isInteger(candidate) && (candidate as number) > 0 && !(backendPids.includes(candidate as number))) backendPids.push(candidate as number);
+        }
+        if (!spawnWindowsReplacementHelper(backendPids)) throw new Error(`Unable to start the Windows update replacement process. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
         code = 0;
       } else {
         const restartPath = takeUpdateRestartPath();
