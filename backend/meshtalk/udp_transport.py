@@ -60,9 +60,9 @@ MAX_ATTEMPTS = 128
 MAX_SESSIONS = 256
 
 Endpoint = tuple[str, int]
-ConnectedCallback = Callable[[str, str, int, str, bytes, bytes, bool], Awaitable[None]]
+ConnectedCallback = Callable[[str, str, int, str, bytes, bytes, bool, bytes], Awaitable[None]]
 PacketCallback = Callable[[str, Packet], Awaitable[None]]
-DisconnectedCallback = Callable[[str], Awaitable[None]]
+DisconnectedCallback = Callable[[str, bytes], Awaitable[None]]
 DerpSender = Callable[[str, bytes], Awaitable[None]]
 
 
@@ -651,6 +651,7 @@ class UdpTransport:
                     session.encryption_public_key,
                     session.signing_public_key,
                     session.via_relay,
+                    session.session_id,
                 ))
             return
         if not session.confirmed:
@@ -662,7 +663,7 @@ class UdpTransport:
             active = self._sessions.get(session.peer_id) is session
             self._remove_session(session)
             if active:
-                self._spawn(self.on_disconnected(session.peer_id))
+                self._spawn(self.on_disconnected(session.peer_id, session.session_id))
 
     def _send_authenticated(self, session: Session, message_type: int, token: int) -> None:
         header = AUTH_HEADER.pack(MAGIC, message_type, session.session_id, token)
@@ -708,7 +709,7 @@ class UdpTransport:
                 if now - session.last_seen > SESSION_TIMEOUT:
                     self._remove_session(session)
                     try:
-                        await self.on_disconnected(session.peer_id)
+                        await self.on_disconnected(session.peer_id, session.session_id)
                     except Exception:
                         logger.exception("on_disconnected callback failed for %s", session.peer_id)
                     continue

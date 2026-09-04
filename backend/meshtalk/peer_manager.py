@@ -91,6 +91,7 @@ class PeerConnection:
         self.tcp_local_handshake: HandshakePayload | None = None
         self.tcp_remote_handshake: HandshakePayload | None = None
         self.tcp_session: TcpSession | None = None
+        self.udp_session_id: bytes | None = None
         self.tcp_send_lock = asyncio.Lock()
         self.last_seen = time.time()
 
@@ -347,6 +348,7 @@ class PeerManager:
         encryption_public_key: bytes,
         signing_public_key: bytes,
         via_relay: bool,
+        session_id: bytes,
     ) -> None:
         if peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
             logger.warning("Rejecting remote UDP peer %s: peer limit reached", peer_id)
@@ -357,6 +359,7 @@ class PeerManager:
         peer.display_name = display_name
         peer.encryption_public_key = encryption_public_key
         peer.signing_public_key = signing_public_key
+        peer.udp_session_id = session_id
         peer.capabilities = self.udp.get_capabilities(peer_id)
         gaps = self.udp.get_capability_gaps(peer_id)
         if gaps is not None:
@@ -388,23 +391,25 @@ class PeerManager:
         if packet.type == PacketType.PING:
             await self._send_packet(peer, Packet(PacketType.PONG))
         elif packet.type == PacketType.GOODBYE:
-            await self._on_udp_disconnected(peer_id, peer)
+            await self._on_udp_disconnected(peer_id, peer.udp_session_id)
         elif packet.type == PacketType.PROFILE:
             await self._apply_profile_update(peer, packet)
         else:
             await self.on_packet(peer, packet)
 
     async def _on_udp_disconnected(
-        self, peer_id: str, expected_peer: PeerConnection | None = None
+        self, peer_id: str, expected_session_id: bytes | None = None
     ) -> None:
         """Handle UDP peer disconnection, optionally verifying the disconnecting session.
 
         Args:
             peer_id: The peer identifier.
-            expected_peer: If provided, only disconnect if this connection is still active.
+            expected_session_id: If provided, only disconnect if it matches the active UDP session.
         """
         old_peer = self._udp_peers.get(peer_id)
-        if expected_peer is not None and old_peer is not expected_peer:
+        if expected_session_id is not None and (
+            old_peer is None or old_peer.udp_session_id != expected_session_id
+        ):
             return
         # Only remove from _udp_peers if it still points to the disconnecting peer.
         # Prevents a stale disconnect from deleting a replacement that raced in.
@@ -678,7 +683,7 @@ class PeerManager:
             await self._send_packet(peer, packet)
         except ConnectionError:
             if peer.transport in ("remote_udp", "remote_derp"):
-                await self._on_udp_disconnected(peer.peer_id, peer)
+                await self._on_udp_disconnected(peer.peer_id, peer.udp_session_id)
             raise
 
     async def _send_packet(self, peer: PeerConnection, packet: Packet) -> None:
