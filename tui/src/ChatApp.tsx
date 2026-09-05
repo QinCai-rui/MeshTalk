@@ -1749,6 +1749,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           setSelectedReplyTarget(target);
           setScrollFocused(true);
         }}
+        clearReplyTarget={() => setSelectedReplyTarget(undefined)}
         onComposerChange={handleComposerChange}
         send={() => {
           stopOutgoingTyping();
