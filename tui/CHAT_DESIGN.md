@@ -4,7 +4,8 @@ MeshTalk uses a quiet workspace: a slate conversation rail, an open message hist
 and a slightly raised composer. A restrained mint accent marks selection and actions.
 The design deliberately avoids message bubbles, nested borders, moving status text,
 and icons that require a particular terminal font. Typing retains the original animated dots. The main chat and file manager share this treatment;
-settings, commands, notifications, and startup retain their existing UI.
+settings, settings, and notifications use a centered settings panel. Startup retains
+its existing UI.
 
 ## Layout and hierarchy
 
@@ -31,7 +32,7 @@ settings, commands, notifications, and startup retain their existing UI.
   image previews, selection, scrolling, and unread highlights. Connection/delivery
   warnings remain outside the scrolling history and use static text.
 - Typing, reply context, input, byte usage, and keyboard help each occupy their own
-  layout rows. Temporary status messages replace keyboard hints in a fixed-height footer; long messages scroll inside that area without moving the composer. The footer aligns composer/history hints left and the highlighted commands shortcut right. Nothing is absolutely positioned over editable text.
+  layout rows. Temporary status messages replace keyboard hints in a fixed-height footer; long messages scroll inside that area without moving the composer. The footer aligns composer/history hints left and the highlighted settings shortcut right. Nothing is absolutely positioned over editable text.
 - The chat pane receives its actual available width. Its zero flex basis prevents
   an old horizontal layout measurement from pushing the composer offscreen on resize.
 
@@ -53,11 +54,23 @@ settings, commands, notifications, and startup retain their existing UI.
 
 ## Existing keyboard behavior
 
-No key bindings were changed. `ChatApp.tsx` remains the authority for global keys.
+Settings open in a centered panel capped at 100 columns and 32 rows, with space
+around the dialog. Wide panels have a category rail beside the content pane.
+Narrow panels expose the same categories with Tab. First-run setup stays in its
+own flow without category navigation. Preferences show explicit On, Off, Current,
+and connection states, with wrapped descriptions and scrollable help.
+
+Within settings, Tab switches category/content focus, arrows or J/K select rows,
+Enter activates, and Escape follows the existing Back route. Backspace also
+goes back outside text editors. PgUp/PgDn scroll menu help. Editors retain their
+draft when categories gain focus. Destructive confirmations initially select
+Cancel. All settings colours come from chatTheme.ts.
+
+`ChatApp.tsx` remains the authority for global keys.
 
 | Key | Action / context |
 | --- | --- |
-| Ctrl+P | Open or close commands |
+| Ctrl+P | Open or close settings |
 | Ctrl+Up/Down | Switch peer/group conversation |
 | Ctrl+N | Edit display name |
 | Ctrl+U | Open file picker |

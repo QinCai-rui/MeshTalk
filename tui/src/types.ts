@@ -44,7 +44,7 @@ export type ConversationItem = { type: "message"; createdAt: number; message: Me
 export type ReplyTarget = { id: string; senderId: string; label: string; groupId?: string; kind: "message" | "file" }
 
 export type Dialog =
-  | { kind: "commands" } | { kind: "control"; firstRun?: boolean } | { kind: "control-custom"; firstRun?: boolean }
+  | { kind: "settings" } | { kind: "control"; firstRun?: boolean } | { kind: "control-custom"; firstRun?: boolean }
   | { kind: "control-status"; control: ControlStatus } | { kind: "advanced"; config: AdvancedConfig }
   | { kind: "advanced-image-protocol"; config: AdvancedConfig } | { kind: "advanced-ip-pinning"; config: AdvancedConfig } | { kind: "advanced-control"; config: AdvancedConfig } | { kind: "advanced-stun"; config: AdvancedConfig }
   | { kind: "customisation" } | { kind: "customisation-splash"; splashStyle: SplashPreference }

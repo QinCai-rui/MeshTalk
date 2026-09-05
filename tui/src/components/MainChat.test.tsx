@@ -10,6 +10,20 @@ import { DEFAULT_STATUS, MAX_MESSAGE_BYTES } from "../utils"
 import type { Peer } from "../types"
 
 const noop = () => {}
+
+test("View all members aligns with group member presence indicators", async () => {
+  const props = sidebarProps(120)
+  props.selectedPeerId = undefined
+  props.selectedGroupId = group.group_id
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }] }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup)
+    const member = frame.split("\n").find(line => line.includes("● Alex Morgan"))!
+    const link = frame.split("\n").find(line => line.includes("View all members"))!
+    expect(link.indexOf("View")).toBe(member.indexOf("●"))
+  } finally { await close(setup) }
+})
 const peers: Peer[] = [
   { peer_id: "alex", display_name: "Alex Morgan", is_online: 1, presence: "active", last_seen: 0, last_interaction: 0, unread_count: 3, is_friend: true, active_transport: "lan_tcp", endpoints: [] },
   { peer_id: "sam", display_name: "Sam Chen", is_online: 0, presence: "offline", last_seen: 0, last_interaction: 0, unread_count: 0, endpoints: [] },
@@ -54,13 +68,13 @@ for (const width of [120, 80, 64, 48, 32]) {
       expect(frame).toContain("●")
       expect(frame).toContain("3 new")
       expect(frame).toContain("MeshTalk 0.23.0")
-      expect(frame.match(/Ctrl\+P commands/g)?.length).toBe(1)
+      expect(frame.match(/Ctrl\+P settings/g)?.length).toBe(1)
       if (width >= 64) expect(frame.match(/Ctrl\+Up\/Down switch/g)?.length).toBe(1)
       expect(frame).toContain("Write a message...")
       expect(frame).toContain("30,720 bytes")
-      expect(frame).toContain("Ctrl+P commands")
+      expect(frame).toContain("Ctrl+P settings")
       expect(frame.replace(/\s+/g, " ")).toContain("Ctrl+↑↓ chats")
-      const commandsShortcut = setup.renderer.root.findDescendantById("commands-shortcut")!
+      const commandsShortcut = setup.renderer.root.findDescendantById("settings-shortcut")!
       expect(commandsShortcut).toBeDefined()
       if (!props.compact) expect(commandsShortcut.screenX).toBeGreaterThan(props.composerRef.current!.screenX)
       expect(frame).not.toContain("PgUp/PgDn history")
@@ -236,7 +250,7 @@ test("resizing to a short narrow terminal preserves the live draft and chat view
     const frame = await settle(setup)
     expect(props.composerRef.current).toBe(composer)
     expect(composer!.plainText).toBe("Keep this draft")
-    expect(frame).toContain("Ctrl+P commands")
+    expect(frame).toContain("Ctrl+P settings")
     expect(frame).toContain("30,720 bytes")
     expect(props.scrollboxRef.current!.viewport.height).toBeGreaterThanOrEqual(3)
     expect(composer!.screenY + composer!.height).toBeLessThan(24)
@@ -296,7 +310,7 @@ for (const width of [80, 48, 32]) {
       let frame = await settle(setup)
       expect(frame).toContain("Message sent.")
       expect(frame).not.toContain("Enter send")
-      expect(frame).not.toContain("Ctrl+P commands")
+      expect(frame).not.toContain("Ctrl+P settings")
       expect(props.composerRef.current!.screenY).toBe(y)
       expect(props.scrollboxRef.current!.viewport.height).toBe(historyHeight)
       await act(async () => { changeStatus("Connection error: " + "More details. ".repeat(50) + "End of status.") })
@@ -309,7 +323,7 @@ for (const width of [80, 48, 32]) {
       await act(async () => { changeStatus(DEFAULT_STATUS) })
       frame = await settle(setup)
       expect(frame).toContain("Enter send")
-      expect(frame).toContain("Ctrl+P commands")
+      expect(frame).toContain("Ctrl+P settings")
       expect(props.composerRef.current!.screenY).toBe(y)
     } finally { await close(setup) }
   })

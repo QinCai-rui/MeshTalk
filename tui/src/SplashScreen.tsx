@@ -281,7 +281,7 @@ export function StartupSplash<T>(props: StartupSplashProps<T>) {
         >
           <text fg={theme.warning}><b>Splash screen is not enabled.</b></text>
           <text fg={theme.splash.notice}>MeshTalk is starting.</text>
-          <text fg={theme.splash.notice} wrapMode="word">Enable: Commands &gt; Customisation &gt; Splash screen.</text>
+          <text fg={theme.splash.notice} wrapMode="word">Enable: Settings &gt; Customisation &gt; Splash screen.</text>
           <text fg={theme.splash.subtle} wrapMode="word">Or launch with `meshtalk --splash=card`.</text>
         </box>
       </box>

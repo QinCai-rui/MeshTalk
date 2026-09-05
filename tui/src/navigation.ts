@@ -12,8 +12,27 @@ type NavigationDependencies = {
   loadBlockedPeers: () => Promise<void>
 }
 
+const TEXT_INPUT_DIALOGS = new Set<Dialog["kind"]>([
+  "control-custom",
+  "advanced-control-ip",
+  "advanced-stun-ip",
+  "room-create",
+  "room-join",
+  "rename",
+  "add-friend",
+  "file-send",
+  "files-dir",
+  "file-download",
+  "update-directory",
+  "update-token",
+])
+
+export function dialogUsesTextInput(dialog: Dialog): boolean {
+  return TEXT_INPUT_DIALOGS.has(dialog.kind)
+}
+
 export function goBack({ dialog, selection, fileTransfers, closeDialog, showDialog, loadAdvancedConfig, loadRooms, loadFriendRequests, loadBlockedPeers }: NavigationDependencies) {
-  if (!dialog || dialog.kind === "commands" || dialog.kind === "update" || (dialog.kind === "control" && dialog.firstRun) || (dialog.kind === "rename" && dialog.firstRun)) {
+  if (!dialog || dialog.kind === "settings" || dialog.kind === "update" || (dialog.kind === "control" && dialog.firstRun) || (dialog.kind === "rename" && dialog.firstRun)) {
     closeDialog()
   } else if (dialog.kind === "image-view") {
     if (dialog.returnTo === "files") showDialog({ kind: "file-list", files: fileTransfers })
@@ -36,7 +55,7 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
   } else if (dialog.kind === "customisation-splash") {
     showDialog({ kind: "customisation" })
   } else if (dialog.kind === "customisation" || dialog.kind === "advanced" || dialog.kind === "about") {
-    showDialog({ kind: "commands" })
+    showDialog({ kind: "settings" })
   } else if (["room-create", "room-join", "room-created", "room-detail"].includes(dialog.kind)) {
     showDialog({ kind: "rooms", rooms: [] })
     void loadRooms()
@@ -50,7 +69,7 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
   } else if (dialog.kind === "friend-requests" || dialog.kind === "add-friend" || dialog.kind === "remove-friend") {
     showDialog({ kind: "friends" })
   } else if (dialog.kind === "friends" || dialog.kind === "notifications") {
-    showDialog({ kind: "commands" })
+    showDialog({ kind: "settings" })
   } else if (dialog.kind === "notification-enable" || dialog.kind === "notification-confirm" || dialog.kind === "notification-fallback") {
     if (dialog.firstRun) closeDialog()
     else showDialog({ kind: "notification-settings" })
@@ -69,11 +88,11 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
   } else if (dialog.kind === "debug-endpoints") {
     showDialog({ kind: "debug" })
   } else if (dialog.kind === "debug" || dialog.kind === "file-send" || dialog.kind === "group-file-send" || dialog.kind === "file-list") {
-    showDialog({ kind: "commands" })
+    showDialog({ kind: "settings" })
   } else if (dialog.kind === "file-download" || dialog.kind === "files-dir") {
     showDialog({ kind: "file-list", files: fileTransfers })
   } else {
-    showDialog({ kind: "commands" })
+    showDialog({ kind: "settings" })
   }
 }
 
@@ -114,7 +133,7 @@ export function runCommand(command: string, dependencies: CommandDependencies) {
   else if (command === "accessibility") showDialog({ kind: "accessibility" })
   else if (command === "customisation") showDialog({ kind: "customisation" })
   else if (command === "advanced") void loadAdvancedConfig()
-  else if (command === "rename") { const displayName = identity?.display_name ?? ""; setNameDraft(displayName); setDialogDraft(displayName); setDialogError(""); setRenameDialog() }
+  else if (command === "rename") { const displayName = identity?.display_name ?? ""; setRenameDialog(); setNameDraft(displayName); setDialogDraft(displayName); setDialogError("") }
   else if (command === "mute" || command === "unmute") {
     const peer = peers.find((peer) => peer.peer_id === selectedPeerId)
     if (!peer) { showStatus(`Select a peer to ${command}.`); return }
@@ -127,7 +146,7 @@ export function runCommand(command: string, dependencies: CommandDependencies) {
     const peer = peers.find((peer) => peer.peer_id === selectedPeerId)
     if (!peer) { showStatus(command === "add-friend" ? "Select a peer to add as a friend." : "Select a friend to remove."); return }
     if (command === "add-friend" && peer.is_friend) { showStatus(`${peer.display_name} is already your friend.`); return }
-    if (command === "add-friend" && peer.is_blocked) { showStatus(`${peer.display_name} is blocked. Unblock them in Commands > Friends > Block.`); return }
+    if (command === "add-friend" && peer.is_blocked) { showStatus(`${peer.display_name} is blocked. Unblock them in Settings > Friends > Block.`); return }
     if (command === "add-friend" && (peer.friend_request === "outgoing" || peer.friend_request === "both")) { showStatus(`Friend request to ${peer.display_name} is already pending.`); return }
     if (command === "remove-friend" && !peer.is_friend) { showStatus(`${peer.display_name} is not your friend.`); return }
     if (command === "add-friend") setDialogDraft("")

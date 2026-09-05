@@ -2,38 +2,22 @@ import { MouseSelect } from "../MouseSelect"
 import { MarqueeText } from "../MarqueeText"
 import { releaseInstallDir } from "../../../../common/updater"
 import { resolve } from "path"
-import type { Conversation, Dialog, Group, Peer } from "../../types"
+import type { Dialog } from "../../types"
 import { chatTheme as theme } from "../../chatTheme"
 
-type CommandsDialogProps = {
+type SettingsLandingProps = {
   dialogHeight: number
-  groups: Group[]
-  peers: Peer[]
-  selectedGroup: Group | undefined
-  selection: Conversation | undefined
-  runCommand: (command: string) => void
 }
 
-export function CommandsDialog({ dialogHeight, groups, peers, selectedGroup, selection, runCommand }: CommandsDialogProps) {
-  return <box style={{ flexDirection: "column" }}>
-    <box height={1} flexShrink={0}><text><span fg={theme.accent}><b>COMMAND CENTER</b></span> <span fg={theme.muted}>Choose an action</span></text></box>
-    <box height={1} flexShrink={0}><text fg={theme.line}>────────────────────────────────────────</text></box>
-    <MouseSelect focused height={Math.max(5, dialogHeight - 5)} options={[
-      { name: "Control server", description: "Set up or inspect remote discovery", value: "control" },
-      { name: "Private rooms", description: "Create, join, view, or leave rooms", value: "rooms" },
-      ...(selectedGroup ? [{ name: "Group details", description: `View members or leave ${selectedGroup.name}`, value: "group-details" }] : []),
-      { name: "Friends", description: "Add a friend, respond to requests, remove, or block", value: "friends" },
-      { name: "Send file", description: selection ? `Send a file to ${selection.kind === "peer" ? peers.find((peer) => peer.peer_id === selection.id)?.display_name ?? "peer" : groups.find((group) => group.group_id === selection.id)?.name ?? "group"}` : "Select a peer or group first", value: "send-file" },
-      { name: "Files", description: "View file transfer history and status", value: "files" },
-      { name: "Notifications", description: "Mute or unmute desktop notifications for the selected peer", value: "notifications" },
-      { name: "Accessibility", description: "Reduce motion and other accessibility options", value: "accessibility" },
-      { name: "Customisation", description: "Make the terminal yours", value: "customisation" },
-      { name: "Advanced Configuration", description: "Here be dragons. Not responsible for melted terminals.", value: "advanced" },
-      { name: "Rename yourself", description: "Change the display name peers see", value: "rename" },
-      { name: "Debug", description: "Re-STUN and connection diagnostics", value: "debug" },
-      { name: "★  ABOUT & UPDATES  ★", description: "Version, credits, and check for updates", value: "about" },
-    ]} onSelect={(_, option) => option && runCommand(option.value as string)} wrapSelection showDescription />
-  </box>
+export function SettingsLanding({ dialogHeight: _dialogHeight }: SettingsLandingProps) {
+  return <box style={{ width: "100%", height: "100%", flexGrow: 1, justifyContent: "center", alignItems: "center", padding: 2 }}>
+      <box style={{ maxWidth: 48, flexDirection: "column", gap: 1 }}>
+        <text fg={theme.accent}><b>Choose a settings section</b></text>
+        <text fg={theme.text} wrapMode="word">Select a panel in the category rail to open its page.</text>
+        <text fg={theme.muted} wrapMode="word">On narrow terminals, press Tab to open the category list.</text>
+        <text fg={theme.subdued} wrapMode="word">Files & transfers opens the full-screen transfer manager.</text>
+      </box>
+    </box>
 }
 
 type AboutDialogProps = {
@@ -58,7 +42,7 @@ export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeig
     {dialogError && <text fg={theme.danger}>{dialogError}</text>}
     <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={[
       { name: dialog.checking ? "Checking for updates..." : "Check for updates", description: isReleaseBuild ? "Look for the latest stable MeshTalk release" : "Available in compiled MeshTalk releases", value: "check" },
-      { name: "Back", description: "Return to Commands", value: "back" },
+      { name: "Back", description: "Return to Settings", value: "back" },
     ]} onSelect={(_, option) => {
       if (option?.value === "check" && !dialog.checking) checkForUpdates()
       else if (option?.value === "back") goBack()

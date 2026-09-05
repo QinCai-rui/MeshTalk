@@ -39,6 +39,7 @@ import type {
   TypingPeer,
   UnreadMessageState,
 } from "./types";
+import { dialogUsesTextInput } from "./navigation";
 import {
   composerLimitColor,
   DEFAULT_STATUS,
@@ -980,7 +981,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           if (!dialog) setDialog({ kind: "friend-request-incoming", request });
           else
             actions.showStatus(
-              `Friend request from ${request.sender_name}. Open Commands > Friends to respond.`,
+              `Friend request from ${request.sender_name}. Open Settings > Friends to respond.`,
             );
           void actions.refreshPeers();
           return;
@@ -1332,7 +1333,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   }
 
   useKeyboard((key) => {
-    if (dialog && dialogBusyRef.current) return;
+    if (dialog && dialogBusyRef.current) { key.preventDefault(); return; }
     if (deleteConfirmation) {
       if (key.name === "escape") {
         setDeleteConfirmation(undefined);
@@ -1393,12 +1394,15 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     }
     if (key.ctrl && key.name === "p") {
       key.preventDefault();
-      if (dialog?.kind === "commands") actions.closeDialog();
-      else actions.showDialog({ kind: "commands" });
+      if (dialog?.kind === "settings") actions.closeDialog();
+      else actions.showDialog({ kind: "settings" });
       return;
     }
     if (dialog) {
-      if (key.name === "escape") actions.goBack();
+      if (key.name === "escape" || (key.name === "backspace" && !dialogUsesTextInput(dialog))) {
+        key.preventDefault();
+        actions.goBack();
+      }
       return;
     }
     if (key.name === "escape" && editingName) {
@@ -1651,14 +1655,15 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const { stacked, sidebarWidth, panelWidth } = chatLayout(width);
   const compact = panelWidth < 70;
   const limitColor = composerLimitColor(draftLength);
-  const dialogWidth = Math.min(68, Math.max(1, width - 4));
+  const dialogWidth = Math.min(100, Math.max(1, width - 6));
   const dialogHeight =
-    dialog?.kind === "image-view" || dialog?.kind === "file-list" || dialog?.kind === "files-dir" || dialog?.kind === "file-download"
+    (dialog?.kind === "image-view" || dialog?.kind === "file-list")
       ? Math.max(1, height - 2)
-      : Math.min(20, Math.max(1, height - 4));
+      : Math.min(32, Math.max(1, height - 4));
   function dialogWidthFor(kind: Dialog["kind"]): number {
-    if (kind === "image-view" || kind === "file-list" || kind === "files-dir" || kind === "file-download") return Math.max(1, width - 2);
-    if (kind === "room-detail" || kind === "group-detail")
+    if (kind === "image-view" || kind === "file-list") return Math.max(1, width - 2);
+    if (kind === "files-dir" || kind === "file-download") return Math.min(118, Math.max(1, width - 6));
+    if (kind === "group-detail")
       return Math.min(78, Math.max(1, width - 2));
     return dialogWidth;
   }

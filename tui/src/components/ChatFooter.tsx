@@ -14,10 +14,10 @@ export function ChatFooter({ width, scrollFocused, status }: { width: number; sc
       <text fg={/error|lost|exceeds/i.test(status) ? theme.danger : theme.muted} wrapMode="word">{status}</text>
     </scrollbox> : compact ? <box style={{ width: "100%", flexDirection: "column", alignItems: "flex-start" }}>
       <text id="chat-hint" fg={theme.muted} wrapMode="word">{hint[0]}</text>
-      <text id="commands-shortcut" fg={theme.accent} wrapMode="none"><u>Ctrl+P</u> commands</text>
+      <text id="settings-shortcut" fg={theme.accent} wrapMode="none"><u>Ctrl+P</u> settings</text>
     </box> : <box style={{ width: "100%", flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 1 }}>
       <text fg={theme.muted} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{hint[0]}</text>
-      <text id="commands-shortcut" fg={theme.accent} style={{ flexShrink: 0 }} wrapMode="none"><u>Ctrl+P</u> commands</text>
+      <text id="settings-shortcut" fg={theme.accent} style={{ flexShrink: 0 }} wrapMode="none"><u>Ctrl+P</u> settings</text>
     </box>}
   </box>
 }

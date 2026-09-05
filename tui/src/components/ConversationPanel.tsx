@@ -157,7 +157,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
         {selectedGroup && limitedGroupMembers.length > 0 && <text fg={theme.warning} wrapMode="word">Limited features: {limitedGroupMembers.map(member => member.display_name).join(", ")}. Shared features remain available.</text>}
       </box>
       <scrollbox ref={scrollboxRef} focused={scrollFocused && !dialogOpen} onMouseDown={() => setScrollFocused(true)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, paddingLeft: 2, paddingRight: 1 }} contentOptions={{ flexDirection: "column" }} stickyScroll stickyStart="bottom" verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
-        {!selected && !selectedGroup ? <box marginTop={2} gap={1}><text fg={theme.text}><b>A little closer, wherever you are.</b></text><text fg={theme.muted}>Ctrl+Up/Down selects a conversation. Ctrl+P opens commands to find peers, join a group, or share files.</text></box> : null}
+        {!selected && !selectedGroup ? <box marginTop={2} gap={1}><text fg={theme.text}><b>A little closer, wherever you are.</b></text><text fg={theme.muted}>Ctrl+Up/Down selects a conversation. Ctrl+P opens settings to find peers, join a group, or share files.</text></box> : null}
         {selected && !conversationItems.length ? <text fg={theme.muted}>No messages yet. Say hello.</text> : null}
         {selectedGroup && !conversationItems.length ? <text fg={theme.muted}>No messages yet. Say hello to the group.</text> : null}
         {conversationItems.map((item, index) => {

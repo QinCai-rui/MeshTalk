@@ -102,17 +102,17 @@ export function Sidebar({ appVersion, compact, stacked = false, dialogOpen, edit
           <box flexDirection="row" width="100%">
             <text fg={selected ? theme.accent : theme.text} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{selected || group.unread_count ? <b>{label}</b> : label}<span fg={theme.muted}>{memberLabel}</span></text>
           </box>
-          <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
+          {(group.unread_count > 0 || typing) && <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {group.unread_count > 0 && <text fg={theme.accent}>{group.unread_count} new</text>}
             {typing && <TypingDots />}
-          </box>
+          </box>}
           {selected && !stacked && visibleMembers.map((member, index) => {
             const id = member.peer_id ?? member.member_id
             const peer = peers.find(peer => peer.peer_id === id)
             const presence = peer ? peerPresence(peer) : member.is_online ? "active" : "offline"
             return <text key={id ?? index} fg={id === identity?.peer_id ? theme.presence.self : presenceColor(presence)}>  {presenceIndicator(presence)} {member.display_name}{id === identity?.peer_id ? " (you)" : ""}{peer ? friendMarkers(peer) : ""}</text>
           })}
-          {selected && members && <box onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}><u>View all members</u></text></box>}
+          {selected && members && <box paddingLeft={2} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}><u>View all members</u></text></box>}
         </box>
           })}
         </scrollbox>
