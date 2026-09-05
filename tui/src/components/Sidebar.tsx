@@ -10,7 +10,6 @@ const presenceColor = (presence: "active" | "away" | "offline") => theme.presenc
 
 type SidebarProps = {
   appVersion: string
-  compact: boolean
   stacked?: boolean
   dialogOpen: boolean
   editingName: boolean
@@ -32,7 +31,7 @@ type SidebarProps = {
   saveDisplayName: () => void
 }
 
-export function Sidebar({ appVersion, compact, stacked = false, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
+export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
   const renderer = useRenderer()
   const peerListRef = useRef<ScrollBoxRenderable>(null)
   const groupListRef = useRef<ScrollBoxRenderable>(null)
@@ -98,21 +97,25 @@ export function Sidebar({ appVersion, compact, stacked = false, dialogOpen, edit
         const typing = typingConversationKeys.has(`group:${group.group_id}`)
         const memberLabel = ` (${group.member_count} members)`
         const label = nameLabel(group.name, 0, terminalWidth(memberLabel))
-        return <box id={`nav-group-${group.group_id}`} key={group.group_id} onMouseDown={() => pick({ kind: "group", id: group.group_id })} style={rowStyle(selected)}>
+        return <box key={group.group_id} style={{ width: "100%", flexDirection: "column" }}>
+          <box id={`nav-group-${group.group_id}`} onMouseDown={() => pick({ kind: "group", id: group.group_id })} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
             <text fg={selected ? theme.accent : theme.text} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{selected || group.unread_count ? <b>{label}</b> : label}<span fg={theme.muted}>{memberLabel}</span></text>
           </box>
-          {(group.unread_count > 0 || typing) && <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
+          <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {group.unread_count > 0 && <text fg={theme.accent}>{group.unread_count} new</text>}
             {typing && <TypingDots />}
-          </box>}
-          {selected && !stacked && visibleMembers.map((member, index) => {
+          </box>
+        </box>
+          {selected && !stacked && visibleMembers.length > 0 && <box style={{ width: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
+            {visibleMembers.map((member, index) => {
             const id = member.peer_id ?? member.member_id
             const peer = peers.find(peer => peer.peer_id === id)
             const presence = peer ? peerPresence(peer) : member.is_online ? "active" : "offline"
             return <text key={id ?? index} fg={id === identity?.peer_id ? theme.presence.self : presenceColor(presence)}>  {presenceIndicator(presence)} {member.display_name}{id === identity?.peer_id ? " (you)" : ""}{peer ? friendMarkers(peer) : ""}</text>
           })}
-          {selected && members && <box paddingLeft={2} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}><u>View all members</u></text></box>}
+          </box>}
+          {selected && members && <box paddingLeft={3} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}><u>View all members</u></text></box>}
         </box>
           })}
         </scrollbox>

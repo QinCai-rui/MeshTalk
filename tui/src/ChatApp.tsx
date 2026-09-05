@@ -1701,7 +1701,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       <Sidebar
         appVersion={APP_RELEASE_VERSION}
         stacked={stacked}
-        compact={width < 100}
         dialogOpen={Boolean(dialog)}
         editingName={editingName}
         groups={groups}

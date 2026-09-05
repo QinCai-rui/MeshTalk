@@ -30,7 +30,7 @@ const peers: Peer[] = [
 ]
 const group = { group_id: "team", name: "Design studio", member_count: 4, unread_count: 2 }
 function sidebarProps(width: number): ComponentProps<typeof Sidebar> {
-  return { appVersion: "0.23.0", compact: width < 100, ...chatLayout(width), dialogOpen: false, editingName: false, groups: [group], groupMembers: {}, identity: { peer_id: "me", display_name: "Taylor" }, mutedPeers: {}, nameDraft: "", peers, selectedPeerId: "alex", selectedGroupId: undefined, typingConversationKeys: new Set(), openGroupDetails: noop, setEditingName: noop, setNameDraft: noop, setSelection: noop, setScrollFocused: noop, saveDisplayName: noop }
+  return { appVersion: "0.23.0", ...chatLayout(width), dialogOpen: false, editingName: false, groups: [group], groupMembers: {}, identity: { peer_id: "me", display_name: "Taylor" }, mutedPeers: {}, nameDraft: "", peers, selectedPeerId: "alex", selectedGroupId: undefined, typingConversationKeys: new Set(), openGroupDetails: noop, setEditingName: noop, setNameDraft: noop, setSelection: noop, setScrollFocused: noop, saveDisplayName: noop }
 }
 function panelProps(width: number): ComponentProps<typeof ConversationPanel> {
   return {
