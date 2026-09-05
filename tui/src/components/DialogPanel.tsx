@@ -545,6 +545,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
   const [filter, setFilter] = useState<"all" | "inbound" | "outbound" | "images" | "other">("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<FileTransfer | null>(null)
+  const pendingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const scrollboxRef = useRef<ScrollBoxRenderable | null>(null)
   const filtered = useMemo(() => {
     let files = [...dialog.files].sort((a, b) => (b.completed_at ?? b.created_at) - (a.completed_at ?? a.created_at))
@@ -568,6 +569,12 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
   useEffect(() => {
     if (selectedId) scrollboxRef.current?.scrollChildIntoView(selectedId)
   }, [selectedId])
+  useEffect(() => {
+    if (pendingTimer.current) clearTimeout(pendingTimer.current)
+    if (!pendingDelete) { pendingTimer.current = undefined; return }
+    pendingTimer.current = setTimeout(() => setPendingDelete(null), 3_000)
+    return () => { if (pendingTimer.current) clearTimeout(pendingTimer.current); pendingTimer.current = undefined }
+  }, [pendingDelete])
   const selectedFile = filtered.find((f) => f.file_id === selectedId) ?? null
   const canSaveSelected = !!selectedFile && ["completed", "sent"].includes(selectedFile.status) && !isLocalFileMissing(selectedFile.file_path)
   const saveSelected = () => {
