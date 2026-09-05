@@ -1392,6 +1392,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       return;
     }
     if (key.ctrl && key.name === "p") {
+      key.preventDefault();
       if (dialog?.kind === "commands") actions.closeDialog();
       else actions.showDialog({ kind: "commands" });
       return;
@@ -1407,15 +1408,18 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       return;
     }
     if (key.ctrl && key.name === "n") {
+      key.preventDefault();
       setNameDraft(identity?.display_name ?? "");
       setEditingName(true);
       return;
     }
     if (key.ctrl && key.name === "u") {
+      key.preventDefault();
       void actions.openFilePicker();
       return;
     }
     if (key.ctrl && key.name === "d") {
+      key.preventDefault();
       void actions.removeSelectedPeer();
       return;
     }
@@ -1424,6 +1428,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       !key.ctrl &&
       (key.name === "up" || key.name === "down")
     ) {
+      key.preventDefault();
       const replyTargets = conversationItems.map((item): ReplyTarget =>
         item.type === "message"
           ? {
@@ -1442,7 +1447,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             },
       );
       if (!replyTargets.length) return;
-      key.preventDefault();
       const index = selectedReplyTarget
         ? replyTargets.findIndex(
             (target) => target.id === selectedReplyTarget.id,
@@ -1498,11 +1502,19 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       setReplyTo(undefined);
       return;
     }
+    if (key.name === "escape" && scrollFocused) {
+      key.preventDefault();
+      setScrollFocused(false);
+      return;
+    }
     if (
       (key.name === "up" || key.name === "down") &&
       key.ctrl &&
       (peers.length || groups.length)
     ) {
+      key.preventDefault();
+      setScrollFocused(false);
+      setEditingName(false);
       const conversations: Conversation[] = [
         ...peers.map((peer) => ({ kind: "peer" as const, id: peer.peer_id })),
         ...groups.map((group) => ({
@@ -1529,16 +1541,23 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       }
     }
     if (key.name === "pageup") {
+      key.preventDefault();
       setScrollFocused(true);
       scrollboxRef.current?.scrollBy(-1, "viewport");
     }
     if (key.name === "pagedown") {
+      key.preventDefault();
       setScrollFocused(true);
       scrollboxRef.current?.scrollBy(1, "viewport");
     }
-    if (scrollFocused && key.name === "home") scrollboxRef.current?.scrollTo(0);
-    if (scrollFocused && key.name === "end")
+    if (scrollFocused && key.name === "home") {
+      key.preventDefault();
+      scrollboxRef.current?.scrollTo(0);
+    }
+    if (scrollFocused && key.name === "end") {
+      key.preventDefault();
       scrollboxRef.current?.scrollTo(scrollboxRef.current.scrollHeight);
+    }
   });
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId);
@@ -1768,20 +1787,21 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             position: "absolute",
             left: Math.max(2, Math.floor(width / 2) - 24),
             top: Math.max(1, Math.floor(height / 2) - 2),
-            width: Math.min(48, Math.max(1, width - 4)),
+            width: Math.min(42, Math.max(1, width - 4)),
             border: true,
-            borderColor: "#ff7777",
-            backgroundColor: "#2d1818",
+            borderColor: chatTheme.line,
+            backgroundColor: chatTheme.surfaceRaised,
             padding: 1,
             flexDirection: "column",
           }}
         >
-          <text fg="#ff7777">
-            <b>Delete this message locally?</b>
+          <text fg={chatTheme.danger}>
+            <b>Delete this message?</b>
           </text>
-          <text fg="#bbbbbb">
-            Enter confirms. Esc cancels. This is not sent to peers.
+          <text fg={chatTheme.muted}>
+            It will be removed from this device only.
           </text>
+          <text><span fg={chatTheme.danger}>Enter delete</span><span fg={chatTheme.muted}>  /  Esc keep</span></text>
         </box>
       )}
       {copyToast && (
@@ -1791,13 +1811,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             right: 2,
             top: 1,
             border: true,
-            borderColor: "#66dd88",
-            backgroundColor: "#18251d",
+            borderColor: chatTheme.line,
+            backgroundColor: chatTheme.surfaceRaised,
             paddingLeft: 1,
             paddingRight: 1,
           }}
         >
-          <text fg="#66dd88">Copied to clipboard</text>
+          <text><span fg={chatTheme.success}>●</span><span fg={chatTheme.text}> Copied to clipboard</span></text>
         </box>
       )}
       {dialog && (

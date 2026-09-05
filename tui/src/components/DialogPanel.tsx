@@ -110,7 +110,7 @@ export function DialogPanel(props: DialogPanelProps) {
   if (!dialog) return null
   const fileManagerOpen = dialog.kind === "file-list"
 
-  return <box style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", backgroundColor: "#080b1099", alignItems: "center", justifyContent: "center" }}>
+  return <box style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", backgroundColor: theme.overlay, alignItems: "center", justifyContent: "center" }}>
     <box
       title={fileManagerOpen ? undefined : dialog.kind === "commands" ? "Commands"
         : dialog.kind.startsWith("control") ? "Control server"
@@ -148,7 +148,7 @@ export function DialogPanel(props: DialogPanelProps) {
          : dialog.kind === "delivery-details" ? "Delivery details"
          : "Private rooms"}
       bottomTitle={fileManagerOpen ? undefined : dialogBusy ? "Working..." : "Esc back  Ctrl+P Commands"}
-      style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: !fileManagerOpen, borderColor: dialog.kind === "about" ? "#9b8cff" : dialog.kind === "update" ? "#e0a34a" : "#6ea8fe", backgroundColor: fileManagerOpen ? theme.canvas : "#111923", padding: fileManagerOpen ? 0 : 1, flexDirection: "column", gap: fileManagerOpen ? 0 : 1, overflow: "hidden" }}
+      style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: !fileManagerOpen, borderColor: dialog.kind === "about" ? theme.accent : dialog.kind === "update" ? theme.warning : theme.link, backgroundColor: fileManagerOpen ? theme.canvas : theme.surfaceRaised, padding: fileManagerOpen ? 0 : 1, flexDirection: "column", gap: fileManagerOpen ? 0 : 1, overflow: "hidden" }}
     >
       {dialog.kind === "commands" && <CommandsDialog dialogHeight={dialogHeight} groups={groups} peers={peers} selectedGroup={groups.find((group) => group.group_id === selectedGroupId)} selection={selection} runCommand={runCommand} />}
       {dialog.kind === "about" && <AboutDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} isReleaseBuild={isReleaseBuild} checkForUpdates={checkForUpdatesFromAbout} goBack={goBack} />}
@@ -198,7 +198,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} />}
     </box>
     {!fileManagerOpen && <box style={{ position: "absolute", right: 1, bottom: 0 }}>
-      <text><span fg="#66dd88">● </span><span fg="#bbbbbb">MeshTalk </span><span fg="#888888">{appReleaseVersion}</span></text>
+      <text><span fg={theme.success}>● </span><span fg={theme.muted}>MeshTalk </span><span fg={theme.muted}>{appReleaseVersion}</span></text>
     </box>}
   </box>
 }
@@ -206,21 +206,21 @@ export function DialogPanel(props: DialogPanelProps) {
 function ImageViewerDialogContent({ dialog, dialogWidth, dialogHeight, imageProtocol }: { dialog: Extract<Dialog, { kind: "image-view" }>; dialogWidth: number; dialogHeight: number; imageProtocol: ImageProtocol }) {
   return (
     <>
-      <text wrapMode="none"><span fg="#66dd88">{dialog.filename}</span></text>
+      <text wrapMode="none"><span fg={theme.success}>{dialog.filename}</span></text>
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, alignItems: "center", justifyContent: "center" }}>
         <ImageAttachment filePath={dialog.filePath} filename={dialog.filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} />
       </box>
-      <text fg="#888888">Esc returns.</text>
+      <text fg={theme.muted}>Esc returns.</text>
     </>
   )
 }
 
 function DeliveryDetailsDialogContent({ dialog }: { dialog: Extract<Dialog, { kind: "delivery-details" }> }) {
   const statusOrder = ["delivered", "sent", "queued", "pending", "unavailable"]
-  const statusColor: Record<string, string> = { delivered: "#66dd88", sent: "#7aa2d6", queued: "#e0a34a", pending: "#888888", unavailable: "#ff7777" }
+  const statusColor: Record<string, string> = { delivered: theme.success, sent: theme.markdown.heading, queued: theme.warning, pending: theme.muted, unavailable: theme.danger }
   const grouped = statusOrder.map((status) => [status, dialog.deliveries.filter((delivery) => delivery.status === status)] as const).filter(([, deliveries]) => deliveries.length)
-  return <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
-    {!dialog.deliveries.length ? <text fg="#888888">No delivery details are available yet.</text> : null}
+  return <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
+    {!dialog.deliveries.length ? <text fg={theme.muted}>No delivery details are available yet.</text> : null}
     {grouped.map(([status, deliveries]) => <box key={status} style={{ flexDirection: "column", marginBottom: 1 }}>
       <text fg={statusColor[status]}><b>{status[0].toUpperCase() + status.slice(1)} ({deliveries.length})</b></text>
       {deliveries.map((delivery: GroupDelivery) => <text key={delivery.recipient_id}>  {delivery.display_name}</text>)}
@@ -231,7 +231,7 @@ function DeliveryDetailsDialogContent({ dialog }: { dialog: Extract<Dialog, { ki
 function ControlDialogContent({ dialog, dialogHeight, configureControl, dismissControlSetup, loadControlStatus, showDialog }: { dialog: Extract<Dialog, { kind: "control" }>; dialogHeight: number; configureControl: (url: string) => void; dismissControlSetup: () => void; loadControlStatus: () => void; showDialog: (d: Dialog) => void }) {
   return (
     <>
-      {dialog.firstRun && <MarqueeText width={50} fg="#e0a34a" text="Set up remote discovery to connect outside your LAN. You can skip this for LAN-only chat." />}
+      {dialog.firstRun && <MarqueeText width={50} fg={theme.warning} text="Set up remote discovery to connect outside your LAN. You can skip this for LAN-only chat." />}
       <MouseSelect focused height={Math.max(6, dialogHeight - 4)} options={[
         { name: "Use MeshTalk public server", description: "wss://meshtalk-control.qincai.xyz/v1/rendezvous", value: "public" },
         { name: "Use a custom server", description: "Enter another secure WebSocket URL", value: "custom" },
@@ -252,7 +252,7 @@ function ControlCustomDialogContent({ dialogDraft, setDialogDraft, configureCont
     <>
       <text>Enter a `wss://` URL. Plain `ws://` is accepted only for localhost.</text>
       <input focused value={dialogDraft} placeholder="wss://control.example/v1/rendezvous" onInput={setDialogDraft} onSubmit={(value) => void configureControl(typeof value === "string" ? value : dialogDraft)} maxLength={2048} />
-      <text fg="#888888">Enter saves the server.</text>
+      <text fg={theme.muted}>Enter saves the server.</text>
     </>
   )
 }
@@ -260,10 +260,10 @@ function ControlCustomDialogContent({ dialogDraft, setDialogDraft, configureCont
 function ControlStatusDialogContent({ dialog, showDialog }: { dialog: Extract<Dialog, { kind: "control-status" }>; showDialog: (d: Dialog) => void }) {
   return (
     <>
-      <text><span fg="#888888">Server: </span>{dialog.control.url ?? "Not configured"}</text>
-      <text><span fg="#888888">Connection: </span><span fg={dialog.control.connected ? "#66dd88" : "#e0a34a"}>{dialog.control.connected ? "Connected" : "Disconnected"}</span></text>
-      <text><span fg="#888888">STUN: </span>{dialog.control.stun_server}</text>
-      <text><span fg="#888888">Public endpoint: </span>{dialog.control.public_endpoint?.join(":") ?? "Not discovered"}</text>
+      <text><span fg={theme.muted}>Server: </span>{dialog.control.url ?? "Not configured"}</text>
+      <text><span fg={theme.muted}>Connection: </span><span fg={dialog.control.connected ? theme.success : theme.warning}>{dialog.control.connected ? "Connected" : "Disconnected"}</span></text>
+      <text><span fg={theme.muted}>STUN: </span>{dialog.control.stun_server}</text>
+      <text><span fg={theme.muted}>Public endpoint: </span>{dialog.control.public_endpoint?.join(":") ?? "Not discovered"}</text>
       <MouseSelect focused height={5} options={[
         { name: "Change server", description: "Choose the public server or enter a custom URL", value: "change" },
          { name: "Back to Commands", description: "Return to Commands", value: "back" },
@@ -299,7 +299,7 @@ function CustomisationDialogContent({ splashStyle, dialogHeight, showDialog }: {
 function SplashStyleDialogContent({ splashStyle, dialogHeight, saveAdvancedConfig, showDialog }: { splashStyle: SplashPreference; dialogHeight: number; saveAdvancedConfig: (p: Record<string, unknown>, m: string) => void; showDialog: (d: Dialog) => void }) {
   const current = splashStyle === "boot-log" ? "Boot log" : splashStyle === "card" ? "Animated card" : "Off"
   return <>
-    <text><span fg="#888888">Current: </span>{current}</text>
+    <text><span fg={theme.muted}>Current: </span>{current}</text>
     <MouseSelect focused height={Math.max(5, dialogHeight - 5)} options={[
       { name: "Boot log", description: "Show real startup operations as a terminal boot log", value: "boot-log" },
       { name: "Animated card", description: "Show the animated MeshTalk card with live startup status", value: "card" },
@@ -376,7 +376,7 @@ function AdvancedControlIpDialogContent({ dialogDraft, setDialogDraft, saveAdvan
     <>
       <text>Enter comma-separated IPv4 or IPv6 addresses for the control server.</text>
       <input focused value={dialogDraft} placeholder="104.21.6.171, 172.67.135.15, 2606:4700:3032::6815:6ab, 2606:4700:3037::ac43:870f" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ control_pinned_ip: typeof value === "string" ? value : dialogDraft }, "Control server IPs pinned.")} maxLength={1024} />
-      <text fg="#888888">Enter saves the IP pin.</text>
+      <text fg={theme.muted}>Enter saves the IP pin.</text>
     </>
   )
 }
@@ -386,7 +386,7 @@ function AdvancedStunIpDialogContent({ dialogDraft, setDialogDraft, saveAdvanced
     <>
       <text>Enter comma-separated IPv4 addresses for the STUN server.</text>
       <input focused value={dialogDraft} placeholder="203.0.113.10, 203.0.113.11" onInput={setDialogDraft} onSubmit={(value) => void saveAdvancedConfig({ stun_pinned_ip: typeof value === "string" ? value : dialogDraft }, "STUN server IPs pinned.")} maxLength={1024} />
-      <text fg="#888888">Enter saves the IP pin.</text>
+      <text fg={theme.muted}>Enter saves the IP pin.</text>
     </>
   )
 }
@@ -410,7 +410,7 @@ function RoomsDialogContent({ dialog, dialogHeight, loadRooms, showDialog }: { d
           if (room) showDialog({ kind: "room-detail", room })
         }
       }} wrapSelection showDescription />
-      {!dialog.rooms.length && <text fg="#888888">No joined rooms yet.</text>}
+      {!dialog.rooms.length && <text fg={theme.muted}>No joined rooms yet.</text>}
     </>
   )
 }
@@ -420,7 +420,7 @@ function RoomCreateDialogContent({ dialogDraft, setDialogDraft, createRoom }: { 
     <>
       <text>Choose a name for the new group.</text>
       <input focused value={dialogDraft} placeholder="Group name" onInput={setDialogDraft} onSubmit={(value) => void createRoom(typeof value === "string" ? value : dialogDraft)} maxLength={80} />
-      <text fg="#888888">Enter creates the group and copies its secret invite.</text>
+      <text fg={theme.muted}>Enter creates the group and copies its secret invite.</text>
     </>
   )
 }
@@ -430,7 +430,7 @@ function RoomJoinDialogContent({ dialogDraft, setDialogDraft, joinRoom }: { dial
     <>
       <text>Paste the secret invite you received from another room member.</text>
       <input focused value={dialogDraft} placeholder="meshtalk:... or meshtalk-group:..." onInput={setDialogDraft} onSubmit={(value) => void joinRoom(typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
-      <text fg="#888888">Enter joins the room. Invites are secrets.</text>
+      <text fg={theme.muted}>Enter joins the room. Invites are secrets.</text>
     </>
   )
 }
@@ -438,10 +438,10 @@ function RoomJoinDialogContent({ dialogDraft, setDialogDraft, joinRoom }: { dial
 function RoomCreatedDialogContent({ dialog, copyInvite, loadRooms }: { dialog: Extract<Dialog, { kind: "room-created" }>; copyInvite: (invite: string) => void; loadRooms: () => void }) {
   return (
     <>
-      <text fg="#66dd88">{dialog.created ? "Room created" : "Room invite"}</text>
-      <text><span fg="#888888">ID: </span>{dialog.roomId}</text>
-      <text wrapMode="word"><span fg="#888888">Invite: </span>{dialog.invite}</text>
-      <text fg={dialog.copied ? "#66dd88" : "#e0a34a"}>{dialog.copied ? "Copy requested. Paste once to confirm your terminal accepted it." : "Copy the invite before sharing it."}</text>
+      <text fg={theme.success}>{dialog.created ? "Room created" : "Room invite"}</text>
+      <text><span fg={theme.muted}>ID: </span>{dialog.roomId}</text>
+      <text wrapMode="word"><span fg={theme.muted}>Invite: </span>{dialog.invite}</text>
+      <text fg={dialog.copied ? theme.success : theme.warning}>{dialog.copied ? "Copy requested. Paste once to confirm your terminal accepted it." : "Copy the invite before sharing it."}</text>
       <MouseSelect focused height={5} options={[
         { name: "Copy invite", description: "Copy the secret invite to the clipboard", value: "copy" },
         { name: "Back to rooms", description: "Manage your private rooms", value: "back" },
@@ -453,9 +453,9 @@ function RoomCreatedDialogContent({ dialog, copyInvite, loadRooms }: { dialog: E
 function RoomDetailDialogContent({ dialog, groups, leaveGroup, leaveRoom, loadRoomInvite, loadRooms }: { dialog: Extract<Dialog, { kind: "room-detail" }>; groups: Group[]; leaveGroup: (g: Group) => void; leaveRoom: (roomId: string) => void; loadRoomInvite: (roomId: string) => void; loadRooms: () => void }) {
   return (
     <>
-      <text><span fg="#888888">Room ID: </span>{dialog.room.room_id}</text>
-      <text><span fg="#888888">Control connections: </span>{dialog.room.members}</text>
-      <text fg="#e0a34a">Leaving removes this room and its secret from this device.</text>
+      <text><span fg={theme.muted}>Room ID: </span>{dialog.room.room_id}</text>
+      <text><span fg={theme.muted}>Control connections: </span>{dialog.room.members}</text>
+      <text fg={theme.warning}>Leaving removes this room and its secret from this device.</text>
       <MouseSelect focused height={6} options={[
         { name: "Keep room", description: "Return without making changes", value: "keep" },
         { name: "Copy invite", description: "Reveal and copy this room's secret invite", value: "copy" },
@@ -472,17 +472,17 @@ function RoomDetailDialogContent({ dialog, groups, leaveGroup, leaveRoom, loadRo
 function GroupDetailDialogContent({ dialog, identity, peers, closeDialog, leaveGroup }: { dialog: Extract<Dialog, { kind: "group-detail" }>; identity: { peer_id: string; display_name: string } | undefined; peers: Peer[]; closeDialog: () => void; leaveGroup: (g: Group) => void }) {
   return (
     <>
-      <text><span fg="#888888">Name: </span>{dialog.group.name}</text>
-      <text><span fg="#888888">Group ID: </span>{dialog.group.group_id}</text>
-      <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
-        {!dialog.members.length ? <text fg="#888888">No member details available.</text> : null}
+      <text><span fg={theme.muted}>Name: </span>{dialog.group.name}</text>
+      <text><span fg={theme.muted}>Group ID: </span>{dialog.group.group_id}</text>
+      <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
+        {!dialog.members.length ? <text fg={theme.muted}>No member details available.</text> : null}
         {dialog.members.map((member, index) => {
           const memberId = member.peer_id ?? member.member_id
           const knownPeer = peers.find((peer) => peer.peer_id === memberId)
-          const color = memberId === identity?.peer_id ? "#65a9ff" : knownPeer ? peerPresence(knownPeer) === "active" ? "#66dd88" : peerPresence(knownPeer) === "away" ? "#e0a34a" : "#888888" : member.is_online ? "#66dd88" : "#888888"
+          const color = memberId === identity?.peer_id ? theme.presence.self : knownPeer ? peerPresence(knownPeer) === "active" ? theme.success : peerPresence(knownPeer) === "away" ? theme.warning : theme.muted : member.is_online ? theme.success : theme.muted
           return <text key={memberId ?? String(index)}>
             <span fg={color}>{member.display_name}</span>
-            <span fg="#718096"> {(memberId ?? "").slice(0, 12)}</span>
+            <span fg={theme.subdued}> {(memberId ?? "").slice(0, 12)}</span>
           </text>
         })}
       </scrollbox>
@@ -499,7 +499,7 @@ function RenameDialogContent({ dialogDraft, setDialogDraft, setNameDraft, saveDi
     <>
       <text>Choose the name other peers will see.</text>
       <input focused value={dialogDraft} placeholder="Display name" onInput={(value) => { setDialogDraft(value); setNameDraft(value) }} onSubmit={(value) => void saveDisplayName(typeof value === "string" ? value : dialogDraft)} maxLength={48} />
-      <text fg="#888888">Enter saves and shares the name with connected peers.</text>
+      <text fg={theme.muted}>Enter saves and shares the name with connected peers.</text>
     </>
   )
 }
@@ -507,8 +507,8 @@ function RenameDialogContent({ dialogDraft, setDialogDraft, setNameDraft, saveDi
 function MuteTimeoutDialogContent({ dialog, dialogHeight, mutePeer }: { dialog: Extract<Dialog, { kind: "mute-timeout" }>; dialogHeight: number; mutePeer: (peerId: string, timeout: number) => void }) {
   return (
     <>
-      <text>Mute notifications from <span fg="#66dd88">{dialog.displayName}</span>.</text>
-      <text fg="#888888">Choose how long notifications will stay muted.</text>
+      <text>Mute notifications from <span fg={theme.success}>{dialog.displayName}</span>.</text>
+      <text fg={theme.muted}>Choose how long notifications will stay muted.</text>
       <MouseSelect focused height={Math.max(5, dialogHeight - 6)} options={[
         { name: "15 minutes", description: "Mute for a short break", value: String(15 * 60) },
         { name: "1 hour", description: "Mute for a while", value: String(60 * 60) },
@@ -523,7 +523,7 @@ function MuteTimeoutDialogContent({ dialog, dialogHeight, mutePeer }: { dialog: 
 function UnmuteConfirmDialogContent({ dialog, unmutePeer, showDialog }: { dialog: Extract<Dialog, { kind: "unmute-confirm" }>; unmutePeer: (peerId: string) => void; showDialog: (d: Dialog) => void }) {
   return (
     <>
-      <text>Unmute notifications from <span fg="#66dd88">{dialog.displayName}</span>?</text>
+      <text>Unmute notifications from <span fg={theme.success}>{dialog.displayName}</span>?</text>
       <MouseSelect focused height={4} options={[
         { name: "Yes, unmute", description: "Resume desktop notifications from this peer", value: "yes" },
         { name: "Cancel", description: "Keep muted", value: "no" },
@@ -535,10 +535,10 @@ function UnmuteConfirmDialogContent({ dialog, unmutePeer, showDialog }: { dialog
 function AddFriendDialogContent({ dialog, dialogDraft, setDialogDraft, sendFriendRequest }: { dialog: Extract<Dialog, { kind: "add-friend" }>; dialogDraft: string; setDialogDraft: (v: string) => void; sendFriendRequest: (peerId: string, note: string) => void }) {
   return (
     <>
-      <text>Send a friend request to <span fg="#66dd88">{dialog.displayName}</span>?</text>
-      <text fg="#888888">They must accept before your messages get through.</text>
+      <text>Send a friend request to <span fg={theme.success}>{dialog.displayName}</span>?</text>
+      <text fg={theme.muted}>They must accept before your messages get through.</text>
       <input focused value={dialogDraft} placeholder="Optional note" onInput={setDialogDraft} onSubmit={(value) => void sendFriendRequest(dialog.peerId, typeof value === "string" ? value : dialogDraft)} maxLength={1024} />
-      <text fg="#888888">Enter sends the request. Esc backs out.</text>
+      <text fg={theme.muted}>Enter sends the request. Esc backs out.</text>
     </>
   )
 }
@@ -546,8 +546,8 @@ function AddFriendDialogContent({ dialog, dialogDraft, setDialogDraft, sendFrien
 function RemoveFriendDialogContent({ dialog, unfriendPeer, showDialog }: { dialog: Extract<Dialog, { kind: "remove-friend" }>; unfriendPeer: (peerId: string) => void; showDialog: (d: Dialog) => void }) {
   return (
     <>
-      <text>Remove <span fg="#66dd88">{dialog.displayName}</span> as a friend?</text>
-      <text fg="#888888">Their future messages will be blocked until you accept a new request.</text>
+      <text>Remove <span fg={theme.success}>{dialog.displayName}</span> as a friend?</text>
+      <text fg={theme.muted}>Their future messages will be blocked until you accept a new request.</text>
       <MouseSelect focused height={4} options={[
         { name: "Remove friend", description: "Stop being friends and block their messages", value: "yes" },
         { name: "Cancel", description: "Keep them as a friend", value: "no" },
@@ -559,7 +559,7 @@ function RemoveFriendDialogContent({ dialog, unfriendPeer, showDialog }: { dialo
 function FriendRequestsDialogContent({ dialog, dialogHeight, showDialog }: { dialog: Extract<Dialog, { kind: "friend-requests" }>; dialogHeight: number; showDialog: (d: Dialog) => void }) {
   return (
     <>
-      {!dialog.requests.length && <text fg="#888888">No pending friend requests.</text>}
+      {!dialog.requests.length && <text fg={theme.muted}>No pending friend requests.</text>}
       {dialog.requests.length > 0 && (
         <MouseSelect focused height={Math.max(5, dialogHeight - 3)} options={[
           ...dialog.requests.filter((r) => r.direction === "incoming").map((r) => ({
@@ -590,8 +590,8 @@ function FriendRequestsDialogContent({ dialog, dialogHeight, showDialog }: { dia
 function FriendRequestIncomingDialogContent({ dialog, blockSenderFromRequest, respondToFriendRequest }: { dialog: Extract<Dialog, { kind: "friend-request-incoming" }>; blockSenderFromRequest: (request: FriendRequest) => void; respondToFriendRequest: (request: FriendRequest, accept: boolean) => void }) {
   return (
     <>
-      <text><span fg="#66dd88">{dialog.request.sender_name}</span> wants to add you as a friend.</text>
-      {dialog.request.note ? <text wrapMode="word"><span fg="#888888">Note: </span>{dialog.request.note}</text> : null}
+      <text><span fg={theme.success}>{dialog.request.sender_name}</span> wants to add you as a friend.</text>
+      {dialog.request.note ? <text wrapMode="word"><span fg={theme.muted}>Note: </span>{dialog.request.note}</text> : null}
       <MouseSelect focused height={7} options={[
         { name: "Accept", description: "Become friends and allow direct messages", value: "accept" },
         { name: "Decline", description: "Reject this friend request", value: "decline" },
@@ -625,7 +625,7 @@ function FriendsDialogContent({ dialogHeight, loadBlockedPeers, runCommand, show
 function AccessibilityDialogContent({ dialogHeight, flashingEnabled, setAccessibilityFlashing, showDialog }: { dialogHeight: number; flashingEnabled: boolean; setAccessibilityFlashing: (enabled: boolean) => void; showDialog: (d: Dialog) => void }) {
   return (
     <>
-      <text fg="#888888">Reduce motion and other accessibility options.</text>
+      <text fg={theme.muted}>Reduce motion and other accessibility options.</text>
       <MouseSelect focused height={Math.max(4, dialogHeight - 4)} options={[
         { name: flashingEnabled ? "Disable Flashing" : "Re-enable Flashing", description: flashingEnabled ? "Stop capability and rendezvous warnings from blinking" : "Allow capability and rendezvous warnings to blink", value: "toggle-flash" },
          { name: "Back to Commands", description: "Return to Commands", value: "back" },
@@ -641,7 +641,7 @@ function AccessibilityDialogContent({ dialogHeight, flashingEnabled, setAccessib
 function BlockedDialogContent({ dialog, dialogHeight, loadBlockedPeers, showDialog, unblockPeer }: { dialog: Extract<Dialog, { kind: "blocked" }>; dialogHeight: number; loadBlockedPeers: () => void; showDialog: (d: Dialog) => void; unblockPeer: (peerId: string, displayName: string) => void }) {
   return (
     <>
-      {!dialog.blocked.length && <text fg="#888888">No blocked peers. Blocked peers cannot send you friend requests.</text>}
+      {!dialog.blocked.length && <text fg={theme.muted}>No blocked peers. Blocked peers cannot send you friend requests.</text>}
       {dialog.blocked.length > 0 && (
         <MouseSelect focused height={Math.max(5, dialogHeight - 6)} options={[
           ...dialog.blocked.map((peer) => ({ name: peer.display_name, description: "Unblock — allow friend requests again", value: `unblock:${peer.peer_id}` })),
@@ -673,7 +673,7 @@ function BlockedDialogContent({ dialog, dialogHeight, loadBlockedPeers, showDial
 function BlockPeerPickDialogContent({ dialogWidth, dialogHeight, peers, identity, loadBlockedPeers, showDialog }: { dialogWidth: number; dialogHeight: number; peers: Peer[]; identity: { peer_id: string; display_name: string } | undefined; loadBlockedPeers: () => void; showDialog: (d: Dialog) => void }) {
   return (
     <>
-      <MarqueeText width={dialogWidth - 4} fg="#888888" text="Choose someone to block. Blocked peers cannot send you friend requests." />
+      <MarqueeText width={dialogWidth - 4} fg={theme.muted} text="Choose someone to block. Blocked peers cannot send you friend requests." />
       <MouseSelect focused height={Math.max(5, dialogHeight - 6)} options={[
         ...peers.filter((peer) => peer.peer_id !== identity?.peer_id && !peer.is_blocked).map((peer) => ({
           name: peer.display_name, description: peer.is_online ? "Online" : "Offline", value: peer.peer_id,
@@ -692,8 +692,8 @@ function BlockPeerPickDialogContent({ dialogWidth, dialogHeight, peers, identity
 function BlockPeerDialogContent({ dialog, blockPeer, loadBlockedPeers, showDialog }: { dialog: Extract<Dialog, { kind: "block-peer" }>; blockPeer: (peerId: string, displayName: string) => void; loadBlockedPeers: () => void; showDialog: (d: Dialog) => void }) {
   return (
     <>
-      <text>Block friend requests from <span fg="#66dd88">{dialog.displayName}</span>?</text>
-      <text fg="#888888">You can unblock later in Commands {'>'} Friends {'>'} Block.</text>
+      <text>Block friend requests from <span fg={theme.success}>{dialog.displayName}</span>?</text>
+      <text fg={theme.muted}>You can unblock later in Commands {'>'} Friends {'>'} Block.</text>
       <MouseSelect focused height={4} options={[
         { name: "Block", description: "Ignore friend requests from this person", value: "yes" },
         { name: "Cancel", description: "Keep receiving friend requests", value: "no" },
@@ -709,8 +709,8 @@ function BlockPeerDialogContent({ dialog, blockPeer, loadBlockedPeers, showDialo
 function CancelFriendConfirmDialogContent({ dialog, cancelFriendRequest, loadFriendRequests, showDialog }: { dialog: Extract<Dialog, { kind: "cancel-friend-confirm" }>; cancelFriendRequest: (requestId: string) => void; loadFriendRequests: () => void; showDialog: (d: Dialog) => void }) {
   return (
     <>
-      <text>Cancel friend request to <span fg="#66dd88">{dialog.displayName}</span>?</text>
-      <text fg="#888888">They will no longer see your pending request.</text>
+      <text>Cancel friend request to <span fg={theme.success}>{dialog.displayName}</span>?</text>
+      <text fg={theme.muted}>They will no longer see your pending request.</text>
       <MouseSelect focused height={4} options={[
         { name: "Cancel request", description: "Withdraw the pending friend request", value: "yes" },
         { name: "Keep request", description: "Leave the request pending", value: "no" },
@@ -726,8 +726,8 @@ function CancelFriendConfirmDialogContent({ dialog, cancelFriendRequest, loadFri
 function DebugDialogContent({ dialog, controlStatus, debugInfo, dialogHeight, reStun, loadDebugInfo, showDialog }: { dialog: Extract<Dialog, { kind: "debug" }>; controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }; debugInfo: DebugInfo | null; dialogHeight: number; reStun: () => void; loadDebugInfo: () => void; showDialog: (d: Dialog) => void }) {
   return (
     <>
-      <text><span fg="#888888">Control: </span>{controlStatus.connected ? "Connected" : "Disconnected"}{controlStatus.reconnect_attempts ? ` (reconnects: ${controlStatus.reconnect_attempts})` : ""}</text>
-      <text><span fg="#888888">STUN server: </span>{debugInfo?.stun_server ?? "..."}</text>
+      <text><span fg={theme.muted}>Control: </span>{controlStatus.connected ? "Connected" : "Disconnected"}{controlStatus.reconnect_attempts ? ` (reconnects: ${controlStatus.reconnect_attempts})` : ""}</text>
+      <text><span fg={theme.muted}>STUN server: </span>{debugInfo?.stun_server ?? "..."}</text>
       <MouseSelect focused height={Math.min(8, Math.max(1, dialogHeight - 8))} options={[
         { name: "Re-STUN", description: "Re-query STUN server and republish endpoint cards", value: "re-stun" },
         { name: "Endpoints", description: "View your endpoint and connected peers", value: "endpoints" },
@@ -748,17 +748,17 @@ function DebugEndpointsDialogContent({ debugInfo, showDialog }: { debugInfo: Deb
   const sortedPeers = debugInfo ? sortPeersByInteraction(debugInfo.peers) : []
   return (
     <>
-      {!debugInfo && <text fg="#888888">Loading debug info...</text>}
+      {!debugInfo && <text fg={theme.muted}>Loading debug info...</text>}
       {debugInfo && (
-        <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
-          <text><span fg="#888888">My public endpoint: </span>{debugInfo.public_endpoint ? `${debugInfo.public_endpoint[0]}:${debugInfo.public_endpoint[1]}` : "None"}</text>
-          <text><span fg="#888888">Local TCP port: </span>{debugInfo.local_tcp_port}</text>
-          <text fg="#888888">{"─".repeat(40)}</text>
-          <text><span fg="#888888">Peers</span></text>
-          {sortedPeers.length === 0 && <text fg="#888888">  No peers</text>}
+        <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
+          <text><span fg={theme.muted}>My public endpoint: </span>{debugInfo.public_endpoint ? `${debugInfo.public_endpoint[0]}:${debugInfo.public_endpoint[1]}` : "None"}</text>
+          <text><span fg={theme.muted}>Local TCP port: </span>{debugInfo.local_tcp_port}</text>
+          <text fg={theme.muted}>{"─".repeat(40)}</text>
+          <text><span fg={theme.muted}>Peers</span></text>
+          {sortedPeers.length === 0 && <text fg={theme.muted}>  No peers</text>}
           {sortedPeers.map((peer) => (
             <box key={peer.peer_id} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
-              <text truncate fg={peer.is_online ? "#66dd88" : "#888888"}>{"> "}{peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
+              <text truncate fg={peer.is_online ? theme.success : theme.muted}>{"> "}{peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
             </box>
           ))}
         </scrollbox>
@@ -770,19 +770,19 @@ function DebugEndpointsDialogContent({ debugInfo, showDialog }: { debugInfo: Deb
 
 function DebugPeerDialogContent({ dialog, debugInfo, showDialog }: { dialog: Extract<Dialog, { kind: "debug-peer" }>; debugInfo: DebugInfo | null; showDialog: (d: Dialog) => void }) {
   const peer = debugInfo?.peers.find((p) => p.peer_id === dialog.peerId)
-  if (!peer) return <text fg="#888888">Peer not found (try Refresh)</text>
+  if (!peer) return <text fg={theme.muted}>Peer not found (try Refresh)</text>
   return (
     <>
-      <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
-        <text><span fg="#888888">Name: </span>{peer.display_name}</text>
-        <text><span fg="#888888">Peer ID: </span>{peer.peer_id}</text>
-        <text><span fg="#888888">Online: </span>{peer.is_online ? "Yes" : "No"}</text>
-        <text><span fg="#888888">Active transport: </span>{peer.active_transport ?? "None"}</text>
-        <text><span fg="#888888">Active endpoint: </span>{peer.active_endpoint ?? "None"}</text>
-        {peer.capabilities?.length ? <text><span fg="#888888">Capabilities: </span>{peer.capabilities.join(", ")}</text> : null}
-        {peer.peer_missing_capabilities?.length ? <text><span fg="#888888">Peer missing: </span>{peer.peer_missing_capabilities.join(", ")}</text> : null}
-        {peer.local_missing_capabilities?.length ? <text><span fg="#888888">Unavailable locally: </span>{peer.local_missing_capabilities.join(", ")}</text> : null}
-        <text><span fg="#888888">Endpoints:</span></text>
+      <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
+        <text><span fg={theme.muted}>Name: </span>{peer.display_name}</text>
+        <text><span fg={theme.muted}>Peer ID: </span>{peer.peer_id}</text>
+        <text><span fg={theme.muted}>Online: </span>{peer.is_online ? "Yes" : "No"}</text>
+        <text><span fg={theme.muted}>Active transport: </span>{peer.active_transport ?? "None"}</text>
+        <text><span fg={theme.muted}>Active endpoint: </span>{peer.active_endpoint ?? "None"}</text>
+        {peer.capabilities?.length ? <text><span fg={theme.muted}>Capabilities: </span>{peer.capabilities.join(", ")}</text> : null}
+        {peer.peer_missing_capabilities?.length ? <text><span fg={theme.muted}>Peer missing: </span>{peer.peer_missing_capabilities.join(", ")}</text> : null}
+        {peer.local_missing_capabilities?.length ? <text><span fg={theme.muted}>Unavailable locally: </span>{peer.local_missing_capabilities.join(", ")}</text> : null}
+        <text><span fg={theme.muted}>Endpoints:</span></text>
         {peer.endpoints.map((e) => (
           <text key={`${e.transport}-${e.endpoint}`}>  {e.transport} {e.endpoint}{e.active ? " *" : ""}</text>
         ))}
@@ -796,10 +796,10 @@ function FileSendDialogContent({ dialog, dialogWidth, selection, peers, groups, 
   const targetName = selection?.kind === "peer" ? peers.find((p) => p.peer_id === selection.id)?.display_name ?? selection.id.slice(0, 8) : groups.find((g) => g.group_id === selection?.id)?.name ?? "group"
   return (
     <>
-      <text>Enter full file path to send to <span fg="#66dd88">{targetName}</span></text>
-      <MarqueeText width={dialogWidth - 4} fg="#888888" text="Works cross-platform. Windows: C:\\path\\to\\file  macOS/Linux: /path/to/file" />
+      <text>Enter full file path to send to <span fg={theme.success}>{targetName}</span></text>
+      <MarqueeText width={dialogWidth - 4} fg={theme.muted} text="Works cross-platform. Windows: C:\\path\\to\\file  macOS/Linux: /path/to/file" />
       <input focused value={dialogDraft} placeholder={process.platform === "win32" ? "C:\\Users\\you\\Documents\\file.txt" : "/home/you/file.txt"} onInput={setDialogDraft} onSubmit={(value) => void sendFile(typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
-      <MarqueeText width={dialogWidth - 4} fg="#888888" text="Enter sends. Path must be readable by the MeshTalk backend. Files up to 50 MiB." />
+      <MarqueeText width={dialogWidth - 4} fg={theme.muted} text="Enter sends. Path must be readable by the MeshTalk backend. Files up to 50 MiB." />
     </>
   )
 }
@@ -869,11 +869,11 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
   })
   const formatSize = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
   const statusStyle = (status: string) => {
-    if (status === "completed") return { color: "#66dd88", label: "done" }
-    if (status === "sent") return { color: "#65a9ff", label: "sent" }
-    if (status === "receiving" || status === "sending") return { color: "#e0a34a", label: status }
-    if (status === "failed" || status === "error") return { color: "#ff7777", label: "failed" }
-    return { color: "#888888", label: status }
+    if (status === "completed") return { color: theme.success, label: "done" }
+    if (status === "sent") return { color: theme.presence.self, label: "sent" }
+    if (status === "receiving" || status === "sending") return { color: theme.warning, label: status }
+    if (status === "failed" || status === "error") return { color: theme.danger, label: "failed" }
+    return { color: theme.muted, label: status }
   }
   const chips: { id: typeof filter; label: string; count: number }[] = [
     { id: "all", label: "All", count: counts.all }, { id: "inbound", label: "Received", count: counts.inbound },
@@ -952,7 +952,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
       <FileManagerAction shortcut="Esc" label=" Back" onPress={() => showDialog({ kind: "commands" })} />
       <text fg={theme.muted}>Up/Down or J/K select</text>
     </box>
-    {pendingDelete ? <box style={{ position: "absolute", left: 2, right: 2, top: Math.max(1, Math.floor(dialogHeight / 2) - 3), border: true, borderColor: theme.danger, backgroundColor: "#2d1818", padding: 1, flexDirection: "column", gap: 1 }}>
+    {pendingDelete ? <box style={{ position: "absolute", left: 2, right: 2, top: Math.max(1, Math.floor(dialogHeight / 2) - 3), border: true, borderColor: theme.danger, backgroundColor: theme.dangerSurface, padding: 1, flexDirection: "column", gap: 1 }}>
       <text fg={theme.danger}><b>Delete {pendingDelete.filename} locally?</b></text>
       <text fg={theme.text}>This removes the local file and transfer history. Enter confirms; Esc cancels.</text>
       <box style={{ flexDirection: "row", gap: 1 }}>
@@ -965,7 +965,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
 
 function FileManagerAction({ shortcut, label, onPress, disabled = false, danger = false }: { shortcut: string; label: string; onPress: () => void; disabled?: boolean; danger?: boolean }) {
   const color = disabled ? theme.line : danger ? theme.danger : theme.text
-  return <box onMouseDown={disabled ? undefined : onPress} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: disabled ? undefined : danger ? "#3a2022" : theme.selected }}>
+  return <box onMouseDown={disabled ? undefined : onPress} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: disabled ? undefined : danger ? theme.dangerSurface : theme.selected }}>
     <text fg={color}><u>{shortcut}</u>{label}</text>
   </box>
 }
@@ -973,33 +973,33 @@ function FileManagerAction({ shortcut, label, onPress, disabled = false, danger 
 function FilesDirDialogContent({ dialog, dialogWidth, dialogDraft, setDialogDraft, setFilesDir, loadFiles }: { dialog: Extract<Dialog, { kind: "files-dir" }>; dialogWidth: number; dialogDraft: string; setDialogDraft: (v: string) => void; setFilesDir: (path: string) => void; loadFiles: () => void }) {
   const isEnv = !!dialog.env
   const isCustom = !!dialog.configured && !isEnv
-  const state = isEnv ? { label: "env override", color: "#e0a34a", background: "#33260a" } : isCustom ? { label: "custom", color: "#66dd88", background: "#1a3320" } : { label: "default", color: "#888888", background: "#1a2332" }
+  const state = isEnv ? { label: "env override", color: theme.warning, background: theme.dangerSurface } : isCustom ? { label: "custom", color: theme.success, background: theme.successSurface } : { label: "default", color: theme.muted, background: theme.surface }
   return <>
     <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingBottom: 1, flexShrink: 0 }}>
-      <text><span fg="#6ea8fe"><b>File storage</b></span> <span fg="#888888">· received files</span></text>
-      <text fg="#5a6b86">Enter saves · Esc returns</text>
+      <text><span fg={theme.link}><b>File storage</b></span> <span fg={theme.muted}>· received files</span></text>
+      <text fg={theme.subdued}>Enter saves · Esc returns</text>
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
-      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: "#24344d", backgroundColor: "#0f1826" }}>
+      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: theme.surface, backgroundColor: theme.canvas }}>
         <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-          <text fg="#c8dfff"><b>Current location</b></text>
-          <box style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: state.background, border: true, borderColor: "#24344d" }}><text fg={state.color}>{state.label}</text></box>
+          <text fg={theme.text}><b>Current location</b></text>
+          <box style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: state.background, border: true, borderColor: theme.surface }}><text fg={state.color}>{state.label}</text></box>
         </box>
-        <box style={{ minHeight: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", border: true, borderColor: "#1e2e4a", backgroundColor: "#111d2e" }}>
-          <text fg="#c8dfff" wrapMode="word"><b>{dialog.filesDir}</b></text>
+        <box style={{ minHeight: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", border: true, borderColor: theme.selected, backgroundColor: theme.surfaceRaised }}>
+          <text fg={theme.text} wrapMode="word"><b>{dialog.filesDir}</b></text>
         </box>
-        {isEnv ? <text fg="#e0a34a">MESHTALK_FILES_DIR={dialog.env} takes precedence over this setting.</text> : isCustom ? <text fg="#888888">Custom path saved in settings.json.</text> : <text fg="#888888">Default location: {dialog.dataDir}/files</text>}
+        {isEnv ? <text fg={theme.warning}>MESHTALK_FILES_DIR={dialog.env} takes precedence over this setting.</text> : isCustom ? <text fg={theme.muted}>Custom path saved in settings.json.</text> : <text fg={theme.muted}>Default location: {dialog.dataDir}/files</text>}
       </box>
-      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: "#24344d", backgroundColor: "#111923" }}>
-        <text fg="#c8dfff"><b>Change location</b></text>
-        <text fg="#888888">New incoming files will be saved here. Existing files stay where they are.</text>
+      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: theme.surface, backgroundColor: theme.surfaceRaised }}>
+        <text fg={theme.text}><b>Change location</b></text>
+        <text fg={theme.muted}>New incoming files will be saved here. Existing files stay where they are.</text>
         <input focused value={dialogDraft} placeholder={dialog.filesDir} onInput={setDialogDraft} onSubmit={(value) => void setFilesDir(typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
-        <text fg="#5a6b86">Examples: E:\MeshTalkFiles · /mnt/e/MeshTalkFiles · /Volumes/E/MeshTalkFiles</text>
+        <text fg={theme.subdued}>Examples: E:\MeshTalkFiles · /mnt/e/MeshTalkFiles · /Volumes/E/MeshTalkFiles</text>
       </box>
     </box>
     <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end", minHeight: 3, flexShrink: 0 }}>
-      <box onMouseDown={() => void setFilesDir(dialogDraft)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1d3a5f", border: true, borderColor: "#6ea8fe" }}><text fg="#c8dfff">Save location</text></box>
-      <box onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff">Back to files</text></box>
+      <box onMouseDown={() => void setFilesDir(dialogDraft)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}>Save location</text></box>
+      <box onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>Back to files</text></box>
     </box>
   </>
 }
@@ -1011,32 +1011,32 @@ function FileDownloadDialogContent({ dialog, dialogWidth, dialogHeight, dialogDr
   useKeyboard((key) => { if (key.name === "s") void downloadFile(dialog.fileId, dialogDraft || suggested) })
   return <>
     <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingBottom: 1, flexShrink: 0 }}>
-      <text><span fg="#6ea8fe"><b>Save File</b></span> <span fg="#888888">· {dialog.filename}</span></text>
-      <text fg="#5a6b86">Enter saves · Esc back</text>
+      <text><span fg={theme.link}><b>Save File</b></span> <span fg={theme.muted}>· {dialog.filename}</span></text>
+      <text fg={theme.subdued}>Enter saves · Esc back</text>
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
-      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: "#24344d", backgroundColor: "#0f1826" }}>
-        <text fg="#c8dfff"><b>Source</b></text>
-        <box style={{ flexDirection: "column", padding: 1, border: true, borderColor: "#1e2e4a", backgroundColor: "#111d2e" }}>
+      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: theme.surface, backgroundColor: theme.canvas }}>
+        <text fg={theme.text}><b>Source</b></text>
+        <box style={{ flexDirection: "column", padding: 1, border: true, borderColor: theme.selected, backgroundColor: theme.surfaceRaised }}>
           <box style={{ flexDirection: "row", gap: 1 }}>
-            <text fg={isImage ? "#e0a34a" : "#6ea8fe"}>{isImage ? "◉" : "▭"}</text>
-            <text><b fg="#e8edf5">{dialog.filename}</b> <span fg="#5a6b86">· {dialog.fileId.slice(0, 8)}</span></text>
+            <text fg={isImage ? theme.warning : theme.link}>{isImage ? "◉" : "▭"}</text>
+            <text><b fg={theme.text}>{dialog.filename}</b> <span fg={theme.subdued}>· {dialog.fileId.slice(0, 8)}</span></text>
           </box>
-          {dialog.filePath ? <text fg="#5a6b86" wrapMode="word">{dialog.filePath}</text> : <text fg="#888888">No local path</text>}
-          {sourceMissing ? <text fg="#ff7777">Source unavailable — file was moved or deleted locally</text> : null}
+          {dialog.filePath ? <text fg={theme.subdued} wrapMode="word">{dialog.filePath}</text> : <text fg={theme.muted}>No local path</text>}
+          {sourceMissing ? <text fg={theme.danger}>Source unavailable — file was moved or deleted locally</text> : null}
         </box>
-        <text fg="#888888">Saving copies the file; the original stays in File Manager.</text>
+        <text fg={theme.muted}>Saving copies the file; the original stays in File Manager.</text>
       </box>
-      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: "#24344d", backgroundColor: "#111923" }}>
-        <text fg="#c8dfff"><b>Destination</b></text>
-        <text fg="#888888">Folder or full file path. Works on Windows, macOS and Linux.</text>
+      <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: theme.surface, backgroundColor: theme.surfaceRaised }}>
+        <text fg={theme.text}><b>Destination</b></text>
+        <text fg={theme.muted}>Folder or full file path. Works on Windows, macOS and Linux.</text>
         <input focused value={dialogDraft} placeholder={suggested} onInput={setDialogDraft} onSubmit={(value) => void downloadFile(dialog.fileId, typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
-        <text fg="#5a6b86">Suggested: {suggested}</text>
+        <text fg={theme.subdued}>Suggested: {suggested}</text>
       </box>
     </box>
     <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end", minHeight: 3, flexShrink: 0 }}>
-      <box onMouseDown={() => void downloadFile(dialog.fileId, dialogDraft || suggested)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1d3a5f", border: true, borderColor: "#6ea8fe" }}><text fg="#c8dfff"><u>S</u>ave</text></box>
-      <box onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff">Back</text></box>
+      <box onMouseDown={() => void downloadFile(dialog.fileId, dialogDraft || suggested)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}><u>S</u>ave</text></box>
+      <box onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>Back</text></box>
     </box>
   </>
 }

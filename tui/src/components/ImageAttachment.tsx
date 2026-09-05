@@ -2,6 +2,7 @@ import { NativeImage, type BoxRenderable, type ScrollBoxRenderable } from "@open
 import { useEffect, useRef, useState, type RefObject } from "react"
 import { existsSync, statSync } from "fs"
 import type { ImageProtocol } from "../types"
+import { chatTheme as theme } from "../chatTheme"
 
 type CachedImage = {
   modifiedAt: number
@@ -213,8 +214,8 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
   // Kitty and Sixel placements are terminal overlays and cannot be scroll-clipped reliably.
   const displayProtocol = scrollboxRef && !fullyVisible && protocol !== "blocks" ? "blocks" : protocol
   return <box ref={containerRef} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={{ flexDirection: "column", width: displayed?.width, height: displayed?.height }}>
-    {!nearViewport && expectedImage ? <text fg="#888888">{filename} (image preview loads nearby)</text> : null}
-    {nearViewport && !safeImage && expectedImage ? <text fg="#888888">{loadFailed ? `${filename} (image unavailable)` : "Loading image..."}</text> : null}
+    {!nearViewport && expectedImage ? <text fg={theme.muted}>{filename} (image preview loads nearby)</text> : null}
+    {nearViewport && !safeImage && expectedImage ? <text fg={theme.muted}>{loadFailed ? `${filename} (image unavailable)` : "Loading image..."}</text> : null}
     {safeImage && displayed ? <image source={safeImage} fit="fit" protocol={displayProtocol} style={displayed} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} /> : null}
   </box>
 }

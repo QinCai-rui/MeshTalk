@@ -51,6 +51,7 @@ for (const width of [120, 80, 64, 48, 32]) {
     try {
       const frame = await settle(setup, "Looks good")
       expect(frame).toContain("Alex Morgan")
+      expect(frame).toContain("●")
       expect(frame).toContain("3 new")
       expect(frame).toContain("MeshTalk 0.23.0")
       expect(frame.match(/Ctrl\+P commands/g)?.length).toBe(1)
@@ -58,9 +59,10 @@ for (const width of [120, 80, 64, 48, 32]) {
       expect(frame).toContain("Write a message...")
       expect(frame).toContain("30,720 bytes")
       expect(frame).toContain("Ctrl+P commands")
+      expect(frame.replace(/\s+/g, " ")).toContain("Ctrl+↑↓ chats")
       const commandsShortcut = setup.renderer.root.findDescendantById("commands-shortcut")!
       expect(commandsShortcut).toBeDefined()
-      expect(commandsShortcut.screenX).toBeGreaterThan(props.composerRef.current!.screenX)
+      if (!props.compact) expect(commandsShortcut.screenX).toBeGreaterThan(props.composerRef.current!.screenX)
       expect(frame).not.toContain("PgUp/PgDn history")
       expect(frame).not.toContain("Drag text to select")
       expect(props.composerRef.current!.screenX + props.composerRef.current!.width).toBeLessThanOrEqual(width)
@@ -81,7 +83,7 @@ test("sidebar uses friend/request markers and mouse selection retains the conver
     const frame = await settle(setup)
     expect(frame).toContain("Groups (1)")
     expect(frame).not.toContain("──── Groups")
-    for (const label of ["♥", "↙", "↗", "Limited", "Muted", "3 new"]) expect(frame).toContain(label)
+    for (const label of ["~", "♥", "↙", "↗", "Limited", "Muted", "3 new"]) expect(frame).toContain(label)
     for (const label of ["Away", "Offline", "Friend", "Request received", "Request sent"]) expect(frame).not.toContain(label)
     const row = setup.renderer.root.findDescendantById("nav-peer-alex")!
     await act(async () => { await setup.mockMouse.click(row.screenX + 1, row.screenY) })

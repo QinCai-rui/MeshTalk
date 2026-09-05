@@ -1,6 +1,7 @@
 import { type BoxRenderable } from "@opentui/core";
 import { useTimeline } from "@opentui/react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { chatTheme as theme } from "./chatTheme";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -45,8 +46,7 @@ const MESHTALK_WORDMARK = [
   "██║ ╚═╝ ██║███████╗███████║██║  ██║   ██║   ██║  ██║███████╗██║  ██╗",
   "╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝",
 ] as const;
-//const MESHTALK_WORDMARK_COLORS = ["#c9b8ff", "#a99bf5", "#8b8aec", "#6f8ee0", "#57a8cf", "#45c2b8"] as const;
-const MESHTALK_WORDMARK_COLORS = ["#d7e3ff", "#becff5", "#a4bbed", "#8aa6df", "#718fcf", "#5d7abd"] as const;
+const MESHTALK_WORDMARK_COLORS = theme.splash.wordmark;
 const STARTUP_PHASES = ["GRAPHICS", "BACKEND", "CONTACTS", "READY"] as const;
 const STARTUP_BURST = [
   ["", "", "                                    ·", "", "", ""],
@@ -54,7 +54,7 @@ const STARTUP_BURST = [
   ["           ·   ✦   ·    ╲   ╱    ·   ✦   ·", "       ✦       ╲      ═  ◈  ═      ╱       ✦", "   ·       ═══════     ╱   ╲     ═══════       ·", "       ✦       ╱      ═  ◈  ═      ╲       ✦", "           ·   ✦   ·    ╱   ╲    ·   ✦   ·", ""],
   ["", "              ✦                    ✦", "        ═════════   ◈◈◈   ═════════", "              ✦                    ✦", "", ""],
 ] as const;
-const STARTUP_BURST_COLORS = ["#65d6b4", "#a997ff", "#f0d7ff", "#ffd98a"] as const;
+const STARTUP_BURST_COLORS = [theme.splash.accent, theme.splash.violet, theme.splash.pink, theme.splash.gold] as const;
 const BRAILLE_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
 let logIdCounter = 0;
@@ -261,28 +261,28 @@ export function StartupSplash<T>(props: StartupSplashProps<T>) {
         style={{
           width: "100%",
           height: "100%",
-          backgroundColor: "#070a0f",
+          backgroundColor: theme.splash.canvas,
           alignItems: "center",
           justifyContent: "center",
         }}
       >
         <box
           title=" MeshTalk "
-          titleColor="#9db4e8"
+          titleColor={theme.splash.title}
           style={{
             width: Math.min(48, Math.max(24, props.width - 4)),
             border: true,
-            borderColor: "#4a5f8a",
-            backgroundColor: "#0c111b",
+            borderColor: theme.splash.border,
+            backgroundColor: theme.splash.surface,
             padding: 1,
             flexDirection: "column",
             gap: 1,
           }}
         >
-          <text fg="#e0a34a"><b>Splash screen is not enabled.</b></text>
-          <text fg="#9aa8bd">MeshTalk is starting.</text>
-          <text fg="#9aa8bd" wrapMode="word">Enable: Commands &gt; Customisation &gt; Splash screen.</text>
-          <text fg="#687386" wrapMode="word">Or launch with `meshtalk --splash=card`.</text>
+          <text fg={theme.warning}><b>Splash screen is not enabled.</b></text>
+          <text fg={theme.splash.notice}>MeshTalk is starting.</text>
+          <text fg={theme.splash.notice} wrapMode="word">Enable: Commands &gt; Customisation &gt; Splash screen.</text>
+          <text fg={theme.splash.subtle} wrapMode="word">Or launch with `meshtalk --splash=card`.</text>
         </box>
       </box>
     );
@@ -351,46 +351,46 @@ function CardSplash({ width, height, startup }: { width: number; height: number;
 
   const burstColor = STARTUP_BURST_COLORS[Math.min(burstFrame, STARTUP_BURST_COLORS.length - 1)];
   return (
-    <box style={{ width: "100%", height: "100%", alignItems: "center", justifyContent: "center", backgroundColor: "#070a0f" }}>
+    <box style={{ width: "100%", height: "100%", alignItems: "center", justifyContent: "center", backgroundColor: theme.splash.canvas }}>
       <box
         title={compact ? undefined : " ◇ MeshTalk // Let's Get Meshing! ◇ "}
-        titleColor="#9db4e8"
-        style={{ width: cardWidth, border: true, borderColor: "#4a5f8a", backgroundColor: "#0c111b", padding: 1, flexDirection: "column", overflow: "hidden" }}
+        titleColor={theme.splash.title}
+        style={{ width: cardWidth, border: true, borderColor: theme.splash.border, backgroundColor: theme.splash.surface, padding: 1, flexDirection: "column", overflow: "hidden" }}
       >
         <box style={{ width: "100%", marginBottom: 1, flexDirection: "row", justifyContent: "space-between" }}>
-          <text><span fg="#354867">{IS_RELEASE_BUILD ? "● STABLE" : "◐ DEV BUILD"}</span></text>
-          <text><span fg="#3f516f">VERSION </span><span fg="#9db4e8"><b>{APP_RELEASE_VERSION}</b></span></text>
+          <text><span fg={theme.splash.build}>{IS_RELEASE_BUILD ? "● STABLE" : "◐ DEV BUILD"}</span></text>
+          <text><span fg={theme.splash.buildLabel}>VERSION </span><span fg={theme.splash.title}><b>{APP_RELEASE_VERSION}</b></span></text>
         </box>
 
         {wide ? <box style={{ width: "100%", height: 7, flexDirection: "column", justifyContent: "center", alignItems: "center" }}>
           {burstFrame < STARTUP_BURST.length
-            ? STARTUP_BURST[burstFrame].map((line, index) => <text key={`${burstFrame}-${index}`} wrapMode="none" fg={index === 2 ? "#ffffff" : burstColor}><b>{line}</b></text>)
+            ? STARTUP_BURST[burstFrame].map((line, index) => <text key={`${burstFrame}-${index}`} wrapMode="none" fg={index === 2 ? theme.splash.white : burstColor}><b>{line}</b></text>)
             : MESHTALK_WORDMARK.map((line, index) => <text key={line} wrapMode="none" fg={MESHTALK_WORDMARK_COLORS[index]}><b>{line}</b></text>)}
         </box> : <box style={{ height: compact ? 3 : 5, flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-          {!compact ? <text fg="#2e3f5c">◇ ─────────────── ◇</text> : null}
+          {!compact ? <text fg={theme.splash.divider}>◇ ─────────────── ◇</text> : null}
           {burstFrame < STARTUP_BURST.length
             ? <text fg={burstColor}><b>{burstFrame === 0 ? "·" : burstFrame === 1 ? "·  ✦  ·" : burstFrame === 2 ? "✦ ═══ ◈ ═══ ✦" : "✦  ◈◈◈  ✦"}</b></text>
-            : <text><span fg="#b3a3ff"><b>MESH</b></span><span fg="#45c2b8"><b>TALK</b></span></text>}
-          <text fg="#5c7196">DIRECT  •  PRIVATE  •  TERMINAL-NATIVE</text>
-          {!compact ? <text fg="#2e3f5c">◇ ─────────────── ◇</text> : null}
+            : <text><span fg={theme.splash.mesh}><b>MESH</b></span><span fg={theme.splash.talk}><b>TALK</b></span></text>}
+          <text fg={theme.splash.muted}>DIRECT  •  PRIVATE  •  TERMINAL-NATIVE</text>
+          {!compact ? <text fg={theme.splash.divider}>◇ ─────────────── ◇</text> : null}
         </box>}
 
-        <box style={{ width: "100%", height: 1, marginTop: 1, backgroundColor: "#141d2e", overflow: "hidden" }}>
-          <box ref={trailRef2} width={1} height={1} backgroundColor="#65d6b4" opacity={0.05}><text fg="#ecfff9">◆</text></box>
-          <box ref={trailRef1} width={1} height={1} backgroundColor="#65d6b4" opacity={0.15}><text fg="#ecfff9">◆</text></box>
-          <box ref={sweepRef} width={1} height={1} backgroundColor="#65d6b4"><text fg="#ecfff9">◆</text></box>
+        <box style={{ width: "100%", height: 1, marginTop: 1, backgroundColor: theme.splash.progressTrack, overflow: "hidden" }}>
+          <box ref={trailRef2} width={1} height={1} backgroundColor={theme.splash.accent} opacity={0.05}><text fg={theme.splash.accentLight}>◆</text></box>
+          <box ref={trailRef1} width={1} height={1} backgroundColor={theme.splash.accent} opacity={0.15}><text fg={theme.splash.accentLight}>◆</text></box>
+          <box ref={sweepRef} width={1} height={1} backgroundColor={theme.splash.accent}><text fg={theme.splash.accentLight}>◆</text></box>
         </box>
 
         <box style={{ width: "100%", marginTop: 1, flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
-          <text><span fg="#5c6f92">{phaseNumber} / 04  </span><span fg="#e4eaf7"><b>{status}</b></span></text>
+          <text><span fg={theme.splash.phaseMuted}>{phaseNumber} / 04  </span><span fg={theme.splash.phaseText}><b>{status}</b></span></text>
         </box>
 
         {!compact ? <box style={{ width: "100%", marginTop: 1, flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
           {STARTUP_PHASES.map((label, index) => (
             <text key={label}>
-              <span fg={index < phase ? "#65d6b4" : index === phase ? "#a997ff" : "#2e3a52"}>{index <= phase ? "●" : "○"}</span>
-              <span fg={index === phase ? "#c7d3e8" : "#4a5773"}> {label}</span>
-              {index < STARTUP_PHASES.length - 1 ? <span fg="#232e44">{"  ─  "}</span> : null}
+              <span fg={index < phase ? theme.splash.accent : index === phase ? theme.splash.violet : theme.splash.dim}>{index <= phase ? "●" : "○"}</span>
+              <span fg={index === phase ? theme.splash.phaseActiveText : theme.splash.phaseInactiveText}> {label}</span>
+              {index < STARTUP_PHASES.length - 1 ? <span fg={theme.splash.connector}>{"  ─  "}</span> : null}
             </text>
           ))}
         </box> : null}
@@ -403,32 +403,32 @@ function BootLogSplash({ width, height, startup }: { width: number; height: numb
   const wide = width >= 82 && height >= 19;
   const compact = width < 48 || height < 14;
   return (
-    <box style={{ width: "100%", height: "100%", flexDirection: "column", alignItems: "flex-start", justifyContent: "flex-start", backgroundColor: "#05070c", padding: compact ? 1 : 2 }}>
+    <box style={{ width: "100%", height: "100%", flexDirection: "column", alignItems: "flex-start", justifyContent: "flex-start", backgroundColor: theme.splash.logCanvas, padding: compact ? 1 : 2 }}>
       {wide ? <box style={{ flexDirection: "column" }}>
         {MESHTALK_WORDMARK.map((line, index) => <text key={line} wrapMode="none" fg={MESHTALK_WORDMARK_COLORS[index]}><b>{line}</b></text>)}
-      </box> : <text><span fg="#a997ff"><b>MESH</b></span><span fg="#65d6b4"><b>TALK</b></span></text>}
+      </box> : <text><span fg={theme.splash.violet}><b>MESH</b></span><span fg={theme.splash.accent}><b>TALK</b></span></text>}
 
       <text>
-        <span fg="#4a5773">Welcome to </span><span fg="#d5deed"><b>MeshTalk</b></span><span fg="#4a5773"> </span><span fg="#8fa7c9">{APP_RELEASE_VERSION}</span><span fg="#4a5773"> ({IS_RELEASE_BUILD ? "stable" : "dev"}, {process.platform ?? "unknown"})</span>
+        <span fg={theme.splash.phaseInactiveText}>Welcome to </span><span fg={theme.splash.text}><b>MeshTalk</b></span><span fg={theme.splash.phaseInactiveText}> </span><span fg={theme.splash.version}>{APP_RELEASE_VERSION}</span><span fg={theme.splash.phaseInactiveText}> ({IS_RELEASE_BUILD ? "stable" : "dev"}, {process.platform ?? "unknown"})</span>
       </text>
       <box style={{ height: 1 }} />
 
       {startup.log.map((entry) => {
         const isWelcome = entry.kind === "welcome";
         const active = entry.kind === "phase" && entry.id === startup.activePhaseId && entry.finishedAt === undefined && !startup.ready;
-        const tag = isWelcome ? null : entry.kind === "final" ? <span fg="#65d6b4">[ OK ] </span> : active ? <span fg="#a997ff">[ {startup.spinnerChar} ] </span> : <span fg="#3ddc97">[ OK ] </span>;
-        const color = isWelcome ? "#f0d7ff" : entry.kind === "final" ? "#65d6b4" : active ? "#d5deed" : "#4a5773";
+        const tag = isWelcome ? null : entry.kind === "final" ? <span fg={theme.splash.accent}>[ OK ] </span> : active ? <span fg={theme.splash.violet}>[ {startup.spinnerChar} ] </span> : <span fg={theme.splash.bootSuccess}>[ OK ] </span>;
+        const color = isWelcome ? theme.splash.pink : entry.kind === "final" ? theme.splash.accent : active ? theme.splash.text : theme.splash.phaseInactiveText;
         const elapsedMs = (entry.finishedAt ?? performance.now()) - startup.mountTime;
         return <Fragment key={entry.id}>
           {isWelcome ? <text key={`${entry.id}-gap`}> </text> : null}
-          <text><span fg="#2e3a52">[{formatKernelTimestamp(elapsedMs)}] </span>{tag}<span fg={color}><b>{entry.text}</b></span>{active && startup.cursorVisible ? <span fg="#65d6b4"> ▊</span> : null}</text>
+          <text><span fg={theme.splash.dim}>[{formatKernelTimestamp(elapsedMs)}] </span>{tag}<span fg={color}><b>{entry.text}</b></span>{active && startup.cursorVisible ? <span fg={theme.splash.accent}> ▊</span> : null}</text>
         </Fragment>;
       })}
 
       {startup.countdown && startup.countdown !== "welcome" ? <text>
-        <span fg="#2e3a52">[{formatKernelTimestamp(performance.now() - startup.mountTime)}] </span>
-        <span fg={startup.countdown === "starting" ? "#65d6b4" : "#a997ff"}>[{startup.countdown === "starting" ? " OK " : ` ${startup.spinnerChar} `}] </span>
-        <span fg={startup.countdown === "starting" ? "#65d6b4" : "#d5deed"}><b>{startup.countdown === "starting" ? "starting..." : "loading..."}</b></span>
+        <span fg={theme.splash.dim}>[{formatKernelTimestamp(performance.now() - startup.mountTime)}] </span>
+        <span fg={startup.countdown === "starting" ? theme.splash.accent : theme.splash.violet}>[{startup.countdown === "starting" ? " OK " : ` ${startup.spinnerChar} `}] </span>
+        <span fg={startup.countdown === "starting" ? theme.splash.accent : theme.splash.text}><b>{startup.countdown === "starting" ? "starting..." : "loading..."}</b></span>
       </text> : null}
     </box>
   );

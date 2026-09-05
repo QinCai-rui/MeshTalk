@@ -2,11 +2,11 @@ import { TypingDots } from "./TypingDots"
 import { useEffect, useRef } from "react"
 import { useRenderer } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
-import { chatTheme as theme } from "../chatTheme"
+import { chatTheme as theme, presenceIndicator } from "../chatTheme"
 import type { Conversation, Group, GroupMember, Peer } from "../types"
 import { clipTextToWidth, friendMarkers, peerPresence, terminalWidth } from "../utils"
 
-const presenceColor = (presence: "active" | "away" | "offline") => presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"
+const presenceColor = (presence: "active" | "away" | "offline") => theme.presence[presence]
 
 type SidebarProps = {
   appVersion: string
@@ -58,7 +58,7 @@ export function Sidebar({ appVersion, compact, stacked = false, dialogOpen, edit
     <box style={{ paddingLeft: 1, paddingRight: 1, paddingTop: stacked ? 0 : 1, paddingBottom: stacked ? 0 : 1, flexShrink: 0 }} onMouseDown={() => setEditingName(true)}>
       <text fg={theme.accent}><b>MeshTalk</b><span fg={theme.muted}> {appVersion}</span></text>
       {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <text fg={theme.text} wrapMode="none">{clipTextToWidth(`You: ${identity?.display_name ?? "Connecting..."}`, sidebarWidth - 2)}</text>}
-      {!stacked && <text fg={theme.muted}>Ctrl+Up/Down switch</text>}
+      {!stacked && <text fg={theme.muted}>Ctrl+Up/Down switch chats</text>}
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
       <box id="sidebar-dm-section" style={{ flexGrow: 3, flexBasis: 0, flexShrink: 1, minHeight: 1, flexDirection: "column" }}>
@@ -75,7 +75,7 @@ export function Sidebar({ appVersion, compact, stacked = false, dialogOpen, edit
         const flags = [peer.capability_gap && "Limited", peer.peer_id in mutedPeers && "Muted"].filter(Boolean).join(" / ")
         return <box id={`nav-peer-${peer.peer_id}`} key={peer.peer_id} onMouseDown={() => pick({ kind: "peer", id: peer.peer_id })} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
-            <text fg={color} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{selected || peer.unread_count ? <b>{label}</b> : label}</text>
+            <text fg={color} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{presenceIndicator(presence)} {selected || peer.unread_count ? <b>{label}</b> : label}</text>
             {markers && <text fg={color} flexShrink={0}>{markers}</text>}
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
@@ -110,7 +110,7 @@ export function Sidebar({ appVersion, compact, stacked = false, dialogOpen, edit
             const id = member.peer_id ?? member.member_id
             const peer = peers.find(peer => peer.peer_id === id)
             const presence = peer ? peerPresence(peer) : member.is_online ? "active" : "offline"
-            return <text key={id ?? index} fg={id === identity?.peer_id ? "#65a9ff" : presenceColor(presence)}>  {member.display_name}{id === identity?.peer_id ? " (you)" : ""}{peer ? friendMarkers(peer) : ""}</text>
+            return <text key={id ?? index} fg={id === identity?.peer_id ? theme.presence.self : presenceColor(presence)}>  {presenceIndicator(presence)} {member.display_name}{id === identity?.peer_id ? " (you)" : ""}{peer ? friendMarkers(peer) : ""}</text>
           })}
           {selected && members && <box onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}><u>View all members</u></text></box>}
         </box>

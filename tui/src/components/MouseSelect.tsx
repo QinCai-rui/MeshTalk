@@ -3,6 +3,7 @@ import { type SelectProps } from "@opentui/react"
 import { useEffect, useRef, useState } from "react"
 import { terminalWidth } from "../utils"
 import { MarqueeText } from "./MarqueeText"
+import { chatTheme as theme } from "../chatTheme"
 
 type MouseSelectProps = SelectProps & { marqueeNames?: boolean }
 
@@ -53,7 +54,7 @@ export function MouseSelect(props: MouseSelectProps) {
   }
   function selectOption(index: number) { changeSelection(index); props.onSelect?.(index, options[index] ?? null) }
 
-  return <box width={props.width} height={menuHeight} style={{ ...props.style, flexShrink: 0, minHeight: 0, overflow: "hidden", backgroundColor: props.style?.backgroundColor ?? "#1a1a1a" }}><scrollbox ref={scrollboxRef} focused={props.focused} width="100%" height="100%" style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} onKeyDown={(key) => {
+  return <box width={props.width} height={menuHeight} style={{ ...props.style, flexShrink: 0, minHeight: 0, overflow: "hidden", backgroundColor: props.style?.backgroundColor ?? theme.menu.background }}><scrollbox ref={scrollboxRef} focused={props.focused} width="100%" height="100%" style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} onKeyDown={(key) => {
     if (key.name === "up" || key.name === "k") { key.preventDefault(); setHoveredIndex(null); changeSelection(selectedIndex - 1) }
     else if (key.name === "down" || key.name === "j") { key.preventDefault(); setHoveredIndex(null); changeSelection(selectedIndex + 1) }
     else if (key.name === "return" || key.name === "linefeed") { key.preventDefault(); setHoveredIndex(null); selectOption(selectedIndex) }
@@ -67,7 +68,7 @@ export function MouseSelect(props: MouseSelectProps) {
   }}>
     {options.map((option, index) => {
       const highlighted = index === activeIndex
-      const nameColor = highlighted ? props.selectedTextColor ?? "#FFFF00" : props.textColor ?? "#FFFFFF"
+      const nameColor = highlighted ? props.selectedTextColor ?? theme.menu.selectedText : props.textColor ?? theme.text
       let descriptionText = option.description
       if (highlighted && showDescription && descriptionOffset > 0) {
         const fullText = option.description
@@ -85,12 +86,12 @@ export function MouseSelect(props: MouseSelectProps) {
         }
         descriptionText = fullText.substring(startIndex)
       }
-      return <box id={`${menuId}-${index}`} key={index} width="100%" height={showDescription ? 2 : 1} flexShrink={0} overflow="hidden" backgroundColor={highlighted ? props.selectedBackgroundColor ?? "#334455" : undefined} onMouseMove={() => setHoveredIndex(index)} onMouseOut={() => setHoveredIndex(null)} onMouseDown={(event) => { if (event.button === 0) { selectOption(index); event.stopPropagation() } }}>
+      return <box id={`${menuId}-${index}`} key={index} width="100%" height={showDescription ? 2 : 1} flexShrink={0} overflow="hidden" backgroundColor={highlighted ? props.selectedBackgroundColor ?? theme.selected : undefined} onMouseMove={() => setHoveredIndex(index)} onMouseOut={() => setHoveredIndex(null)} onMouseDown={(event) => { if (event.button === 0) { selectOption(index); event.stopPropagation() } }}>
         {props.marqueeNames ? <box style={{ flexDirection: "row", width: "100%", height: 1, overflow: "hidden" }}>
           <box width={showSelectionIndicator ? 3 : 1} height={1} overflow="hidden"><text wrapMode="none" fg={nameColor}>{showSelectionIndicator ? highlighted ? " ▶" : "  " : ""}</text></box>
           <MarqueeText width={nameWidth} fg={nameColor} text={option.name} />
         </box> : <text fg={nameColor}>{showSelectionIndicator ? highlighted ? " ▶ " : "   " : " "}{option.name}</text>}
-        {showDescription && <text wrapMode="none" fg={highlighted ? props.selectedDescriptionColor ?? "#CCCCCC" : props.descriptionColor ?? "#888888"}>{descriptionPrefix}{descriptionText}</text>}
+        {showDescription && <text wrapMode="none" fg={highlighted ? props.selectedDescriptionColor ?? theme.menu.selectedDescription : props.descriptionColor ?? theme.muted}>{descriptionPrefix}{descriptionText}</text>}
       </box>
     })}
   </scrollbox></box>
