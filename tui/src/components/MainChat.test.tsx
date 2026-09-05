@@ -118,7 +118,7 @@ test("sidebar peers use contiguous two-line click targets", async () => {
   } finally { await close(setup) }
 })
 
-test("sidebar groups skip the empty second line and space entries after View all members", async () => {
+test("sidebar groups reserve a second line like DMs and space entries after View all members", async () => {
   const props = sidebarProps(120)
   props.selectedPeerId = undefined
   props.groups = Array.from({ length: 3 }, (_, index) => ({ ...group, group_id: `group-${index}`, name: `Group ${index}`, unread_count: 0 }))
@@ -126,7 +126,7 @@ test("sidebar groups skip the empty second line and space entries after View all
   try {
     await settle(setup)
     const rows = props.groups.map(item => setup.renderer.root.findDescendantById(`nav-group-${item.group_id}`)!)
-    expect(rows.every(row => row.height === 1)).toBe(true)
+    expect(rows.every(row => row.height >= 2)).toBe(true)
     expect(rows[0]!.screenY + rows[0]!.height + 1).toBe(rows[1]!.screenY)
     expect(rows[1]!.screenY + rows[1]!.height + 1).toBe(rows[2]!.screenY)
   } finally { await close(setup) }

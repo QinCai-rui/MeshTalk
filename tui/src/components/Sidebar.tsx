@@ -101,7 +101,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           <box flexDirection="row" width="100%">
             <text fg={selected ? theme.accent : theme.text} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{selected || group.unread_count ? <b>{label}</b> : label}<span fg={theme.muted}>{memberLabel}</span></text>
           </box>
-          {(group.unread_count > 0 || typing) && <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
+          <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {group.unread_count > 0 && <text fg={theme.accent}>{group.unread_count} new</text>}
             {typing && <TypingDots />}
           </box>}
