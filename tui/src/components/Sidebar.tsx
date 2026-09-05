@@ -1,8 +1,16 @@
+import { TypingDots } from "./TypingDots"
+import { useEffect, useRef } from "react"
+import { useRenderer } from "@opentui/react"
+import type { ScrollBoxRenderable } from "@opentui/core"
+import { chatTheme as theme, presenceIndicator } from "../chatTheme"
 import type { Conversation, Group, GroupMember, Peer } from "../types"
-import { friendMarkers, peerConnectionLabel, peerPresence } from "../utils"
+import { clipTextToWidth, friendMarkers, peerPresence, terminalWidth } from "../utils"
+
+const presenceColor = (presence: "active" | "away" | "offline") => theme.presence[presence]
 
 type SidebarProps = {
-  compact: boolean
+  appVersion: string
+  stacked?: boolean
   dialogOpen: boolean
   editingName: boolean
   groups: Group[]
@@ -23,51 +31,91 @@ type SidebarProps = {
   saveDisplayName: () => void
 }
 
-export function Sidebar({ compact, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
-  // Outer and section borders/padding consume eight columns; reserve one more for the scrollbar.
-  const listContentOptions = { flexDirection: "column" as const, width: Math.max(1, sidebarWidth - 9) }
-  return <box title={`You: ${identity?.display_name ?? "..."}`} style={{ border: true, width: sidebarWidth, flexShrink: 0, flexDirection: "column", padding: 1, gap: 1 }}>
-    <box onMouseDown={() => setEditingName(true)}>
-      {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <><text fg="#888888">Click to rename</text><text fg="#888888">{identity?.peer_id.slice(0, 12)}</text></>}
+export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
+  const renderer = useRenderer()
+  const peerListRef = useRef<ScrollBoxRenderable>(null)
+  const groupListRef = useRef<ScrollBoxRenderable>(null)
+  useEffect(() => {
+    const id = selectedPeerId ? `nav-peer-${selectedPeerId}` : selectedGroupId ? `nav-group-${selectedGroupId}` : undefined
+    if (!id) return
+    const list = selectedPeerId ? peerListRef.current : groupListRef.current
+    const reveal = () => list?.scrollChildIntoView(id)
+    // Newly mounted rows have no screen coordinates until the first layout pass.
+    reveal()
+    renderer.once("frame", reveal)
+    return () => { renderer.off("frame", reveal) }
+  }, [renderer, selectedPeerId, selectedGroupId, stacked])
+  const nameLabel = (name: string, unread: number, markerWidth = 0) => {
+    if (!stacked) return name
+    const available = Math.max(4, sidebarWidth - 5 - markerWidth - (unread > 0 ? `${unread} new`.length + 1 : 0))
+    const clipped = clipTextToWidth(name, available)
+    return clipped === name ? name : `${clipTextToWidth(name, available - 3)}...`
+  }
+  const pick = (selection: Conversation) => { setSelection(selection); setScrollFocused(false); setEditingName(false) }
+  const rowStyle = (selected: boolean) => ({ width: "100%" as const, flexDirection: "column" as const, paddingLeft: 1, paddingRight: 1, backgroundColor: selected ? theme.selected : undefined })
+  return <box style={{ width: sidebarWidth, height: stacked ? 8 : "100%", flexShrink: 0, flexDirection: "column", backgroundColor: theme.surface }}>
+    <box style={{ paddingLeft: 1, paddingRight: 1, paddingTop: stacked ? 0 : 1, paddingBottom: stacked ? 0 : 1, flexShrink: 0 }} onMouseDown={() => setEditingName(true)}>
+      <text fg={theme.accent}><b>MeshTalk</b><span fg={theme.muted}> {appVersion}</span></text>
+      {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <text fg={theme.text} wrapMode="none">{clipTextToWidth(`You: ${identity?.display_name ?? "Connecting..."}`, sidebarWidth - 2)}</text>}
+      {!stacked && <text fg={theme.muted}>Ctrl+Up/Down switch chats</text>}
     </box>
-    <box title={`Peers: ${peers.length}, Online: ${peers.filter((peer) => peer.is_online).length}`} bottomTitle="Ctrl+D removes peers" style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 3, flexDirection: "column", padding: 1 }}>
-      <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={listContentOptions} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
-        {!peers.length ? <text fg="#888888">No peers discovered</text> : null}
-        {peers.map((peer) => {
-          const presence = peerPresence(peer)
-          const limited = Boolean(peer.capability_gap)
-          const muted = peer.peer_id in mutedPeers
-          const unread = peer.unread_count > 0
-          const peerLabel = <>{peer.peer_id === selectedPeerId ? "> " : "  "}{compact ? peer.display_name.slice(0, 10) : peer.display_name}{limited ? <span fg="#ff9f43"> LIMITED</span> : null}{unread ? ` (${peer.unread_count} new)` : ""}{friendMarkers(peer)}{muted ? " M" : ""}</>
-          return <box key={peer.peer_id} onMouseDown={() => { setSelection({ kind: "peer", id: peer.peer_id }); setScrollFocused(false); setEditingName(false) }} style={{ width: "100%", flexDirection: "column", backgroundColor: peer.peer_id === selectedPeerId ? "#25354d" : unread ? "#304d3d" : undefined }}>
-            <box style={{ width: "100%", flexDirection: "row" }}><text wrapMode="word" style={{ flexGrow: 1, flexShrink: 1 }} fg={presence === "active" ? "#66dd88" : presence === "away" ? "#e0a34a" : "#888888"}>{unread ? <b>{peerLabel}</b> : peerLabel}</text>{typingConversationKeys.has(`peer:${peer.peer_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
-             <text fg="#718096">  {peerConnectionLabel(peer)}</text>
+    <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
+      <box id="sidebar-dm-section" style={{ flexGrow: 3, flexBasis: 0, flexShrink: 1, minHeight: 1, flexDirection: "column" }}>
+        <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.muted}>DMs ({peers.length}) / {peers.filter(peer => peer.is_online).length} online</text></box>
+        <scrollbox id="sidebar-dms" ref={peerListRef} onMouseDown={() => setScrollFocused(false)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", width: Math.max(1, sidebarWidth - 1) }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}>
+          {!peers.length && <text fg={theme.muted}> Waiting for peers...</text>}
+          {peers.map(peer => {
+        const selected = peer.peer_id === selectedPeerId
+        const presence = peerPresence(peer)
+        const color = presenceColor(presence)
+        const markers = friendMarkers(peer)
+        const typing = typingConversationKeys.has(`peer:${peer.peer_id}`)
+        const label = nameLabel(peer.display_name, 0, terminalWidth(markers))
+        const flags = [peer.capability_gap && "Limited", peer.peer_id in mutedPeers && "Muted"].filter(Boolean).join(" / ")
+        return <box id={`nav-peer-${peer.peer_id}`} key={peer.peer_id} onMouseDown={() => pick({ kind: "peer", id: peer.peer_id })} style={rowStyle(selected)}>
+          <box flexDirection="row" width="100%">
+            <text fg={color} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{presenceIndicator(presence)} {selected || peer.unread_count ? <b>{label}</b> : label}</text>
+            {markers.length > 0 && <text fg={color} flexShrink={0}>{markers}</text>}
           </box>
-        })}
-      </scrollbox>
-    </box>
-    <box title={`Groups: ${groups.length}`} style={{ border: true, flexGrow: 1, flexShrink: 1, minHeight: 3, flexDirection: "column", padding: 1 }}>
-      <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={listContentOptions} verticalScrollbarOptions={{ trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" } }}>
-        {!groups.length ? <text fg="#888888">No groups joined</text> : null}
-        {groups.map((group) => {
-          const unread = group.unread_count > 0
-          const groupLabel = <>{group.group_id === selectedGroupId ? "> " : "  "}{compact ? group.name.slice(0, 14) : group.name}{unread ? ` (${group.unread_count} new)` : ""}</>
-          const members = groupMembers[group.group_id]
-          const visibleMembers = members?.filter((member) => member.show_in_sidebar !== false) ?? []
-          const memberLabel = members ? `${group.member_count} member${group.member_count === 1 ? "" : "s"} · showing ${visibleMembers.length}` : `${group.member_count} member${group.member_count === 1 ? "" : "s"}`
-          return <box key={group.group_id} onMouseDown={() => { setSelection({ kind: "group", id: group.group_id }); setScrollFocused(false); setEditingName(false) }} style={{ width: "100%", flexDirection: "column", backgroundColor: group.group_id === selectedGroupId ? "#25354d" : unread ? "#453c61" : undefined }}>
-           <box style={{ width: "100%", flexDirection: "row" }}><text wrapMode="word" style={{ flexGrow: 1, flexShrink: 1 }} fg="#b69cff">{unread ? <b>{groupLabel}</b> : groupLabel}</text>{typingConversationKeys.has(`group:${group.group_id}`) && <spinner name="simpleDotsScrolling" color="#7aa2d6" />}</box>
-           <text fg="#718096">  {memberLabel}</text>
-           {group.group_id === selectedGroupId && visibleMembers.map((member, index) => {
-            const memberId = member.peer_id ?? member.member_id
-            const knownPeer = peers.find((peer) => peer.peer_id === memberId)
-            const color = memberId === identity?.peer_id ? "#65a9ff" : knownPeer ? peerPresence(knownPeer) === "active" ? "#66dd88" : peerPresence(knownPeer) === "away" ? "#e0a34a" : "#888888" : member.is_online ? "#66dd88" : "#888888"
-             return <text key={memberId ?? String(index)} wrapMode="word" fg={color}>{"    "}{compact ? member.display_name.slice(0, 12) : member.display_name}</text>
-            })}
-           {group.group_id === selectedGroupId && members && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg="#7aa2d6">    <u>View all members</u></text></box>}
-           </box>
-        })}
-      </scrollbox>
+          <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
+            {peer.unread_count > 0 && <text fg={theme.accent}>{peer.unread_count} new</text>}
+            {flags.length > 0 && <text fg={theme.muted}>{flags}</text>}
+            {typing && <TypingDots />}
+          </box>
+        </box>
+          })}
+        </scrollbox>
+      </box>
+      <box id="sidebar-group-section" style={{ flexGrow: 2, flexBasis: 0, flexShrink: 1, minHeight: 1, flexDirection: "column" }}>
+        <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.muted}>Groups ({groups.length})</text></box>
+        <scrollbox id="sidebar-groups" ref={groupListRef} onMouseDown={() => setScrollFocused(false)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", gap: 1, width: Math.max(1, sidebarWidth - 1) }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}>
+          {!groups.length && <text fg={theme.muted}> No groups joined</text>}
+          {groups.map(group => {
+        const selected = group.group_id === selectedGroupId
+        const members = groupMembers[group.group_id]
+        const visibleMembers = members?.filter(member => member.show_in_sidebar !== false) ?? []
+        const typing = typingConversationKeys.has(`group:${group.group_id}`)
+        const memberLabel = ` (${group.member_count} members)`
+        const label = nameLabel(group.name, 0, terminalWidth(memberLabel))
+        return <box id={`nav-group-${group.group_id}`} key={group.group_id} onMouseDown={() => pick({ kind: "group", id: group.group_id })} style={rowStyle(selected)}>
+          <box flexDirection="row" width="100%">
+            <text fg={selected ? theme.accent : theme.text} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{selected || group.unread_count ? <b>{label}</b> : label}<span fg={theme.muted}>{memberLabel}</span></text>
+          </box>
+          <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
+            {group.unread_count > 0 && <text fg={theme.accent}>{group.unread_count} new</text>}
+            {typing && <TypingDots />}
+          </box>
+          {selected && !stacked && visibleMembers.map((member, index) => {
+            const id = member.peer_id ?? member.member_id
+            const peer = peers.find(peer => peer.peer_id === id)
+            const presence = peer ? peerPresence(peer) : member.is_online ? "active" : "offline"
+            return <text key={id ?? index} fg={id === identity?.peer_id ? theme.presence.self : presenceColor(presence)}>  {presenceIndicator(presence)} {member.display_name}{id === identity?.peer_id ? " (you)" : ""}{peer ? friendMarkers(peer) : ""}</text>
+          })}
+          {selected && members && <box paddingLeft={2} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}><u>View all members</u></text></box>}
+        </box>
+          })}
+        </scrollbox>
+      </box>
     </box>
   </box>
 }

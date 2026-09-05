@@ -1,8 +1,10 @@
+import { ChatFooter } from "./ChatFooter"
+import { TypingDots } from "./TypingDots"
 import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
-import { MarqueeText } from "./MarqueeText"
-import { dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
+import { chatTheme as theme } from "../chatTheme"
+import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
 import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 
 type ConversationPanelProps = {
@@ -54,28 +56,28 @@ type ConversationPanelProps = {
 }
 
 const MESSAGE_MARKDOWN_STYLES = {
-  default: { fg: "#d6deeb" },
-  "markup.heading.1": { fg: "#7aa2d6", bold: true },
-  "markup.heading.2": { fg: "#7aa2d6", bold: true },
-  "markup.heading.3": { fg: "#7aa2d6", bold: true },
-  "markup.heading.4": { fg: "#7aa2d6", bold: true },
-  "markup.heading.5": { fg: "#7aa2d6", bold: true },
-  "markup.heading.6": { fg: "#7aa2d6", bold: true },
+  default: { fg: theme.markdown.default },
+  "markup.heading.1": { fg: theme.markdown.heading, bold: true },
+  "markup.heading.2": { fg: theme.markdown.heading, bold: true },
+  "markup.heading.3": { fg: theme.markdown.heading, bold: true },
+  "markup.heading.4": { fg: theme.markdown.heading, bold: true },
+  "markup.heading.5": { fg: theme.markdown.heading, bold: true },
+  "markup.heading.6": { fg: theme.markdown.heading, bold: true },
   "markup.strong": { bold: true },
   "markup.italic": { italic: true },
-  "markup.link.label": { fg: "#7aa2d6", underline: true },
-  "markup.link.url": { fg: "#65a9ff", underline: true },
-  "markup.raw": { fg: "#a5d6ff" },
-  "markup.list": { fg: "#ff9f43" },
-  keyword: { fg: "#ff7b72", bold: true },
-  string: { fg: "#a5d6ff" },
-  comment: { fg: "#8b949e", italic: true },
-  number: { fg: "#79c0ff" },
-  boolean: { fg: "#79c0ff" },
-  function: { fg: "#d2a8ff" },
-  type: { fg: "#ffa657" },
-  operator: { fg: "#ff7b72" },
-  punctuation: { fg: "#c9d1d9" },
+  "markup.link.label": { fg: theme.markdown.heading, underline: true },
+  "markup.link.url": { fg: theme.markdown.link, underline: true },
+  "markup.raw": { fg: theme.markdown.raw },
+  "markup.list": { fg: theme.markdown.list },
+  keyword: { fg: theme.markdown.keyword, bold: true },
+  string: { fg: theme.markdown.raw },
+  comment: { fg: theme.markdown.comment, italic: true },
+  number: { fg: theme.markdown.number },
+  boolean: { fg: theme.markdown.number },
+  function: { fg: theme.markdown.function },
+  type: { fg: theme.markdown.type },
+  operator: { fg: theme.markdown.keyword },
+  punctuation: { fg: theme.markdown.punctuation },
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
@@ -84,9 +86,14 @@ export function ConversationPanel(props: ConversationPanelProps) {
   const [replyHighlight, setReplyHighlight] = useState<{ id: string; startedAt: number }>()
   const [replyHighlightNow, setReplyHighlightNow] = useState(0)
   const messageSyntaxStyle = useMemo(() => SyntaxStyle.fromStyles(MESSAGE_MARKDOWN_STYLES), [])
-  const typingText = typingNames.length === 1 ? `${typingNames[0]} is typing` : typingNames.length === 2 ? `${typingNames[0]} and ${typingNames[1]} are typing...` : typingNames.length > 2 ? "Multiple people are typing..." : undefined
-  const composerTitle = selectedGroup || selected?.is_online ? (compact ? "Message" : "Message: Enter sends, Alt+Enter adds a line") : "Message: queued until peer is online"
+  const typingText = typingNames.length === 1
+    ? `${clipTextToWidth(typingNames[0]!, Math.max(1, width - 18)).trimEnd()} is typing`
+    : typingNames.length > 1 ? `${typingNames.length} people are typing` : undefined
+  const composerTitle = !selected && !selectedGroup ? "Message" : selectedGroup || selected?.is_online ? "Message" : "Message / queued until online"
   const byteCount = `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`
+  const hasConversation = Boolean(selected || selectedGroup)
+  const peerState = selected ? peerPresence(selected) === "active" ? "Online" : peerPresence(selected) === "away" ? "Away" : "Offline" : ""
+
 
   useEffect(() => () => messageSyntaxStyle.destroy(), [messageSyntaxStyle])
 
@@ -135,25 +142,31 @@ export function ConversationPanel(props: ConversationPanelProps) {
     scrollboxRef.current?.scrollChildIntoView(selectedReplyTargetId)
   }, [selectedReplyTargetId])
 
-  return <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
-    {controlStatus.control_url && !controlStatus.connected ? <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}><MarqueeText width={width - 4} fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"} text={`Out-of-sync with rendezvous server. Peer connectivity may degrade over time; reconnecting (${controlStatus.reconnect_attempts}).`} /></box> : null}
-     <box title={selectedGroup ? `Group: ${selectedGroup.name} (${selectedGroup.member_count} members)` : selected ? `Chat: ${selected.display_name}${selected.is_friend ? " \u2665" : ""}${selected.peer_id in mutedPeers ? " (muted)" : ""} (${peerPresence(selected) === "offline" ? "offline" : `${peerPresence(selected)}: ${transportName(selected.active_transport)}${selected.active_transport === "remote_derp" || !selected.active_endpoint ? "" : ` ${selected.active_endpoint}`}`}${selectedHasCapabilityGap ? ", limited" : ""})` : "Chat"} bottomTitle={compact ? "PgUp/PgDn scroll  Up/Down select  R reply  D delete" : "PgUp/PgDn scroll  Up/Down select  R reply  D delete  End latest  Drag text to select"} style={{ border: true, borderColor: scrollFocused ? "#6ea8fe" : undefined, flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
-      {selected && ((selected.delivery_warnings ?? []).length > 0 || selectedHasCapabilityGap) ? <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
-         {(selected.delivery_warnings ?? []).map((kind) => kind === "offline" ? <MarqueeText key="offline" width={width - 6} fg="#e0a34a" text="This peer is offline. Messages will be queued and delivered automatically upon reconnection." /> : kind === "not_friend" ? <MarqueeText key="not_friend" width={width - 6} fg="#e0a34a" text="Not friends yet. Your messages will be blocked until they accept your friend request (Commands > Friends > Add friend)." /> : kind === "limited" && selectedHasCapabilityGap ? <text key="limited" wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"}><b>{capabilityGapMessage}</b></text> : null)}
-        {selectedHasCapabilityGap && !(selected.delivery_warnings ?? []).includes("limited") ? <text wrapMode="word" fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"}><b>{capabilityGapMessage}</b></text> : null}
-      </box> : null}
-      {selectedGroup && limitedGroupMembers.length > 0 ? <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}><MarqueeText width={width - 6} fg={(flashingEnabled ? blinkOn : true) ? "#ff9f43" : "#7a4b12"} text={`Some group peers have capability differences: ${limitedGroupMembers.map((member) => member.display_name).join(", ")}. Shared features remain available.`} /></box> : null}
-      <scrollbox ref={scrollboxRef} focused={scrollFocused && !dialogOpen} onMouseDown={() => setScrollFocused(true)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, padding: 1 }} contentOptions={{ flexDirection: "column" }} stickyScroll stickyStart="bottom" verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" }, arrowOptions: { foregroundColor: "#6ea8fe" } }}>
-        {!selected && !selectedGroup ? <text fg="#888888">Select a peer or group.</text> : null}
-        {selected && !conversationItems.length && selected.is_online ? <text fg="#888888">No messages yet. Say hello.</text> : null}
-        {selectedGroup && !conversationItems.length ? <text fg="#888888">No messages yet. Say hello to the group.</text> : null}
+  return <box style={{ width, flexBasis: 0, flexGrow: 1, flexShrink: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: theme.canvas }}>
+    <box style={{ flexShrink: 0, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, backgroundColor: theme.surface }}>
+      <text fg={theme.text} wrapMode="word"><b>{selectedGroup?.name ?? selected?.display_name ?? "Your conversations"}</b></text>
+      <text fg={theme.muted} wrapMode="word">{selectedGroup ? `Group / ${selectedGroup.member_count} members` : selected ? `${peerState}${selected.is_online ? ` / ${compact && selected.active_transport === "remote_derp" ? "Relay" : transportName(selected.active_transport)}` : ""}${!compact && selected.active_endpoint && selected.active_transport !== "remote_derp" ? ` / ${selected.active_endpoint}` : ""}${selected.is_friend ? " / Friend" : ""}${selected.peer_id in mutedPeers ? " / Muted" : ""}${selectedHasCapabilityGap ? " / Limited" : ""}${selected.friend_request === "incoming" ? " / Request received" : selected.friend_request === "outgoing" ? " / Request sent" : selected.friend_request === "both" ? " / Requests exchanged" : ""}` : "Choose a peer or group to get started"}</text>
+    </box>
+    <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
+      <box paddingLeft={2} paddingRight={1} flexShrink={0}>
+        {controlStatus.control_url && !controlStatus.connected && <text fg={theme.warning} wrapMode="word">Rendezvous out of sync; reconnecting ({controlStatus.reconnect_attempts}).</text>}
+        {selected && <>
+          {(selected.delivery_warnings ?? []).map(kind => kind === "offline" ? <text key={kind} fg={theme.warning} wrapMode="word">Offline: messages queue until this peer reconnects.</text> : kind === "not_friend" ? <text key={kind} fg={theme.warning} wrapMode="word">Messages blocked until your friend request is accepted. Ctrl+P &gt; Friends &gt; Add friend.</text> : null)}
+          {selectedHasCapabilityGap && <text fg={theme.warning} wrapMode="word">Limited: {capabilityGapMessage}</text>}
+        </>}
+        {selectedGroup && limitedGroupMembers.length > 0 && <text fg={theme.warning} wrapMode="word">Limited features: {limitedGroupMembers.map(member => member.display_name).join(", ")}. Shared features remain available.</text>}
+      </box>
+      <scrollbox ref={scrollboxRef} focused={scrollFocused && !dialogOpen} onMouseDown={() => setScrollFocused(true)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, paddingLeft: 2, paddingRight: 1 }} contentOptions={{ flexDirection: "column" }} stickyScroll stickyStart="bottom" verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
+        {!selected && !selectedGroup ? <box marginTop={2} gap={1}><text fg={theme.text}><b>A little closer, wherever you are.</b></text><text fg={theme.muted}>Ctrl+Up/Down selects a conversation. Ctrl+P opens settings to find peers, join a group, or share files.</text></box> : null}
+        {selected && !conversationItems.length ? <text fg={theme.muted}>No messages yet. Say hello.</text> : null}
+        {selectedGroup && !conversationItems.length ? <text fg={theme.muted}>No messages yet. Say hello to the group.</text> : null}
         {conversationItems.map((item, index) => {
           const rows: ReactNode[] = []
           const prev = conversationItems[index - 1]
           if (!prev || dayKey(prev.createdAt) !== dayKey(item.createdAt)) {
             rows.push(
               <box key={`sep-${dayKey(item.createdAt)}`} style={{ alignItems: "center", marginTop: 1, marginBottom: 1 }}>
-                <text fg="#5b6b82">───── {formatDateSeparator(item.createdAt)} ─────</text>
+                <text fg={theme.muted}>{formatDateSeparator(item.createdAt)}</text>
               </box>
             )
           }
@@ -166,11 +179,11 @@ export function ConversationPanel(props: ConversationPanelProps) {
               ?? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === file.sender_id)?.display_name
               ?? "Unknown member"
             const fileStatusColor = (s: string) => {
-              if (s === "completed" || s === "sent") return "#888888"
-              if (s === "queued") return "#d9b36b"
-              if (s === "failed" || s === "unavailable") return "#ff7777"
-              if (s === "receiving" || s === "transferring") return "#888888"
-              return "#888888"
+              if (s === "completed" || s === "sent") return theme.muted
+              if (s === "queued") return theme.warning
+              if (s === "failed" || s === "unavailable") return theme.danger
+              if (s === "receiving" || s === "transferring") return theme.muted
+              return theme.muted
             }
             const fileStatusLabel = (s: string) => {
               if (s === "completed") return " delivered"
@@ -192,17 +205,17 @@ export function ConversationPanel(props: ConversationPanelProps) {
             }))
             const fileReplyHighlightProgress = replyHighlightProgress(file.file_id)
             rows.push(
-              <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { messageRefs.current[file.file_id] = node }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ flexDirection: "column", marginBottom: 1, backgroundColor: fileReplyHighlightProgress !== undefined ? unreadMessageBackground(fileReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === file.file_id ? "#25354d" : undefined }}>
+              <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { messageRefs.current[file.file_id] = node }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ flexDirection: "column", marginBottom: 1, backgroundColor: fileReplyHighlightProgress !== undefined ? unreadMessageBackground(fileReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === file.file_id ? theme.selected : undefined }}>
                 <text>
-                  <span fg="#888888">{formatTime(file.created_at)} </span>
-                  <span fg={isLocal ? "#65a9ff" : "#66dd88"}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
-                  <span fg="#888888"> shared an attachment</span>
+                  <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === file.file_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(file.created_at)} </span>
+                  <span fg={isLocal ? theme.accent : theme.text}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
+                  <span fg={theme.muted}> shared an attachment</span>
                   {isLocal && !selectedGroup && <span fg={fileStatusColor(file.status)}>{fileStatusLabel(file.status)}</span>}
                 </text>
-                {isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(fileDeliveries) } }}><text fg="#888888">{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
-                <text wrapMode="word"><span fg="#7aa2d6">{file.filename}</span><span fg="#888888"> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
-                {fileUnavailable ? <text fg="#ff7777">File unavailable: not found or deleted locally</text> : null}
-                {!fileUnavailable && file.file_path ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage={isImageFile(file.filename)} scrollboxRef={scrollboxRef} maxWidth={Math.max(12, (scrollboxRef.current?.viewport.width ?? width - (compact ? 28 : 38)) - 4)} maxHeight={Math.min(16, Math.max(4, (scrollboxRef.current?.viewport.height ?? 16) - 4))} onOpen={() => openImage(file)} /> : null}
+                {isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(fileDeliveries) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
+                <text wrapMode="word"><span fg={theme.accent}>{file.filename}</span><span fg={theme.muted}> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
+                {fileUnavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
+                {!fileUnavailable && file.file_path ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage={isImageFile(file.filename)} scrollboxRef={scrollboxRef} maxWidth={Math.max(1, (scrollboxRef.current?.viewport.width ?? width - 3) - 2)} maxHeight={Math.min(16, Math.max(4, (scrollboxRef.current?.viewport.height ?? 16) - 4))} onOpen={() => openImage(file)} /> : null}
               </box>
             )
             return rows
@@ -244,15 +257,15 @@ export function ConversationPanel(props: ConversationPanelProps) {
             formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
           const messageReplyHighlightProgress = replyHighlightProgress(message.message_id)
           rows.push(
-              <box id={message.message_id} key={message.message_id} ref={(node) => { messageRefs.current[message.message_id] = node }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: messageReplyHighlightProgress !== undefined ? unreadMessageBackground(messageReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === message.message_id ? "#25354d" : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
+              <box id={message.message_id} key={message.message_id} ref={(node) => { messageRefs.current[message.message_id] = node }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: messageReplyHighlightProgress !== undefined ? unreadMessageBackground(messageReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === message.message_id ? theme.selected : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
               <text>
-                <span fg="#888888">{formatTime(message.created_at)} </span>
-                <span fg={isSystem ? "#e0a34a" : isLocal ? "#65a9ff" : "#66dd88"}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
-                 {isLocal && !isSystem && !selectedGroup && <span fg={blocked || failed ? "#ff7777" : queued ? "#d9b36b" : "#888888"}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
-                 {showReceived && <span fg="#888888"> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
+                <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === message.message_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(message.created_at)} </span>
+                <span fg={isSystem ? theme.warning : isLocal ? theme.accent : theme.text}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
+                 {isLocal && !isSystem && !selectedGroup && <span fg={blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
+                 {showReceived && <span fg={theme.muted}> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                  </text>
-                {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg="#888888">{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
-                {message.reply_to_message_id && <box onMouseDown={replySelectTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); clearReplyTarget(); highlightReplyTarget(replySelectTarget.id); setScrollFocused(true); scrollboxRef.current?.scrollChildIntoView(replySelectTarget.id) } } : undefined}><text fg="#7aa2d6">&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
+                {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
+                {message.reply_to_message_id && <box onMouseDown={replySelectTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); clearReplyTarget(); highlightReplyTarget(replySelectTarget.id); setScrollFocused(true); scrollboxRef.current?.scrollChildIntoView(replySelectTarget.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
                 <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
             </box>
           )
@@ -260,17 +273,19 @@ export function ConversationPanel(props: ConversationPanelProps) {
         })}
       </scrollbox>
     </box>
-    <box title={composerTitle} bottomTitle={isSending ? "Sending..." : byteCount} titleColor={limitColor ?? "#888888"} style={{ border: true, borderColor: limitColor ?? (!scrollFocused && !editingName && (selected?.is_online || selectedGroup) ? "#6ea8fe" : undefined), flexShrink: 0, overflow: "hidden", padding: 1 }}>
-      {replyTo && <text fg="#7aa2d6">Replying to {replyTo.senderId === identity?.peer_id ? "You" : selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replyTo.senderId)?.display_name ?? "Unknown member" : selected?.display_name ?? "Unknown peer"}: {replyTo.label.replace(/\s+/g, " ").trim().slice(0, 60)}{replyTo.label.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""} (Esc cancels)</text>}
-      <textarea key={selectionKey ?? "no-conversation"} ref={composerRef} initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""} placeholder={selectedGroup ? `Message ${selectedGroup.name} - Ctrl+V image` : selected ? "Write a message - Ctrl+V pastes an image" : "Select a peer or group"} focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !isSending && !dialogOpen} onMouseDown={() => setScrollFocused(false)} onContentChange={() => {
+    <box paddingLeft={2} paddingRight={1} flexShrink={0} height={1} overflow="hidden" flexDirection="row" gap={1}><text fg={theme.accent} wrapMode="none">{typingText ?? (scrollFocused ? "Reading history" : "")}</text>{typingText && <TypingDots />}</box>
+    <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, backgroundColor: theme.surface }}>
+      <text fg={limitColor ?? theme.accent}><b>{!scrollFocused && !editingName && hasConversation ? "> " : ""}{composerTitle}</b></text>
+      {replyTo && <text fg={theme.accent}>Replying to {replyTo.senderId === identity?.peer_id ? "You" : selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replyTo.senderId)?.display_name ?? "Unknown member" : selected?.display_name ?? "Unknown peer"}: {replyTo.label.replace(/\s+/g, " ").trim().slice(0, 60)}{replyTo.label.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""} (Esc cancels)</text>}
+      <textarea key={selectionKey ?? "no-conversation"} ref={composerRef} initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""} placeholder={hasConversation ? "Write a message..." : "Select a peer or group"} focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !isSending && !dialogOpen} onMouseDown={() => setScrollFocused(false)} onContentChange={() => {
         const composer = composerRef.current
         const content = composer?.plainText ?? ""
         setDraftLength(new TextEncoder().encode(content).length)
         setComposerHeight(getComposerHeight(composer))
         onComposerChange(content)
-      }} onSubmit={() => void send()} keyBindings={[{ name: "return", action: "submit" }, { name: "return", meta: true, action: "newline" }]} height={composerHeight} wrapMode="word" overflow="hidden" scrollMargin={1} selectionBg="#365b85" />
-      {typingText && <box style={{ position: "absolute", right: 1, bottom: 0, flexDirection: "row", gap: 1 }}><text fg="#7aa2d6">{typingText}</text><spinner name="simpleDotsScrolling" color="#7aa2d6" /></box>}
+      }} onSubmit={() => void send()} keyBindings={[{ name: "return", action: "submit" }, { name: "return", meta: true, action: "newline" }]} height={composerHeight} wrapMode="word" overflow="hidden" scrollMargin={1} textColor={theme.text} backgroundColor={theme.surface} focusedBackgroundColor={theme.surface} focusedTextColor={theme.text} selectionBg={theme.selected} />
+      <text fg={limitColor ?? theme.muted}>{isSending ? "Sending... / " : ""}{byteCount}{draftLength > MAX_MESSAGE_BYTES ? " / Too long" : ""}</text>
     </box>
-    <MarqueeText width={width - 2} fg={status.includes("error") || status.includes("lost") || status.includes("exceeds") ? "#ff7777" : "#888888"} text={status} />
+    <ChatFooter width={width} scrollFocused={scrollFocused} status={status} />
   </box>
 }

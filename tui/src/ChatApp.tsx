@@ -1,3 +1,4 @@
+import { chatLayout, chatTheme } from "./chatTheme";
 import {
   createClipboard,
   createHostClipboard,
@@ -38,6 +39,7 @@ import type {
   TypingPeer,
   UnreadMessageState,
 } from "./types";
+import { dialogUsesTextInput } from "./navigation";
 import {
   composerLimitColor,
   DEFAULT_STATUS,
@@ -979,7 +981,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           if (!dialog) setDialog({ kind: "friend-request-incoming", request });
           else
             actions.showStatus(
-              `Friend request from ${request.sender_name}. Open Commands > Friends to respond.`,
+              `Friend request from ${request.sender_name}. Open Settings > Friends to respond.`,
             );
           void actions.refreshPeers();
           return;
@@ -1331,7 +1333,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   }
 
   useKeyboard((key) => {
-    if (dialog && dialogBusyRef.current) return;
+    if (dialog && dialogBusyRef.current) { key.preventDefault(); return; }
     if (deleteConfirmation) {
       if (key.name === "escape") {
         setDeleteConfirmation(undefined);
@@ -1391,12 +1393,16 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       return;
     }
     if (key.ctrl && key.name === "p") {
-      if (dialog?.kind === "commands") actions.closeDialog();
-      else actions.showDialog({ kind: "commands" });
+      key.preventDefault();
+      if (dialog?.kind === "settings") actions.closeDialog();
+      else actions.showDialog({ kind: "settings" });
       return;
     }
     if (dialog) {
-      if (key.name === "escape") actions.goBack();
+      if (key.name === "escape" || (key.name === "backspace" && !dialogUsesTextInput(dialog))) {
+        key.preventDefault();
+        actions.goBack();
+      }
       return;
     }
     if (key.name === "escape" && editingName) {
@@ -1406,15 +1412,18 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       return;
     }
     if (key.ctrl && key.name === "n") {
+      key.preventDefault();
       setNameDraft(identity?.display_name ?? "");
       setEditingName(true);
       return;
     }
     if (key.ctrl && key.name === "u") {
+      key.preventDefault();
       void actions.openFilePicker();
       return;
     }
     if (key.ctrl && key.name === "d") {
+      key.preventDefault();
       void actions.removeSelectedPeer();
       return;
     }
@@ -1423,6 +1432,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       !key.ctrl &&
       (key.name === "up" || key.name === "down")
     ) {
+      key.preventDefault();
       const replyTargets = conversationItems.map((item): ReplyTarget =>
         item.type === "message"
           ? {
@@ -1441,7 +1451,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             },
       );
       if (!replyTargets.length) return;
-      key.preventDefault();
       const index = selectedReplyTarget
         ? replyTargets.findIndex(
             (target) => target.id === selectedReplyTarget.id,
@@ -1497,11 +1506,19 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       setReplyTo(undefined);
       return;
     }
+    if (key.name === "escape" && scrollFocused) {
+      key.preventDefault();
+      setScrollFocused(false);
+      return;
+    }
     if (
       (key.name === "up" || key.name === "down") &&
       key.ctrl &&
       (peers.length || groups.length)
     ) {
+      key.preventDefault();
+      setScrollFocused(false);
+      setEditingName(false);
       const conversations: Conversation[] = [
         ...peers.map((peer) => ({ kind: "peer" as const, id: peer.peer_id })),
         ...groups.map((group) => ({
@@ -1528,16 +1545,23 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       }
     }
     if (key.name === "pageup") {
+      key.preventDefault();
       setScrollFocused(true);
       scrollboxRef.current?.scrollBy(-1, "viewport");
     }
     if (key.name === "pagedown") {
+      key.preventDefault();
       setScrollFocused(true);
       scrollboxRef.current?.scrollBy(1, "viewport");
     }
-    if (scrollFocused && key.name === "home") scrollboxRef.current?.scrollTo(0);
-    if (scrollFocused && key.name === "end")
+    if (scrollFocused && key.name === "home") {
+      key.preventDefault();
+      scrollboxRef.current?.scrollTo(0);
+    }
+    if (scrollFocused && key.name === "end") {
+      key.preventDefault();
       scrollboxRef.current?.scrollTo(scrollboxRef.current.scrollHeight);
+    }
   });
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId);
@@ -1628,17 +1652,18 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         (member) => member.is_limited,
       )
     : [];
-  const sidebarWidth = width < 72 ? 22 : 32;
-  const compact = width < 72;
+  const { stacked, sidebarWidth, panelWidth } = chatLayout(width);
+  const compact = panelWidth < 70;
   const limitColor = composerLimitColor(draftLength);
-  const dialogWidth = Math.min(68, Math.max(1, width - 4));
+  const dialogWidth = Math.min(100, Math.max(1, width - 6));
   const dialogHeight =
-    dialog?.kind === "image-view" || dialog?.kind === "file-list" || dialog?.kind === "files-dir" || dialog?.kind === "file-download"
+    (dialog?.kind === "image-view" || dialog?.kind === "file-list")
       ? Math.max(1, height - 2)
-      : Math.min(20, Math.max(1, height - 4));
+      : Math.min(32, Math.max(1, height - 4));
   function dialogWidthFor(kind: Dialog["kind"]): number {
-    if (kind === "image-view" || kind === "file-list" || kind === "files-dir" || kind === "file-download") return Math.max(1, width - 2);
-    if (kind === "room-detail" || kind === "group-detail")
+    if (kind === "image-view" || kind === "file-list") return Math.max(1, width - 2);
+    if (kind === "files-dir" || kind === "file-download") return Math.min(118, Math.max(1, width - 6));
+    if (kind === "group-detail")
       return Math.min(78, Math.max(1, width - 2));
     return dialogWidth;
   }
@@ -1664,16 +1689,18 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   return (
     <box
       style={{
-        flexDirection: "row",
+        flexDirection: stacked ? "column" : "row",
+        backgroundColor: chatTheme.canvas,
         width: "100%",
         height: "100%",
         minWidth: 0,
-        padding: 1,
-        gap: 1,
+        padding: 0,
+        gap: stacked ? 0 : 1,
       }}
     >
       <Sidebar
-        compact={compact}
+        appVersion={APP_RELEASE_VERSION}
+        stacked={stacked}
         dialogOpen={Boolean(dialog)}
         editingName={editingName}
         groups={groups}
@@ -1726,7 +1753,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         scrollFocused={scrollFocused}
         scrollboxRef={scrollboxRef}
         status={status}
-        width={width}
+        width={panelWidth}
         unreadMessageStates={unreadMessages}
         unreadNow={unreadNow}
         markUnreadMessageVisible={markUnreadMessageVisible}
@@ -1764,20 +1791,21 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             position: "absolute",
             left: Math.max(2, Math.floor(width / 2) - 24),
             top: Math.max(1, Math.floor(height / 2) - 2),
-            width: Math.min(48, Math.max(1, width - 4)),
+            width: Math.min(42, Math.max(1, width - 4)),
             border: true,
-            borderColor: "#ff7777",
-            backgroundColor: "#2d1818",
+            borderColor: chatTheme.line,
+            backgroundColor: chatTheme.surfaceRaised,
             padding: 1,
             flexDirection: "column",
           }}
         >
-          <text fg="#ff7777">
-            <b>Delete this message locally?</b>
+          <text fg={chatTheme.danger}>
+            <b>Delete this message?</b>
           </text>
-          <text fg="#bbbbbb">
-            Enter confirms. Esc cancels. This is not sent to peers.
+          <text fg={chatTheme.muted}>
+            It will be removed from this device only.
           </text>
+          <text><span fg={chatTheme.danger}>Enter delete</span><span fg={chatTheme.muted}>  /  Esc keep</span></text>
         </box>
       )}
       {copyToast && (
@@ -1787,13 +1815,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             right: 2,
             top: 1,
             border: true,
-            borderColor: "#66dd88",
-            backgroundColor: "#18251d",
+            borderColor: chatTheme.line,
+            backgroundColor: chatTheme.surfaceRaised,
             paddingLeft: 1,
             paddingRight: 1,
           }}
         >
-          <text fg="#66dd88">Copied to clipboard</text>
+          <text><span fg={chatTheme.success}>●</span><span fg={chatTheme.text}> Copied to clipboard</span></text>
         </box>
       )}
       {dialog && (
@@ -1878,15 +1906,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           saveUpdateToken={actions.saveUpdateToken}
           restartUpdate={actions.restartUpdate}
         />
-      )}
-      {!dialog && (
-        <box style={{ position: "absolute", right: 1, bottom: 0 }}>
-          <text>
-            <span fg="#66dd88">● </span>
-            <span fg="#bbbbbb">MeshTalk </span>
-            <span fg="#888888">{APP_RELEASE_VERSION}</span>
-          </text>
-        </box>
       )}
     </box>
   );

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react"
+import { useContext, useEffect, useState } from "react"
+import { SettingsPanelContext } from "./dialogs/SettingsInteraction"
 import type { SelectProps } from "@opentui/react"
 import { terminalWidth, clipTextToWidth } from "../utils"
 
@@ -9,11 +10,13 @@ type MarqueeTextProps = {
 }
 
 export function MarqueeText({ text, width, fg }: MarqueeTextProps) {
+  const inSettings = useContext(SettingsPanelContext)
   const [offset, setOffset] = useState(0)
   const viewportWidth = Math.max(1, width)
   const maxOffset = Math.max(0, terminalWidth(text) - viewportWidth)
 
   useEffect(() => {
+    if (inSettings) return
     if (!maxOffset) {
       setOffset(0)
       return
@@ -33,7 +36,7 @@ export function MarqueeText({ text, width, fg }: MarqueeTextProps) {
       setOffset(currentOffset)
     }, 125)
     return () => clearInterval(timer)
-  }, [maxOffset])
+  }, [maxOffset, inSettings])
 
   let visibleText = text
   if (maxOffset > 0) {
@@ -52,5 +55,6 @@ export function MarqueeText({ text, width, fg }: MarqueeTextProps) {
     visibleText = clipTextToWidth(text.substring(startIndex), viewportWidth)
   }
 
+  if (inSettings) return <text wrapMode="word" fg={fg}>{text}</text>
   return <box width={viewportWidth} height={1} overflow="hidden" flexShrink={0}><text wrapMode="none" fg={fg}>{visibleText}</text></box>
 }
