@@ -11,6 +11,7 @@ import { useKeyboard } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
 import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
+import { chatTheme as theme } from "../chatTheme"
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
 
@@ -107,10 +108,11 @@ export function DialogPanel(props: DialogPanelProps) {
   const { saveDisplayName, checkForUpdatesFromAbout, installUpdate, saveUpdateToken, restartUpdate } = props
 
   if (!dialog) return null
+  const fileManagerOpen = dialog.kind === "file-list"
 
   return <box style={{ position: "absolute", left: 0, top: 0, width: "100%", height: "100%", backgroundColor: "#080b1099", alignItems: "center", justifyContent: "center" }}>
     <box
-      title={dialog.kind === "commands" ? "Commands"
+      title={fileManagerOpen ? undefined : dialog.kind === "commands" ? "Commands"
         : dialog.kind.startsWith("control") ? "Control server"
          : dialog.kind === "customisation" || dialog.kind === "customisation-splash" ? "Customisation"
          : dialog.kind.startsWith("advanced") ? "Advanced Configuration"
@@ -140,14 +142,13 @@ export function DialogPanel(props: DialogPanelProps) {
         : dialog.kind === "about" ? "About MeshTalk"
         : dialog.kind === "group-detail" ? "Group details"
         : dialog.kind === "file-send" ? "Upload file"
-        : dialog.kind === "file-list" ? "File Manager"
         : dialog.kind === "file-download" ? "Save File"
          : dialog.kind === "files-dir" ? "File storage"
          : dialog.kind === "image-view" ? "Image preview"
          : dialog.kind === "delivery-details" ? "Delivery details"
          : "Private rooms"}
-      bottomTitle={dialogBusy ? "Working..." : "Esc back  Ctrl+P Commands"}
-      style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: true, borderColor: dialog.kind === "about" ? "#9b8cff" : dialog.kind === "update" ? "#e0a34a" : "#6ea8fe", backgroundColor: "#111923", padding: 1, flexDirection: "column", gap: 1, overflow: "hidden" }}
+      bottomTitle={fileManagerOpen ? undefined : dialogBusy ? "Working..." : "Esc back  Ctrl+P Commands"}
+      style={{ width: dialogWidthFor(dialog.kind), height: dialogHeight, border: !fileManagerOpen, borderColor: dialog.kind === "about" ? "#9b8cff" : dialog.kind === "update" ? "#e0a34a" : "#6ea8fe", backgroundColor: fileManagerOpen ? theme.canvas : "#111923", padding: fileManagerOpen ? 0 : 1, flexDirection: "column", gap: fileManagerOpen ? 0 : 1, overflow: "hidden" }}
     >
       {dialog.kind === "commands" && <CommandsDialog dialogHeight={dialogHeight} groups={groups} peers={peers} selectedGroup={groups.find((group) => group.group_id === selectedGroupId)} selection={selection} runCommand={runCommand} />}
       {dialog.kind === "about" && <AboutDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} isReleaseBuild={isReleaseBuild} checkForUpdates={checkForUpdatesFromAbout} goBack={goBack} />}
@@ -190,15 +191,15 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "debug-endpoints" && <DebugEndpointsDialogContent debugInfo={debugInfo} showDialog={showDialog} />}
       {dialog.kind === "debug-peer" && <DebugPeerDialogContent dialog={dialog} debugInfo={debugInfo} showDialog={showDialog} />}
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
-      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidth} imageProtocol={imageProtocol} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
+      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
       {dialog.kind === "image-view" && <ImageViewerDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} />}
     </box>
-    <box style={{ position: "absolute", right: 1, bottom: 0 }}>
+    {!fileManagerOpen && <box style={{ position: "absolute", right: 1, bottom: 0 }}>
       <text><span fg="#66dd88">● </span><span fg="#bbbbbb">MeshTalk </span><span fg="#888888">{appReleaseVersion}</span></text>
-    </box>
+    </box>}
   </box>
 }
 
@@ -803,7 +804,7 @@ function FileSendDialogContent({ dialog, dialogWidth, selection, peers, groups, 
   )
 }
 
-function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, loadFiles, loadFilesDir, setDialogDraft, showDialog, defaultDownloadPath, onDeleteFile }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; defaultDownloadPath: (filename: string) => string; onDeleteFile?: (file: FileTransfer) => void }) {
+export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, peers, groups, loadFiles, loadFilesDir, setDialogDraft, showDialog, defaultDownloadPath, onDeleteFile }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; defaultDownloadPath: (filename: string) => string; onDeleteFile?: (file: FileTransfer) => void }) {
   const [filter, setFilter] = useState<"all" | "inbound" | "outbound" | "images" | "other">("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<FileTransfer | null>(null)
@@ -868,62 +869,105 @@ function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtoco
   })
   const formatSize = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
   const statusStyle = (status: string) => {
-    if (status === "completed") return { color: "#66dd88", bg: "#1a3320", label: "done" }
-    if (status === "sent") return { color: "#65a9ff", bg: "#1a2740", label: "sent" }
-    if (status === "receiving" || status === "sending") return { color: "#e0a34a", bg: "#33260a", label: status }
-    if (status === "failed" || status === "error") return { color: "#ff7777", bg: "#331a1a", label: "failed" }
-    return { color: "#888888", bg: "#222222", label: status }
+    if (status === "completed") return { color: "#66dd88", label: "done" }
+    if (status === "sent") return { color: "#65a9ff", label: "sent" }
+    if (status === "receiving" || status === "sending") return { color: "#e0a34a", label: status }
+    if (status === "failed" || status === "error") return { color: "#ff7777", label: "failed" }
+    return { color: "#888888", label: status }
   }
   const chips: { id: typeof filter; label: string; count: number }[] = [
-    { id: "all", label: "All", count: counts.all }, { id: "inbound", label: "↓ In", count: counts.inbound },
-    { id: "outbound", label: "↑ Out", count: counts.outbound }, { id: "images", label: "Images", count: counts.images }, { id: "other", label: "Other", count: counts.other },
+    { id: "all", label: "All", count: counts.all }, { id: "inbound", label: "Received", count: counts.inbound },
+    { id: "outbound", label: "Sent", count: counts.outbound }, { id: "images", label: "Images", count: counts.images }, { id: "other", label: "Other", count: counts.other },
   ]
-  return <>
-    <box style={{ flexDirection: "row", alignItems: "center", paddingBottom: 1 }}>
-      <text><span fg="#6ea8fe"><b>Transfer history</b></span> <span fg="#888888">· {counts.all} files</span></text>
+  const peerLabel = (peerId: string) => peers.find((peer) => peer.peer_id === peerId)?.display_name ?? peerId.slice(0, 8)
+  const transferDirection = (file: FileTransfer) => {
+    if (file.direction === "inbound") return `Received from ${peerLabel(file.sender_id)}`
+    if (file.group_id) return `Sent to ${groups.find((group) => group.group_id === file.group_id)?.name ?? file.group_id.slice(0, 8)}`
+    return `Sent to ${peerLabel(file.recipient_id)}`
+  }
+  const wide = dialogWidth >= 92
+  const renderSelectedImage = (file: FileTransfer, maxWidth: number) => isImageFile(file.filename) && file.status === "completed" && file.file_path && !isLocalFileMissing(file.file_path)
+    ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage lazy={false} maxWidth={maxWidth} maxHeight={Math.max(4, Math.min(14, dialogHeight - 14))} onOpen={() => showDialog({ kind: "image-view", filePath: file.file_path!, filename: file.filename, version: file.completed_at, returnTo: "files" })} />
+    : null
+  return <box style={{ width: "100%", height: "100%", minHeight: 0, flexDirection: "column", backgroundColor: theme.canvas }}>
+    <box style={{ flexShrink: 0, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, backgroundColor: theme.surface }}>
+      <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
+        <text fg={theme.text}><b>File Manager</b></text>
+        <text fg={theme.muted}>{counts.all} transfer{counts.all === 1 ? "" : "s"}</text>
+      </box>
+      <text fg={theme.muted}>Files shared through MeshTalk</text>
     </box>
-    <box style={{ flexDirection: "row", gap: 1, paddingBottom: 1, minHeight: 3, flexShrink: 0 }}>
-      {chips.map((chip) => <box key={chip.id} onMouseDown={() => setFilter(chip.id)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: filter === chip.id ? "#1d3a5f" : "#1a2332", border: true, borderColor: filter === chip.id ? "#6ea8fe" : "#24344d" }}>
-        <text fg={filter === chip.id ? "#c8dfff" : "#888888"}>{chip.label}{chip.count ? ` · ${chip.count}` : ""}</text>
+    <box style={{ flexDirection: "row", flexWrap: "wrap", gap: 1, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, flexShrink: 0, backgroundColor: theme.surface }}>
+      {chips.map((chip) => <box id={`file-filter-${chip.id}`} key={chip.id} onMouseDown={() => setFilter(chip.id)} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: filter === chip.id ? theme.selected : undefined }}>
+        <text fg={filter === chip.id ? theme.accent : theme.muted}>{filter === chip.id ? "> " : ""}{chip.label} {chip.count}</text>
       </box>)}
     </box>
-    <scrollbox ref={scrollboxRef} focused style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", gap: 1, paddingRight: 1 }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: "#6ea8fe", backgroundColor: "#24344d" }, arrowOptions: { foregroundColor: "#6ea8fe" } }}>
-      {!filtered.length ? <box style={{ alignItems: "center", justifyContent: "center", flexDirection: "column", padding: 2, gap: 1 }}><text fg="#6ea8fe"><b>No {filter === "all" ? "file transfers" : filter} yet</b></text><text fg="#888888">Send a file with /file or receive one from a peer.</text></box> : null}
-      {filtered.map((f) => {
-        const status = statusStyle(f.status)
-        const missing = ["completed", "sent"].includes(f.status) && isLocalFileMissing(f.file_path)
-        const selected = f.file_id === selectedId
-        const isImage = isImageFile(f.filename)
-        const progress = f.total_chunks && f.received_chunks !== undefined ? Math.round(f.received_chunks / f.total_chunks * 100) : undefined
-        return <box key={f.file_id} id={f.file_id} onMouseDown={() => setSelectedId(f.file_id)} style={{ flexDirection: "column", padding: 1, border: true, borderColor: selected ? "#6ea8fe" : missing ? "#4a2a2a" : "#1e2e4a", backgroundColor: selected ? "#1d2e4a" : "#111d2e" }}>
-          <box style={{ flexDirection: "row", justifyContent: "space-between", gap: 1 }}>
-            <text><span fg={selected ? "#6ea8fe" : f.direction === "inbound" ? "#66dd88" : "#65a9ff"}>{selected ? "›" : f.direction === "inbound" ? "↓" : "↑"}</span> <b fg={selected ? "#c8dfff" : "#e8edf5"}>{f.filename}</b>{isImage ? <span fg="#e0a34a"> ◉</span> : null}</text>
-            <text><span fg="#888888">{formatSize(f.file_size)} </span><span fg={status.color} bg={status.bg}>{` ${status.label} `}</span></text>
+    <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: wide ? "row" : "column", gap: wide ? 1 : 0 }}>
+      <scrollbox id="file-manager-list" ref={scrollboxRef} focused style={{ width: wide ? "44%" : "100%", flexGrow: wide ? 0 : 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1 }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas }, arrowOptions: { foregroundColor: theme.line } }}>
+        {!filtered.length ? <box style={{ paddingLeft: 2, paddingRight: 2, paddingTop: 2, flexDirection: "column", gap: 1 }}><text fg={theme.text}><b>No {filter === "all" ? "file transfers" : filter} yet</b></text><text fg={theme.muted}>Send a file with /file or receive one from a peer.</text></box> : null}
+        {filtered.map((f) => {
+          const status = statusStyle(f.status)
+          const missing = ["completed", "sent"].includes(f.status) && isLocalFileMissing(f.file_path)
+          const selected = f.file_id === selectedId
+          const progress = f.total_chunks && f.received_chunks !== undefined ? Math.round(f.received_chunks / f.total_chunks * 100) : undefined
+          const direction = transferDirection(f)
+          return <box key={f.file_id} id={f.file_id} onMouseDown={() => setSelectedId(f.file_id)} style={{ width: "100%", flexDirection: "column", paddingLeft: 2, paddingRight: 1, paddingTop: 1, paddingBottom: 1, backgroundColor: selected ? theme.selected : undefined }}>
+            <box style={{ flexDirection: "row", justifyContent: "space-between", gap: 1 }}>
+              <text fg={selected ? theme.accent : theme.text} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}<b>{f.filename}</b></text>
+              <text fg={theme.muted} flexShrink={0}>{formatSize(f.file_size)}</text>
+            </box>
+            <text fg={theme.muted} wrapMode="word">  {direction}{f.group_id ? " / group" : ""} / <span fg={status.color}>{status.label}</span>{progress !== undefined && !["completed", "sent"].includes(f.status) ? ` / ${progress}%` : ""}</text>
+            {missing ? <text fg={theme.danger}>  File unavailable: moved or deleted locally</text> : null}
+            {progress !== undefined && !["completed", "sent"].includes(f.status) ? <box style={{ width: "100%", height: 1, backgroundColor: theme.surface }}><box style={{ width: `${Math.min(100, progress)}%`, height: 1, backgroundColor: theme.warning }} /></box> : null}
+            {!wide && selected && f.file_path ? <text fg={theme.muted} wrapMode="word">  {f.file_path}</text> : null}
+            {!wide && selected ? renderSelectedImage(f, Math.max(12, dialogWidth - 6)) : null}
           </box>
-          <text fg="#888888">{f.direction === "inbound" ? `from ${f.sender_id.slice(0, 8)}` : `to ${f.recipient_id.slice(0, 8)}`}{f.group_id ? " · group" : ""} <span fg="#5a6b86">· {f.file_id.slice(0, 8)}</span>{progress !== undefined && !["completed", "sent"].includes(f.status) ? ` · ${progress}%` : ""}</text>
-          {f.file_path ? <text fg="#5a6b86" wrapMode="none">{f.file_path}</text> : null}
-          {missing ? <text fg="#ff7777">File unavailable — moved or deleted locally</text> : null}
-          {progress !== undefined && !["completed", "sent"].includes(f.status) ? <box style={{ width: "100%", height: 1, backgroundColor: "#1a2332", marginTop: 1 }}><box style={{ width: `${Math.min(100, progress)}%`, height: 1, backgroundColor: "#e0a34a" }} /></box> : null}
-          {selected && isImage && f.status === "completed" && f.file_path && !missing ? <box style={{ paddingTop: 1 }}><ImageAttachment filePath={f.file_path} filename={f.filename} protocol={imageProtocol} expectedImage lazy={false} maxWidth={Math.max(12, dialogWidth - 8)} maxHeight={Math.max(4, Math.min(12, Math.floor(dialogHeight / 3)))} onOpen={() => showDialog({ kind: "image-view", filePath: f.file_path!, filename: f.filename, version: f.completed_at, returnTo: "files" })} /></box> : null}
-        </box>
-      })}
-    </scrollbox>
-    <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end", minHeight: 3, flexShrink: 0 }}>
-      <box onMouseDown={saveSelected} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: canSaveSelected ? "#1d3a5f" : "#1a2332", border: true, borderColor: canSaveSelected ? "#6ea8fe" : "#24344d" }}><text fg={canSaveSelected ? "#c8dfff" : "#5a6b86"}><u>S</u>ave</text></box>
-      <box onMouseDown={requestDelete} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#2d1818", border: true, borderColor: "#4a2a2a" }}><text fg="#ff7777"><u>D</u>elete</text></box>
-      <box onMouseDown={() => void loadFilesDir()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff"><u>L</u>ocation</text></box>
-      <box onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff"><u>R</u>efresh</text></box>
-      <box onMouseDown={() => showDialog({ kind: "commands" })} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff">Back</text></box>
+        })}
+      </scrollbox>
+      {wide && <box id="file-manager-details" style={{ flexGrow: 1, flexShrink: 1, minWidth: 0, padding: 2, backgroundColor: theme.surface }}>
+        {!selectedFile ? <text fg={theme.muted}>Select a file to see its details.</text> : (() => {
+          const status = statusStyle(selectedFile.status)
+          const missing = ["completed", "sent"].includes(selectedFile.status) && isLocalFileMissing(selectedFile.file_path)
+          return <>
+            <text fg={theme.text} wrapMode="word"><b>{selectedFile.filename}</b></text>
+            <text fg={theme.muted}>{formatSize(selectedFile.file_size)} / <span fg={status.color}>{status.label}</span>{isImageFile(selectedFile.filename) ? " / image" : ""}</text>
+            <text fg={theme.muted}>{transferDirection(selectedFile)}{selectedFile.group_id ? " / group" : ""}</text>
+            <text fg={theme.muted}>Transfer {selectedFile.file_id.slice(0, 8)}</text>
+            <box height={1} />
+            <text fg={theme.muted}>Local file</text>
+            {selectedFile.file_path ? <text fg={missing ? theme.danger : theme.text} wrapMode="word">{selectedFile.file_path}</text> : <text fg={theme.muted}>No local path available</text>}
+            {missing ? <text fg={theme.danger}>File unavailable: moved or deleted locally</text> : null}
+            <box height={1} />
+            {renderSelectedImage(selectedFile, Math.max(12, Math.floor(dialogWidth * 0.5) - 6))}
+            <text fg={canSaveSelected ? theme.muted : theme.warning}>{canSaveSelected ? "S saves a copy to another location." : "This file cannot be saved in its current state."}</text>
+          </>
+        })()}
+      </box>}
     </box>
-    {pendingDelete ? <box style={{ position: "absolute", left: 2, right: 2, top: Math.max(1, Math.floor(dialogHeight / 2) - 3), border: true, borderColor: "#ff7777", backgroundColor: "#2d1818", padding: 1, flexDirection: "column", gap: 1 }}>
-      <text fg="#ff7777"><b>Delete {pendingDelete.filename} locally?</b></text>
-      <text fg="#bbbbbb">Enter confirms · Esc cancels. File + history removed.</text>
+    <box style={{ flexDirection: "row", flexWrap: "wrap", gap: 1, paddingLeft: 1, paddingRight: 1, paddingTop: 1, paddingBottom: 1, flexShrink: 0, backgroundColor: theme.surface }}>
+      <FileManagerAction shortcut="S" label="ave" onPress={saveSelected} disabled={!canSaveSelected} />
+      <FileManagerAction shortcut="D" label="elete" onPress={requestDelete} danger />
+      <FileManagerAction shortcut="L" label="ocation" onPress={() => void loadFilesDir()} />
+      <FileManagerAction shortcut="R" label="efresh" onPress={() => void loadFiles()} />
+      <FileManagerAction shortcut="Esc" label=" Back" onPress={() => showDialog({ kind: "commands" })} />
+      <text fg={theme.muted}>Up/Down or J/K select</text>
+    </box>
+    {pendingDelete ? <box style={{ position: "absolute", left: 2, right: 2, top: Math.max(1, Math.floor(dialogHeight / 2) - 3), border: true, borderColor: theme.danger, backgroundColor: "#2d1818", padding: 1, flexDirection: "column", gap: 1 }}>
+      <text fg={theme.danger}><b>Delete {pendingDelete.filename} locally?</b></text>
+      <text fg={theme.text}>This removes the local file and transfer history. Enter confirms; Esc cancels.</text>
       <box style={{ flexDirection: "row", gap: 1 }}>
-        <box onMouseDown={() => void confirmDelete()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#4a1a1a", border: true, borderColor: "#ff7777" }}><text fg="#ffbbbb">Delete</text></box>
-        <box onMouseDown={() => setPendingDelete(null)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#1a2332", border: true, borderColor: "#24344d" }}><text fg="#c8dfff">Cancel</text></box>
+        <FileManagerAction shortcut="Enter" label=" Delete" onPress={() => void confirmDelete()} danger />
+        <FileManagerAction shortcut="Esc" label=" Cancel" onPress={() => setPendingDelete(null)} />
       </box>
     </box> : null}
-  </>
+  </box>
+}
+
+function FileManagerAction({ shortcut, label, onPress, disabled = false, danger = false }: { shortcut: string; label: string; onPress: () => void; disabled?: boolean; danger?: boolean }) {
+  const color = disabled ? theme.line : danger ? theme.danger : theme.text
+  return <box onMouseDown={disabled ? undefined : onPress} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: disabled ? undefined : danger ? "#3a2022" : theme.selected }}>
+    <text fg={color}><u>{shortcut}</u>{label}</text>
+  </box>
 }
 
 function FilesDirDialogContent({ dialog, dialogWidth, dialogDraft, setDialogDraft, setFilesDir, loadFiles }: { dialog: Extract<Dialog, { kind: "files-dir" }>; dialogWidth: number; dialogDraft: string; setDialogDraft: (v: string) => void; setFilesDir: (path: string) => void; loadFiles: () => void }) {

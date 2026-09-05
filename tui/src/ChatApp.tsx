@@ -1,3 +1,4 @@
+import { chatLayout, chatTheme } from "./chatTheme";
 import {
   createClipboard,
   createHostClipboard,
@@ -1628,8 +1629,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         (member) => member.is_limited,
       )
     : [];
-  const sidebarWidth = width < 72 ? 22 : 32;
-  const compact = width < 72;
+  const { stacked, sidebarWidth, panelWidth } = chatLayout(width);
+  const compact = panelWidth < 70;
   const limitColor = composerLimitColor(draftLength);
   const dialogWidth = Math.min(68, Math.max(1, width - 4));
   const dialogHeight =
@@ -1664,16 +1665,19 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   return (
     <box
       style={{
-        flexDirection: "row",
+        flexDirection: stacked ? "column" : "row",
+        backgroundColor: chatTheme.canvas,
         width: "100%",
         height: "100%",
         minWidth: 0,
-        padding: 1,
-        gap: 1,
+        padding: 0,
+        gap: stacked ? 0 : 1,
       }}
     >
       <Sidebar
-        compact={compact}
+        appVersion={APP_RELEASE_VERSION}
+        stacked={stacked}
+        compact={width < 100}
         dialogOpen={Boolean(dialog)}
         editingName={editingName}
         groups={groups}
@@ -1726,7 +1730,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         scrollFocused={scrollFocused}
         scrollboxRef={scrollboxRef}
         status={status}
-        width={width}
+        width={panelWidth}
         unreadMessageStates={unreadMessages}
         unreadNow={unreadNow}
         markUnreadMessageVisible={markUnreadMessageVisible}
@@ -1878,15 +1882,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           saveUpdateToken={actions.saveUpdateToken}
           restartUpdate={actions.restartUpdate}
         />
-      )}
-      {!dialog && (
-        <box style={{ position: "absolute", right: 1, bottom: 0 }}>
-          <text>
-            <span fg="#66dd88">● </span>
-            <span fg="#bbbbbb">MeshTalk </span>
-            <span fg="#888888">{APP_RELEASE_VERSION}</span>
-          </text>
-        </box>
       )}
     </box>
   );
