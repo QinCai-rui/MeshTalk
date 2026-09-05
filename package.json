@@ -20,6 +20,6 @@
   },
   "devDependencies": {
     "react-devtools-core": "^7.0.1",
-    "web-tree-sitter": "^0.27.0"
+    "web-tree-sitter": "^0.25.10"
   }
 }
