@@ -75,11 +75,11 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
         return <box id={`nav-peer-${peer.peer_id}`} key={peer.peer_id} onMouseDown={() => pick({ kind: "peer", id: peer.peer_id })} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
             <text fg={color} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{presenceIndicator(presence)} {selected || peer.unread_count ? <b>{label}</b> : label}</text>
-            {markers && <text fg={color} flexShrink={0}>{markers}</text>}
+            {markers.length > 0 && <text fg={color} flexShrink={0}>{markers}</text>}
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {peer.unread_count > 0 && <text fg={theme.accent}>{peer.unread_count} new</text>}
-            {flags && <text fg={theme.muted}>{flags}</text>}
+            {flags.length > 0 && <text fg={theme.muted}>{flags}</text>}
             {typing && <TypingDots />}
           </box>
         </box>
@@ -104,7 +104,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {group.unread_count > 0 && <text fg={theme.accent}>{group.unread_count} new</text>}
             {typing && <TypingDots />}
-          </box>}
+          </box>
           {selected && !stacked && visibleMembers.map((member, index) => {
             const id = member.peer_id ?? member.member_id
             const peer = peers.find(peer => peer.peer_id === id)
