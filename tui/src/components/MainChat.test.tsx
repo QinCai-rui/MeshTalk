@@ -118,7 +118,7 @@ test("sidebar peers use contiguous two-line click targets", async () => {
   } finally { await close(setup) }
 })
 
-test("sidebar groups reserve a second line like DMs and space entries after View all members", async () => {
+test("sidebar groups use contiguous two-line targets like DMs", async () => {
   const props = sidebarProps(120)
   props.selectedPeerId = undefined
   props.groups = Array.from({ length: 3 }, (_, index) => ({ ...group, group_id: `group-${index}`, name: `Group ${index}`, unread_count: 0 }))
@@ -127,8 +127,27 @@ test("sidebar groups reserve a second line like DMs and space entries after View
     await settle(setup)
     const rows = props.groups.map(item => setup.renderer.root.findDescendantById(`nav-group-${item.group_id}`)!)
     expect(rows.every(row => row.height >= 2)).toBe(true)
-    expect(rows[0]!.screenY + rows[0]!.height + 1).toBe(rows[1]!.screenY)
-    expect(rows[1]!.screenY + rows[1]!.height + 1).toBe(rows[2]!.screenY)
+    expect(rows[0]!.screenY + rows[0]!.height).toBe(rows[1]!.screenY)
+    expect(rows[1]!.screenY + rows[1]!.height).toBe(rows[2]!.screenY)
+  } finally { await close(setup) }
+})
+
+test("expanded group keeps its detail row above its members", async () => {
+  const props = sidebarProps(120)
+  props.selectedPeerId = undefined
+  props.selectedGroupId = group.group_id
+  props.groups = [{ ...group, unread_count: 0 }]
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "sam", display_name: "Sam Chen" }] }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Alex Morgan")
+    const lines = frame.split("\n")
+    const headerIdx = lines.findIndex(line => line.includes("Design studio"))
+    const memberIdx = lines.findIndex((line, i) => i > headerIdx && line.includes("Alex Morgan"))
+    expect(headerIdx).toBeGreaterThanOrEqual(0)
+    expect(memberIdx).toBe(headerIdx + 2)
+    // Name + detail row + 2 members + View all members.
+    expect(setup.renderer.root.findDescendantById(`nav-group-${group.group_id}`)!.height).toBe(5)
   } finally { await close(setup) }
 })
 

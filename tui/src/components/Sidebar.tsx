@@ -88,7 +88,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
       </box>
       <box id="sidebar-group-section" style={{ flexGrow: 2, flexBasis: 0, flexShrink: 1, minHeight: 1, flexDirection: "column" }}>
         <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.muted}>Groups ({groups.length})</text></box>
-        <scrollbox id="sidebar-groups" ref={groupListRef} onMouseDown={() => setScrollFocused(false)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", gap: 1, width: Math.max(1, sidebarWidth - 1) }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}>
+        <scrollbox id="sidebar-groups" ref={groupListRef} onMouseDown={() => setScrollFocused(false)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", width: Math.max(1, sidebarWidth - 1) }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}>
           {!groups.length && <text fg={theme.muted}> No groups joined</text>}
           {groups.map(group => {
         const selected = group.group_id === selectedGroupId

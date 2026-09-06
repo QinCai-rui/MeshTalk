@@ -50,7 +50,7 @@ export function NotificationDialogs(props: Props) {
   </SettingsScreen>
   if (dialog.kind === "notifications") return <NotificationMenu dialogHeight={dialogHeight} peers={peers} selectedPeerId={selectedPeerId} identity={identity} mutedPeers={mutedPeers} showDialog={showDialog} />
   if (dialog.kind === "notification-settings") return <NotificationSettings dialogBusy={dialogBusy} dialogHeight={dialogHeight} dialogWidth={dialogWidth} notificationPreferences={notificationPreferences} notificationTestDelivery={notificationTestDelivery} notificationEventEnabled={(event) => Boolean(notificationPreferences?.events[event])} showDialog={showDialog} testNotificationDelivery={testNotificationDelivery} toggleNotificationEvent={toggleNotificationEvent} />
-  return <NotificationPeer dialogHeight={dialogHeight} peers={peers} selectedPeerId={selectedPeerId} identity={identity} mutedPeers={mutedPeers} showDialog={showDialog} runCommand={runCommand} />
+  return <NotificationPeer dialogHeight={dialogHeight} peers={peers} selectedPeerId={selectedPeerId} identity={identity} mutedPeers={mutedPeers} runCommand={runCommand} />
 }
 
 function NotificationMenu({ dialogHeight, peers, selectedPeerId, identity, mutedPeers, showDialog }: Pick<Props, "dialogHeight" | "peers" | "selectedPeerId" | "identity" | "mutedPeers" | "showDialog">) {
@@ -61,8 +61,7 @@ function NotificationMenu({ dialogHeight, peers, selectedPeerId, identity, muted
     <SettingsMenu dialogHeight={dialogHeight} options={[
       { section: "General", name: "Desktop alerts", description: "Choose the delivery method, send a test, and select which events trigger alerts.", value: "desktop" },
       { section: "Selected peer", name: peer ? peer.display_name : "Peer alerts", description: !peer ? "Select a peer in the conversation list first." : peer.peer_id === identity?.peer_id ? "Your own notifications cannot be muted." : !peer.is_online && !isMuted ? `${peer.display_name} is offline and cannot be muted until connected.` : "Mute or unmute alerts from this peer.", value: "peer", status: peerStatus, tone: isMuted ? "warning" : peer ? "default" : "warning" },
-      { section: "Navigation", name: "Back", description: "Return to Settings.", value: "back" },
-    ]} onSelect={(option) => { if (option.value === "desktop") showDialog({ kind: "notification-settings" }); else if (option.value === "peer") showDialog({ kind: "notification-peer" }); else showDialog({ kind: "settings" }) }} />
+    ]} onSelect={(option) => { if (option.value === "desktop") showDialog({ kind: "notification-settings" }); else showDialog({ kind: "notification-peer" }) }} />
   </SettingsScreen>
 }
 
@@ -76,23 +75,21 @@ function NotificationSettings({ dialogBusy, dialogHeight, dialogWidth, notificat
       options.push({ section: "Alert types", name: label, description: `${enabled ? "Send" : "Do not send"} desktop alerts for ${label.toLowerCase()}. Press Enter to toggle.`, value: `event:${event}`, status: enabled ? "On" : "Off", tone: enabled ? "success" : "default" })
     }
   }
-  options.push({ section: "Navigation", name: "Back", description: "Return to Notifications.", value: "back", status: "" })
   return <SettingsScreen breadcrumb={["Notifications", "Desktop alerts"]} description="Choose how alerts are delivered and which events trigger them." dialogHeight={dialogHeight}>
     {dialogBusy && notificationTestDelivery === "terminal" ? <SettingsNotice tone="warning">Switch to another terminal tab. The test will be sent in four seconds.</SettingsNotice> : null}
     {dialogBusy && notificationTestDelivery === "native" ? <SettingsNotice>Sending a native desktop notification.</SettingsNotice> : null}
-    <SettingsMenu dialogHeight={dialogHeight} headerRows={dialogBusy ? 7 : 4} options={options} onSelect={(option) => { if (option.value === "back") showDialog({ kind: "notifications" }); else if (option.value === "configure") showDialog({ kind: "notification-enable" }); else if (option.value === "test" && delivery !== "disabled") testNotificationDelivery(delivery); else if (option.value.startsWith("event:")) toggleNotificationEvent(option.value.slice("event:".length) as NotificationEvent) }} />
+    <SettingsMenu dialogHeight={dialogHeight} headerRows={dialogBusy ? 7 : 4} options={options} onSelect={(option) => { if (option.value === "configure") showDialog({ kind: "notification-enable" }); else if (option.value === "test" && delivery !== "disabled") testNotificationDelivery(delivery); else if (option.value.startsWith("event:")) toggleNotificationEvent(option.value.slice("event:".length) as NotificationEvent) }} />
   </SettingsScreen>
 }
 
-function NotificationPeer({ dialogHeight, peers, selectedPeerId, identity, mutedPeers, showDialog, runCommand }: Pick<Props, "dialogHeight" | "peers" | "selectedPeerId" | "identity" | "mutedPeers" | "showDialog" | "runCommand">) {
+function NotificationPeer({ dialogHeight, peers, selectedPeerId, identity, mutedPeers, runCommand }: Pick<Props, "dialogHeight" | "peers" | "selectedPeerId" | "identity" | "mutedPeers" | "runCommand">) {
   const peer = peers.find((item) => item.peer_id === selectedPeerId)
   const muted = peer ? !!mutedPeers[peer.peer_id] : false
   const options: MouseSelectOption[] = []
   if (peer && !muted && peer.is_online && peer.peer_id !== identity?.peer_id) options.push({ section: "Selected peer", name: "Notifications from this peer", description: `Mute notifications from ${peer.display_name}.`, value: "mute", status: "On", tone: "success" as const })
   if (peer && muted) options.push({ section: "Selected peer", name: "Notifications from this peer", description: `Resume notifications from ${peer.display_name}.`, value: "unmute", status: "Muted", tone: "warning" as const })
-  if (!options.length) options.push({ section: "Selected peer", name: peer?.display_name ?? "No peer selected", description: !peer ? "Select a peer in the conversation list before managing its alerts." : peer.peer_id === identity?.peer_id ? "Your own notifications cannot be muted." : "This peer must be online before notifications can be muted.", value: "back", status: "Unavailable", tone: "warning" as const })
-  options.push({ section: "Navigation", name: "Back", description: "Return to Notifications.", value: "back", tone: "default" as const })
+  if (!options.length) options.push({ section: "Selected peer", name: peer?.display_name ?? "No peer selected", description: !peer ? "Select a peer in the conversation list before managing its alerts." : peer.peer_id === identity?.peer_id ? "Your own notifications cannot be muted." : "This peer must be online before notifications can be muted.", value: "unavailable", status: "Unavailable", tone: "warning" as const })
   return <SettingsScreen breadcrumb={["Notifications", "Peer alerts"]} description={peer ? `Alert state for ${peer.display_name}.` : "Manage alerts from the selected peer."} dialogHeight={dialogHeight}>
-    <SettingsMenu dialogHeight={dialogHeight} options={options} onSelect={(option) => { if (option.value === "back") showDialog({ kind: "notifications" }); else runCommand(option.value as string) }} />
+    <SettingsMenu dialogHeight={dialogHeight} options={options} onSelect={(option) => { if (option.value !== "unavailable") runCommand(option.value as string) }} />
   </SettingsScreen>
 }

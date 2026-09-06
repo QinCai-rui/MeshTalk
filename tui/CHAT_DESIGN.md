@@ -20,10 +20,12 @@ its existing UI.
   space beside the name.
 - Each DM entry is a contiguous two-row target: the name, presence colour, and
   friend/request markers appear first; indented unread count, muted/limited
-   state, and typing dots use the second row. Group rows match: the group name
-   with member count appears first, with a permanently reserved indented second
-   row sharing unread count and typing dots so activity never adds a newline.
-   Group entries are separated by a one-row gap after "View all members".
+   state, and typing dots use the second row. Group rows match when collapsed:
+   the group name with member count appears first, with a permanently reserved
+   indented second row sharing unread count and typing dots so activity never
+   adds a newline. Expanded groups keep the reserved second row above their
+   members, so typing and unread dots never shift the member list.
+   Group entries are contiguous with no gap, like DMs.
 - Sidebar peers use the original green/amber/gray presence colours and heart/request
   arrow markers. The conversation header retains textual state labels; muted state,
   capability limits, and delivery state still use words. Selected rows and the active composer also have a plain `>` marker.

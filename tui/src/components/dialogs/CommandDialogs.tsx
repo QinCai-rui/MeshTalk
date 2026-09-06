@@ -4,6 +4,7 @@ import { releaseInstallDir } from "../../../../common/updater"
 import { resolve } from "path"
 import type { Dialog } from "../../types"
 import { chatTheme as theme } from "../../chatTheme"
+import { SettingsScreen } from "./SettingsPrimitives"
 
 type SettingsLandingProps = {
   dialogHeight: number
@@ -28,12 +29,11 @@ type AboutDialogProps = {
   dialogWidth: number
   isReleaseBuild: boolean
   checkForUpdates: () => void
-  goBack: () => void
 }
 
-export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeight, dialogWidth, isReleaseBuild, checkForUpdates, goBack }: AboutDialogProps) {
-  return <box style={{ flexDirection: "column", gap: 1, backgroundColor: theme.surfaceRaised, width: "100%", height: "100%" }}>
-    <text><span fg={theme.accent}><b>MeshTalk</b></span> <span fg={theme.muted}>terminal messenger</span></text>
+export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeight, dialogWidth, isReleaseBuild, checkForUpdates }: AboutDialogProps) {
+  return <SettingsScreen breadcrumb={["About & updates"]} description="MeshTalk terminal messenger." dialogHeight={dialogHeight}>
+  <box style={{ flexDirection: "column", gap: 1, width: "100%" }}>
     <text><span fg={theme.link}>Version </span><span fg={theme.success}><b>{appReleaseVersion}</b></span></text>
     <text><span fg={theme.warning}>Made with love</span> <span fg={theme.muted}>by </span><span fg={theme.accent}>Raymont</span><span fg={theme.muted}>, </span><span fg={theme.link}>Kaesar, </span>and contributors.</text>
      <text fg={theme.subdued}>Fully decentralised</text>
@@ -42,12 +42,11 @@ export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeig
     {dialogError && <text fg={theme.danger}>{dialogError}</text>}
     <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={[
       { name: dialog.checking ? "Checking for updates..." : "Check for updates", description: isReleaseBuild ? "Look for the latest stable MeshTalk release" : "Available in compiled MeshTalk releases", value: "check" },
-      { name: "Back", description: "Return to Settings", value: "back" },
     ]} onSelect={(_, option) => {
       if (option?.value === "check" && !dialog.checking) checkForUpdates()
-      else if (option?.value === "back") goBack()
     }} wrapSelection showDescription />
   </box>
+  </SettingsScreen>
 }
 
 type UpdateDialogProps = {
@@ -72,8 +71,8 @@ function progressLabel(progress: NonNullable<Extract<Dialog, { kind: "update" }>
 }
 
 export function UpdateDialog({ appReleaseVersion, dialog, dialogError, dialogHeight, dialogWidth, closeDialog, installing, installUpdate, restartUpdate, chooseUpdateDestination }: UpdateDialogProps) {
-  return <>
-    <text><b>{dialog.installed ? `MeshTalk ${dialog.release.version} is ready.` : `MeshTalk ${dialog.release.version} is available.`}</b></text>
+  return <SettingsScreen breadcrumb={["About & updates", "Update"]} description={dialog.installed ? `MeshTalk ${dialog.release.version} is ready.` : `MeshTalk ${dialog.release.version} is available.`} dialogHeight={dialogHeight}>
+  <>
     {!dialog.installed && <text fg={theme.muted}>Installed version: {appReleaseVersion}</text>}
     {installing ? <box style={{ flexDirection: "row", alignItems: "center", gap: 1 }}><spinner name="material" color={theme.warning} /><text fg={theme.warning}>{progressLabel(dialog.progress ?? { current: 1, total: 6, step: "Preparing update" })}</text></box> : dialog.installed ? <MarqueeText width={dialogWidth - 4} fg={theme.success} text="Update installed. Restart now to use the new version, or dismiss to keep this session running." /> : <MarqueeText width={dialogWidth - 4} fg={theme.muted} text="The download will be verified with GitHub's SHA-256 digest before installation." />}
     {dialogError && <text fg={theme.danger}>{dialogError}</text>}
@@ -95,23 +94,26 @@ export function UpdateDialog({ appReleaseVersion, dialog, dialogError, dialogHei
       return dir ? <text fg={theme.subdued}>  {resolve(dir)}</text> : null
     })()}
   </>
+  </SettingsScreen>
 }
 
-export function UpdateTokenDialog({ dialog, dialogError, dialogDraft, setDialogDraft, saveUpdateToken }: { dialog: Extract<Dialog, { kind: "update-token" }>; dialogError: string; dialogDraft: string; setDialogDraft: (value: string) => void; saveUpdateToken: (release: Extract<Dialog, { kind: "update" }>["release"] | undefined, destination: string | undefined, token: string) => void }) {
-  return <box style={{ flexDirection: "column", gap: 1 }}>
-    <text>GitHub denied access to MeshTalk{dialog.release ? ` ${dialog.release.version}` : " releases"}.</text>
+export function UpdateTokenDialog({ dialog, dialogHeight, dialogError, dialogDraft, setDialogDraft, saveUpdateToken }: { dialog: Extract<Dialog, { kind: "update-token" }>; dialogHeight: number; dialogError: string; dialogDraft: string; setDialogDraft: (value: string) => void; saveUpdateToken: (release: Extract<Dialog, { kind: "update" }>["release"] | undefined, destination: string | undefined, token: string) => void }) {
+  return <SettingsScreen breadcrumb={["About & updates", "GitHub token"]} description="GitHub denied access to MeshTalk releases." dialogHeight={dialogHeight}>
+  <box style={{ flexDirection: "column", gap: 1 }}>
     <text fg={theme.muted}>Enter a token with repository access. It is stored unencrypted in ~/.meshtalk/settings.json.</text>
     {dialogError && <text fg={theme.danger}>{dialogError}</text>}
     <input focused value={dialogDraft} placeholder="GitHub token" onInput={setDialogDraft} onSubmit={(value) => saveUpdateToken(dialog.release, dialog.destination, typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
   </box>
+  </SettingsScreen>
 }
 
-export function UpdateDestinationDialog({ dialog, dialogError, dialogWidth, dialogDraft, setDialogDraft, installUpdate }: { dialog: Extract<Dialog, { kind: "update-directory" }>; dialogError: string; dialogWidth: number; dialogDraft: string; setDialogDraft: (value: string) => void; installUpdate: (release: Extract<Dialog, { kind: "update" }>["release"], destination?: string) => void }) {
-  return <box style={{ flexDirection: "column", gap: 1 }}>
-    <text>Install MeshTalk {dialog.release.version} into an existing installation folder.</text>
+export function UpdateDestinationDialog({ dialog, dialogHeight, dialogError, dialogWidth, dialogDraft, setDialogDraft, installUpdate }: { dialog: Extract<Dialog, { kind: "update-directory" }>; dialogHeight: number; dialogError: string; dialogWidth: number; dialogDraft: string; setDialogDraft: (value: string) => void; installUpdate: (release: Extract<Dialog, { kind: "update" }>["release"], destination?: string) => void }) {
+  return <SettingsScreen breadcrumb={["About & updates", "Install location"]} description={`Install MeshTalk ${dialog.release.version} into an existing installation folder.`} dialogHeight={dialogHeight}>
+  <box style={{ flexDirection: "column", gap: 1 }}>
     <MarqueeText width={dialogWidth - 4} fg={theme.muted} text="The folder must contain meshtalk, meshtalk-backend, meshtalk-cli, and meshtalk-tui." />
     {dialogError && <text fg={theme.danger}>{dialogError}</text>}
     <input focused value={dialogDraft} placeholder="/path/to/MeshTalk" onInput={setDialogDraft} onSubmit={(value) => installUpdate(dialog.release, typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
     {dialogDraft.trim() ? <text fg={theme.subdued}>  {resolve(dialogDraft.trim())}</text> : null}
   </box>
+  </SettingsScreen>
 }
