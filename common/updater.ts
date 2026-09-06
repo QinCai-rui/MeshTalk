@@ -1,8 +1,9 @@
 import { spawn as spawnDetached } from "node:child_process"
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs"
+import { randomUUID } from "node:crypto"
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "fs"
 import { chmod, copyFile, mkdir, open, rename, rm, stat } from "fs/promises"
 import { tmpdir } from "os"
-import { basename, dirname, join } from "path"
+import { basename, dirname, join, resolve, sep, win32 as win32path } from "path"
 
 const DEFAULT_GITHUB_USER = "QinCai-rui"
 const DEFAULT_GITHUB_REPO = "MeshTalk"
@@ -204,8 +205,22 @@ export function parsePendingUpdate(value: unknown): PendingUpdate | null {
   if (!value || typeof value !== "object") return null
   const { staging, installDir, files } = value as Record<string, unknown>
   if (typeof staging !== "string" || !staging || typeof installDir !== "string" || !installDir) return null
-  if (!Array.isArray(files) || files.length === 0 || files.some((name) => typeof name !== "string" || !name || name.includes("/") || name.includes("\\") || name.includes(".."))) return null
+  if (!Array.isArray(files) || files.length === 0 || files.some((name) => typeof name !== "string" || !name || name.includes("/") || name.includes("\\") || name.includes("..") || name.includes(":"))) return null
   return { staging, installDir, files: [...files as string[]] }
+}
+
+// A corrupt or tampered pending-update.json must never turn cleanup into a
+// recursive delete of an arbitrary path. Staging directories are always
+// created inside the install dir (mkdtempSync(join(installDir, ...))), so
+// require that containment before removing anything derived from the marker.
+export function isStagingWithinInstallDir(installDir: string, staging: string): boolean {
+  try {
+    const parent = resolve(installDir)
+    const child = resolve(staging)
+    return child !== parent && child.startsWith(parent + sep)
+  } catch {
+    return false
+  }
 }
 
 function readPendingUpdate(): PendingUpdate | null {
@@ -228,6 +243,10 @@ function writePendingUpdate(pending: PendingUpdate): void {
 export function applyPendingWindowsReplacement(): boolean {
   const pending = readPendingUpdate()
   if (!pending) return true
+  if (!isStagingWithinInstallDir(pending.installDir, pending.staging)) {
+    logUpdateHelper(`pending update ignored: staging ${pending.staging} is not inside ${pending.installDir}`)
+    return false
+  }
   // Replace atomically: the launcher itself is always locked while this
   // process runs, so a partial replacement would leave a mixed-version
   // install (new backend, old launcher). If any file is locked, roll back
@@ -312,7 +331,7 @@ export function buildWindowsReplacementScript(pending: PendingUpdate, launcherPa
     lines.push(
       `set /a copy_attempts_${index}=0`,
       `:${label}`,
-      `copy /y ${batQuote(join(pending.staging, name))} ${batQuote(join(pending.installDir, name))} >nul 2>&1`,
+      `copy /y ${batQuote(win32path.join(pending.staging, name))} ${batQuote(win32path.join(pending.installDir, name))} >nul 2>&1`,
       // NOTE: the errorlevel check must come immediately after copy — any
       // command in between (even del or echo) would reset errorlevel.
       `if not errorlevel 1 goto ${label}_ok`,
@@ -364,13 +383,29 @@ export function spawnWindowsReplacementHelper(): boolean {
   if (process.platform !== "win32") return false
   const pending = readPendingUpdate()
   if (!pending) return false
+  if (!isStagingWithinInstallDir(pending.installDir, pending.staging)) {
+    logUpdateHelper(`helper spawn REFUSED: staging ${pending.staging} is not inside ${pending.installDir}`)
+    return false
+  }
   const launcherPath = join(pending.installDir, "meshtalk.exe")
   const logPath = join(DATA_DIR, "update-helper.log")
+  // Best-effort sweep of helper scripts leaked by a crash between write and
+  // self-delete. Only files matching our own prefix and older than 24h.
+  try {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000
+    for (const entry of readdirSync(tmpdir())) {
+      if (!entry.startsWith("meshtalk-update-") || !entry.endsWith(".cmd")) continue
+      const candidate = join(tmpdir(), entry)
+      try {
+        if (statSync(candidate).isFile() && statSync(candidate).mtimeMs < cutoff) rmSync(candidate, { force: true })
+      } catch {}
+    }
+  } catch {}
   // The script must not live inside the staging directory: it deletes that
   // directory, and Windows cannot remove the running batch file's own folder.
   // Write it directly in the temp directory (no subdirectory) so its
   // self-delete leaves nothing behind.
-  const script = join(tmpdir(), `meshtalk-update-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 0xffffff).toString(16)}.cmd`)
+  const script = join(tmpdir(), `meshtalk-update-${randomUUID()}.cmd`)
   try {
     writeFileSync(script, buildWindowsReplacementScript(pending, launcherPath, logPath))
   } catch (error) {
@@ -487,7 +522,7 @@ export async function installRelease(release: Release, installDir: string, onPro
       }))
       writePendingUpdate({ staging: installStaging, installDir, files: expectedFiles() })
       staging = undefined
-      if (previous && previous.staging !== installStaging) {
+      if (previous && previous.staging !== installStaging && isStagingWithinInstallDir(previous.installDir, previous.staging)) {
         try { rmSync(previous.staging, { recursive: true, force: true }) } catch {}
       }
       return

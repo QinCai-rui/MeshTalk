@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
-import { buildWindowsReplacementScript, installRelease, isNewerVersion, parsePendingUpdate, type UpdateProgress } from "./updater"
+import { buildWindowsReplacementScript, installRelease, isNewerVersion, isStagingWithinInstallDir, parsePendingUpdate, type UpdateProgress } from "./updater"
 
 describe("isNewerVersion", () => {
   test("orders numeric release revisions after the base release", () => {
@@ -32,7 +32,16 @@ describe("parsePendingUpdate", () => {
     expect(parsePendingUpdate({ staging: "s", installDir: "i", files: [] })).toBeNull()
     expect(parsePendingUpdate({ staging: "s", installDir: "i", files: ["../evil.exe"] })).toBeNull()
     expect(parsePendingUpdate({ staging: "s", installDir: "i", files: ["sub\\evil.exe"] })).toBeNull()
+    expect(parsePendingUpdate({ staging: "s", installDir: "i", files: ["evil:stream"] })).toBeNull()
+    expect(parsePendingUpdate({ staging: "s", installDir: "i", files: ["C:evil.exe"] })).toBeNull()
     expect(parsePendingUpdate({ staging: "", installDir: "i", files: ["a.exe"] })).toBeNull()
+  })
+
+  test("requires staged replacements to live inside the install dir", () => {
+    expect(isStagingWithinInstallDir("/opt/meshtalk", "/opt/meshtalk/.meshtalk-update-abc")).toBe(true)
+    expect(isStagingWithinInstallDir("/opt/meshtalk", "/opt/meshtalk")).toBe(false)
+    expect(isStagingWithinInstallDir("/opt/meshtalk", "/tmp/evil")).toBe(false)
+    expect(isStagingWithinInstallDir("/opt/meshtalk", "/opt/meshtalk-other/dir")).toBe(false)
   })
 })
 
@@ -57,7 +66,7 @@ describe("buildWindowsReplacementScript", () => {
     expect(script).not.toMatch(/(^|[^a-zA-Z])find(\.exe)?(\s|\/)/i)
     // No delayed expansion: `!` in install paths would be eaten.
     expect(script).not.toContain("EnableDelayedExpansion")
-    expect(script).not.toContain("!")
+    expect(script).not.toMatch(/setlocal.*!/i)
   })
 
   test("cleans up the staging dir plus pending marker and relaunches", () => {

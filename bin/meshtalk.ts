@@ -323,7 +323,12 @@ function otherLauncherPids(): number[] {
   if (!isWindows) return [];
   try {
     const result = Bun.spawnSync(["tasklist", "/fo", "csv", "/nh", "/fi", "IMAGENAME eq meshtalk.exe"], { stdout: "pipe", stderr: "ignore" });
-    if (result.exitCode !== 0) return [];
+    if (result.exitCode !== 0) {
+      const detail = `tasklist exited with code ${result.exitCode}; failing open (no fail-fast on other launchers)`;
+      log(detail);
+      try { logUpdateHelper(`otherLauncherPids: ${detail}`); } catch {}
+      return [];
+    }
     const output = new TextDecoder().decode(result.stdout);
     const pids: number[] = [];
     for (const line of output.split("\n")) {
@@ -333,7 +338,12 @@ function otherLauncherPids(): number[] {
       if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && !pids.includes(pid)) pids.push(pid);
     }
     return pids;
-  } catch { return []; }
+  } catch (error) {
+    const detail = `tasklist failed (${error instanceof Error ? error.message : String(error)}); failing open (no fail-fast on other launchers)`;
+    log(detail);
+    try { logUpdateHelper(`otherLauncherPids: ${detail}`); } catch {}
+    return [];
+  }
 }
 
 async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
@@ -512,9 +522,18 @@ async function main() {
     if (code === UPDATE_RESTART_EXIT_CODE) {
       if (isWindows) logUpdateHelper(`restart requested (tui exit ${code})`);
       if (!await requestBackendShutdown()) {
-        if (!await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt, iStartedIt ? backendProcess : undefined)) {
-          if (isWindows) logUpdateHelper("restart ABORTED: backend did not stop");
-          throw new Error("MeshTalk backend did not stop. Close MeshTalk completely and try the update again.");
+        // requestBackendShutdown returns false both when no backend is
+        // listening on IPC and when a live backend ignored the shutdown.
+        // Only signal the pid file in the latter case: a stale pid file may
+        // otherwise point at a recycled PID belonging to an unrelated
+        // process, which must never be signaled.
+        if (await backendRunning()) {
+          if (!await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt, iStartedIt ? backendProcess : undefined)) {
+            if (isWindows) logUpdateHelper("restart ABORTED: backend did not stop");
+            throw new Error("MeshTalk backend did not stop. Close MeshTalk completely and try the update again.");
+          }
+        } else if (isWindows) {
+          logUpdateHelper("no backend on IPC; skipping pid-file signal (stale pid file is dropped below)");
         }
       }
       try { backendProcess?.kill("SIGKILL"); } catch {}
