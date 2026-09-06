@@ -102,6 +102,8 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           return peer ? peerPresence(peer) !== "offline" : Boolean(member.is_online)
         }) ?? []
         const typing = typingConversationKeys.has(`group:${group.group_id}`)
+        const otherOnline = visibleMembers.some(member => (member.peer_id ?? member.member_id) !== identity?.peer_id)
+        const onlyYouOnline = Boolean(members && visibleMembers.some(member => (member.peer_id ?? member.member_id) === identity?.peer_id) && !otherOnline)
         const memberLabel = ` (${group.member_count} members)`
         const label = nameLabel(group.name, 0, terminalWidth(memberLabel))
         return <box id={`nav-group-${group.group_id}`} key={group.group_id} onMouseDown={() => pick({ kind: "group", id: group.group_id })} style={rowStyle(selected)}>
@@ -110,6 +112,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {group.unread_count > 0 && <text fg={theme.accent}>{group.unread_count} new</text>}
+            {selected && onlyYouOnline && !typing && <text fg={theme.muted}>No one else online</text>}
             {typing && <TypingDots />}
           </box>
           {selected && !stacked && visibleMembers.map((member, index) => {
@@ -120,9 +123,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           })}
           {selected && members && (() => {
             const hidden = Math.max(0, group.member_count - visibleMembers.length)
-            const otherOnline = visibleMembers.some(member => (member.peer_id ?? member.member_id) !== identity?.peer_id)
-            const presenceHint = hidden > 0 && !otherOnline ? "No one else online" : undefined
-            return <box id={`nav-group-more-${group.group_id}`} paddingLeft={2} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}>{hidden > 0 ? <u>{`+ ${hidden} more`}</u> : <u>···</u>}{presenceHint && <span fg={theme.muted}> · {presenceHint}</span>}</text></box>
+            return <box id={`nav-group-more-${group.group_id}`} paddingLeft={2} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}>{hidden > 0 ? <u>{`+ ${hidden} more`}</u> : <u>···</u>}</text></box>
           })()}
         </box>
           })}
