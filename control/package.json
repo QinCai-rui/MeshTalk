@@ -1,6 +1,6 @@
 {
   "name": "meshtalk-control",
-  "version": "0.24.5",
+  "version": "0.24.5-1",
   "private": true,
   "type": "module",
   "scripts": {
