@@ -1,13 +1,12 @@
 #!/usr/bin/env bun
 /// <reference types="bun-types" />
 
-import { spawn } from "bun";
 import { spawn as spawnProcess, type ChildProcess } from "node:child_process";
 import { createConnection, type Socket } from "net";
 import { basename, dirname, join, resolve } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { applyPendingWindowsReplacement, checkForUpdate, githubRepository, installRelease, isReleaseInstallDir, logUpdateHelper, releaseInstallDir, saveGithubRepository, saveGithubToken, spawnWindowsReplacementHelper, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
+import { activatePendingVersion, applyPendingWindowsReplacement, checkForUpdate, githubRepository, hasPendingVersion, installRelease, isReleaseInstallDir, logUpdateHelper, releaseInstallDir, saveGithubRepository, saveGithubToken, spawnWindowsReplacementHelper, takeUpdateRestartPath, versionedLauncherForBootstrap, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
 import { main as cliMain } from "../cli/src/index";
 import { runTui } from "./tui-entry";
 import type { SplashStyle } from "../tui/src/SplashScreen";
@@ -132,19 +131,29 @@ async function runUpdate(args: string[]): Promise<void> {
     console.log("Update skipped.");
     return;
   }
-  if (isWindows && await backendRunning()) throw new Error("A MeshTalk instance is already running. Close MeshTalk before updating.");
+  if (await backendRunning()) throw new Error("A MeshTalk instance is already running. Close MeshTalk before updating from the command line.");
   const destination = installDir ?? releaseInstallDir();
   if (!destination) throw new Error(`Unable to locate the standalone MeshTalk installation. Use --dir <directory> to select one. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
   if (!isReleaseInstallDir(destination)) throw new Error(`Update directory must contain the current MeshTalk release binaries. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
   console.log(`Downloading and installing MeshTalk ${release.version}...`);
-  if (isWindows) applyPendingWindowsReplacement();
   await installRelease(release, destination);
-  if (isWindows) {
-    if (!spawnWindowsReplacementHelper()) throw new Error("Unable to start the Windows update replacement process.");
-    console.log("Update installed. MeshTalk will restart shortly.");
-    return;
-  }
-  console.log("Update installed. Restart MeshTalk to use the new version.");
+  console.log("Update staged and verified. Restart MeshTalk to activate the new version.");
+}
+
+async function launchReplacement(path: string, args: string[] = process.argv.slice(2)): Promise<void> {
+  await new Promise<void>((resolveSpawn, reject) => {
+    const child = spawnProcess(path, args, {
+      detached: true,
+      stdio: "inherit",
+      windowsHide: true,
+    });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.removeListener("error", reject);
+      child.unref();
+      resolveSpawn();
+    });
+  });
 }
 
 function findExecutable(name: string): string | null {
@@ -411,6 +420,22 @@ async function main() {
 
   if (isWindows) applyPendingWindowsReplacement();
 
+  // A top-level release launcher is a stable bootstrap once versioned
+  // installs exist. Activate a fully verified pending version only when no
+  // backend is running, then hand off without retaining this process as a
+  // supervisor. This prevents mixed launcher/backend versions and restart
+  // process chains on macOS/Linux.
+  const installRoot = releaseInstallDir();
+  let versionedTarget: string | null = null;
+  if (installRoot && hasPendingVersion(installRoot) && !await backendRunning()) {
+    versionedTarget = activatePendingVersion(installRoot);
+  }
+  versionedTarget ??= versionedLauncherForBootstrap();
+  if (versionedTarget && resolve(versionedTarget) !== resolve(process.execPath)) {
+    await launchReplacement(versionedTarget, args);
+    process.exit(0);
+  }
+
   if (args[0] === "update") {
     await runUpdate(args.slice(1));
     process.exit(0);
@@ -538,7 +563,14 @@ async function main() {
       }
       try { backendProcess?.kill("SIGKILL"); } catch {}
       try { backendProcess?.unref?.(); } catch {}
-      if (isWindows) {
+      const restartValue = takeUpdateRestartPath();
+      if (!restartValue) throw new Error("Update restart target was not provided.");
+      const restartInstallDir = existsSync(restartValue) && statSync(restartValue).isDirectory() ? restartValue : dirname(restartValue);
+      const versionedRestart = activatePendingVersion(restartInstallDir);
+      if (versionedRestart) {
+        await launchReplacement(versionedRestart, []);
+        code = 0;
+      } else if (isWindows) {
         // The backend executable stays locked while the backend lives. The
         // replacement helper retries locked copies, but refuse early if the
         // backend is still alive so a lingering backend cannot pile up as an
@@ -585,11 +617,7 @@ async function main() {
         logUpdateHelper("launcher exiting, helper owns the replacement + relaunch");
         code = 0;
       } else {
-        const restartPath = takeUpdateRestartPath();
-        if (!restartPath) throw new Error("Update restart target was not provided.");
-        if (!existsSync(restartPath)) throw new Error(`Updated launcher does not exist: ${restartPath}`);
-        const restarted = spawn([restartPath], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-        code = await restarted.exited;
+        throw new Error("The staged update does not contain a valid versioned launcher.");
       }
     } else {
       await cleanup();

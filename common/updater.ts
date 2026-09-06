@@ -1,7 +1,7 @@
 import { spawn as spawnDetached } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "fs"
-import { chmod, copyFile, mkdir, open, rename, rm, stat } from "fs/promises"
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs"
+import { chmod, copyFile, mkdir, open, rename, rm } from "fs/promises"
 import { tmpdir } from "os"
 import { basename, dirname, join, resolve, sep, win32 as win32path } from "path"
 
@@ -21,6 +21,9 @@ const DATA_DIR = process.env.MESHTALK_DATA_DIR ? expandHomePath(process.env.MESH
 const SETTINGS_PATH = join(DATA_DIR, "settings.json")
 const RESTART_PATH = join(DATA_DIR, "update-restart-path")
 const PENDING_UPDATE_PATH = join(DATA_DIR, "pending-update.json")
+const VERSIONS_DIRECTORY = "versions"
+const CURRENT_VERSION_MANIFEST = ".meshtalk-current.json"
+const PENDING_VERSION_MANIFEST = ".meshtalk-pending.json"
 export const UPDATE_RESTART_EXIT_CODE = 75
 
 export type Release = {
@@ -195,6 +198,166 @@ function expectedFiles(): string[] {
   return ["meshtalk", "meshtalk-backend"].map((name) => `${name}${suffix}`)
 }
 
+function archiveEntryIsSafe(entry: string): boolean {
+  const normalized = entry.replace(/\\/g, "/")
+  if (!normalized || normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized)) return false
+  return !normalized.split("/").some((part) => part === "..")
+}
+
+type VersionFile = { sha256: string }
+type VersionManifest = {
+  schema: 1
+  current: string
+  previous?: string
+  targetVersion: string
+  files: Record<string, VersionFile>
+}
+
+function safeVersionDirectory(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 160 && basename(value) === value && value !== "." && value !== ".." && !value.includes(":")
+}
+
+function parseVersionManifest(value: unknown): VersionManifest | null {
+  if (!value || typeof value !== "object") return null
+  const candidate = value as Record<string, unknown>
+  if (candidate.schema !== 1 || !safeVersionDirectory(candidate.current) || typeof candidate.targetVersion !== "string" || !parseVersion(candidate.targetVersion)) return null
+  if (candidate.previous !== undefined && !safeVersionDirectory(candidate.previous)) return null
+  if (!candidate.files || typeof candidate.files !== "object") return null
+  const files = candidate.files as Record<string, unknown>
+  const expected = expectedFiles()
+  if (Object.keys(files).length !== expected.length) return null
+  for (const name of expected) {
+    const entry = files[name]
+    if (!entry || typeof entry !== "object" || !/^[0-9a-f]{64}$/.test(String((entry as Record<string, unknown>).sha256 ?? ""))) return null
+  }
+  return candidate as VersionManifest
+}
+
+function readVersionManifest(path: string): VersionManifest | null {
+  try { return parseVersionManifest(JSON.parse(readFileSync(path, "utf-8"))) } catch { return null }
+}
+
+function versionDirectory(installDir: string, name: string): string | null {
+  if (!safeVersionDirectory(name)) return null
+  const versions = resolve(installDir, VERSIONS_DIRECTORY)
+  const directory = resolve(versions, name)
+  return directory.startsWith(versions + sep) ? directory : null
+}
+
+function safeInstalledVersionDirectory(installDir: string, name: string): string | null {
+  const directory = versionDirectory(installDir, name)
+  if (!directory) return null
+  try {
+    if (!lstatSync(directory).isDirectory()) return null
+    const versions = realpathSync(resolve(installDir, VERSIONS_DIRECTORY))
+    const actual = realpathSync(directory)
+    if (!actual.startsWith(versions + sep)) return null
+    if (!expectedFiles().every((file) => lstatSync(join(actual, file)).isFile())) return null
+    return actual
+  } catch { return null }
+}
+
+function manifestPath(installDir: string, pending = false): string {
+  return join(installDir, pending ? PENDING_VERSION_MANIFEST : CURRENT_VERSION_MANIFEST)
+}
+
+function writeFileAtomically(path: string, contents: string): void {
+  const temporary = `${path}.${randomUUID()}.tmp`
+  writeFileSync(temporary, contents)
+  chmodSync(temporary, 0o600)
+  if (process.platform !== "win32" || !existsSync(path)) {
+    renameSync(temporary, path)
+    return
+  }
+  // Windows rename cannot reliably replace an existing file. Keep a recovery
+  // copy so a crash in the short hand-off cannot destroy the active pointer.
+  const backup = `${path}.bak`
+  rmSync(backup, { force: true })
+  renameSync(path, backup)
+  try {
+    renameSync(temporary, path)
+    rmSync(backup, { force: true })
+  } catch (error) {
+    try { renameSync(backup, path) } catch {}
+    throw error
+  }
+}
+
+async function sha256File(path: string): Promise<string> {
+  const hasher = new Bun.CryptoHasher("sha256")
+  const reader = Bun.file(path).stream().getReader()
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    hasher.update(value)
+  }
+  return hasher.digest("hex")
+}
+
+function sha256FileSync(path: string): string {
+  return new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex")
+}
+
+function verifiedVersionDirectory(installDir: string, manifest: VersionManifest): string | null {
+  const directory = safeInstalledVersionDirectory(installDir, manifest.current)
+  if (!directory) return null
+  try {
+    return expectedFiles().every((name) => sha256FileSync(join(directory, name)) === manifest.files[name].sha256) ? directory : null
+  } catch { return null }
+}
+
+export function activeVersionLauncher(installDir: string): string | null {
+  const current = readVersionManifest(manifestPath(installDir))
+  if (!current) return null
+  const directory = safeInstalledVersionDirectory(installDir, current.current)
+    ?? (current.previous ? safeInstalledVersionDirectory(installDir, current.previous) : null)
+  return directory ? join(directory, expectedFiles()[0]) : null
+}
+
+export function hasPendingVersion(installDir: string): boolean {
+  return readVersionManifest(manifestPath(installDir, true)) !== null
+}
+
+export function activatePendingVersion(installDir: string): string | null {
+  const pendingPath = manifestPath(installDir, true)
+  const pending = readVersionManifest(pendingPath)
+  if (!pending) return activeVersionLauncher(installDir)
+  const directory = verifiedVersionDirectory(installDir, pending)
+  if (!directory) throw new Error(`The staged MeshTalk ${pending.targetVersion} update failed verification. ${REINSTALL_HINT}`)
+  writeFileAtomically(manifestPath(installDir), JSON.stringify(pending, null, 2))
+  rmSync(pendingPath, { force: true })
+  cleanupOldVersions(installDir, new Set([pending.current, pending.previous].filter((value): value is string => Boolean(value))))
+  return join(directory, expectedFiles()[0])
+}
+
+function cleanupOldVersions(installDir: string, keep: Set<string>): void {
+  const versions = resolve(installDir, VERSIONS_DIRECTORY)
+  try {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000
+    for (const entry of readdirSync(versions)) {
+      if (keep.has(entry)) continue
+      const candidate = join(versions, entry)
+      try {
+        const info = lstatSync(candidate)
+        const managedVersion = /^\d+\.\d+\.\d+(?:-\d+)?-[0-9a-f]{12}$/.test(entry)
+        const staleStaging = entry.startsWith(".meshtalk-update-") && info.mtimeMs < cutoff
+        if (info.isDirectory() && !info.isSymbolicLink() && (managedVersion || staleStaging)) rmSync(candidate, { recursive: true, force: true })
+      } catch {}
+    }
+  } catch {}
+}
+
+export function versionedLauncherForBootstrap(): string | null {
+  for (const executable of [process.argv[0], process.argv[1], process.execPath]) {
+    if (!executable || !basename(executable).startsWith("meshtalk")) continue
+    const directory = dirname(resolve(executable))
+    if (basename(dirname(directory)) === VERSIONS_DIRECTORY) continue
+    const launcher = activeVersionLauncher(directory)
+    if (launcher && resolve(launcher) !== resolve(executable)) return launcher
+  }
+  return null
+}
+
 type PendingUpdate = {
   staging: string
   installDir: string
@@ -231,6 +394,11 @@ function readPendingUpdate(): PendingUpdate | null {
   }
 }
 
+function backendFirst(files: string[]): string[] {
+  const isLauncher = (name: string) => name === "meshtalk" || name === "meshtalk.exe"
+  return [...files].sort((left, right) => Number(isLauncher(left)) - Number(isLauncher(right)))
+}
+
 function writePendingUpdate(pending: PendingUpdate): void {
   mkdirSync(DATA_DIR, { recursive: true })
   const temporary = `${PENDING_UPDATE_PATH}.tmp`
@@ -253,7 +421,7 @@ export function applyPendingWindowsReplacement(): boolean {
   // the files already moved and leave the pending marker for the restart
   // helper, which runs after this process has exited.
   const moved: string[] = []
-  for (const name of pending.files) {
+  for (const name of backendFirst(pending.files)) {
     try {
       renameSync(join(pending.staging, name), join(pending.installDir, name))
       moved.push(name)
@@ -321,7 +489,7 @@ export function buildWindowsReplacementScript(pending: PendingUpdate, launcherPa
     `echo %DATE% %TIME% MeshTalk update helper started. staging=${batQuote(pending.staging)} installDir=${batQuote(pending.installDir)}>> ${log}`,
   ]
   const failedLabels: string[] = []
-  pending.files.forEach((name, index) => {
+  backendFirst(pending.files).forEach((name, index) => {
     const label = helperLabel(name, index)
     failedLabels.push(
       `:${label}_failed`,
@@ -492,7 +660,7 @@ export async function installRelease(release: Release, installDir: string, onPro
     const listingOutput = new Response(listing.stdout).text()
     if (await listing.exited !== 0) throw new Error(`Unable to inspect the release archive. ${REINSTALL_HINT}`)
     const entries = (await listingOutput).split("\n").filter(Boolean)
-    if (entries.some((entry) => entry.startsWith("/") || entry === ".." || entry.includes("../"))) throw new Error(`Release archive contains an unsafe path. ${REINSTALL_HINT}`)
+    if (entries.some((entry) => !archiveEntryIsSafe(entry))) throw new Error(`Release archive contains an unsafe path. ${REINSTALL_HINT}`)
     const extracted = join(temporary, "extracted")
     await mkdir(extracted)
     onProgress?.({ current: 4, total: 6, step: "Extracting release archive" })
@@ -503,45 +671,51 @@ export async function installRelease(release: Release, installDir: string, onPro
     for (const name of expectedFiles()) {
       const source = join(extracted, name)
       try {
-        if (!(await stat(source)).isFile()) throw new Error()
+        if (!lstatSync(source).isFile() || !realpathSync(source).startsWith(realpathSync(extracted) + sep)) throw new Error()
       } catch {
         throw new Error(`Release archive is missing ${name}. ${REINSTALL_HINT}`)
       }
     }
-    if (process.platform === "win32") {
-      onProgress?.({ current: 6, total: 6, step: "Staging files for replacement after restart" })
-      await Bun.sleep(16)
-      // Drop any orphaned staging from a previously failed update before
-      // recording the new one, so failed attempts cannot pile up dirs in the
-      // install directory or leave a stale pending marker behind.
-      const previous = readPendingUpdate()
-      staging = mkdtempSync(join(installDir, ".meshtalk-update-"))
-      const installStaging = staging
-      await Promise.all(expectedFiles().map(async (name) => {
-        await copyFile(join(extracted, name), join(installStaging, name))
-      }))
-      writePendingUpdate({ staging: installStaging, installDir, files: expectedFiles() })
-      staging = undefined
-      if (previous && previous.staging !== installStaging && isStagingWithinInstallDir(previous.installDir, previous.staging)) {
-        try { rmSync(previous.staging, { recursive: true, force: true }) } catch {}
-      }
-      return
-    }
-    // A running executable cannot be copied over, but its pathname can be
-    // atomically replaced. Stage on the installation filesystem so rename does
-    // not fail when the system temporary directory is on another filesystem.
-    onProgress?.({ current: 6, total: 6, step: "Replacing installed binaries" })
+    // Install an immutable version directory on the same filesystem, then
+    // publish a pending manifest. Activation is a small manifest replacement
+    // performed only after the old backend has stopped; running executables
+    // are never overwritten and a process/power interruption cannot create a
+    // mixed launcher/backend pair.
+    onProgress?.({ current: 6, total: 6, step: "Staging verified version for restart" })
     await Bun.sleep(16)
-    staging = mkdtempSync(join(installDir, ".meshtalk-update-"))
+    const versions = join(installDir, VERSIONS_DIRECTORY)
+    await mkdir(versions, { recursive: true })
+    staging = mkdtempSync(join(versions, ".meshtalk-update-"))
     const installStaging = staging
-    await Promise.all(expectedFiles().map(async (name) => {
+    // Backend first, launcher last. This also makes an interrupted migration
+    // from an older flat install leave the known-good bootstrap untouched.
+    for (const name of [...expectedFiles()].reverse()) {
       const staged = join(installStaging, name)
       await copyFile(join(extracted, name), staged)
       if (process.platform !== "win32") await chmod(staged, 0o755)
-    }))
-    for (const name of expectedFiles()) {
-      await rename(join(installStaging, name), join(installDir, name))
     }
+    const files: Record<string, VersionFile> = {}
+    for (const name of expectedFiles()) files[name] = { sha256: await sha256File(join(installStaging, name)) }
+    const versionName = `${release.version}-${expectedDigest.slice(0, 12)}`
+    const destination = versionDirectory(installDir, versionName)
+    if (!destination) throw new Error(`Release version cannot be used as an install directory. ${REINSTALL_HINT}`)
+    if (existsSync(destination)) {
+      const existing: VersionManifest = { schema: 1, current: versionName, targetVersion: release.version, files }
+      if (!verifiedVersionDirectory(installDir, existing)) throw new Error(`Existing staged MeshTalk ${release.version} files failed verification. ${REINSTALL_HINT}`)
+      await rm(installStaging, { recursive: true, force: true })
+    } else {
+      await rename(installStaging, destination)
+    }
+    staging = undefined
+    const active = readVersionManifest(manifestPath(installDir))
+    const pending: VersionManifest = {
+      schema: 1,
+      current: versionName,
+      ...(active?.current && active.current !== versionName ? { previous: active.current } : {}),
+      targetVersion: release.version,
+      files,
+    }
+    writeFileAtomically(manifestPath(installDir, true), JSON.stringify(pending, null, 2))
   } finally {
     if (staging) await rm(staging, { recursive: true, force: true })
     await rm(temporary, { recursive: true, force: true })
@@ -551,7 +725,7 @@ export async function installRelease(release: Release, installDir: string, onPro
 export function requestUpdateRestart(installDir: string): void {
   mkdirSync(DATA_DIR, { recursive: true })
   const temporary = `${RESTART_PATH}.tmp`
-  writeFileSync(temporary, join(installDir, `meshtalk${process.platform === "win32" ? ".exe" : ""}`))
+  writeFileSync(temporary, resolve(installDir))
   chmodSync(temporary, 0o600)
   renameSync(temporary, RESTART_PATH)
 }
@@ -575,6 +749,10 @@ export function releaseInstallDir(): string | null {
   for (const executable of [process.argv[0], process.argv[1], process.execPath]) {
     if (!executable || !basename(executable).startsWith("meshtalk")) continue
     const directory = dirname(executable)
+    if (basename(dirname(directory)) === VERSIONS_DIRECTORY) {
+      const root = dirname(dirname(directory))
+      if (isReleaseInstallDir(root)) return root
+    }
     if (isReleaseInstallDir(directory)) return directory
   }
   return null
@@ -582,9 +760,11 @@ export function releaseInstallDir(): string | null {
 
 export function isReleaseInstallDir(directory: string): boolean {
   try {
-    return statSync(directory).isDirectory() && expectedFiles().every((name) => {
+    if (!statSync(directory).isDirectory()) return false
+    if (activeVersionLauncher(directory)) return true
+    return expectedFiles().every((name) => {
       const path = join(directory, name)
-      return existsSync(path) && statSync(path).isFile()
+      return existsSync(path) && lstatSync(path).isFile()
     })
   } catch {
     return false

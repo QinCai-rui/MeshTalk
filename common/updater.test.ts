@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
-import { buildWindowsReplacementScript, installRelease, isNewerVersion, isStagingWithinInstallDir, parsePendingUpdate, type UpdateProgress } from "./updater"
+import { activeVersionLauncher, activatePendingVersion, buildWindowsReplacementScript, hasPendingVersion, installRelease, isNewerVersion, isStagingWithinInstallDir, parsePendingUpdate, type UpdateProgress } from "./updater"
 
 describe("isNewerVersion", () => {
   test("orders numeric release revisions after the base release", () => {
@@ -55,6 +55,7 @@ describe("buildWindowsReplacementScript", () => {
     expect(script).toContain("copy_attempts_0")
     expect(script).toContain("copy_attempts_1")
     expect(script).toContain('copy /y "C:\\install\\.meshtalk-update-abc\\meshtalk.exe" "C:\\install\\meshtalk.exe"')
+    expect(script.indexOf("meshtalk-backend.exe")).toBeLessThan(script.indexOf("meshtalk.exe"))
     // PID polling cannot work in the detached helper: pipes hang and tasklist
     // output capture yields empty files, so neither may be used. The legacy
     // `find /i "%PID%"` must never come back either (Unix find on MSYS
@@ -94,6 +95,32 @@ describe("buildWindowsReplacementScript", () => {
   })
 })
 
+test("activeVersionLauncher falls back when the selected version is incomplete", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "meshtalk-version-fallback-"))
+  const suffix = process.platform === "win32" ? ".exe" : ""
+  const launcher = `meshtalk${suffix}`
+  const backend = `meshtalk-backend${suffix}`
+  const previous = "1.0.0-aaaaaaaaaaaa"
+  try {
+    mkdirSync(join(temporary, "versions", previous), { recursive: true })
+    writeFileSync(join(temporary, "versions", previous, launcher), "launcher")
+    writeFileSync(join(temporary, "versions", previous, backend), "backend")
+    writeFileSync(join(temporary, ".meshtalk-current.json"), JSON.stringify({
+      schema: 1,
+      current: "1.1.0-bbbbbbbbbbbb",
+      previous,
+      targetVersion: "1.1.0",
+      files: {
+        [launcher]: { sha256: "b".repeat(64) },
+        [backend]: { sha256: "b".repeat(64) },
+      },
+    }))
+    expect(activeVersionLauncher(temporary)).toBe(join(realpathSync(join(temporary, "versions", previous)), launcher))
+  } finally {
+    rmSync(temporary, { recursive: true, force: true })
+  }
+})
+
 test("installRelease streams the archive and reports each install phase", async () => {
   const temporary = mkdtempSync(join(tmpdir(), "meshtalk-updater-test-"))
   const source = join(temporary, "source")
@@ -117,14 +144,6 @@ test("installRelease streams the archive and reports each install phase", async 
     port: 0,
     fetch: () => new Response(archiveBytes, { headers: { "content-length": String(archiveBytes.length) } }),
   })
-  // On Windows installRelease stages into a pending-update marker (in the
-  // real data dir) instead of replacing locked binaries. Back it up so the
-  // test never destroys or leaves behind real update state.
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? ""
-  const dataDir = process.env.MESHTALK_DATA_DIR?.trim() ? process.env.MESHTALK_DATA_DIR.trim() : join(home, ".meshtalk")
-  const pendingPath = join(dataDir, "pending-update.json")
-  let pendingBackup: Uint8Array | null = null
-  try { pendingBackup = new Uint8Array(await Bun.file(pendingPath).arrayBuffer()) } catch {}
   const progress: UpdateProgress[] = []
   try {
     await installRelease({
@@ -134,17 +153,14 @@ test("installRelease streams the archive and reports each install phase", async 
       downloadUrl: `http://127.0.0.1:${server.port}/release.tar.gz`,
       digest: `sha256:${digest}`,
     }, installDir, (event) => progress.push(event))
-    if (process.platform === "win32") {
-      // Binaries stay locked: the update is staged for the restart helper.
-      for (const name of files) expect(readFileSync(join(installDir, name), "utf-8")).toBe(`old ${name}`)
-      const pending = parsePendingUpdate(JSON.parse(readFileSync(pendingPath, "utf-8")))
-      expect(pending?.installDir).toBe(installDir)
-      for (const name of files) expect(readFileSync(join(pending!.staging, name), "utf-8")).toBe(`new ${name}`)
-      expect(progress.map((event) => event.step)).toContain("Staging files for replacement after restart")
-    } else {
-      for (const name of files) expect(readFileSync(join(installDir, name), "utf-8")).toBe(`new ${name}`)
-      expect(progress.map((event) => event.step)).toContain("Replacing installed binaries")
-    }
+    // Installation is immutable and does not touch the running flat release.
+    for (const name of files) expect(readFileSync(join(installDir, name), "utf-8")).toBe(`old ${name}`)
+    expect(hasPendingVersion(installDir)).toBe(true)
+    const launcher = activatePendingVersion(installDir)
+    expect(launcher).toBe(activeVersionLauncher(installDir))
+    expect(launcher).not.toBeNull()
+    for (const name of files) expect(readFileSync(join(launcher!, "..", name), "utf-8")).toBe(`new ${name}`)
+    expect(progress.map((event) => event.step)).toContain("Staging verified version for restart")
     expect(progress.some((event) => event.current === 1 && event.total === 6 && event.receivedBytes === archiveBytes.length && event.totalBytes === archiveBytes.length)).toBe(true)
     expect(progress.map((event) => event.step)).toContain("Verifying SHA-256 digest")
     expect(progress.map((event) => event.step)).toContain("Inspecting release archive")
@@ -152,16 +168,6 @@ test("installRelease streams the archive and reports each install phase", async 
     expect(progress.map((event) => event.step)).toContain("Validating extracted binaries")
   } finally {
     server.stop(true)
-    if (process.platform === "win32") {
-      try {
-        const pending = parsePendingUpdate(JSON.parse(readFileSync(pendingPath, "utf-8")))
-        if (pending?.installDir === installDir) {
-          rmSync(pending.staging, { recursive: true, force: true })
-          rmSync(pendingPath, { force: true })
-        }
-      } catch {}
-      if (pendingBackup) writeFileSync(pendingPath, pendingBackup)
-    }
     rmSync(temporary, { recursive: true, force: true })
   }
 })
