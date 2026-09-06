@@ -2,6 +2,7 @@ import { createCliRenderer } from "@opentui/core"
 import { createRoot, extend, useKeyboard, useRenderer } from "@opentui/react"
 import { useState } from "react"
 import { SpinnerRenderable } from "opentui-spinner"
+import { chatTheme as theme } from "./chatTheme"
 extend({ spinner: SpinnerRenderable })
 
 const spinnerNames = [
@@ -25,12 +26,12 @@ function SpinnerPreview() {
   })
 
   return <box style={{ width: "100%", height: "100%", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 1 }}>
-    <text fg="#888888">OpenTUI Spinner Preview</text>
+    <text fg={theme.muted}>OpenTUI Spinner Preview</text>
     <box style={{ flexDirection: "row", alignItems: "center", gap: 1 }}>
-      <spinner name={name as never} color="#7aa2d6" />
+      <spinner name={name as never} color={theme.markdown.heading} />
       <text>{name}</text>
     </box>
-    <text fg="#888888">{index + 1} / {spinnerNames.length}   Left/Right or Space: next   Q/Esc: quit</text>
+    <text fg={theme.muted}>{index + 1} / {spinnerNames.length}   Left/Right or Space: next   Q/Esc: quit</text>
   </box>
 }
 
