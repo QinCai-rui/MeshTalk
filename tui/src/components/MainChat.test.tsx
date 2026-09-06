@@ -254,6 +254,13 @@ test("control status stays quiet until a room exists, then explains how to conne
     expect(frame).toContain("reconnecting (0)")
     expect(frame).toContain("Ctrl+P > Connection")
   } finally { await close(disconnected) }
+
+  props.controlStatus = { connected: false, reconnect_attempts: 0 }
+  const unconfigured = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(unconfigured, "Remote discovery is not configured")
+    expect(frame.replace(/\s+/g, " ")).toContain("connect these rooms")
+  } finally { await close(unconfigured) }
 })
 
 test("group history keeps system messages, replies, file status, and delivery details", async () => {

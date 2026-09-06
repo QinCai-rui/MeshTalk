@@ -150,7 +150,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
       <box paddingLeft={2} paddingRight={1} flexShrink={0}>
-        {hasRooms && !controlStatus.connected && <text fg={theme.warning} wrapMode="word">{controlStatus.control_url ? `Control server disconnected; reconnecting (${controlStatus.reconnect_attempts}). Open Ctrl+P > Connection to check settings.` : "Remote discovery is not configured. Open Ctrl+P > Connection to connect this room."}</text>}
+        {hasRooms && !controlStatus.connected && <text fg={theme.warning} wrapMode="word">{controlStatus.control_url ? `Control server disconnected; reconnecting (${controlStatus.reconnect_attempts}). Open Ctrl+P > Connection to check settings.` : "Remote discovery is not configured. Open Ctrl+P > Connection to connect these rooms."}</text>}
         {selected && <>
           {(selected.delivery_warnings ?? []).map(kind => kind === "offline" ? <text key={kind} fg={theme.warning} wrapMode="word">Offline: messages queue until this peer reconnects.</text> : kind === "not_friend" ? <text key={kind} fg={theme.warning} wrapMode="word">Messages blocked until your friend request is accepted. Ctrl+P &gt; Friends &gt; Add friend.</text> : null)}
           {selectedHasCapabilityGap && <text fg={theme.warning} wrapMode="word">Limited: {capabilityGapMessage}</text>}
