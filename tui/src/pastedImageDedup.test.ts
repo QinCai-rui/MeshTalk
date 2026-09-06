@@ -20,7 +20,11 @@ test("allows images with different bytes or a different destination", () => {
   expect(
     shouldSuppressPastedImage(
       previous,
-      createPastedImageDedupRecord(new Uint8Array([0xff, 0xd8, 0xff]), "peer:alice", 200),
+      createPastedImageDedupRecord(
+        new Uint8Array([0x89, 0x50, 0x4e, 0x48]),
+        "peer:alice",
+        200,
+      ),
     ),
   ).toBe(false);
   expect(
@@ -29,6 +33,13 @@ test("allows images with different bytes or a different destination", () => {
       createPastedImageDedupRecord(image, "group:alice", 200),
     ),
   ).toBe(false);
+});
+
+test("does not suppress a paste when no destination is selected", () => {
+  const previous = createPastedImageDedupRecord(image, undefined, 100);
+  const next = createPastedImageDedupRecord(image, undefined, 200);
+
+  expect(shouldSuppressPastedImage(previous, next)).toBe(false);
 });
 
 test("allows the same image after the dedup window", () => {
