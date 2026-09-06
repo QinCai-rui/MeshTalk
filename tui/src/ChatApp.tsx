@@ -1777,6 +1777,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         unreadMessageStates={unreadMessages}
         unreadNow={unreadNow}
         markUnreadMessageVisible={markUnreadMessageVisible}
+        openSettings={() => actions.showDialog({ kind: "settings" })}
         openImage={(file) => {
           if (file.file_path)
             actions.showDialog({

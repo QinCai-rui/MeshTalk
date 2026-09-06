@@ -43,7 +43,7 @@ function panelProps(width: number): ComponentProps<typeof ConversationPanel> {
       { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "I shared the **updated notes**. What do you think?", created_at: 1788580800 } },
       { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "me", content: "Looks good. The simpler layout makes it much easier to read.", created_at: 1788580860, delivered: 1 } },
     ],
-    deliveredMessageIds: new Set(), dialogOpen: false, draftLength: 0, drafts: {}, flashingEnabled: false, blinkOn: true, composerHeight: 3, composerRef: createRef<TextareaRenderable>(), groupMembers: {}, identity: { peer_id: "me", display_name: "Taylor" }, imageProtocol: "blocks", limitedGroupMembers: [], capabilityGapMessage: "", isSending: false, limitColor: undefined, mutedPeers: {}, peers, selected: peers[0], selectedGroup: undefined, selectedGroupId: undefined, selectedHasCapabilityGap: false, selectedReplyTargetId: undefined, replyTo: undefined, selectionKey: "peer:alex", unreadMessageStates: {}, unreadNow: 0, markUnreadMessageVisible: noop, openImage: noop, openDeliveryDetails: noop, typingNames: [], editingName: false, scrollFocused: false, scrollboxRef: createRef<ScrollBoxRenderable>(), status: DEFAULT_STATUS, setComposerHeight: noop, setDraftLength: noop, setScrollFocused: noop, selectReplyTarget: noop, clearReplyTarget: noop, onComposerChange: noop, send: noop,
+    deliveredMessageIds: new Set(), dialogOpen: false, draftLength: 0, drafts: {}, flashingEnabled: false, blinkOn: true, composerHeight: 3, composerRef: createRef<TextareaRenderable>(), groupMembers: {}, identity: { peer_id: "me", display_name: "Taylor" }, imageProtocol: "blocks", limitedGroupMembers: [], capabilityGapMessage: "", isSending: false, limitColor: undefined, mutedPeers: {}, peers, selected: peers[0], selectedGroup: undefined, selectedGroupId: undefined, selectedHasCapabilityGap: false, selectedReplyTargetId: undefined, replyTo: undefined, selectionKey: "peer:alex", unreadMessageStates: {}, unreadNow: 0, markUnreadMessageVisible: noop, openSettings: noop, openImage: noop, openDeliveryDetails: noop, typingNames: [], editingName: false, scrollFocused: false, scrollboxRef: createRef<ScrollBoxRenderable>(), status: DEFAULT_STATUS, setComposerHeight: noop, setDraftLength: noop, setScrollFocused: noop, selectReplyTarget: noop, clearReplyTarget: noop, onComposerChange: noop, send: noop,
   }
 }
 // Markdown's worker initializes asynchronously, independently of the renderer scheduler.
@@ -122,6 +122,60 @@ test("sidebar peers use contiguous two-line click targets", async () => {
   } finally { await close(setup) }
 })
 
+test("expanded groups show only active and away members while counting offline members in overflow", async () => {
+  const props = sidebarProps(120)
+  props.selectedPeerId = undefined
+  props.selectedGroupId = group.group_id
+  props.groups = [{ ...group, member_count: 5 }]
+  props.groupMembers = { team: [
+    { peer_id: "alex", display_name: "Alex Morgan", is_online: true },
+    { peer_id: "sam", display_name: "Sam Chen", is_online: false },
+    { peer_id: "away", display_name: "Avery Away", is_online: false },
+    { peer_id: "me", display_name: "Taylor", is_online: true },
+  ] }
+  props.peers = [...peers, { ...peers[0]!, peer_id: "away", display_name: "Avery Away", is_online: 1, presence: "away" }]
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Avery Away")
+    const groupRoster = frame.slice(frame.indexOf("Design studio"))
+    expect(groupRoster).toContain("Alex Morgan")
+    expect(groupRoster).toContain("Avery Away")
+    expect(groupRoster).toContain("Taylor (you)")
+    expect(groupRoster).not.toContain("Sam Chen")
+    expect(groupRoster).toContain("+ 2 more")
+  } finally { await close(setup) }
+})
+
+test("expanded groups subtly note when only you are online", async () => {
+  const props = sidebarProps(120)
+  props.selectedPeerId = undefined
+  props.selectedGroupId = group.group_id
+  props.groups = [{ ...group, member_count: 12 }]
+  props.groupMembers = { team: [{ peer_id: "me", display_name: "Taylor", is_online: true }] }
+  props.peers = []
+  const setup = await testRender(<Sidebar {...props} />, { width: 40, height: 30 })
+  try {
+    const frame = await settle(setup)
+    const groupRoster = frame.slice(frame.indexOf("Design studio")).replace(/\s+/g, " ")
+    expect(groupRoster).toContain("Taylor (you)")
+    expect(groupRoster).toContain("+ 11 more")
+    expect(groupRoster).toContain("No one else online")
+  } finally { await close(setup) }
+})
+
+test("clicking the settings footer opens settings", async () => {
+  const props = panelProps(80)
+  let opened = 0
+  props.openSettings = () => { opened++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    await settle(setup)
+    const shortcut = setup.renderer.root.findDescendantById("settings-shortcut")!
+    await act(async () => { await setup.mockMouse.click(shortcut.screenX + 1, shortcut.screenY) })
+    expect(opened).toBe(1)
+  } finally { await close(setup) }
+})
+
 test("sidebar groups use contiguous two-line targets like DMs", async () => {
   const props = sidebarProps(120)
   props.selectedPeerId = undefined
@@ -150,8 +204,8 @@ test("expanded group keeps its detail row above its members", async () => {
     const memberIdx = lines.findIndex((line, i) => i > headerIdx && line.includes("Alex Morgan"))
     expect(headerIdx).toBeGreaterThanOrEqual(0)
     expect(memberIdx).toBe(headerIdx + 2)
-    // Name + detail row + 2 members + overflow link.
-    expect(setup.renderer.root.findDescendantById(`nav-group-${group.group_id}`)!.height).toBe(5)
+    // Name + detail row + online member + overflow link.
+    expect(setup.renderer.root.findDescendantById(`nav-group-${group.group_id}`)!.height).toBe(4)
   } finally { await close(setup) }
 })
 

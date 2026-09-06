@@ -45,6 +45,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
     renderer.once("frame", reveal)
     return () => { renderer.off("frame", reveal) }
   }, [renderer, selectedPeerId, selectedGroupId, stacked])
+  const peersById = new Map(peers.map(peer => [peer.peer_id, peer]))
   const nameLabel = (name: string, unread: number, markerWidth = 0) => {
     if (!stacked) return name
     const available = Math.max(4, sidebarWidth - 5 - markerWidth - (unread > 0 ? `${unread} new`.length + 1 : 0))
@@ -93,7 +94,13 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           {groups.map(group => {
         const selected = group.group_id === selectedGroupId
         const members = groupMembers[group.group_id]
-        const visibleMembers = members?.filter(member => member.show_in_sidebar !== false) ?? []
+        // The compact roster is a presence view: retain active and away members,
+        // while the overflow count still represents everyone in the group.
+        const visibleMembers = members?.filter(member => {
+          const id = member.peer_id ?? member.member_id
+          const peer = id ? peersById.get(id) : undefined
+          return peer ? peerPresence(peer) !== "offline" : Boolean(member.is_online)
+        }) ?? []
         const typing = typingConversationKeys.has(`group:${group.group_id}`)
         const memberLabel = ` (${group.member_count} members)`
         const label = nameLabel(group.name, 0, terminalWidth(memberLabel))
@@ -107,13 +114,15 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           </box>
           {selected && !stacked && visibleMembers.map((member, index) => {
             const id = member.peer_id ?? member.member_id
-            const peer = peers.find(peer => peer.peer_id === id)
+            const peer = id ? peersById.get(id) : undefined
             const presence = peer ? peerPresence(peer) : member.is_online ? "active" : "offline"
             return <text key={id ?? index} fg={id === identity?.peer_id ? theme.presence.self : presenceColor(presence)}>  {presenceIndicator(presence)} {member.display_name}{id === identity?.peer_id ? " (you)" : ""}{peer ? friendMarkers(peer) : ""}</text>
           })}
           {selected && members && (() => {
             const hidden = Math.max(0, group.member_count - visibleMembers.length)
-            return <box id={`nav-group-more-${group.group_id}`} paddingLeft={2} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}>{hidden > 0 ? <u>{`+ ${hidden} more`}</u> : <u>···</u>}</text></box>
+            const otherOnline = visibleMembers.some(member => (member.peer_id ?? member.member_id) !== identity?.peer_id)
+            const presenceHint = hidden > 0 && !otherOnline ? "No one else online" : undefined
+            return <box id={`nav-group-more-${group.group_id}`} paddingLeft={2} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}>{hidden > 0 ? <u>{`+ ${hidden} more`}</u> : <u>···</u>}{presenceHint && <span fg={theme.muted}> · {presenceHint}</span>}</text></box>
           })()}
         </box>
           })}
