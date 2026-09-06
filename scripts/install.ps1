@@ -891,6 +891,10 @@ function Install-MeshTalk {
 
         Start-Step "Installing MeshTalk to $($script:InstallDirSel)"
         New-Item -ItemType Directory -Path $script:InstallDirSel -Force | Out-Null
+        foreach ($stateFile in @('.meshtalk-current.json', '.meshtalk-current.json.bak', '.meshtalk-pending.json')) {
+            Remove-Item -Path (Join-Path $script:InstallDirSel $stateFile) -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item -Path (Join-Path $script:InstallDirSel 'versions') -Recurse -Force -ErrorAction SilentlyContinue
         foreach ($file in $script:ExpectedFiles) {
             Copy-Item -Path (Join-Path $extractDir $file) -Destination (Join-Path $script:InstallDirSel $file) -Force
         }
@@ -942,6 +946,10 @@ function Uninstall-MeshTalk {
         $target = Join-Path $script:InstallDirSel $file
         Remove-Item -Path $target -Force -ErrorAction SilentlyContinue
     }
+    foreach ($stateFile in @('.meshtalk-current.json', '.meshtalk-current.json.bak', '.meshtalk-pending.json')) {
+        Remove-Item -Path (Join-Path $script:InstallDirSel $stateFile) -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -Path (Join-Path $script:InstallDirSel 'versions') -Recurse -Force -ErrorAction SilentlyContinue
     Complete-Step -Marker $script:TICK -CompletedLabel "Removed MeshTalk from $($script:InstallDirSel)."
 }
 

@@ -1,13 +1,12 @@
 #!/usr/bin/env bun
 /// <reference types="bun-types" />
 
-import { spawn } from "bun";
 import { spawn as spawnProcess, type ChildProcess } from "node:child_process";
 import { createConnection, type Socket } from "net";
 import { basename, dirname, join, resolve } from "path";
-import { chmodSync, closeSync, existsSync, openSync, readFileSync, writeFileSync, statSync, mkdirSync } from "fs";
+import { chmodSync, closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { applyPendingWindowsReplacement, checkForUpdate, githubRepository, installRelease, isReleaseInstallDir, releaseInstallDir, saveGithubRepository, saveGithubToken, spawnWindowsReplacementHelper, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
+import { activatePendingVersion, applyPendingWindowsReplacement, checkForUpdate, githubRepository, hasPendingVersion, installRelease, isReleaseInstallDir, logUpdateHelper, releaseInstallDir, saveGithubRepository, saveGithubToken, spawnWindowsReplacementHelper, takeUpdateRestartPath, versionedLauncherForBootstrap, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
 import { main as cliMain } from "../cli/src/index";
 import { runTui } from "./tui-entry";
 import type { SplashStyle } from "../tui/src/SplashScreen";
@@ -132,19 +131,29 @@ async function runUpdate(args: string[]): Promise<void> {
     console.log("Update skipped.");
     return;
   }
-  if (isWindows && await backendRunning()) throw new Error("A MeshTalk instance is already running. Close MeshTalk before updating.");
+  if (await backendRunning()) throw new Error("A MeshTalk instance is already running. Close MeshTalk before updating from the command line.");
   const destination = installDir ?? releaseInstallDir();
   if (!destination) throw new Error(`Unable to locate the standalone MeshTalk installation. Use --dir <directory> to select one. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
   if (!isReleaseInstallDir(destination)) throw new Error(`Update directory must contain the current MeshTalk release binaries. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
   console.log(`Downloading and installing MeshTalk ${release.version}...`);
-  if (isWindows) applyPendingWindowsReplacement();
   await installRelease(release, destination);
-  if (isWindows) {
-    if (!spawnWindowsReplacementHelper()) throw new Error("Unable to start the Windows update replacement process.");
-    console.log("Update installed. MeshTalk will restart shortly.");
-    return;
-  }
-  console.log("Update installed. Restart MeshTalk to use the new version.");
+  console.log("Update staged and verified. Restart MeshTalk to activate the new version.");
+}
+
+async function launchReplacement(path: string, args: string[] = process.argv.slice(2)): Promise<void> {
+  await new Promise<void>((resolveSpawn, reject) => {
+    const child = spawnProcess(path, args, {
+      detached: true,
+      stdio: "inherit",
+      windowsHide: true,
+    });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.removeListener("error", reject);
+      child.unref();
+      resolveSpawn();
+    });
+  });
 }
 
 function findExecutable(name: string): string | null {
@@ -304,20 +313,72 @@ async function waitForBackend(backendProcess?: ChildProcess): Promise<boolean> {
   return false;
 }
 
-async function stopBackend(pid?: number, daemonise = true): Promise<void> {
+function readPidFile(): number | undefined {
+  try {
+    const pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch { return undefined; }
+}
+
+function backendPidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+// PIDs of other meshtalk.exe launchers still running. A running launcher
+// locks meshtalk.exe, so the update helper could never replace it while they
+// live — fail fast with a clear message instead of timing out with the old
+// version still installed and orphaned processes piling up.
+function otherLauncherPids(): number[] {
+  if (!isWindows) return [];
+  try {
+    const result = Bun.spawnSync(["tasklist", "/fo", "csv", "/nh", "/fi", "IMAGENAME eq meshtalk.exe"], { stdout: "pipe", stderr: "ignore" });
+    if (result.exitCode !== 0) {
+      const detail = `tasklist exited with code ${result.exitCode}; failing open (no fail-fast on other launchers)`;
+      log(detail);
+      try { logUpdateHelper(`otherLauncherPids: ${detail}`); } catch {}
+      return [];
+    }
+    const output = new TextDecoder().decode(result.stdout);
+    const pids: number[] = [];
+    for (const line of output.split("\n")) {
+      const match = line.match(/"meshtalk\.exe","\s*(\d+)\s*"/i);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && !pids.includes(pid)) pids.push(pid);
+    }
+    return pids;
+  } catch (error) {
+    const detail = `tasklist failed (${error instanceof Error ? error.message : String(error)}); failing open (no fail-fast on other launchers)`;
+    log(detail);
+    try { logUpdateHelper(`otherLauncherPids: ${detail}`); } catch {}
+    return [];
+  }
+}
+
+async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!backendPidAlive(pid)) return true;
+    await Bun.sleep(200);
+  }
+  return !backendPidAlive(pid);
+}
+
+async function stopBackend(pid?: number, daemonise = true, proc?: ChildProcess): Promise<boolean> {
   if (!pid && daemonise) {
     try { pid = Number(readFileSync(`${DATA_DIR}/meshtalk.pid`, "utf-8").trim()); } catch {}
   }
-  if (!pid || !Number.isInteger(pid)) return;
+  if (!pid || !Number.isInteger(pid)) return true;
+  if (!backendPidAlive(pid)) return true;
   const useGroup = process.platform !== "win32" && (daemonise || process.platform === "darwin");
-  if (!signalBackend(pid, useGroup, "SIGTERM")) return;
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    await Bun.sleep(200);
-    try { process.kill(pid!, 0); } catch { return; }
-  }
+  if (!signalBackend(pid, useGroup, "SIGTERM")) return true;
+  if (await waitForPidExit(pid, 5_000)) return true;
   log("Backend did not stop gracefully; sending SIGKILL.");
   signalBackend(pid, useGroup, "SIGKILL");
+  try { proc?.kill("SIGKILL"); } catch {}
+  // Wait for the kill to land so a lingering backend cannot keep its
+  // executable locked (blocking a Windows update) or pile up as an orphan.
+  return await waitForPidExit(pid, 3_000);
 }
 
 function signalBackend(pid: number, useGroup: boolean, signal: NodeJS.Signal): boolean {
@@ -358,6 +419,22 @@ async function main() {
   const args = process.argv.slice(2);
 
   if (isWindows) applyPendingWindowsReplacement();
+
+  // A top-level release launcher is a stable bootstrap once versioned
+  // installs exist. Activate a fully verified pending version only when no
+  // backend is running, then hand off without retaining this process as a
+  // supervisor. This prevents mixed launcher/backend versions and restart
+  // process chains on macOS/Linux.
+  const installRoot = releaseInstallDir();
+  let versionedTarget: string | null = null;
+  if (installRoot && hasPendingVersion(installRoot) && !await backendRunning()) {
+    versionedTarget = activatePendingVersion(installRoot);
+  }
+  versionedTarget ??= versionedLauncherForBootstrap();
+  if (versionedTarget && resolve(versionedTarget) !== resolve(process.execPath)) {
+    await launchReplacement(versionedTarget, args);
+    process.exit(0);
+  }
 
   if (args[0] === "update") {
     await runUpdate(args.slice(1));
@@ -449,10 +526,10 @@ async function main() {
 
   let code = 0;
   if (launchTui) {
-    let cleanupPromise: Promise<void> | undefined;
+    let cleanupPromise: Promise<boolean> | undefined;
     const cleanup = () => {
-      if (!iStartedIt) return Promise.resolve();
-      return (cleanupPromise ??= stopBackend(backendPid, false));
+      if (!iStartedIt) return Promise.resolve(true);
+      return (cleanupPromise ??= stopBackend(backendPid, false, backendProcess));
     };
     const tui = await runTui({ splashStyle: splash ?? savedSplashStyle() });
     if (iStartedIt) {
@@ -468,16 +545,79 @@ async function main() {
     }
     code = await tui.exited;
     if (code === UPDATE_RESTART_EXIT_CODE) {
-      if (!await requestBackendShutdown()) await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt);
-      if (isWindows) {
-    if (!spawnWindowsReplacementHelper()) throw new Error(`Unable to start the Windows update replacement process. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
+      if (isWindows) logUpdateHelper(`restart requested (tui exit ${code})`);
+      if (!await requestBackendShutdown()) {
+        // requestBackendShutdown returns false both when no backend is
+        // listening on IPC and when a live backend ignored the shutdown.
+        // Only signal the pid file in the latter case: a stale pid file may
+        // otherwise point at a recycled PID belonging to an unrelated
+        // process, which must never be signaled.
+        if (await backendRunning()) {
+          if (!await stopBackend(iStartedIt ? backendPid : undefined, !iStartedIt, iStartedIt ? backendProcess : undefined)) {
+            if (isWindows) logUpdateHelper("restart ABORTED: backend did not stop");
+            throw new Error("MeshTalk backend did not stop. Close MeshTalk completely and try the update again.");
+          }
+        } else if (isWindows) {
+          logUpdateHelper("no backend on IPC; skipping pid-file signal (stale pid file is dropped below)");
+        }
+      }
+      try { backendProcess?.kill("SIGKILL"); } catch {}
+      try { backendProcess?.unref?.(); } catch {}
+      const restartValue = takeUpdateRestartPath();
+      if (!restartValue) throw new Error("Update restart target was not provided.");
+      const restartInstallDir = existsSync(restartValue) && statSync(restartValue).isDirectory() ? restartValue : dirname(restartValue);
+      const versionedRestart = activatePendingVersion(restartInstallDir);
+      if (versionedRestart) {
+        await launchReplacement(versionedRestart, []);
+        code = 0;
+      } else if (isWindows) {
+        // The backend executable stays locked while the backend lives. The
+        // replacement helper retries locked copies, but refuse early if the
+        // backend is still alive so a lingering backend cannot pile up as an
+        // orphan behind the restarted instance. Only consider PIDs that are
+        // still alive: a stale pid file may point at a recycled PID belonging
+        // to an unrelated process.
+        const backendPids: number[] = [];
+        for (const candidate of [iStartedIt ? backendPid : undefined, readPidFile()]) {
+          if (Number.isInteger(candidate) && (candidate as number) > 0 && !(backendPids.includes(candidate as number)) && backendPidAlive(candidate as number)) backendPids.push(candidate as number);
+        }
+        if (backendPids.length > 0) {
+          // Final grace period: requestBackendShutdown/stopBackend should have
+          // ended the backend already; refuse to restart-to-update rather than
+          // leave an orphan backend locking the install directory (which would
+          // make the helper time out with the old version still installed).
+          const deadline = Date.now() + 5_000;
+          let settled = false;
+          while (Date.now() < deadline) {
+            if (backendPids.every((pid) => !backendPidAlive(pid))) { settled = true; break; }
+            await Bun.sleep(200);
+          }
+          if (!settled && backendPids.some((pid) => backendPidAlive(pid))) {
+            throw new Error("MeshTalk backend is still running. Close MeshTalk completely and try the update again.");
+          }
+        }
+        // Remove a stale pid file so a recycled PID can never be mistaken for
+        // the backend later (which could kill an unrelated process or stall a
+        // future update helper waiting on it).
+        try {
+          const stale = readPidFile();
+          if (stale !== undefined && !backendPidAlive(stale)) rmSync(`${DATA_DIR}/meshtalk.pid`, { force: true });
+        } catch {}
+        // Another open MeshTalk window holds a lock on meshtalk.exe forever,
+        // so the helper could never replace it. Refuse early with a clear
+        // message instead of failing minutes later with the old version.
+        const others = otherLauncherPids();
+        if (others.length > 0) {
+          throw new Error(`Another MeshTalk instance is still running (PID ${others.join(", ")}). Close all MeshTalk windows before restarting to update.`);
+        }
+        if (!spawnWindowsReplacementHelper()) {
+          logUpdateHelper("restart ABORTED: helper spawn failed");
+          throw new Error(`Unable to start the Windows update replacement process. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
+        }
+        logUpdateHelper("launcher exiting, helper owns the replacement + relaunch");
         code = 0;
       } else {
-        const restartPath = takeUpdateRestartPath();
-        if (!restartPath) throw new Error("Update restart target was not provided.");
-        if (!existsSync(restartPath)) throw new Error(`Updated launcher does not exist: ${restartPath}`);
-        const restarted = spawn([restartPath], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-        code = await restarted.exited;
+        throw new Error("The staged update does not contain a valid versioned launcher.");
       }
     } else {
       await cleanup();

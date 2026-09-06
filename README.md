@@ -98,6 +98,12 @@ To update a different existing MeshTalk installation, use its directory:
 
 The target directory must contain the complete MeshTalk release binaries.
 
+In-app updates are installed as immutable, hash-verified pairs under
+`versions/<version>-<digest>/`. The original top-level launcher remains a
+stable bootstrap and selects the active pair through `.meshtalk-current.json`.
+Activation happens only after the old backend stops; the previous version is
+retained for automatic fallback if the selected version is incomplete.
+
 Updates use `QinCai-rui/MeshTalk` by default. To use releases from another
 GitHub repository, configure its user and repository name:
 

@@ -952,6 +952,11 @@ install_meshtalk() {
   done
   task_start "Installing MeshTalk to ${INSTALL_DIR}"
   mkdir -p "$INSTALL_DIR"
+  # A full installer run resets the version selector before replacing the
+  # stable bootstrap. Otherwise a newly installed bootstrap could immediately
+  # redirect back into an older in-app update.
+  rm -f -- "$INSTALL_DIR/.meshtalk-current.json" "$INSTALL_DIR/.meshtalk-current.json.bak" "$INSTALL_DIR/.meshtalk-pending.json"
+  rm -rf -- "$INSTALL_DIR/versions"
   for file in "${EXPECTED_FILES[@]}"; do
     cp "$extract_dir/$file" "$INSTALL_DIR/$file"
     chmod u+rx "$INSTALL_DIR/$file"
@@ -1008,6 +1013,8 @@ uninstall_meshtalk() {
   for file in "${EXPECTED_FILES[@]}"; do
     rm -f -- "$INSTALL_DIR/$file"
   done
+  rm -f -- "$INSTALL_DIR/.meshtalk-current.json" "$INSTALL_DIR/.meshtalk-current.json.bak" "$INSTALL_DIR/.meshtalk-pending.json"
+  rm -rf -- "$INSTALL_DIR/versions"
   task_finish "$TICK" "Removed MeshTalk from ${INSTALL_DIR}."
 }
 
