@@ -39,22 +39,49 @@ describe("parsePendingUpdate", () => {
 describe("buildWindowsReplacementScript", () => {
   const pending = { staging: "C:\\install\\.meshtalk-update-abc", installDir: "C:\\install", files: ["meshtalk.exe", "meshtalk-backend.exe"] }
 
-  test("waits for every supplied pid with an exact pid match", () => {
-    const script = buildWindowsReplacementScript(pending, [1234, 5678], "C:\\install\\meshtalk.exe", "C:\\data\\update-helper.log")
-    expect(script).toContain("WAIT_PID_0=1234")
-    expect(script).toContain("WAIT_PID_1=5678")
-    // Surrounding spaces keep PID 123 from matching a 1234 row.
-    expect(script).toContain('/C:" !WAIT_PID_0! "')
-    expect(script).toContain('/C:" !WAIT_PID_1! "')
-    expect(script).not.toContain('find /i "%PID%"')
-  })
-
-  test("retries each file copy and cleans up the staging dir plus pending marker", () => {
-    const script = buildWindowsReplacementScript(pending, [1234], "C:\\install\\meshtalk.exe", "C:\\data\\update-helper.log")
+  test("retries each file copy until locks clear, without PID polling", () => {
+    const script = buildWindowsReplacementScript(pending, "C:\\install\\meshtalk.exe", "C:\\data\\update-helper.log")
+    // Lock-retry per file: copy fails with a sharing violation while the old
+    // instance still holds its executable, and succeeds once it exits.
     expect(script).toContain("copy_attempts_0")
     expect(script).toContain("copy_attempts_1")
+    expect(script).toContain('copy /y "C:\\install\\.meshtalk-update-abc\\meshtalk.exe" "C:\\install\\meshtalk.exe"')
+    // PID polling cannot work in the detached helper: pipes hang and tasklist
+    // output capture yields empty files, so neither may be used. The legacy
+    // `find /i "%PID%"` must never come back either (Unix find on MSYS
+    // machines misparses it and flashes a console window).
+    expect(script).not.toContain("tasklist")
+    expect(script).not.toContain("findstr")
+    expect(script).not.toContain("|")
+    expect(script).not.toContain("WAIT_PID")
+    expect(script).not.toMatch(/(^|[^a-zA-Z])find(\.exe)?(\s|\/)/i)
+    // No delayed expansion: `!` in install paths would be eaten.
+    expect(script).not.toContain("EnableDelayedExpansion")
+    expect(script).not.toContain("!")
+  })
+
+  test("cleans up the staging dir plus pending marker and relaunches", () => {
+    const script = buildWindowsReplacementScript(pending, "C:\\install\\meshtalk.exe", "C:\\data\\update-helper.log")
     expect(script).toContain('rmdir /s /q "C:\\install\\.meshtalk-update-abc"')
-    expect(script).toContain('start "" "C:\\install\\meshtalk.exe"')
+    expect(script).toContain('start "" /d "C:\\install" "C:\\install\\meshtalk.exe"')
+    // Relaunch is retried (transient AV locks) and its outcome is logged.
+    expect(script).toContain(":start_retry")
+    expect(script).toContain(":start_failed")
+    // A missing launcher must fail fast: `start` on a nonexistent target can
+    // hang forever in a windowless session instead of returning an error.
+    expect(script).toContain("if not exist")
+    expect(script).toContain(":start_missing")
+    // Self-deletes without leaving the script file behind.
+    expect(script).toContain('del "%~f0"')
+  })
+
+  test("logs each phase for post-mortem debugging", () => {
+    const script = buildWindowsReplacementScript(pending, "C:\\install\\meshtalk.exe", "C:\\data\\update-helper.log")
+    expect(script).toContain("helper started")
+    expect(script).toContain("replaced meshtalk.exe")
+    expect(script).toContain("could not replace meshtalk.exe")
+    expect(script).toContain("relaunched")
+    expect(script).toContain("C:\\data\\update-helper.log")
   })
 })
 
@@ -71,7 +98,9 @@ test("installRelease streams the archive and reports each install phase", async 
     writeFileSync(join(source, name), `new ${name}`)
     writeFileSync(join(installDir, name), `old ${name}`)
   }
-  const archive = Bun.spawnSync(["tar", "-czf", archivePath, "-C", source, ...files])
+  // Run tar with cwd + relative names: MSYS/Git-Bash tar treats `C:\...`
+  // absolute paths as remote (`C: resolve failed`).
+  const archive = Bun.spawnSync(["tar", "-czf", "release.tar.gz", "-C", "source", ...files], { cwd: temporary })
   expect(archive.exitCode).toBe(0)
   const archiveBytes = new Uint8Array(await Bun.file(archivePath).arrayBuffer())
   const digest = new Bun.CryptoHasher("sha256").update(archiveBytes).digest("hex")
