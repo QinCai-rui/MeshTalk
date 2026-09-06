@@ -45,6 +45,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
     renderer.once("frame", reveal)
     return () => { renderer.off("frame", reveal) }
   }, [renderer, selectedPeerId, selectedGroupId, stacked])
+  const peersById = new Map(peers.map(peer => [peer.peer_id, peer]))
   const nameLabel = (name: string, unread: number, markerWidth = 0) => {
     if (!stacked) return name
     const available = Math.max(4, sidebarWidth - 5 - markerWidth - (unread > 0 ? `${unread} new`.length + 1 : 0))
@@ -97,7 +98,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
         // while the overflow count still represents everyone in the group.
         const visibleMembers = members?.filter(member => {
           const id = member.peer_id ?? member.member_id
-          const peer = peers.find(peer => peer.peer_id === id)
+          const peer = id ? peersById.get(id) : undefined
           return peer ? peerPresence(peer) !== "offline" : Boolean(member.is_online)
         }) ?? []
         const typing = typingConversationKeys.has(`group:${group.group_id}`)
@@ -113,7 +114,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           </box>
           {selected && !stacked && visibleMembers.map((member, index) => {
             const id = member.peer_id ?? member.member_id
-            const peer = peers.find(peer => peer.peer_id === id)
+            const peer = id ? peersById.get(id) : undefined
             const presence = peer ? peerPresence(peer) : member.is_online ? "active" : "offline"
             return <text key={id ?? index} fg={id === identity?.peer_id ? theme.presence.self : presenceColor(presence)}>  {presenceIndicator(presence)} {member.display_name}{id === identity?.peer_id ? " (you)" : ""}{peer ? friendMarkers(peer) : ""}</text>
           })}

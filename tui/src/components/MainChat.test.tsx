@@ -126,10 +126,12 @@ test("expanded groups show only active and away members while counting offline m
   const props = sidebarProps(120)
   props.selectedPeerId = undefined
   props.selectedGroupId = group.group_id
+  props.groups = [{ ...group, member_count: 5 }]
   props.groupMembers = { team: [
     { peer_id: "alex", display_name: "Alex Morgan", is_online: true },
     { peer_id: "sam", display_name: "Sam Chen", is_online: false },
     { peer_id: "away", display_name: "Avery Away", is_online: false },
+    { peer_id: "me", display_name: "Taylor", is_online: true },
   ] }
   props.peers = [...peers, { ...peers[0]!, peer_id: "away", display_name: "Avery Away", is_online: 1, presence: "away" }]
   const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
@@ -138,6 +140,7 @@ test("expanded groups show only active and away members while counting offline m
     const groupRoster = frame.slice(frame.indexOf("Design studio"))
     expect(groupRoster).toContain("Alex Morgan")
     expect(groupRoster).toContain("Avery Away")
+    expect(groupRoster).toContain("Taylor (you)")
     expect(groupRoster).not.toContain("Sam Chen")
     expect(groupRoster).toContain("+ 2 more")
   } finally { await close(setup) }
