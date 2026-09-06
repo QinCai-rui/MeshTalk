@@ -60,6 +60,11 @@ import {
 } from "./notifications";
 import { useChatActions } from "./useChatActions";
 import {
+  createPastedImageDedupRecord,
+  shouldSuppressPastedImage,
+  type PastedImageDedupRecord,
+} from "./pastedImageDedup";
+import {
   APP_RELEASE_VERSION,
   IS_RELEASE_BUILD,
   MIN_SPLASH_PHASE_MS,
@@ -71,16 +76,6 @@ import {
 } from "./SplashScreen";
 
 declare const APP_VERSION: string;
-
-const PASTED_IMAGE_DEDUP_WINDOW_MS = 750;
-
-function bytesEqual(left: Uint8Array, right: Uint8Array) {
-  if (left.byteLength !== right.byteLength) return false;
-  for (let index = 0; index < left.byteLength; index++) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
-}
 
 function detectImageMime(bytes: Uint8Array): string | undefined {
   if (
@@ -159,11 +154,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const [draftLength, setDraftLength] = useState(0);
   const [composerHeight, setComposerHeight] = useState(MIN_COMPOSER_HEIGHT);
   const [isSending, setIsSending] = useState(false);
-  const lastPastedImage = useRef<{
-    bytes: Uint8Array;
-    selectionKey?: string;
-    sentAt: number;
-  } | undefined>(undefined);
+  const lastPastedImage = useRef<PastedImageDedupRecord | undefined>(undefined);
+  const selectionKeyRef = useRef<string | undefined>(undefined);
   const [nameDraft, setNameDraft] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [scrollFocused, setScrollFocused] = useState(false);
@@ -236,6 +228,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const selectionKey = selection
     ? `${selection.kind}:${selection.id}`
     : undefined;
+  selectionKeyRef.current = selectionKey;
 
   function rememberUnreadMessage(
     conversationKey: string,
@@ -1267,17 +1260,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   }, [selectionKey, width]);
 
   function sendPastedImage(bytes: Uint8Array, mimeType: string) {
-    const now = Date.now();
-    const previous = lastPastedImage.current;
-    if (
-      previous &&
-      now - previous.sentAt < PASTED_IMAGE_DEDUP_WINDOW_MS &&
-      previous.selectionKey === selectionKey &&
-      bytesEqual(previous.bytes, bytes)
-    ) {
-      return;
-    }
-    lastPastedImage.current = { bytes, selectionKey, sentAt: now };
+    const next = createPastedImageDedupRecord(
+      bytes,
+      selectionKeyRef.current,
+      performance.now(),
+    );
+    if (shouldSuppressPastedImage(lastPastedImage.current, next)) return;
+    lastPastedImage.current = next;
     void actions.sendImage(bytes, mimeType);
   }
 
