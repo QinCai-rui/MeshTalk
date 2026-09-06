@@ -13,11 +13,11 @@ its existing UI.
 - Below 64 columns, navigation becomes a six-row strip above the full-width chat.
   The selected conversation scrolls into view after layout. Long list names shorten
   with `...`; the selected conversation's full name wraps in the chat header.
-- MeshTalk displays the release version beside its title. DMs and groups have a
-  plain section labels and separate scroll areas: DMs receive 60% of the available
-  navigation height and groups receive 40%. Each section keeps its own scrollbar
-  and brings the selected conversation into view. Unread counts have their own
-  space beside the name.
+- MeshTalk displays the release version beside its title. DMs and groups have
+  accent-coloured section labels and separate scroll areas: DMs receive 60% of
+  the available navigation height and groups receive 40%. Each section keeps
+  its own scrollbar and brings the selected conversation into view. Unread
+  counts have their own space beside the name.
 - Each DM entry is a contiguous two-row target: the name, presence colour, and
   friend/request markers appear first; indented unread count, muted/limited
    state, and typing dots use the second row. Group rows match when collapsed:
@@ -25,6 +25,7 @@ its existing UI.
    indented second row sharing unread count and typing dots so activity never
    adds a newline. Expanded groups keep the reserved second row above their
    members, so typing and unread dots never shift the member list.
+   An underlined `+ N more` link beneath the members opens the full member list.
    Group entries are contiguous with no gap, like DMs.
 - Sidebar peers use the original green/amber/gray presence colours and heart/request
   arrow markers. The conversation header retains textual state labels; muted state,

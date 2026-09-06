@@ -11,7 +11,7 @@ import type { Peer } from "../types"
 
 const noop = () => {}
 
-test("View all members aligns with group member presence indicators", async () => {
+test("member overflow link aligns with group member presence indicators", async () => {
   const props = sidebarProps(120)
   props.selectedPeerId = undefined
   props.selectedGroupId = group.group_id
@@ -19,9 +19,13 @@ test("View all members aligns with group member presence indicators", async () =
   const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
   try {
     const frame = await settle(setup)
-    const member = frame.split("\n").find(line => line.includes("● Alex Morgan"))!
-    const link = frame.split("\n").find(line => line.includes("View all members"))!
-    expect(link.indexOf("View")).toBe(member.indexOf("●"))
+    const lines = frame.split("\n")
+    const headerIdx = lines.findIndex(line => line.includes("Design studio"))
+    const memberIdx = lines.findIndex((line, i) => i > headerIdx && line.includes("● Alex Morgan"))
+    const member = lines[memberIdx]!
+    const link = lines[memberIdx + 1]!
+    expect(link.trim()).toBe("+ 3 more")
+    expect(link.indexOf("+")).toBe(member.indexOf("●"))
   } finally { await close(setup) }
 })
 const peers: Peer[] = [
@@ -146,7 +150,7 @@ test("expanded group keeps its detail row above its members", async () => {
     const memberIdx = lines.findIndex((line, i) => i > headerIdx && line.includes("Alex Morgan"))
     expect(headerIdx).toBeGreaterThanOrEqual(0)
     expect(memberIdx).toBe(headerIdx + 2)
-    // Name + detail row + 2 members + View all members.
+    // Name + detail row + 2 members + overflow link.
     expect(setup.renderer.root.findDescendantById(`nav-group-${group.group_id}`)!.height).toBe(5)
   } finally { await close(setup) }
 })

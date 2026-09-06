@@ -61,7 +61,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
       <box id="sidebar-dm-section" style={{ flexGrow: 3, flexBasis: 0, flexShrink: 1, minHeight: 1, flexDirection: "column" }}>
-        <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.muted}>DMs ({peers.length}) / {peers.filter(peer => peer.is_online).length} online</text></box>
+        <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.accent}><b>DMs ({peers.length}) / {peers.filter(peer => peer.is_online).length} online</b></text></box>
         <scrollbox id="sidebar-dms" ref={peerListRef} onMouseDown={() => setScrollFocused(false)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", width: Math.max(1, sidebarWidth - 1) }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}>
           {!peers.length && <text fg={theme.muted}> Waiting for peers...</text>}
           {peers.map(peer => {
@@ -87,7 +87,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
         </scrollbox>
       </box>
       <box id="sidebar-group-section" style={{ flexGrow: 2, flexBasis: 0, flexShrink: 1, minHeight: 1, flexDirection: "column" }}>
-        <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.muted}>Groups ({groups.length})</text></box>
+        <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.accent}><b>Groups ({groups.length})</b></text></box>
         <scrollbox id="sidebar-groups" ref={groupListRef} onMouseDown={() => setScrollFocused(false)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", width: Math.max(1, sidebarWidth - 1) }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}>
           {!groups.length && <text fg={theme.muted}> No groups joined</text>}
           {groups.map(group => {
@@ -111,7 +111,10 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
             const presence = peer ? peerPresence(peer) : member.is_online ? "active" : "offline"
             return <text key={id ?? index} fg={id === identity?.peer_id ? theme.presence.self : presenceColor(presence)}>  {presenceIndicator(presence)} {member.display_name}{id === identity?.peer_id ? " (you)" : ""}{peer ? friendMarkers(peer) : ""}</text>
           })}
-          {selected && members && <box paddingLeft={2} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}><u>View all members</u></text></box>}
+          {selected && members && (() => {
+            const hidden = Math.max(0, group.member_count - visibleMembers.length)
+            return <box id={`nav-group-more-${group.group_id}`} paddingLeft={2} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}>{hidden > 0 ? <u>{`+ ${hidden} more`}</u> : <u>···</u>}</text></box>
+          })()}
         </box>
           })}
         </scrollbox>
