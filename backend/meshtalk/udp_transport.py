@@ -60,9 +60,9 @@ MAX_ATTEMPTS = 128
 MAX_SESSIONS = 256
 
 Endpoint = tuple[str, int]
-ConnectedCallback = Callable[[str, str, int, str, bytes, bytes, bool], Awaitable[None]]
+ConnectedCallback = Callable[[str, str, int, str, bytes, bytes, bool, bytes], Awaitable[None]]
 PacketCallback = Callable[[str, Packet], Awaitable[None]]
-DisconnectedCallback = Callable[[str], Awaitable[None]]
+DisconnectedCallback = Callable[[str, bytes], Awaitable[None]]
 DerpSender = Callable[[str, bytes], Awaitable[None]]
 
 
@@ -651,6 +651,7 @@ class UdpTransport:
                     session.encryption_public_key,
                     session.signing_public_key,
                     session.via_relay,
+                    session.session_id,
                 ))
             return
         if not session.confirmed:
@@ -662,7 +663,7 @@ class UdpTransport:
             active = self._sessions.get(session.peer_id) is session
             self._remove_session(session)
             if active:
-                self._spawn(self.on_disconnected(session.peer_id))
+                self._spawn(self.on_disconnected(session.peer_id, session.session_id))
 
     def _send_authenticated(self, session: Session, message_type: int, token: int) -> None:
         header = AUTH_HEADER.pack(MAGIC, message_type, session.session_id, token)
@@ -707,7 +708,10 @@ class UdpTransport:
                     continue
                 if now - session.last_seen > SESSION_TIMEOUT:
                     self._remove_session(session)
-                    await self.on_disconnected(session.peer_id)
+                    try:
+                        await self.on_disconnected(session.peer_id, session.session_id)
+                    except Exception:
+                        logger.exception("on_disconnected callback failed for %s", session.peer_id)
                     continue
                 if session.confirmed:
                     self._send_authenticated(session, PING, secrets.randbits(64))
@@ -786,7 +790,16 @@ class UdpTransport:
     def _spawn(self, awaitable: Awaitable[None]) -> asyncio.Task:
         task = asyncio.create_task(awaitable)
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+
+        def _done(t: asyncio.Task[None]) -> None:
+            self._tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.exception("Background UDP task failed", exc_info=exc)
+
+        task.add_done_callback(_done)
         return task
 
 

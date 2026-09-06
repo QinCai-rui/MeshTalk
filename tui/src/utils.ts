@@ -1,11 +1,12 @@
 import type { Group, GroupDelivery, Peer } from "./types"
 import type { TextareaRenderable } from "@opentui/core"
+import { chatTheme as theme, unreadMessageBackground as unreadBackground } from "./chatTheme"
 
 export const MIN_COMPOSER_HEIGHT = 3
 export const MAX_COMPOSER_HEIGHT = 5
 export const MAX_MESSAGE_BYTES = 30 * 1024
 export const UNREAD_MESSAGE_FADE_MS = 3_000
-export const DEFAULT_STATUS = "Ctrl+P: Commands  Ctrl+U: upload  Ctrl+V: paste image  Ctrl+Up/Down: select  Ctrl+D: remove offline  Ctrl+C: quit"
+export const DEFAULT_STATUS = "Ctrl+P: Settings  Ctrl+U: upload  Ctrl+V: paste image  Ctrl+Up/Down: switch chats  PgUp: history  Ctrl+D: remove offline  Ctrl+C: quit"
 
 export function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
@@ -22,14 +23,8 @@ export function peerConnectionLabel(peer: Peer): string { if (!peer.is_online) r
 export function peerPresence(peer: Peer): "active" | "away" | "offline" { return peer.presence ?? "offline" }
 export function sortPeersByInteraction(peers: Peer[]): Peer[] { return [...peers].sort((a, b) => (b.last_interaction ?? 0) - (a.last_interaction ?? 0) || a.display_name.localeCompare(b.display_name)) }
 export function friendMarkers(peer: Peer): string { const markers: string[] = []; if (peer.is_friend) markers.push("\u2665"); if (peer.friend_request === "incoming" || peer.friend_request === "both") markers.push("\u2199"); if (peer.friend_request === "outgoing" || peer.friend_request === "both") markers.push("\u2197"); return markers.length ? ` ${markers.join("")}` : "" }
-export function composerLimitColor(length: number): string | undefined { const usage = length / MAX_MESSAGE_BYTES; if (usage >= 1) return "#ff7777"; if (usage >= 0.9) return "#ff9f43"; if (usage >= 0.75) return "#e0a34a"; return undefined }
-export function unreadMessageBackground(progress: number): string {
-  const start = [103, 82, 40]
-  const end = [40, 32, 24]
-  const amount = Math.min(1, Math.max(0, progress))
-  const channels = start.map((channel, index) => Math.round(channel + (end[index] - channel) * amount))
-  return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`
-}
+export function composerLimitColor(length: number): string | undefined { const usage = length / MAX_MESSAGE_BYTES; if (usage >= 1) return theme.danger; if (usage >= 0.9) return theme.caution; if (usage >= 0.75) return theme.warning; return undefined }
+export const unreadMessageBackground = unreadBackground
 export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
   if (!deliveries.length) return "sent"
   const delivered = deliveries.filter((delivery) => delivery.status === "delivered").length

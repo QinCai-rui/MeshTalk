@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import tempfile
 import time
@@ -16,7 +17,7 @@ from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
 from meshtalk.protocol import CAP_DIRECT_ROUTE_RECOVERY, CAP_TEXT_CHAT, Packet, PacketType
 from meshtalk.rendezvous import RendezvousService, _encode, _room_key, decrypt_endpoint_card, encrypt_endpoint_card
 from meshtalk.settings import Room, Settings
-from meshtalk.udp_transport import Attempt, HELLO, MAGIC, READY, UdpTransport
+from meshtalk.udp_transport import AUTH_HEADER, Attempt, GOODBYE, HELLO, MAGIC, READY, Session, UdpTransport
 
 
 class RemoteTransportTest(unittest.IsolatedAsyncioTestCase):
@@ -350,8 +351,8 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         async def on_remote_connected(*args):
             connected[remote.peer_id].append(args)
 
-        async def on_disconnected(peer_id):
-            disconnected.append(peer_id)
+        async def on_disconnected(peer_id, session_id):
+            disconnected.append((peer_id, session_id))
 
         async def on_local_packet(peer_id, packet):
             await received.put((peer_id, packet))
@@ -416,8 +417,8 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(disconnected)
         self.assertFalse(local_transport._sessions[remote.peer_id].via_relay)
         self.assertFalse(remote_transport._sessions[local.peer_id].via_relay)
-        self.assertTrue(any(not args[-1] for args in connected[local.peer_id]))
-        self.assertTrue(any(not args[-1] for args in connected[remote.peer_id]))
+        self.assertTrue(any(not args[6] for args in connected[local.peer_id]))
+        self.assertTrue(any(not args[6] for args in connected[remote.peer_id]))
         await remote_transport.send_packet(local.peer_id, Packet(PacketType.MESSAGE, b"after handoff"))
         peer_id, packet = await asyncio.wait_for(received.get(), 1)
         self.assertEqual(peer_id, remote.peer_id)
@@ -493,10 +494,12 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         manager = PeerManager(Identity.generate("Local"), object(), lambda *_: None, tcp_port=0)
         old = PeerConnection("peer", "derp:peer", 0, PeerState.CONNECTED, "remote_derp")
         replacement = PeerConnection("peer", "127.0.0.1", 45002, PeerState.CONNECTED, "remote_udp")
+        old.udp_session_id = b"old-session"
+        replacement.udp_session_id = b"replacement-session"
         manager._udp_peers["peer"] = replacement
         manager.peers["peer"] = replacement
 
-        await manager._on_udp_disconnected("peer", old)
+        await manager._on_udp_disconnected("peer", old.udp_session_id)
 
         self.assertIs(manager._udp_peers["peer"], replacement)
         self.assertIs(manager.peers["peer"], replacement)
@@ -506,21 +509,64 @@ class UdpKeyConfirmationTest(unittest.IsolatedAsyncioTestCase):
         manager = PeerManager(Identity.generate("Local"), object(), lambda *_: None, tcp_port=0)
         old = PeerConnection("peer", "derp:peer", 0, PeerState.CONNECTED, "remote_derp")
         replacement = PeerConnection("peer", "127.0.0.1", 45002, PeerState.CONNECTED, "remote_udp")
+        old.udp_session_id = b"old-session"
+        replacement.udp_session_id = b"replacement-session"
         manager._udp_peers["peer"] = old
         manager.peers["peer"] = old
 
-        async def disconnect(peer_id, expected_peer=None):
+        async def disconnect(peer_id, expected_session_id=None):
             self.assertIs(peer_id, old.peer_id)
-            self.assertIs(expected_peer, old)
+            self.assertEqual(expected_session_id, old.udp_session_id)
             manager._udp_peers[peer_id] = replacement
             manager.peers[peer_id] = replacement
-            await PeerManager._on_udp_disconnected(manager, peer_id, expected_peer)
+            await PeerManager._on_udp_disconnected(manager, peer_id, expected_session_id)
 
         manager._on_udp_disconnected = disconnect
         await manager._on_udp_packet("peer", Packet(PacketType.GOODBYE))
 
         self.assertIs(manager._udp_peers["peer"], replacement)
         self.assertIs(manager.peers["peer"], replacement)
+
+    async def test_udp_disconnect_callback_includes_session_id(self):
+        """Verify that UDP disconnect callbacks identify the disconnected session."""
+        disconnected = []
+
+        async def on_disconnected(peer_id, session_id):
+            disconnected.append((peer_id, session_id))
+
+        async def ignore(*_):
+            pass
+
+        transport = UdpTransport(Identity.generate("Local"), ignore, ignore, on_disconnected)
+        session = Session(
+            peer_id="peer",
+            endpoint=("127.0.0.1", 45002),
+            via_relay=False,
+            session_id=b"session1",
+            transmit_encryption_key=b"t" * 32,
+            receive_encryption_key=b"r" * 32,
+            transmit_authentication_key=b"a" * 32,
+            receive_authentication_key=b"b" * 32,
+            display_name="Peer",
+            encryption_public_key=b"e" * 32,
+            signing_public_key=b"s" * 32,
+            local_hello=b"",
+            remote_nonce=b"n" * 32,
+            remote_session_public_key=b"p" * 32,
+            confirmed=True,
+        )
+        transport._sessions[session.peer_id] = session
+        transport._sessions_by_id[session.session_id] = session
+        header = AUTH_HEADER.pack(MAGIC, GOODBYE, session.session_id, 0)
+
+        transport._handle_keepalive(
+            header + hmac.digest(session.receive_authentication_key, header, "sha256")[:16],
+            session.endpoint,
+            session.via_relay,
+        )
+        await asyncio.sleep(0)
+
+        self.assertEqual(disconnected, [(session.peer_id, session.session_id)])
 
     async def test_reflected_ready_does_not_confirm_session(self):
         local = Identity.generate("Local")

@@ -1,6 +1,6 @@
 {
   "name": "meshtalk-cli",
-  "version": "0.22.0",
+  "version": "0.24.4",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,6 @@
   "dependencies": {},
   "devDependencies": {
     "bun-types": "latest",
-    "typescript": "^5.7.0"
+    "typescript": "^7.0.2"
   }
 }

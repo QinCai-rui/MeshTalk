@@ -44,13 +44,13 @@ The quick installer downloads the latest release for your platform and places
 the binaries in `~/.local/bin` (or `%LOCALAPPDATA%\MeshTalk` on Windows):
 
 ```bash
-curl -fsSL https://go.qincai.xyz/getmeshtalk | bash
+bash <(curl -fssL go.qincai.xyz/getmeshtalk)
 ```
 
 Pass `--non-interactive` to skip prompts and accept all defaults:
 
 ```bash
-curl -fsSL https://go.qincai.xyz/getmeshtalk | bash -s -- --non-interactive --yes
+bash <(curl -fssL go.qincai.xyz/getmeshtalk) --non-interactive --yes
 ```
 
 Other options: `--version TAG`, `--install-dir DIR`, `--prerelease`, `--uninstall`, `--dry-run`. Run with `--help` for the full list.
