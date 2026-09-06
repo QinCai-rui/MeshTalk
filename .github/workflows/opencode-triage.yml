@@ -39,9 +39,13 @@ jobs:
 
             if (action === 'opened') return existing ? 'false' : 'true';
 
-            // An edit that happened while the initial triage was running must
-            // not cancel or schedule a second initial response.
-            return existing && existing.updated_at < context.payload.issue.updated_at ? 'true' : 'false';
+            // The queued edit must predate the last completed response. This
+            // ignores edits made during any active triage, including the
+            // initial response, while allowing edits made afterward through.
+            if (!existing) return 'false';
+            const responseAt = new Date(existing.updated_at).getTime();
+            const editAt = new Date(context.payload.issue.updated_at).getTime();
+            return responseAt < editAt ? 'true' : 'false';
           result-encoding: string
 
       - name: Check account age
