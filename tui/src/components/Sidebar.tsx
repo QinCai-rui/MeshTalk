@@ -93,7 +93,13 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           {groups.map(group => {
         const selected = group.group_id === selectedGroupId
         const members = groupMembers[group.group_id]
-        const visibleMembers = members?.filter(member => member.show_in_sidebar !== false) ?? []
+        // The compact roster is a presence view: retain active and away members,
+        // while the overflow count still represents everyone in the group.
+        const visibleMembers = members?.filter(member => {
+          const id = member.peer_id ?? member.member_id
+          const peer = peers.find(peer => peer.peer_id === id)
+          return peer ? peerPresence(peer) !== "offline" : Boolean(member.is_online)
+        }) ?? []
         const typing = typingConversationKeys.has(`group:${group.group_id}`)
         const memberLabel = ` (${group.member_count} members)`
         const label = nameLabel(group.name, 0, terminalWidth(memberLabel))
