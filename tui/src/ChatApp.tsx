@@ -230,6 +230,29 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     : undefined;
   selectionKeyRef.current = selectionKey;
 
+  // Bound long-lived collections so an all-day session cannot grow RSS
+  // without bound. These caps are generous for real usage (a few hundred
+  // conversations) but stop pathological growth (thousands of entries).
+  const MAX_DELIVERED_IDS = 500;
+  const MAX_DRAFT_ENTRIES = 200;
+  const MAX_GROUP_MEMBER_CACHE = 32;
+  const MAX_UNREAD_ENTRIES = 500;
+
+  function rememberDeliveredMessage(messageId: string) {
+    setDeliveredMessageIds((current) => {
+      if (current.has(messageId)) return current;
+      const next = new Set(current);
+      next.add(messageId);
+      // Evict oldest (insertion-ordered) ids once over budget.
+      while (next.size > MAX_DELIVERED_IDS) {
+        const oldest = next.values().next().value;
+        if (oldest === undefined) break;
+        next.delete(oldest);
+      }
+      return next;
+    });
+  }
+
   function rememberUnreadMessage(
     conversationKey: string,
     messageId: string | undefined,
@@ -630,8 +653,43 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         }
         return changed ? next : current;
       });
-    }, 100);
+    }, 500);
     return () => clearInterval(interval);
+  }, [unreadMessages]);
+
+  // Trim unbounded caches: drafts per conversation, group-member snapshots,
+  // and unread markers. Each trim keeps the most recently touched entries.
+  useEffect(() => {
+    const keys = Object.keys(drafts);
+    if (keys.length > MAX_DRAFT_ENTRIES) {
+      setDrafts((current) => {
+        const entries = Object.entries(current);
+        if (entries.length <= MAX_DRAFT_ENTRIES) return current;
+        return Object.fromEntries(entries.slice(entries.length - MAX_DRAFT_ENTRIES));
+      });
+    }
+  }, [drafts]);
+
+  useEffect(() => {
+    const keys = Object.keys(groupMembers);
+    if (keys.length > MAX_GROUP_MEMBER_CACHE) {
+      setGroupMembers((current) => {
+        const entries = Object.entries(current);
+        if (entries.length <= MAX_GROUP_MEMBER_CACHE) return current;
+        return Object.fromEntries(entries.slice(entries.length - MAX_GROUP_MEMBER_CACHE));
+      });
+    }
+  }, [groupMembers]);
+
+  useEffect(() => {
+    const keys = Object.keys(unreadMessages);
+    if (keys.length > MAX_UNREAD_ENTRIES) {
+      setUnreadMessages((current) => {
+        const entries = Object.entries(current);
+        if (entries.length <= MAX_UNREAD_ENTRIES) return current;
+        return Object.fromEntries(entries.slice(entries.length - MAX_UNREAD_ENTRIES));
+      });
+    }
   }, [unreadMessages]);
 
   useEffect(() => () => stopOutgoingTyping(), [selectionKey]);
@@ -908,7 +966,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         }
         if (event.event === "delivered") {
           const messageId = event.message_id as string;
-          setDeliveredMessageIds((c) => new Set(c).add(messageId));
+          rememberDeliveredMessage(messageId);
           setMessages((current) =>
             current.map((message) =>
               message.message_id === messageId

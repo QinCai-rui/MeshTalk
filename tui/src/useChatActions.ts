@@ -122,11 +122,23 @@ export function useChatActions(deps: ChatActionsDeps) {
     copyToastResetRef.current = setTimeout(() => setCopyToast(false), 2_000)
   }
 
+  // Polling runs every few seconds: only push new array identities when the
+  // payload actually changed. Otherwise every poll forces a full React tree
+  // re-render and recreates the ipc.onEvent subscription in ChatApp (which
+  // depends on peers/groups), churning closures and JSC heap.
+  function samePayload(a: unknown, b: unknown): boolean {
+    try {
+      return JSON.stringify(a) === JSON.stringify(b)
+    } catch {
+      return false
+    }
+  }
+
   async function refreshPeers() {
     const response = await ipc.send("peers")
     if (response.error) throw new Error(response.error)
     const next = sortPeersByInteraction(response.peers as Peer[])
-    setPeers(next)
+    setPeers((current) => (samePayload(current, next) ? current : next))
     setSelection((current) => current && (current.kind === "group" || next.some((p) => p.peer_id === current.id))
       ? current
       : next[0] ? { kind: "peer", id: next[0].peer_id } : groups[0] ? { kind: "group", id: groups[0].group_id } : undefined)
@@ -136,7 +148,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     const response = await ipc.send("groups")
     if (response.error) throw new Error(response.error)
     const next = (response.groups as Group[]).sort((a, b) => a.name.localeCompare(b.name))
-    setGroups(next)
+    setGroups((current) => (samePayload(current, next) ? current : next))
     setSelection((current) => {
       if (!current) return peers[0] ? { kind: "peer", id: peers[0].peer_id } : next[0] ? { kind: "group", id: next[0].group_id } : undefined
       if (current?.kind !== "group" || next.some((g) => g.group_id === current.id)) return current
@@ -148,13 +160,17 @@ export function useChatActions(deps: ChatActionsDeps) {
     if (!groupId) return
     const response = await ipc.send("group_members", { group_id: groupId })
     if (response.error) throw new Error(response.error)
-    setGroupMembers((current) => ({ ...current, [groupId]: response.members as GroupMember[] }))
+    const next = response.members as GroupMember[]
+    setGroupMembers((current) => (samePayload(current[groupId], next) ? current : { ...current, [groupId]: next }))
   }
 
   async function refreshFiles() {
     try {
       const response = await ipc.send("files")
-      if (!response.error) setFileTransfers(response.files as FileTransfer[])
+      if (!response.error) {
+        const next = response.files as FileTransfer[]
+        setFileTransfers((current) => (samePayload(current, next) ? current : next))
+      }
     } catch {}
   }
 

@@ -99,9 +99,22 @@ export function ConversationPanel(props: ConversationPanelProps) {
 
   useEffect(() => () => messageSyntaxStyle.destroy(), [messageSyntaxStyle])
 
+  // Drop refs for messages that left the visible conversation so a long
+  // session does not retain every rendered row (and its native handle).
+  useEffect(() => {
+    const live = new Set<string>()
+    for (const item of conversationItems) {
+      live.add(item.type === "message" ? item.message.message_id : item.file.file_id)
+    }
+    const refs = messageRefs.current
+    for (const key of Object.keys(refs)) {
+      if (!live.has(key)) delete refs[key]
+    }
+  }, [conversationItems])
+
   useEffect(() => {
     if (!replyHighlight) return
-    const interval = setInterval(() => setReplyHighlightNow(Date.now()), 100)
+    const interval = setInterval(() => setReplyHighlightNow(Date.now()), 250)
     const timeout = setTimeout(() => setReplyHighlight(undefined), UNREAD_MESSAGE_FADE_MS)
     return () => {
       clearInterval(interval)
@@ -135,7 +148,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
       }
     }
     markVisibleMessages()
-    const interval = setInterval(markVisibleMessages, 100)
+    const interval = setInterval(markVisibleMessages, 500)
     return () => clearInterval(interval)
   }, [selectionKey, unreadMessageStates])
 

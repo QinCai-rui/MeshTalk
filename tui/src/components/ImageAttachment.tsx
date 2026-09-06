@@ -10,8 +10,8 @@ type CachedImage = {
   thumbnail: NativeImage
 }
 
-const MAX_CACHED_IMAGES = 48
-const THUMBNAIL_MAX_SIDE = 640
+const MAX_CACHED_IMAGES = 12
+const THUMBNAIL_MAX_SIDE = 480
 const MAX_LOAD_RETRIES = 2
 const LOAD_RETRY_DELAY_MS = 500
 const IMAGE_BACKGROUND = [17, 25, 35, 255] as const
@@ -144,7 +144,7 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
       if (node.screenY + node.height > viewport.screenY - margin && node.screenY < viewport.screenY + viewport.height + margin) setNearViewport(true)
     }
     checkViewport()
-    const interval = setInterval(checkViewport, 100)
+    const interval = setInterval(checkViewport, 500)
     return () => clearInterval(interval)
   }, [lazy, nearViewport, scrollboxRef])
 
@@ -158,7 +158,7 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
       setFullyVisible((current) => current === next ? current : next)
     }
     updateVisibility()
-    const interval = setInterval(updateVisibility, 32)
+    const interval = setInterval(updateVisibility, 250)
     return () => clearInterval(interval)
   }, [image, scrollboxRef])
 
