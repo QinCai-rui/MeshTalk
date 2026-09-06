@@ -10,6 +10,7 @@ import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 type ConversationPanelProps = {
   compact: boolean
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
+  hasRooms: boolean
   conversationItems: ConversationItem[]
   deliveredMessageIds: Set<string>
   dialogOpen: boolean
@@ -81,7 +82,7 @@ const MESSAGE_MARKDOWN_STYLES = {
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send } = props
+  const { compact, controlStatus, hasRooms, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send } = props
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
   const [replyHighlight, setReplyHighlight] = useState<{ id: string; startedAt: number }>()
   const [replyHighlightNow, setReplyHighlightNow] = useState(0)
@@ -149,7 +150,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
       <box paddingLeft={2} paddingRight={1} flexShrink={0}>
-        {controlStatus.control_url && !controlStatus.connected && <text fg={theme.warning} wrapMode="word">Rendezvous out of sync; reconnecting ({controlStatus.reconnect_attempts}).</text>}
+        {hasRooms && !controlStatus.connected && <text fg={theme.warning} wrapMode="word">{controlStatus.control_url ? `Control server disconnected; reconnecting (${controlStatus.reconnect_attempts}). Open Ctrl+P > Connection to check settings.` : "Remote discovery is not configured. Open Ctrl+P > Connection to connect this room."}</text>}
         {selected && <>
           {(selected.delivery_warnings ?? []).map(kind => kind === "offline" ? <text key={kind} fg={theme.warning} wrapMode="word">Offline: messages queue until this peer reconnects.</text> : kind === "not_friend" ? <text key={kind} fg={theme.warning} wrapMode="word">Messages blocked until your friend request is accepted. Ctrl+P &gt; Friends &gt; Add friend.</text> : null)}
           {selectedHasCapabilityGap && <text fg={theme.warning} wrapMode="word">Limited: {capabilityGapMessage}</text>}
