@@ -141,6 +141,8 @@ test("expanded group keeps its detail row above its members", async () => {
   props.selectedPeerId = undefined
   props.selectedGroupId = group.group_id
   props.groups = [{ ...group, unread_count: 0 }]
+  // Both members online so the inline listing shows both (#115 hides offline).
+  props.peers = [{ ...peers[0]! }, { ...peers[1]!, presence: "active" as const, is_online: 1 }]
   props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "sam", display_name: "Sam Chen" }] }
   const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
   try {
@@ -152,6 +154,27 @@ test("expanded group keeps its detail row above its members", async () => {
     expect(memberIdx).toBe(headerIdx + 2)
     // Name + detail row + 2 members + overflow link.
     expect(setup.renderer.root.findDescendantById(`nav-group-${group.group_id}`)!.height).toBe(5)
+  } finally { await close(setup) }
+})
+
+test("expanded group hides offline members but counts them in overflow", async () => {
+  const props = sidebarProps(120)
+  props.selectedPeerId = undefined
+  props.selectedGroupId = group.group_id
+  props.groups = [{ ...group, member_count: 4, unread_count: 0 }]
+  // Sam is offline in the default peers fixture, so only Alex renders inline
+  // while the overflow link still counts every hidden member (#115).
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "sam", display_name: "Sam Chen" }] }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Alex Morgan")
+    // Scope to the group section: the DM list above still shows Sam as a peer.
+    const lines = frame.split("\n")
+    const headerIdx = lines.findIndex((line) => line.includes("Design studio"))
+    const section = lines.slice(headerIdx).join("\n")
+    expect(section).toContain("Alex Morgan")
+    expect(section).not.toContain("Sam Chen")
+    expect(section).toContain("+ 3 more")
   } finally { await close(setup) }
 })
 

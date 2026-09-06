@@ -22,11 +22,18 @@ from .peer_manager import PeerConnection, PeerManager
 from .protocol import (
     CAP_BLOCK_REPORTS,
     CAP_DELIVERY_RECEIPTS,
+    CAP_MESSAGE_DELETES,
+    CAP_MESSAGE_EDITS,
     CAP_MESSAGE_REPLIES,
+    CAP_READ_RECEIPTS,
     CAP_TEXT_CHAT,
+    EDIT_WINDOW_SECONDS,
     MAX_PACKET_SIZE,
     MessageBlockedPayload,
+    MessageDeletePayload,
+    MessageEditPayload,
     MessagePayload,
+    MessageReadPayload,
     Packet,
     PacketType,
 )
@@ -37,10 +44,13 @@ MAX_MESSAGE_CONTENT_SIZE = 30 * 1024
 
 
 class MessageRouter:
-    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None, friend_manager: FriendManager | None = None, group_router: GroupRouter | None = None) -> None:
+    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None, friend_manager: FriendManager | None = None, group_router: GroupRouter | None = None, on_edited: Callable[[dict], Awaitable[None]] | None = None, on_deleted: Callable[[dict], Awaitable[None]] | None = None, on_read: Callable[[dict], Awaitable[None]] | None = None) -> None:
         self.identity, self.peer_manager, self.db = identity, peer_manager, db
         self.on_received = on_received
         self.on_delivered = on_delivered
+        self.on_edited = on_edited
+        self.on_deleted = on_deleted
+        self.on_read = on_read
         self.friend_manager = friend_manager or FriendManager(identity, peer_manager, db)
         self.group_router = group_router
 
@@ -82,11 +92,95 @@ class MessageRouter:
         await self.db.add_to_outqueue(recipient_id, PacketType.MESSAGE.value, encoded_message, message.message_id)
         return message.message_id, True
 
+    async def send_edit(self, recipient_id: str, message_id: str, new_content: str) -> float:
+        plaintext = new_content.encode()
+        if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:
+            raise ValueError("Message exceeds 30 KiB limit")
+        existing = await self.db.get_message(message_id)
+        if not existing:
+            raise ValueError("Message not found")
+        if existing.get("sender_id") != self.identity.peer_id:
+            raise ValueError("Only your own messages can be edited")
+        if existing.get("deleted"):
+            raise ValueError("Message was deleted")
+        if time.time() - float(existing.get("created_at", 0)) > EDIT_WINDOW_SECONDS:
+            raise ValueError("Edit window expired (15 min)")
+        peer = self.peer_manager.get_connected_peer(recipient_id)
+        if peer is not None and not peer.supports(CAP_MESSAGE_EDITS):
+            raise ValueError("Peer does not support message edits")
+        if peer is None and not await self.db.peer_supports(recipient_id, CAP_MESSAGE_EDITS):
+            raise ValueError("Peer does not support message edits")
+        key = peer.encryption_public_key if peer is not None else None
+        if key is None:
+            stored = await self.db.get_peer(recipient_id)
+            if stored and stored.get("public_key"):
+                key = stored["public_key"]
+        if key is None:
+            raise ValueError("No known public key for recipient")
+        now = time.time()
+        payload = MessageEditPayload(message_id, self.identity.peer_id, recipient_id, now, b"")
+        payload.encrypted_content = encrypt_for_recipient(key, plaintext, payload.associated_data())
+        payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+        encoded = payload.encode()
+        if len(encoded) > MAX_PACKET_SIZE:
+            raise ValueError("Encrypted edit exceeds packet limit")
+        await self.db.update_message_content(message_id, new_content)
+        # refresh edited_at for event
+        updated = await self.db.get_message(message_id)
+        edited_at = float((updated or {}).get("edited_at") or now)
+        if peer is not None:
+            await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE_EDIT, encoded))
+        else:
+            await self.db.add_to_outqueue(recipient_id, PacketType.MESSAGE_EDIT.value, encoded, message_id)
+        return edited_at
+
+    async def send_delete(self, recipient_id: str, message_id: str) -> float:
+        existing = await self.db.get_message(message_id)
+        if not existing:
+            raise ValueError("Message not found")
+        if existing.get("sender_id") != self.identity.peer_id:
+            raise ValueError("Only your own messages can be deleted for everyone")
+        peer = self.peer_manager.get_connected_peer(recipient_id)
+        if peer is not None and not peer.supports(CAP_MESSAGE_DELETES):
+            raise ValueError("Peer does not support delete-for-everyone")
+        if peer is None and not await self.db.peer_supports(recipient_id, CAP_MESSAGE_DELETES):
+            raise ValueError("Peer does not support delete-for-everyone")
+        now = time.time()
+        payload = MessageDeletePayload(message_id, self.identity.peer_id, recipient_id, now, b"")
+        payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+        encoded = payload.encode()
+        await self.db.mark_message_deleted(message_id)
+        if peer is not None:
+            await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE_DELETE, encoded))
+        else:
+            await self.db.add_to_outqueue(recipient_id, PacketType.MESSAGE_DELETE.value, encoded, message_id)
+        return now
+
+    async def send_read(self, recipient_id: str, message_id: str, read_up_to_created_at: float) -> float:
+        peer = self.peer_manager.get_connected_peer(recipient_id)
+        if peer is not None and not peer.supports(CAP_READ_RECEIPTS):
+            return 0.0
+        now = time.time()
+        payload = MessageReadPayload(self.identity.peer_id, recipient_id, message_id, read_up_to_created_at, now, b"")
+        payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+        if peer is not None:
+            try:
+                await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE_READ, payload.encode()))
+            except Exception:
+                pass
+        return now
+
     async def handle_packet(self, peer: PeerConnection, packet: Packet) -> None:
         if self.group_router and await self.group_router.handle_packet(peer, packet):
             return
         if packet.type == PacketType.MESSAGE:
             await self._handle_message(peer, packet)
+        elif packet.type == PacketType.MESSAGE_EDIT:
+            await self._handle_edit(peer, packet)
+        elif packet.type == PacketType.MESSAGE_DELETE:
+            await self._handle_delete(peer, packet)
+        elif packet.type == PacketType.MESSAGE_READ:
+            await self._handle_read(peer, packet)
         elif packet.type == PacketType.MESSAGE_ACK:
             message_id = packet.payload.decode("ascii")
             await self.db.mark_message_delivered(message_id)
@@ -118,6 +212,12 @@ class MessageRouter:
         if await self.db.is_message_seen(message.message_id):
             await self._send_delivery_receipt(peer, message.message_id)
             return
+        if await self.db.is_message_deleted(message.message_id):
+            # Tombstoned via delete-for-everyone: ack so the sender stops
+            # retrying, but never resurrect the content.
+            await self.db.mark_message_seen(message.message_id)
+            await self._send_delivery_receipt(peer, message.message_id)
+            return
         try:
             Ed25519PublicKey.from_public_bytes(peer.signing_public_key).verify(message.signature, message.signed_bytes())
             plaintext = decrypt_as_recipient(self.identity.encryption_private_key, message.encrypted_content, message.associated_data())
@@ -135,6 +235,86 @@ class MessageRouter:
         logger.info("Received encrypted message %s from %s", message.message_id, peer.peer_id)
         if self.on_received:
             await self.on_received({"message_id": message.message_id, "sender_id": message.sender_id, "content": content, "created_at": message.created_at, "reply_to_message_id": message.reply_to_message_id})
+
+    async def _handle_edit(self, peer: PeerConnection, packet: Packet) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey as _Pub
+        from cryptography.exceptions import InvalidSignature as _Inv
+        payload = MessageEditPayload.decode(packet.payload)
+        if payload.recipient_id != self.identity.peer_id or payload.sender_id != peer.peer_id or peer.signing_public_key is None:
+            raise ValueError("Edit routing mismatch")
+        if not peer.supports(CAP_MESSAGE_EDITS):
+            raise ValueError("Peer sent edit without negotiating support")
+        if not await self.friend_manager.is_friend(payload.sender_id):
+            return
+        try:
+            _Pub.from_public_bytes(peer.signing_public_key).verify(payload.signature, payload.signed_bytes())
+            plaintext = decrypt_as_recipient(self.identity.encryption_private_key, payload.encrypted_content, payload.associated_data())
+            content = plaintext.decode("utf-8")
+        except (_Inv, UnicodeDecodeError) as exc:
+            raise ValueError("Invalid edit payload") from exc
+        if len(content.encode()) > MAX_MESSAGE_CONTENT_SIZE:
+            raise ValueError("Edit too large")
+        existing = await self.db.get_message(payload.message_id)
+        if existing is None:
+            if await self.db.is_message_deleted(payload.message_id):
+                return
+            return
+        if existing.get("sender_id") != payload.sender_id or existing.get("deleted"):
+            return
+        if payload.created_at - float(existing.get("created_at", 0)) > EDIT_WINDOW_SECONDS + 60:
+            return
+        await self.db.mark_message_seen(payload.message_id)
+        await self.db.update_message_content(payload.message_id, content)
+        updated = await self.db.get_message(payload.message_id)
+        if self.on_edited:
+            await self.on_edited({"message_id": payload.message_id, "sender_id": payload.sender_id, "content": content, "edited_at": (updated or {}).get("edited_at")})
+
+    async def _handle_delete(self, peer: PeerConnection, packet: Packet) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey as _Pub
+        from cryptography.exceptions import InvalidSignature as _Inv
+        payload = MessageDeletePayload.decode(packet.payload)
+        if payload.recipient_id != self.identity.peer_id or payload.sender_id != peer.peer_id or peer.signing_public_key is None:
+            raise ValueError("Delete routing mismatch")
+        if not peer.supports(CAP_MESSAGE_DELETES):
+            raise ValueError("Peer sent delete without negotiating support")
+        if not await self.friend_manager.is_friend(payload.sender_id):
+            return
+        try:
+            _Pub.from_public_bytes(peer.signing_public_key).verify(payload.signature, payload.signed_bytes())
+        except _Inv as exc:
+            raise ValueError("Invalid delete signature") from exc
+        existing = await self.db.get_message(payload.message_id)
+        if existing is not None and existing.get("sender_id") != payload.sender_id:
+            return
+        await self.db.mark_message_seen(payload.message_id)
+        await self.db.mark_message_deleted(payload.message_id)
+        if self.on_deleted:
+            await self.on_deleted({"message_id": payload.message_id, "sender_id": payload.sender_id, "deleted_at": payload.created_at})
+
+    async def _handle_read(self, peer: PeerConnection, packet: Packet) -> None:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey as _Pub
+        from cryptography.exceptions import InvalidSignature as _Inv
+        payload = MessageReadPayload.decode(packet.payload)
+        if payload.peer_id != self.identity.peer_id or payload.reader_id != peer.peer_id or peer.signing_public_key is None:
+            raise ValueError("Read routing mismatch")
+        if not peer.supports(CAP_READ_RECEIPTS):
+            return
+        try:
+            _Pub.from_public_bytes(peer.signing_public_key).verify(payload.signature, payload.signed_bytes())
+        except _Inv as exc:
+            raise ValueError("Invalid read signature") from exc
+        await self.db.set_peer_last_read(peer.peer_id, payload.reader_id, payload.read_up_to_message_id, payload.read_up_to_created_at, payload.read_at)
+        # mark own sent messages up to that timestamp as read
+        await self._db_execute_mark_read(peer.peer_id, payload.read_up_to_created_at)
+        if self.on_read:
+            await self.on_read({"peer_id": peer.peer_id, "reader_id": payload.reader_id, "message_id": payload.read_up_to_message_id, "read_at": payload.read_at, "read_up_to_created_at": payload.read_up_to_created_at})
+
+    async def _db_execute_mark_read(self, peer_id: str, up_to: float) -> None:
+        await self.db._db.execute(
+            "UPDATE messages SET read_at = COALESCE(read_at, ?) WHERE sender_id = ? AND recipient_id = ? AND created_at <= ?",
+            (up_to, self.identity.peer_id, peer_id, up_to),
+        )
+        await self.db._db.commit()
 
     async def _send_delivery_receipt(self, peer: PeerConnection, message_id: str) -> None:
         # Only acknowledge delivery when both peers negotiated the capability.

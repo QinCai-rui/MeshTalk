@@ -111,6 +111,95 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         conversation = await self.router_a.db.get_conversation(self.identity_a.peer_id, self.identity_b.peer_id)
         self.assertNotIn(message_id, {item["message_id"] for item in conversation})
 
+    async def test_edit_propagates_to_both_peers(self):
+        await self._become_friends()
+        edited = asyncio.Queue()
+        self.router_b.on_edited = edited.put
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"original")
+        await asyncio.wait_for(self.received.get(), 1)
+
+        edited_at = await self.router_a.send_edit(self.identity_b.peer_id, message_id, "corrected")
+        event = await asyncio.wait_for(edited.get(), 1)
+        self.assertEqual(event["message_id"], message_id)
+        self.assertEqual(event["content"], "corrected")
+
+        for db in (self.router_a.db, self.router_b.db):
+            stored = await db.get_message(message_id)
+            self.assertEqual(stored["content"], "corrected")
+            self.assertGreater(stored["edited_at"], 0)
+        self.assertAlmostEqual(edited_at, (await self.router_a.db.get_message(message_id))["edited_at"])
+        conversation = await self.router_b.db.get_conversation(self.identity_b.peer_id, self.identity_a.peer_id)
+        self.assertEqual(conversation[0]["content"], "corrected")
+        self.assertGreater(conversation[0]["edited_at"], 0)
+
+    async def test_edit_rejects_non_sender_and_expired_window(self):
+        await self._become_friends()
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"original")
+        await asyncio.wait_for(self.received.get(), 1)
+
+        with self.assertRaises(ValueError):
+            await self.router_b.send_edit(self.identity_a.peer_id, message_id, "hijacked")
+        # Backdate past the 15-minute window.
+        old = __import__("time").time() - 16 * 60
+        await self.router_a.db._db.execute("UPDATE messages SET created_at = ? WHERE message_id = ?", (old, message_id))
+        await self.router_a.db._db.commit()
+        with self.assertRaises(ValueError):
+            await self.router_a.send_edit(self.identity_b.peer_id, message_id, "too late")
+
+    async def test_delete_for_everyone_tombstones_both_peers_and_blocks_resurrection(self):
+        await self._become_friends()
+        deleted = asyncio.Queue()
+        self.router_b.on_deleted = deleted.put
+        # Capture the original wire packet so it can be replayed late.
+        wire_packets = []
+        original_send = self.manager_a.send_packet
+        async def capture(peer, packet):
+            wire_packets.append(packet)
+            await original_send(peer, packet)
+        self.manager_a.send_packet = capture  # type: ignore[method-assign]
+        try:
+            message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"doomed")
+        finally:
+            self.manager_a.send_packet = original_send  # type: ignore[method-assign]
+        await asyncio.wait_for(self.received.get(), 1)
+        original_packet = next(p for p in wire_packets if p.type == PacketType.MESSAGE)
+
+        await self.router_a.send_delete(self.identity_b.peer_id, message_id)
+        event = await asyncio.wait_for(deleted.get(), 1)
+        self.assertEqual(event["message_id"], message_id)
+
+        for db in (self.router_a.db, self.router_b.db):
+            stored = await db.get_message(message_id)
+            self.assertEqual(stored["deleted"], 1)
+            self.assertTrue(await db.is_message_deleted(message_id))
+
+        # Replay the late original: it must be acked but never resurrected.
+        peer_b = self.manager_b.get_connected_peer(self.identity_a.peer_id)
+        self.assertIsNotNone(peer_b)
+        await self.router_b.handle_packet(peer_b, original_packet)
+        stored = await self.router_b.db.get_message(message_id)
+        self.assertEqual(stored["deleted"], 1)
+        self.assertNotEqual(stored.get("content"), "doomed")
+
+    async def test_read_receipt_marks_sender_message_read(self):
+        await self._become_friends()
+        read = asyncio.Queue()
+        self.router_a.on_read = read.put
+        message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"please see this")
+        received = await asyncio.wait_for(self.received.get(), 1)
+        self.assertEqual(received["message_id"], message_id)
+
+        await self.router_b.send_read(self.identity_a.peer_id, message_id, received["created_at"])
+        event = await asyncio.wait_for(read.get(), 1)
+        self.assertEqual(event["message_id"], message_id)
+        self.assertEqual(event["reader_id"], self.identity_b.peer_id)
+
+        last_read = await self.router_a.db.get_peer_last_read(self.identity_b.peer_id)
+        self.assertIsNotNone(last_read)
+        self.assertEqual(last_read["message_id"], message_id)
+        conversation = await self.router_a.db.get_conversation(self.identity_a.peer_id, self.identity_b.peer_id)
+        self.assertIsNotNone(conversation[0]["read_at"])
+
     async def test_non_friend_message_is_blocked_with_notice(self):
         await self._connect_peers()
         message_id, _ = await self.router_a.send_message(self.identity_b.peer_id, b"hello stranger")

@@ -40,7 +40,32 @@ CREATE TABLE IF NOT EXISTS messages (
     failed INTEGER NOT NULL DEFAULT 0,
     read_at REAL,
     received_at REAL,
-    reply_to_message_id TEXT
+    reply_to_message_id TEXT,
+    edited_at REAL,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    deleted_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS deleted_messages (
+    message_id TEXT PRIMARY KEY,
+    deleted_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS peer_last_read (
+    peer_id TEXT PRIMARY KEY,
+    reader_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    read_up_to_created_at REAL NOT NULL,
+    read_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_reads (
+    group_id TEXT NOT NULL,
+    reader_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    read_up_to_created_at REAL NOT NULL,
+    read_at REAL NOT NULL,
+    PRIMARY KEY (group_id, reader_id)
 );
 
 CREATE TABLE IF NOT EXISTS outgoing_queue (
@@ -117,7 +142,10 @@ CREATE TABLE IF NOT EXISTS group_messages (
     created_at REAL NOT NULL,
     received_at REAL,
     kind TEXT NOT NULL DEFAULT 'message',
-    reply_to_message_id TEXT
+    reply_to_message_id TEXT,
+    edited_at REAL,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    deleted_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS group_deliveries (
@@ -191,6 +219,12 @@ class Database:
             await self._db.execute("ALTER TABLE messages ADD COLUMN received_at REAL")
         if "reply_to_message_id" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT")
+        if "edited_at" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN edited_at REAL")
+        if "deleted" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+        if "deleted_at" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN deleted_at REAL")
         if "expires_at" in message_columns:
             try:
                 await self._db.execute("ALTER TABLE messages DROP COLUMN expires_at")
@@ -209,6 +243,16 @@ class Database:
         group_member_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_members)")}
         if "group_capable" not in group_member_columns:
             await self._db.execute("ALTER TABLE group_members ADD COLUMN group_capable INTEGER")
+        group_message_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_messages)")}
+        if "edited_at" not in group_message_columns:
+            await self._db.execute("ALTER TABLE group_messages ADD COLUMN edited_at REAL")
+        if "deleted" not in group_message_columns:
+            await self._db.execute("ALTER TABLE group_messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+        if "deleted_at" not in group_message_columns:
+            await self._db.execute("ALTER TABLE group_messages ADD COLUMN deleted_at REAL")
+        await self._db.execute("""CREATE TABLE IF NOT EXISTS deleted_messages (message_id TEXT PRIMARY KEY, deleted_at REAL NOT NULL)""")
+        await self._db.execute("""CREATE TABLE IF NOT EXISTS peer_last_read (peer_id TEXT PRIMARY KEY, reader_id TEXT NOT NULL, message_id TEXT NOT NULL, read_up_to_created_at REAL NOT NULL, read_at REAL NOT NULL)""")
+        await self._db.execute("""CREATE TABLE IF NOT EXISTS group_reads (group_id TEXT NOT NULL, reader_id TEXT NOT NULL, message_id TEXT NOT NULL, read_up_to_created_at REAL NOT NULL, read_at REAL NOT NULL, PRIMARY KEY (group_id, reader_id))""")
         if "join_announced" not in group_member_columns:
             await self._db.execute("ALTER TABLE group_members ADD COLUMN join_announced INTEGER NOT NULL DEFAULT 0")
         # Migrate groups table from very old DBs that lacked joined_at/read_at
@@ -404,9 +448,9 @@ class Database:
     ) -> list[dict]:
         """Return the latest direct messages with one peer in chronological order."""
         async with self._db.execute(
-            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at, reply_to_message_id
+            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, read_at, received_at, reply_to_message_id, edited_at, deleted, deleted_at
                FROM (
-                     SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at, reply_to_message_id
+                     SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, read_at, received_at, reply_to_message_id, edited_at, deleted, deleted_at
                    FROM messages
                    WHERE (sender_id = ? AND recipient_id = ?)
                       OR (sender_id = ? AND recipient_id = ?)
@@ -562,6 +606,105 @@ class Database:
         )
         await self._db.commit()
 
+    async def update_message_content(self, message_id: str, content: str, encrypted_content: bytes | None = None) -> bool:
+        """Overwrite message content for an edit; sets edited_at. Returns True if a row changed."""
+        import time as _time
+        now = _time.time()
+        if encrypted_content is not None:
+            cursor = await self._db.execute(
+                "UPDATE messages SET content = ?, encrypted_content = ?, edited_at = ? WHERE message_id = ? AND deleted = 0",
+                (self._encrypt_content(content), encrypted_content, now, message_id),
+            )
+        else:
+            cursor = await self._db.execute(
+                "UPDATE messages SET content = ?, edited_at = ? WHERE message_id = ? AND deleted = 0",
+                (self._encrypt_content(content), now, message_id),
+            )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def mark_message_deleted(self, message_id: str) -> bool:
+        import time as _time
+        now = _time.time()
+        cursor = await self._db.execute(
+            "UPDATE messages SET deleted = 1, deleted_at = ?, content = NULL WHERE message_id = ?",
+            (now, message_id),
+        )
+        await self._db.execute("INSERT OR IGNORE INTO deleted_messages (message_id, deleted_at) VALUES (?, ?)", (message_id, now))
+        await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (message_id,))
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def is_message_deleted(self, message_id: str) -> bool:
+        async with self._db.execute("SELECT 1 FROM deleted_messages WHERE message_id = ?", (message_id,)) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def get_message(self, message_id: str) -> dict | None:
+        async with self._db.execute("SELECT * FROM messages WHERE message_id = ?", (message_id,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get("content") is not None:
+                try:
+                    d["content"] = self._decrypt_content(d["content"]) or ""
+                except Exception:
+                    pass
+            return d
+
+    async def update_group_message_content(self, message_id: str, content: str) -> bool:
+        import time as _time
+        now = _time.time()
+        cursor = await self._db.execute(
+            "UPDATE group_messages SET content = ?, edited_at = ? WHERE message_id = ? AND deleted = 0",
+            (self._encrypt_content(content), now, message_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def mark_group_message_deleted(self, message_id: str) -> bool:
+        import time as _time
+        now = _time.time()
+        cursor = await self._db.execute(
+            "UPDATE group_messages SET deleted = 1, deleted_at = ?, content = NULL WHERE message_id = ?",
+            (now, message_id),
+        )
+        await self._db.execute("INSERT OR IGNORE INTO deleted_messages (message_id, deleted_at) VALUES (?, ?)", (message_id, now))
+        await self._db.execute("DELETE FROM group_deliveries WHERE message_id = ?", (message_id,))
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def set_peer_last_read(self, peer_id: str, reader_id: str, message_id: str, read_up_to_created_at: float, read_at: float) -> None:
+        await self._db.execute(
+            """INSERT INTO peer_last_read (peer_id, reader_id, message_id, read_up_to_created_at, read_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(peer_id) DO UPDATE SET reader_id=excluded.reader_id, message_id=excluded.message_id,
+               read_up_to_created_at=excluded.read_up_to_created_at, read_at=excluded.read_at
+               WHERE excluded.read_up_to_created_at >= peer_last_read.read_up_to_created_at""",
+            (peer_id, reader_id, message_id, read_up_to_created_at, read_at),
+        )
+        await self._db.commit()
+
+    async def get_peer_last_read(self, peer_id: str) -> dict | None:
+        async with self._db.execute("SELECT * FROM peer_last_read WHERE peer_id = ?", (peer_id,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def set_group_read(self, group_id: str, reader_id: str, message_id: str, read_up_to_created_at: float, read_at: float) -> None:
+        await self._db.execute(
+            """INSERT INTO group_reads (group_id, reader_id, message_id, read_up_to_created_at, read_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(group_id, reader_id) DO UPDATE SET message_id=excluded.message_id,
+               read_up_to_created_at=excluded.read_up_to_created_at, read_at=excluded.read_at
+               WHERE excluded.read_up_to_created_at >= group_reads.read_up_to_created_at""",
+            (group_id, reader_id, message_id, read_up_to_created_at, read_at),
+        )
+        await self._db.commit()
+
+    async def get_group_reads(self, group_id: str) -> list[dict]:
+        async with self._db.execute("SELECT * FROM group_reads WHERE group_id = ?", (group_id,)) as cursor:
+            return [dict(r) async for r in cursor]
+
     async def delete_message_locally(self, message_id: str, group_id: str | None = None) -> bool:
         """Remove a message and its local history row without notifying peers."""
         await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (message_id,))
@@ -715,7 +858,7 @@ class Database:
     async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
         """Retrieve recent group messages with delivery status."""
         async with self._db.execute(
-            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id
+            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id, edited_at, deleted, deleted_at
                FROM (SELECT rowid AS sequence, * FROM group_messages WHERE group_id = ? ORDER BY rowid DESC LIMIT ?)
                ORDER BY sequence ASC""",
             (group_id, limit),

@@ -47,6 +47,9 @@ CAP_GROUP_CHAT = "group_chat"
 CAP_FILE_TRANSFER = "file_transfer"
 CAP_TYPING_INDICATORS = "typing_indicators"
 CAP_MESSAGE_REPLIES = "message_replies"
+CAP_MESSAGE_EDITS = "message_edits"
+CAP_MESSAGE_DELETES = "message_deletes"
+CAP_READ_RECEIPTS = "read_receipts"
 CAP_DIRECT_ROUTE_RECOVERY = "direct_route_recovery"
 DEFAULT_CAPABILITIES = [
     CAP_TEXT_CHAT,
@@ -58,6 +61,9 @@ DEFAULT_CAPABILITIES = [
     CAP_FILE_TRANSFER,
     CAP_TYPING_INDICATORS,
     CAP_MESSAGE_REPLIES,
+    CAP_MESSAGE_EDITS,
+    CAP_MESSAGE_DELETES,
+    CAP_READ_RECEIPTS,
     CAP_DIRECT_ROUTE_RECOVERY,
 ]
 UDP_PORT = 24890
@@ -126,6 +132,12 @@ class PacketType(enum.IntEnum):
     FILE_CHUNK = 0x12
     FILE_ACK = 0x13
     TYPING = 0x14
+    MESSAGE_EDIT = 0x15
+    MESSAGE_DELETE = 0x16
+    MESSAGE_READ = 0x17
+    GROUP_MESSAGE_EDIT = 0x18
+    GROUP_MESSAGE_DELETE = 0x19
+    GROUP_MESSAGE_READ = 0x1A
 
 
 PACKET_CAPABILITIES = {
@@ -143,6 +155,12 @@ PACKET_CAPABILITIES = {
     PacketType.FILE_CHUNK: CAP_FILE_TRANSFER,
     PacketType.FILE_ACK: CAP_FILE_TRANSFER,
     PacketType.TYPING: CAP_TYPING_INDICATORS,
+    PacketType.MESSAGE_EDIT: CAP_MESSAGE_EDITS,
+    PacketType.MESSAGE_DELETE: CAP_MESSAGE_DELETES,
+    PacketType.MESSAGE_READ: CAP_READ_RECEIPTS,
+    PacketType.GROUP_MESSAGE_EDIT: CAP_MESSAGE_EDITS,
+    PacketType.GROUP_MESSAGE_DELETE: CAP_MESSAGE_DELETES,
+    PacketType.GROUP_MESSAGE_READ: CAP_READ_RECEIPTS,
 }
 
 
@@ -1109,4 +1127,230 @@ class FileAckPayload:
             or len(payload.signature) != 64
         ):
             raise ValueError("Invalid file ack payload")
+        return payload
+
+
+EDIT_WINDOW_SECONDS = 15 * 60
+
+
+@dataclass
+class MessageEditPayload:
+    """E2EE edit of a previously sent direct message (sender-only, time-limited)."""
+
+    message_id: str
+    sender_id: str
+    recipient_id: str
+    created_at: float
+    encrypted_content: bytes
+    signature: bytes = b""
+
+    def associated_data(self) -> bytes:
+        data: dict[str, object] = {
+            "message_id": self.message_id,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+            "kind": "edit",
+        }
+        return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
+
+    def signed_bytes(self) -> bytes:
+        return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
+
+    def encode(self) -> bytes:
+        return json.dumps({
+            "message_id": self.message_id,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+            "encrypted_content": self.encrypted_content.hex(),
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> "MessageEditPayload":
+        obj = json.loads(data)
+        payload = cls(
+            message_id=obj["message_id"],
+            sender_id=obj["sender_id"],
+            recipient_id=obj["recipient_id"],
+            created_at=obj["created_at"],
+            encrypted_content=bytes.fromhex(obj["encrypted_content"]),
+            signature=bytes.fromhex(obj.get("signature", "")),
+        )
+        if (
+            not _valid_request_id(payload.message_id)
+            or not _valid_peer_id(payload.sender_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or not isinstance(payload.created_at, (int, float))
+            or isinstance(payload.created_at, bool)
+            or not math.isfinite(payload.created_at)
+            or payload.created_at <= 0
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid message edit payload")
+        return payload
+
+
+@dataclass
+class GroupMessageEditPayload:
+    message_id: str
+    group_id: str
+    sender_id: str
+    recipient_id: str
+    created_at: float
+    encrypted_content: bytes
+    signature: bytes = b""
+
+    def associated_data(self) -> bytes:
+        data: dict[str, object] = {
+            "message_id": self.message_id,
+            "group_id": self.group_id,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+            "kind": "edit",
+        }
+        return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
+
+    def signed_bytes(self) -> bytes:
+        return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
+
+    def encode(self) -> bytes:
+        return json.dumps({
+            "message_id": self.message_id,
+            "group_id": self.group_id,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+            "encrypted_content": self.encrypted_content.hex(),
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> "GroupMessageEditPayload":
+        obj = json.loads(data)
+        payload = cls(
+            message_id=obj["message_id"],
+            group_id=obj["group_id"],
+            sender_id=obj["sender_id"],
+            recipient_id=obj["recipient_id"],
+            created_at=obj["created_at"],
+            encrypted_content=bytes.fromhex(obj["encrypted_content"]),
+            signature=bytes.fromhex(obj.get("signature", "")),
+        )
+        if (
+            not _valid_request_id(payload.message_id)
+            or not isinstance(payload.group_id, str)
+            or not re.fullmatch(r"[a-f0-9]{32}", payload.group_id)
+            or not _valid_peer_id(payload.sender_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or not isinstance(payload.created_at, (int, float))
+            or isinstance(payload.created_at, bool)
+            or not math.isfinite(payload.created_at)
+            or payload.created_at <= 0
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid group message edit payload")
+        return payload
+
+
+@dataclass
+class MessageDeletePayload:
+    """Signed tombstone request (sender-only). No content, so no encryption."""
+
+    message_id: str
+    sender_id: str
+    recipient_id: str
+    created_at: float
+    signature: bytes = b""
+
+    def signed_bytes(self) -> bytes:
+        data = {"message_id": self.message_id, "sender_id": self.sender_id, "recipient_id": self.recipient_id, "created_at": self.created_at, "kind": "delete"}
+        return hashlib.sha256(json.dumps(data, separators=(",", ":"), sort_keys=True).encode()).digest()
+
+    def encode(self) -> bytes:
+        return json.dumps({"message_id": self.message_id, "sender_id": self.sender_id, "recipient_id": self.recipient_id, "created_at": self.created_at, "signature": self.signature.hex()}, separators=(",", ":")).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> "MessageDeletePayload":
+        obj = json.loads(data)
+        payload = cls(message_id=obj["message_id"], sender_id=obj["sender_id"], recipient_id=obj["recipient_id"], created_at=obj["created_at"], signature=bytes.fromhex(obj.get("signature", "")))
+        if (not _valid_request_id(payload.message_id) or not _valid_peer_id(payload.sender_id) or not _valid_peer_id(payload.recipient_id) or not isinstance(payload.created_at, (int, float)) or isinstance(payload.created_at, bool) or not math.isfinite(payload.created_at) or payload.created_at <= 0 or len(payload.signature) != 64):
+            raise ValueError("Invalid message delete payload")
+        return payload
+
+
+@dataclass
+class GroupMessageDeletePayload:
+    message_id: str
+    group_id: str
+    sender_id: str
+    recipient_id: str
+    created_at: float
+    signature: bytes = b""
+
+    def signed_bytes(self) -> bytes:
+        data = {"message_id": self.message_id, "group_id": self.group_id, "sender_id": self.sender_id, "recipient_id": self.recipient_id, "created_at": self.created_at, "kind": "delete"}
+        return hashlib.sha256(json.dumps(data, separators=(",", ":"), sort_keys=True).encode()).digest()
+
+    def encode(self) -> bytes:
+        return json.dumps({"message_id": self.message_id, "group_id": self.group_id, "sender_id": self.sender_id, "recipient_id": self.recipient_id, "created_at": self.created_at, "signature": self.signature.hex()}, separators=(",", ":")).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> "GroupMessageDeletePayload":
+        obj = json.loads(data)
+        payload = cls(message_id=obj["message_id"], group_id=obj["group_id"], sender_id=obj["sender_id"], recipient_id=obj["recipient_id"], created_at=obj["created_at"], signature=bytes.fromhex(obj.get("signature", "")))
+        if (not _valid_request_id(payload.message_id) or not isinstance(payload.group_id, str) or not re.fullmatch(r"[a-f0-9]{32}", payload.group_id) or not _valid_peer_id(payload.sender_id) or not _valid_peer_id(payload.recipient_id) or not isinstance(payload.created_at, (int, float)) or isinstance(payload.created_at, bool) or not math.isfinite(payload.created_at) or payload.created_at <= 0 or len(payload.signature) != 64):
+            raise ValueError("Invalid group message delete payload")
+        return payload
+
+
+@dataclass
+class MessageReadPayload:
+    reader_id: str
+    peer_id: str
+    read_up_to_message_id: str
+    read_up_to_created_at: float
+    read_at: float
+    signature: bytes = b""
+
+    def signed_bytes(self) -> bytes:
+        data = {"reader_id": self.reader_id, "peer_id": self.peer_id, "read_up_to_message_id": self.read_up_to_message_id, "read_up_to_created_at": self.read_up_to_created_at, "read_at": self.read_at, "kind": "read"}
+        return hashlib.sha256(json.dumps(data, separators=(",", ":"), sort_keys=True).encode()).digest()
+
+    def encode(self) -> bytes:
+        return json.dumps({"reader_id": self.reader_id, "peer_id": self.peer_id, "read_up_to_message_id": self.read_up_to_message_id, "read_up_to_created_at": self.read_up_to_created_at, "read_at": self.read_at, "signature": self.signature.hex()}, separators=(",", ":")).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> "MessageReadPayload":
+        obj = json.loads(data)
+        payload = cls(reader_id=obj["reader_id"], peer_id=obj["peer_id"], read_up_to_message_id=obj["read_up_to_message_id"], read_up_to_created_at=obj["read_up_to_created_at"], read_at=obj["read_at"], signature=bytes.fromhex(obj.get("signature", "")))
+        if (not _valid_peer_id(payload.reader_id) or not _valid_peer_id(payload.peer_id) or not _valid_request_id(payload.read_up_to_message_id) or not isinstance(payload.read_up_to_created_at, (int, float)) or not isinstance(payload.read_at, (int, float)) or len(payload.signature) != 64):
+            raise ValueError("Invalid message read payload")
+        return payload
+
+
+@dataclass
+class GroupMessageReadPayload:
+    reader_id: str
+    group_id: str
+    read_up_to_message_id: str
+    read_up_to_created_at: float
+    read_at: float
+    signature: bytes = b""
+
+    def signed_bytes(self) -> bytes:
+        data = {"reader_id": self.reader_id, "group_id": self.group_id, "read_up_to_message_id": self.read_up_to_message_id, "read_up_to_created_at": self.read_up_to_created_at, "read_at": self.read_at, "kind": "read"}
+        return hashlib.sha256(json.dumps(data, separators=(",", ":"), sort_keys=True).encode()).digest()
+
+    def encode(self) -> bytes:
+        return json.dumps({"reader_id": self.reader_id, "group_id": self.group_id, "read_up_to_message_id": self.read_up_to_message_id, "read_up_to_created_at": self.read_up_to_created_at, "read_at": self.read_at, "signature": self.signature.hex()}, separators=(",", ":")).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> "GroupMessageReadPayload":
+        obj = json.loads(data)
+        payload = cls(reader_id=obj["reader_id"], group_id=obj["group_id"], read_up_to_message_id=obj["read_up_to_message_id"], read_up_to_created_at=obj["read_up_to_created_at"], read_at=obj["read_at"], signature=bytes.fromhex(obj.get("signature", "")))
+        if (not _valid_peer_id(payload.reader_id) or not isinstance(payload.group_id, str) or not re.fullmatch(r"[a-f0-9]{32}", payload.group_id) or not _valid_request_id(payload.read_up_to_message_id) or not isinstance(payload.read_up_to_created_at, (int, float)) or not isinstance(payload.read_at, (int, float)) or len(payload.signature) != 64):
+            raise ValueError("Invalid group message read payload")
         return payload

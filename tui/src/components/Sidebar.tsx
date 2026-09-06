@@ -59,7 +59,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
       {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <text fg={theme.text} wrapMode="none">{clipTextToWidth(`You: ${identity?.display_name ?? "Connecting..."}`, sidebarWidth - 2)}</text>}
       {!stacked && <text fg={theme.muted}>Ctrl+Up/Down switch chats</text>}
     </box>
-    <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
+    <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
       <box id="sidebar-dm-section" style={{ flexGrow: 3, flexBasis: 0, flexShrink: 1, minHeight: 1, flexDirection: "column" }}>
         <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.accent}><b>DMs ({peers.length}) / {peers.filter(peer => peer.is_online).length} online</b></text></box>
         <scrollbox id="sidebar-dms" ref={peerListRef} onMouseDown={() => setScrollFocused(false)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", width: Math.max(1, sidebarWidth - 1) }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}>
@@ -93,7 +93,16 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           {groups.map(group => {
         const selected = group.group_id === selectedGroupId
         const members = groupMembers[group.group_id]
-        const visibleMembers = members?.filter(member => member.show_in_sidebar !== false) ?? []
+        const allSidebarMembers = members?.filter(member => member.show_in_sidebar !== false) ?? []
+        // #115: inline listing shows only online/away (+ self); offline rolls into "+ N more"
+        const visibleMembers = allSidebarMembers.filter(member => {
+          const id = member.peer_id ?? member.member_id
+          if (id === identity?.peer_id) return true
+          const peer = peers.find(peer => peer.peer_id === id)
+          const presence = peer ? peerPresence(peer) : member.is_online ? "active" : "offline"
+          return presence === "active" || presence === "away"
+        })
+        const inlineMembers = selected && !stacked ? visibleMembers : []
         const typing = typingConversationKeys.has(`group:${group.group_id}`)
         const memberLabel = ` (${group.member_count} members)`
         const label = nameLabel(group.name, 0, terminalWidth(memberLabel))
@@ -105,7 +114,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
             {group.unread_count > 0 && <text fg={theme.accent}>{group.unread_count} new</text>}
             {typing && <TypingDots />}
           </box>
-          {selected && !stacked && visibleMembers.map((member, index) => {
+          {selected && !stacked && inlineMembers.map((member, index) => {
             const id = member.peer_id ?? member.member_id
             const peer = peers.find(peer => peer.peer_id === id)
             const presence = peer ? peerPresence(peer) : member.is_online ? "active" : "offline"

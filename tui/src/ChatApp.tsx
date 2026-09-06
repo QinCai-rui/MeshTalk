@@ -28,6 +28,7 @@ import type {
   Conversation,
   ConversationItem,
   Dialog,
+  EditingTarget,
   FileTransfer,
   Group,
   GroupMember,
@@ -140,6 +141,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const [messages, setMessages] = useState<Message[]>([]);
   const [selectedReplyTarget, setSelectedReplyTarget] = useState<ReplyTarget>();
   const [replyTo, setReplyTo] = useState<ReplyTarget>();
+  const [editingTarget, setEditingTarget] = useState<EditingTarget>();
   const [deleteConfirmation, setDeleteConfirmation] = useState<ReplyTarget>();
   const [unreadMessages, setUnreadMessages] = useState<
     Record<string, UnreadMessageState>
@@ -269,6 +271,22 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       return { ...current, [messageId]: { ...message, visibleAt: Date.now() } };
     });
   }
+
+  const lastReadSent = useRef<{ key: string; messageId: string; at: number } | null>(null);
+  function sendReadReceipt() {
+    if (!selection || !messages.length) return;
+    // Always receipt the latest incoming message, whether or not it is the
+    // last row (own messages after it don't cancel the peer's need for Seen).
+    const incoming = [...messages].reverse().find((m) => m.sender_id !== identity?.peer_id && !m.deleted);
+    if (!incoming) return;
+    const key = selectionKey ?? "";
+    const now = Date.now();
+    if (lastReadSent.current?.key === key && lastReadSent.current.messageId === incoming.message_id && now - lastReadSent.current.at < 2000) return;
+    lastReadSent.current = { key, messageId: incoming.message_id, at: now };
+    if (selection.kind === "peer") void ipc.send("read", { peer_id: selection.id, message_id: incoming.message_id, created_at: incoming.created_at }).catch(() => {});
+    else void ipc.send("read", { group_id: selection.id, message_id: incoming.message_id, created_at: incoming.created_at }).catch(() => {});
+  }
+  useEffect(() => { sendReadReceipt(); }, [selectionKey, messages.length]);
 
   function updatePeerInteraction(
     peerId: string | undefined,
@@ -927,6 +945,44 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           );
           return;
         }
+        if (event.event === "message_edited" || event.event === "group_message_edited") {
+          const messageId = event.message_id as string;
+          const content = event.content as string;
+          const editedAt = (event.edited_at as number) ?? Date.now() / 1000;
+          setMessages((current) => current.map((m) => m.message_id === messageId ? { ...m, content: content ?? m.content, edited_at: editedAt } : m));
+          return;
+        }
+        if (event.event === "message_deleted" || event.event === "group_message_deleted") {
+          const messageId = event.message_id as string;
+          const deletedAt = (event.deleted_at as number) ?? Date.now() / 1000;
+          setMessages((current) => current.map((m) => m.message_id === messageId ? { ...m, deleted: 1, content: "", deleted_at: deletedAt } : m));
+          setSelectedReplyTarget((c) => c?.id === messageId ? undefined : c);
+          setReplyTo((c) => c?.id === messageId ? undefined : c);
+          setEditingTarget((c) => c?.id === messageId ? undefined : c);
+          return;
+        }
+        if (event.event === "message_read") {
+          const peerId = event.peer_id as string;
+          const readUpTo = (event.read_up_to_created_at as number) ?? 0;
+          const readAt = (event.read_at as number) ?? Date.now() / 1000;
+          setMessages((current) => current.map((m) => m.sender_id === identity?.peer_id && m.created_at <= readUpTo ? { ...m, read_at: readAt } : m));
+          void actions.refreshPeers();
+          return;
+        }
+        if (event.event === "group_message_read") {
+          const readerId = event.reader_id as string;
+          const readAt = (event.read_at as number) ?? Date.now() / 1000;
+          const groupId = event.group_id as string;
+          if (groupId === selectedGroupId) {
+            setMessages((current) => current.map((m) => {
+              if (m.sender_id !== identity?.peer_id) return m;
+              const seen = [...(m.read_by ?? [])];
+              if (!seen.some((r) => r.peer_id === readerId)) seen.push({ peer_id: readerId, read_at: readAt });
+              return { ...m, read_by: seen };
+            }));
+          }
+          return;
+        }
         if (event.event === "message_blocked") {
           const messageId = event.message_id as string;
           const name = (event.display_name as string) ?? "a peer";
@@ -1340,6 +1396,21 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         actions.showStatus("Message deletion cancelled.");
         return;
       }
+      if (key.name === "e" && !key.ctrl && !key.meta) {
+        key.preventDefault();
+        const message = deleteConfirmation;
+        if (message.kind === "file") { actions.showStatus("Files can only be deleted locally."); return; }
+        void ipc.send("delete_message_everyone", { message_id: message.id, group_id: message.groupId }).then((response) => {
+          if (response.error) { actions.showStatus(`Delete error: ${response.error}`); return; }
+          setMessages((current) => current.map((item) => item.message_id === message.id ? { ...item, deleted: 1, content: "", deleted_at: (response.deleted_at as number) ?? Date.now() / 1000 } : item));
+          setSelectedReplyTarget((c) => c?.id === message.id ? undefined : c);
+          setReplyTo((c) => c?.id === message.id ? undefined : c);
+          setEditingTarget((c) => c?.id === message.id ? undefined : c);
+          setDeleteConfirmation(undefined);
+          actions.showStatus("Message deleted for everyone.");
+        }).catch((e) => { setDeleteConfirmation(undefined); actions.showStatus(`Delete error: ${e instanceof Error ? e.message : String(e)}`); });
+        return;
+      }
       if (key.name === "return" || key.name === "linefeed") {
         key.preventDefault();
         const message = deleteConfirmation;
@@ -1363,6 +1434,9 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
               current?.id === message.id ? undefined : current,
             );
             setReplyTo((current) =>
+              current?.id === message.id ? undefined : current,
+            );
+            setEditingTarget((current) =>
               current?.id === message.id ? undefined : current,
             );
             setDeleteConfirmation(undefined);
@@ -1500,6 +1574,32 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     if (scrollFocused && key.name === "d" && selectedReplyTarget) {
       key.preventDefault();
       setDeleteConfirmation(selectedReplyTarget);
+      return;
+    }
+    if (scrollFocused && key.name === "e" && selectedReplyTarget && !key.ctrl && !key.meta) {
+      const target = conversationItems.find(
+        (item): item is Extract<ConversationItem, { type: "message" }> =>
+          item.type === "message" && item.message.message_id === selectedReplyTarget.id,
+      )?.message;
+      if (!target || selectedReplyTarget.kind !== "message") { actions.showStatus("Only text messages can be edited."); return; }
+      if (target.sender_id !== identity?.peer_id) { actions.showStatus("Only your own messages can be edited."); return; }
+      if (target.deleted) { actions.showStatus("Deleted messages cannot be edited."); return; }
+      if (Date.now() / 1000 - target.created_at > 15 * 60) { actions.showStatus("Edit window expired (15 min)."); return; }
+      key.preventDefault();
+      setEditingTarget({ id: target.message_id, senderId: target.sender_id, label: target.content, groupId: target.group_id });
+      // preload composer with existing content
+      if (composerRef.current) {
+        composerRef.current.selectAll();
+        composerRef.current.deleteSelection();
+        composerRef.current.insertText(target.content);
+      }
+      setScrollFocused(false);
+      actions.showStatus("Editing message — Enter saves, Esc cancels.");
+      return;
+    }
+    if (key.name === "escape" && editingTarget) {
+      setEditingTarget(undefined);
+      actions.showStatus("Edit cancelled.");
       return;
     }
     if (key.name === "escape" && replyTo) {
@@ -1778,11 +1878,30 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         }}
         clearReplyTarget={() => setSelectedReplyTarget(undefined)}
         onComposerChange={handleComposerChange}
+        editingTarget={editingTarget}
         send={() => {
           stopOutgoingTyping();
+          if (editingTarget) {
+            const content = composerRef.current?.plainText.trim() ?? "";
+            if (!content) { actions.showStatus("Edited message is empty."); return; }
+            const target = editingTarget;
+            void ipc.send("edit_message", { message_id: target.id, group_id: target.groupId, content }).then((response) => {
+              if (response.error) { actions.showStatus(`Edit error: ${response.error}`); return; }
+              setMessages((current) => current.map((m) => m.message_id === target.id ? { ...m, content, edited_at: (response.edited_at as number) ?? Date.now() / 1000 } : m));
+              setEditingTarget(undefined);
+              setSelectedReplyTarget(undefined);
+              if (composerRef.current) { composerRef.current.selectAll(); composerRef.current.deleteSelection(); }
+              actions.showStatus("Message edited.");
+            }).catch((e) => actions.showStatus(`Edit error: ${e instanceof Error ? e.message : String(e)}`));
+            return;
+          }
           void actions.send(replyTo?.id).then((sent) => {
             if (sent) setReplyTo(undefined);
           });
+        }}
+        onOpenSettings={() => {
+          if (dialog?.kind === "settings") actions.closeDialog();
+          else actions.showDialog({ kind: "settings" });
         }}
       />
       {deleteConfirmation && (
@@ -1803,9 +1922,9 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             <b>Delete this message?</b>
           </text>
           <text fg={chatTheme.muted}>
-            It will be removed from this device only.
+            Enter removes it here only. Press E to delete for everyone (your messages only).
           </text>
-          <text><span fg={chatTheme.danger}>Enter delete</span><span fg={chatTheme.muted}>  /  Esc keep</span></text>
+          <text><span fg={chatTheme.danger}>Enter delete here</span><span fg={chatTheme.muted}>  /  </span><span fg={chatTheme.warning}>E everyone</span><span fg={chatTheme.muted}>  /  Esc keep</span></text>
         </box>
       )}
       {copyToast && (

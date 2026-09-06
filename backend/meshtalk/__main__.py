@@ -450,7 +450,8 @@ async def main(debug: bool = False) -> None:
             return {"error": "peer_id required"}
         messages = await db.get_conversation(identity.peer_id, peer_id)
         await db.mark_conversation_read(identity.peer_id, peer_id)
-        return {"messages": messages}
+        last_read = await db.get_peer_last_read(peer_id)
+        return {"messages": messages, "last_read": last_read}
 
     async def handle_set_display_name(req: dict) -> dict:
         display_name = Identity.normalize_display_name(req.get("display_name"))
@@ -625,7 +626,14 @@ async def main(debug: bool = False) -> None:
             return {"error": "valid group_id required"}
         messages = await db.get_group_messages(group_id)
         await db.mark_group_read(group_id)
-        return {"messages": messages}
+        # attach read receipts
+        reads = await db.get_group_reads(group_id)
+        by_reader = {r["reader_id"]: r for r in reads}
+        for m in messages:
+            seen = [ {"peer_id": rid, "read_at": r["read_at"]} for rid, r in by_reader.items() if float(r.get("read_up_to_created_at", 0)) >= float(m.get("created_at", 0)) ]
+            if seen:
+                m["read_by"] = seen
+        return {"messages": messages, "reads": reads}
 
     async def handle_group_send(req: dict) -> dict:
         group_id = req.get("group_id")
@@ -662,6 +670,74 @@ async def main(debug: bool = False) -> None:
             if not deleted:
                 return {"error": "message not found"}
         return {"message_id": message_id, "deleted": True}
+
+    async def handle_edit_message(req: dict) -> dict:
+        message_id = req.get("message_id")
+        group_id = req.get("group_id")
+        content = req.get("content")
+        if not isinstance(message_id, str) or not message_id:
+            return {"error": "message_id required"}
+        if not isinstance(content, str) or not content.strip():
+            return {"error": "content required"}
+        if len(content.encode()) > 30 * 1024:
+            return {"error": "Message exceeds 30 KiB limit"}
+        try:
+            if group_id:
+                edited_at = await group_router.send_edit(group_id, message_id, content)
+            else:
+                recipient = req.get("recipient_id")
+                if not isinstance(recipient, str) or not recipient:
+                    # infer recipient from stored message
+                    existing = await db.get_message(message_id)
+                    if not existing:
+                        return {"error": "message not found"}
+                    recipient = existing["recipient_id"] if existing["sender_id"] == identity.peer_id else existing["sender_id"]
+                edited_at = await router.send_edit(recipient, message_id, content)
+            return {"message_id": message_id, "edited_at": edited_at}
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+    async def handle_delete_everyone(req: dict) -> dict:
+        message_id = req.get("message_id")
+        group_id = req.get("group_id")
+        if not isinstance(message_id, str) or not message_id:
+            return {"error": "message_id required"}
+        try:
+            if group_id:
+                deleted_at = await group_router.send_delete(group_id, message_id)
+            else:
+                recipient = req.get("recipient_id")
+                if not isinstance(recipient, str) or not recipient:
+                    existing = await db.get_message(message_id)
+                    if not existing:
+                        return {"error": "message not found"}
+                    recipient = existing["recipient_id"] if existing["sender_id"] == identity.peer_id else existing["sender_id"]
+                deleted_at = await router.send_delete(recipient, message_id)
+            return {"message_id": message_id, "deleted_at": deleted_at}
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+    async def handle_read(req: dict) -> dict:
+        peer_id = req.get("peer_id")
+        group_id = req.get("group_id")
+        message_id = req.get("message_id")
+        created_at = req.get("created_at", 0)
+        if group_id:
+            if not isinstance(group_id, str) or not isinstance(message_id, str):
+                return {"error": "group_id and message_id required"}
+            try:
+                read_at = await group_router.send_read(group_id, message_id, float(created_at or 0))
+            except Exception:
+                read_at = 0.0
+            await db.set_group_read(group_id, identity.peer_id, message_id, float(created_at or 0), read_at or __import__("time").time())
+            return {"ok": True}
+        if not isinstance(peer_id, str) or not isinstance(message_id, str):
+            return {"error": "peer_id and message_id required"}
+        try:
+            await router.send_read(peer_id, message_id, float(created_at or 0))
+        except Exception:
+            pass
+        return {"ok": True}
 
     async def handle_group_leave(req: dict) -> dict:
         group_id = req.get("group_id")
@@ -878,6 +954,9 @@ async def main(debug: bool = False) -> None:
         "group_messages": handle_group_messages,
         "group_send": handle_group_send,
         "delete_message": handle_delete_message,
+        "edit_message": handle_edit_message,
+        "delete_message_everyone": handle_delete_everyone,
+        "read": handle_read,
         "group_leave": handle_group_leave,
         "mute": handle_mute,
         "unmute": handle_unmute,
@@ -900,6 +979,9 @@ async def main(debug: bool = False) -> None:
     )
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
+    router.on_edited = lambda message: ipc.broadcast_event({"event": "message_edited", **message})
+    router.on_deleted = lambda message: ipc.broadcast_event({"event": "message_deleted", **message})
+    router.on_read = lambda message: ipc.broadcast_event({"event": "message_read", **message})
     group_router.on_event = ipc.broadcast_event
     typing_router.on_event = ipc.broadcast_event
     friend_manager.on_friend_request = lambda event: ipc.broadcast_event({"event": "friend_request", **event})

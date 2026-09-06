@@ -109,7 +109,7 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
     {!wide && !firstRun && <box height={1} flexShrink={0} onMouseDown={() => railFocused ? focusContent() : focusRail()}><text fg={theme.accent}>Categories [Tab] / {active >= 0 ? categories[active]![1] : "Choose a section"}</text></box>}
     <box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0} marginTop={height > 12 ? 1 : 0}>
       {showRail && <scrollbox id="settings-categories" ref={rail} focused={railFocused} width={wide ? 21 : "100%"} flexShrink={0} backgroundColor={theme.surface}
-        contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface } }}
+        contentOptions={{ flexDirection: "column", gap: 1, paddingTop: 1, paddingBottom: 1 }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface } }}
         onKeyDown={key => {
           if (busy || key.ctrl || key.meta) return
           let next = railIndex
@@ -122,11 +122,21 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
           setRailIndex(next)
           rail.current?.scrollChildIntoView("settings-category-" + next)
         }}>
-        {categories.map(([id, label], index) => <box id={"settings-category-" + index} key={id} height={2} flexShrink={0} paddingLeft={1} paddingRight={1}
+        {categories.slice(0, -1).map(([id, label], index) => <box id={"settings-category-" + index} key={id} height={2} flexShrink={0} paddingLeft={1} paddingRight={1}
           backgroundColor={(railFocused ? railIndex === index : category === id) ? theme.selected : theme.surface}
           onMouseDown={event => { if (event.button === 0) selectCategory(index) }}>
           <text fg={category === id ? theme.accent : theme.text}>{railFocused && railIndex === index ? "> " : category === id ? "• " : "  "}{label}</text>
         </box>)}
+        <box flexGrow={1} minHeight={1} flexShrink={0} />
+        {(() => {
+          const index = categories.length - 1
+          const [id, label] = categories[index]!
+          return <box id={"settings-category-" + index} key={id} height={2} flexShrink={0} paddingLeft={1} paddingRight={1}
+            backgroundColor={(railFocused ? railIndex === index : category === id) ? theme.selected : theme.surface}
+            onMouseDown={event => { if (event.button === 0) selectCategory(index) }}>
+            <text fg={category === id ? theme.accent : theme.text}>{railFocused && railIndex === index ? "> " : category === id ? "• " : "  "}{label}</text>
+          </box>
+        })()}
       </scrollbox>}
       <scrollbox visible={wide || !showRail} id="settings-content" ref={body} key={dialog.kind} flexGrow={1} flexBasis={0} minWidth={0} minHeight={0} paddingLeft={wide ? 2 : 0}
         contentOptions={{ flexDirection: "column", gap: 1 }}
