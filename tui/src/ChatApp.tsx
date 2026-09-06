@@ -60,6 +60,11 @@ import {
 } from "./notifications";
 import { useChatActions } from "./useChatActions";
 import {
+  createPastedImageDedupRecord,
+  shouldSuppressPastedImage,
+  type PastedImageDedupRecord,
+} from "./pastedImageDedup";
+import {
   APP_RELEASE_VERSION,
   IS_RELEASE_BUILD,
   MIN_SPLASH_PHASE_MS,
@@ -149,6 +154,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const [draftLength, setDraftLength] = useState(0);
   const [composerHeight, setComposerHeight] = useState(MIN_COMPOSER_HEIGHT);
   const [isSending, setIsSending] = useState(false);
+  const lastPastedImage = useRef<PastedImageDedupRecord | undefined>(undefined);
+  const selectionKeyRef = useRef<string | undefined>(undefined);
   const [nameDraft, setNameDraft] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [scrollFocused, setScrollFocused] = useState(false);
@@ -221,6 +228,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const selectionKey = selection
     ? `${selection.kind}:${selection.id}`
     : undefined;
+  selectionKeyRef.current = selectionKey;
 
   function rememberUnreadMessage(
     conversationKey: string,
@@ -1251,6 +1259,17 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     if (composer) setComposerHeight(getComposerHeight(composer));
   }, [selectionKey, width]);
 
+  function sendPastedImage(bytes: Uint8Array, mimeType: string) {
+    const next = createPastedImageDedupRecord(
+      bytes,
+      selectionKeyRef.current,
+      performance.now(),
+    );
+    if (shouldSuppressPastedImage(lastPastedImage.current, next)) return;
+    lastPastedImage.current = next;
+    void actions.sendImage(bytes, mimeType);
+  }
+
   usePaste((event) => {
     if (dialog || editingName || isSending) return;
     try {
@@ -1267,7 +1286,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       )
         event.preventDefault();
       if (eventIsImage && imageMimeType) {
-        void actions.sendImage(rawBytes, imageMimeType);
+        sendPastedImage(rawBytes, imageMimeType);
         return;
       }
       const raw = decodePasteBytes(rawBytes).trim();
@@ -1284,7 +1303,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           })
           .then((result) => {
             if (result.status === "read")
-              void actions.sendImage(
+              sendPastedImage(
                 result.representation.bytes,
                 result.representation.mimeType,
               );
@@ -1319,7 +1338,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       return;
     }
     if (result.representation.mimeType.startsWith("image/")) {
-      await actions.sendImage(
+      sendPastedImage(
         result.representation.bytes,
         result.representation.mimeType,
       );
