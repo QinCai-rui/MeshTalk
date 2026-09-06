@@ -25,8 +25,7 @@ export type Message = {
   message_id: string; sender_id: string; recipient_id?: string; group_id?: string; content: string
   created_at: number; kind?: string; deliveries?: GroupDelivery[]; delivered?: number; blocked?: number
   queued?: number; failed?: number; received_at?: number; reply_to_message_id?: string | null
-  edited_at?: number | null; deleted?: number; deleted_at?: number | null
-  read_at?: number | null; read_by?: { peer_id: string; read_at: number }[]
+  edited_at?: number | null
 }
 export type UnreadMessageState = { conversationKey: string; receivedAt: number; visibleAt?: number }
 export type Group = { group_id: string; name: string; member_count: number; unread_count: number }

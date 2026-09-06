@@ -15,18 +15,14 @@ from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
 from .protocol import (
     CAP_GROUP_CHAT,
-    CAP_MESSAGE_DELETES,
     CAP_MESSAGE_EDITS,
     CAP_MESSAGE_REPLIES,
-    CAP_READ_RECEIPTS,
     EDIT_WINDOW_SECONDS,
     MAX_PACKET_SIZE,
     GroupAckPayload,
     GroupLeavePayload,
-    GroupMessageDeletePayload,
     GroupMessageEditPayload,
     GroupMessagePayload,
-    GroupMessageReadPayload,
     Packet,
     PacketType,
 )
@@ -188,10 +184,6 @@ class GroupRouter:
             await self._handle_leave(peer, GroupLeavePayload.decode(packet.payload))
         elif packet.type == PacketType.GROUP_MESSAGE_EDIT:
             await self._handle_edit(peer, GroupMessageEditPayload.decode(packet.payload))
-        elif packet.type == PacketType.GROUP_MESSAGE_DELETE:
-            await self._handle_delete(peer, GroupMessageDeletePayload.decode(packet.payload))
-        elif packet.type == PacketType.GROUP_MESSAGE_READ:
-            await self._handle_read(peer, GroupMessageReadPayload.decode(packet.payload))
         else:
             return False
         return True
@@ -217,16 +209,6 @@ class GroupRouter:
             )
         except InvalidSignature as exc:
             raise ValueError("Invalid group message signature") from exc
-        if await self.db.is_message_deleted(message.message_id):
-            # Tombstoned via delete-for-everyone: ack so the sender stops
-            # retrying, but never resurrect the content.
-            await self.db.mark_message_seen(message.message_id)
-            acknowledgement = GroupAckPayload(message.message_id, message.group_id, self.identity.peer_id)
-            acknowledgement.signature = self.identity.signing_private_key.sign(acknowledgement.signed_bytes())
-            await self.peer_manager.send_packet(
-                peer, Packet(PacketType.GROUP_MESSAGE_ACK, acknowledgement.encode())
-            )
-            return
         if await self.db.get_group_message(message.message_id) is None:
             plaintext = decrypt_as_recipient(
                 self.identity.encryption_private_key, message.encrypted_content, message.associated_data()
@@ -286,8 +268,6 @@ class GroupRouter:
             raise ValueError("Message not found")
         if existing.get("sender_id") != self.identity.peer_id:
             raise ValueError("Only your own messages can be edited")
-        if existing.get("deleted"):
-            raise ValueError("Message was deleted")
         if time.time() - float(existing.get("created_at", 0)) > EDIT_WINDOW_SECONDS:
             raise ValueError("Edit window expired (15 min)")
         members = [m for m in await self.db.get_group_members(group_id) if m["peer_id"] != self.identity.peer_id]
@@ -325,58 +305,6 @@ class GroupRouter:
                 pass
         return edited_at
 
-    async def send_delete(self, group_id: str, message_id: str) -> float:
-        existing = await self.db.get_group_message(message_id)
-        if not existing or existing.get("group_id") != group_id:
-            raise ValueError("Message not found")
-        if existing.get("sender_id") != self.identity.peer_id:
-            raise ValueError("Only your own messages can be deleted for everyone")
-        members = [m for m in await self.db.get_group_members(group_id) if m["peer_id"] != self.identity.peer_id]
-        now = time.time()
-        await self.db.mark_group_message_deleted(message_id)
-        for member in members:
-            rid = member["peer_id"]
-            if await self.db.is_peer_blocked(rid):
-                continue
-            peer = self.peer_manager.get_connected_peer(rid)
-            if peer and not peer.supports(CAP_MESSAGE_DELETES):
-                continue
-            try:
-                payload = GroupMessageDeletePayload(message_id, group_id, self.identity.peer_id, rid, now, b"")
-                payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
-                encoded = payload.encode()
-            except Exception:
-                continue
-            if peer:
-                try:
-                    await self.peer_manager.send_packet(peer, Packet(PacketType.GROUP_MESSAGE_DELETE, encoded))
-                    continue
-                except Exception:
-                    pass
-            try:
-                await self.db.add_to_outqueue(rid, PacketType.GROUP_MESSAGE_DELETE.value, encoded, message_id, group_id)
-            except Exception:
-                pass
-        return now
-
-    async def send_read(self, group_id: str, message_id: str, read_up_to_created_at: float) -> float:
-        members = [m for m in await self.db.get_group_members(group_id) if m["peer_id"] != self.identity.peer_id]
-        now = time.time()
-        for member in members:
-            rid = member["peer_id"]
-            peer = self.peer_manager.get_connected_peer(rid)
-            if peer and not peer.supports(CAP_READ_RECEIPTS):
-                continue
-            if not peer:
-                continue
-            try:
-                payload = GroupMessageReadPayload(self.identity.peer_id, group_id, message_id, read_up_to_created_at, now, b"")
-                payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
-                await self.peer_manager.send_packet(peer, Packet(PacketType.GROUP_MESSAGE_READ, payload.encode()))
-            except Exception:
-                pass
-        return now
-
     async def _handle_edit(self, peer, payload: GroupMessageEditPayload) -> None:
         peer = self.peer_manager.get_connected_peer(payload.sender_id)
         if peer is None or peer.signing_public_key is None:
@@ -392,7 +320,7 @@ class GroupRouter:
         except (InvalidSignature, UnicodeDecodeError) as exc:
             raise ValueError("Invalid group edit") from exc
         existing = await self.db.get_group_message(payload.message_id)
-        if not existing or existing.get("sender_id") != payload.sender_id or existing.get("deleted"):
+        if not existing or existing.get("sender_id") != payload.sender_id:
             return
         if payload.created_at - float(existing.get("created_at", 0)) > EDIT_WINDOW_SECONDS + 60:
             return
@@ -400,32 +328,6 @@ class GroupRouter:
         await self.db.update_group_message_content(payload.message_id, content)
         updated = await self.db.get_group_message(payload.message_id)
         await self._emit({"event": "group_message_edited", "message_id": payload.message_id, "group_id": payload.group_id, "sender_id": payload.sender_id, "content": content, "edited_at": (updated or {}).get("edited_at")})
-
-    async def _handle_delete(self, peer, payload: GroupMessageDeletePayload) -> None:
-        peer = self.peer_manager.get_connected_peer(payload.sender_id)
-        if peer is None or peer.signing_public_key is None:
-            raise ValueError("Unknown delete sender")
-        try:
-            Ed25519PublicKey.from_public_bytes(peer.signing_public_key).verify(payload.signature, payload.signed_bytes())
-        except InvalidSignature as exc:
-            raise ValueError("Invalid group delete signature") from exc
-        existing = await self.db.get_group_message(payload.message_id)
-        if existing is not None and existing.get("sender_id") != payload.sender_id:
-            return
-        await self.db.mark_message_seen(payload.message_id)
-        await self.db.mark_group_message_deleted(payload.message_id)
-        await self._emit({"event": "group_message_deleted", "message_id": payload.message_id, "group_id": payload.group_id, "sender_id": payload.sender_id, "deleted_at": payload.created_at})
-
-    async def _handle_read(self, peer, payload: GroupMessageReadPayload) -> None:
-        peer = self.peer_manager.get_connected_peer(payload.reader_id)
-        if peer is None or peer.signing_public_key is None:
-            return
-        try:
-            Ed25519PublicKey.from_public_bytes(peer.signing_public_key).verify(payload.signature, payload.signed_bytes())
-        except InvalidSignature:
-            return
-        await self.db.set_group_read(payload.group_id, payload.reader_id, payload.read_up_to_message_id, payload.read_up_to_created_at, payload.read_at)
-        await self._emit({"event": "group_message_read", "group_id": payload.group_id, "reader_id": payload.reader_id, "message_id": payload.read_up_to_message_id, "read_at": payload.read_at})
 
     async def leave_group(self, group_id: str) -> None:
         room = self.settings.rooms.get(group_id)
@@ -461,10 +363,8 @@ class GroupRouter:
             return True
         if not peer.supports(CAP_GROUP_CHAT):
             return False
-        if item["packet_type"] in (PacketType.GROUP_LEAVE.value, PacketType.GROUP_MESSAGE_EDIT.value, PacketType.GROUP_MESSAGE_DELETE.value):
+        if item["packet_type"] in (PacketType.GROUP_LEAVE.value, PacketType.GROUP_MESSAGE_EDIT.value):
             return True
-        if item["packet_type"] == PacketType.GROUP_MESSAGE_READ.value:
-            return False
         room = self.settings.rooms.get(item["group_id"])
         member = await self.db.get_group_member(item["group_id"], peer.peer_id)
         return bool(room and room.group_name and member and member["active"] and not await self.db.is_peer_blocked(peer.peer_id))

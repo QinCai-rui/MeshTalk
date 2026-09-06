@@ -261,26 +261,22 @@ export function ConversationPanel(props: ConversationPanelProps) {
             typeof message.received_at === "number" &&
             formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
           const messageReplyHighlightProgress = replyHighlightProgress(message.message_id)
-          const isDeleted = Boolean(message.deleted)
           const isEdited = typeof message.edited_at === "number" && message.edited_at > 0
           const prevMsgSenderId = prev?.type === "message" ? prev.message.sender_id : prev?.type === "file" ? prev.file.sender_id : undefined
           const prevMsgIsSystem = prev?.type === "message" ? Boolean(prev.message.kind && prev.message.kind !== "message" && prev.message.kind !== "text") : false
-          const prevMsgDeleted = prev?.type === "message" ? Boolean(prev.message.deleted) : false
-          const msgGrouped = Boolean(!isSystem && !isDeleted && prev && !prevMsgIsSystem && !prevMsgDeleted && prevMsgSenderId === message.sender_id && dayKey(prev.createdAt) === dayKey(item.createdAt) && Math.abs(item.createdAt - prev.createdAt) < 300)
-          const dmSeen = Boolean(isLocal && !selectedGroup && typeof message.read_at === "number")
-          const groupSeenCount = selectedGroup && isLocal ? (message.read_by?.length ?? 0) : 0
+          const msgGrouped = Boolean(!isSystem && prev && !prevMsgIsSystem && prevMsgSenderId === message.sender_id && dayKey(prev.createdAt) === dayKey(item.createdAt) && Math.abs(item.createdAt - prev.createdAt) < 300)
           rows.push(
               <box id={message.message_id} key={message.message_id} ref={(node) => { messageRefs.current[message.message_id] = node }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: msgGrouped ? 0 : 1, backgroundColor: messageReplyHighlightProgress !== undefined ? unreadMessageBackground(messageReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === message.message_id ? theme.selected : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
               {msgGrouped ? <text><span fg={theme.muted}>{formatTime(message.created_at)} </span></text> : <text>
                 <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === message.message_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(message.created_at)} </span>
                 <span fg={isSystem ? theme.warning : isLocal ? theme.accent : theme.text}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
-                 {isLocal && !isSystem && !selectedGroup && <span fg={blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : dmSeen ? " seen" : delivered ? " delivered" : " sent"}</span>}
+                 {isLocal && !isSystem && !selectedGroup && <span fg={blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
                  {isEdited && !isSystem && <span fg={theme.muted}> (edited)</span>}
                  {showReceived && <span fg={theme.muted}> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                  </text>}
-                {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)}{groupSeenCount > 0 ? ` · seen by ${groupSeenCount}` : ""} <u>(click for details)</u></text></box>}
-                {!isDeleted && message.reply_to_message_id && <box style={{ flexDirection: "row", alignSelf: "flex-start" }} onMouseDown={replySelectTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); clearReplyTarget(); highlightReplyTarget(replySelectTarget.id); setScrollFocused(true); scrollboxRef.current?.scrollChildIntoView(replySelectTarget.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
-                {isDeleted ? <text fg={theme.muted} wrapMode="word">This message was deleted</text> : <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />}
+                {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
+                {message.reply_to_message_id && <box style={{ flexDirection: "row", alignSelf: "flex-start" }} onMouseDown={replySelectTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); clearReplyTarget(); highlightReplyTarget(replySelectTarget.id); setScrollFocused(true); scrollboxRef.current?.scrollChildIntoView(replySelectTarget.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
+                <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
             </box>
           )
           return rows
