@@ -146,6 +146,23 @@ test("expanded groups show only active and away members while counting offline m
   } finally { await close(setup) }
 })
 
+test("expanded groups subtly note when only you are online", async () => {
+  const props = sidebarProps(120)
+  props.selectedPeerId = undefined
+  props.selectedGroupId = group.group_id
+  props.groups = [{ ...group, member_count: 12 }]
+  props.groupMembers = { team: [{ peer_id: "me", display_name: "Taylor", is_online: true }] }
+  props.peers = []
+  const setup = await testRender(<Sidebar {...props} />, { width: 40, height: 30 })
+  try {
+    const frame = await settle(setup)
+    const groupRoster = frame.slice(frame.indexOf("Design studio")).replace(/\s+/g, " ")
+    expect(groupRoster).toContain("Taylor (you)")
+    expect(groupRoster).toContain("+ 11 more")
+    expect(groupRoster).toContain("No one else online")
+  } finally { await close(setup) }
+})
+
 test("clicking the settings footer opens settings", async () => {
   const props = panelProps(80)
   let opened = 0

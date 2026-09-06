@@ -120,7 +120,9 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           })}
           {selected && members && (() => {
             const hidden = Math.max(0, group.member_count - visibleMembers.length)
-            return <box id={`nav-group-more-${group.group_id}`} paddingLeft={2} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}>{hidden > 0 ? <u>{`+ ${hidden} more`}</u> : <u>···</u>}</text></box>
+            const otherOnline = visibleMembers.some(member => (member.peer_id ?? member.member_id) !== identity?.peer_id)
+            const presenceHint = hidden > 0 && !otherOnline ? "No one else online" : undefined
+            return <box id={`nav-group-more-${group.group_id}`} paddingLeft={2} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openGroupDetails(group) } }}><text fg={theme.accent}>{hidden > 0 ? <u>{`+ ${hidden} more`}</u> : <u>···</u>}{presenceHint && <span fg={theme.muted}> · {presenceHint}</span>}</text></box>
           })()}
         </box>
           })}
