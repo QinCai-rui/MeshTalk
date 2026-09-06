@@ -38,7 +38,7 @@ function sidebarProps(width: number): ComponentProps<typeof Sidebar> {
 }
 function panelProps(width: number): ComponentProps<typeof ConversationPanel> {
   return {
-    width, compact: width < 70, controlStatus: { connected: true, reconnect_attempts: 0 },
+    width, compact: width < 70, controlStatus: { connected: true, reconnect_attempts: 0 }, hasRooms: true,
     conversationItems: [
       { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "I shared the **updated notes**. What do you think?", created_at: 1788580800 } },
       { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "me", content: "Looks good. The simpler layout makes it much easier to read.", created_at: 1788580860, delivered: 1 } },
@@ -236,6 +236,31 @@ test("offline notices, replies, typing, and byte limits have separate readable r
     const frame = await settle(setup)
     for (const label of ["Offline: messages queue", "queued until online", "stored and queued", "cancels)", "Too long", "is typing"]) expect(frame).toContain(label)
   } finally { await close(setup) }
+})
+
+test("control status stays quiet until a room exists, then explains how to connect", async () => {
+  const props = panelProps(80)
+  props.controlStatus = { connected: false, reconnect_attempts: 0, control_url: "wss://control.example/v1/rendezvous" }
+  props.hasRooms = false
+  const idle = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    expect(await settle(idle)).not.toContain("Control server disconnected")
+  } finally { await close(idle) }
+
+  props.hasRooms = true
+  const disconnected = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(disconnected, "Control server disconnected")
+    expect(frame).toContain("reconnecting (0)")
+    expect(frame).toContain("Ctrl+P > Connection")
+  } finally { await close(disconnected) }
+
+  props.controlStatus = { connected: false, reconnect_attempts: 0 }
+  const unconfigured = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(unconfigured, "Remote discovery is not configured")
+    expect(frame.replace(/\s+/g, " ")).toContain("connect these rooms")
+  } finally { await close(unconfigured) }
 })
 
 test("group history keeps system messages, replies, file status, and delivery details", async () => {

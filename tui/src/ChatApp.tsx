@@ -1723,6 +1723,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       <ConversationPanel
         compact={compact}
         controlStatus={controlStatus}
+        hasRooms={groups.length > 0}
         conversationItems={conversationItems}
         deliveredMessageIds={deliveredMessageIds}
         dialogOpen={Boolean(dialog)}
