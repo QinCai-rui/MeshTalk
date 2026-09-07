@@ -6,7 +6,7 @@ import { createConnection, type Socket } from "net";
 import { basename, dirname, join, resolve } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { activatePendingVersion, applyPendingWindowsReplacement, checkForUpdate, githubRepository, hasPendingVersion, installRelease, isReleaseInstallDir, logUpdateHelper, releaseInstallDir, saveGithubRepository, saveGithubToken, spawnWindowsReplacementHelper, takeUpdateRestartPath, versionedLauncherForBootstrap, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
+import { applyPendingWindowsReplacement, checkForUpdate, githubRepository, installRelease, isReleaseInstallDir, logUpdateHelper, releaseInstallDir, saveGithubRepository, saveGithubToken, spawnWindowsReplacementHelper, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
 import { main as cliMain } from "../cli/src/index";
 import { runTui } from "./tui-entry";
 import type { SplashStyle } from "../tui/src/SplashScreen";
@@ -137,11 +137,19 @@ async function runUpdate(args: string[]): Promise<void> {
   if (!isReleaseInstallDir(destination)) throw new Error(`Update directory must contain the current MeshTalk release binaries. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
   console.log(`Downloading and installing MeshTalk ${release.version}...`);
   await installRelease(release, destination);
-  console.log("Update staged and verified. Restart MeshTalk to activate the new version.");
+  console.log("Update installed and verified. Restart MeshTalk to use the new version.");
 }
 
-async function launchReplacement(path: string, args: string[] = process.argv.slice(2)): Promise<void> {
-  await new Promise<void>((resolveSpawn, reject) => {
+async function launchReplacement(path: string, args: string[] = process.argv.slice(2)): Promise<number> {
+  if (!isWindows) {
+    // Replace this process in-place so the updated TUI keeps the exact same
+    // PID, terminal session, process group, and stdio handles. Spawning and
+    // exiting the bootstrap can make terminal supervisors reclaim the PTY
+    // before the replacement enables raw mode.
+    process.execve(path, [path, ...args], process.env);
+  }
+
+  return await new Promise<number>((resolveSpawn, reject) => {
     const child = spawnProcess(path, args, {
       detached: true,
       stdio: "inherit",
@@ -151,7 +159,7 @@ async function launchReplacement(path: string, args: string[] = process.argv.sli
     child.once("spawn", () => {
       child.removeListener("error", reject);
       child.unref();
-      resolveSpawn();
+      resolveSpawn(0);
     });
   });
 }
@@ -381,6 +389,17 @@ async function stopBackend(pid?: number, daemonise = true, proc?: ChildProcess):
   return await waitForPidExit(pid, 3_000);
 }
 
+async function reapBackendProcess(proc?: ChildProcess): Promise<void> {
+  if (!proc || proc.exitCode !== null) return;
+  await Promise.race([
+    new Promise<void>((resolve) => {
+      proc.once("exit", () => resolve());
+      proc.once("error", () => resolve());
+    }),
+    Bun.sleep(3_000),
+  ]);
+}
+
 function signalBackend(pid: number, useGroup: boolean, signal: NodeJS.Signal): boolean {
   try {
     process.kill(useGroup ? -pid : pid, signal);
@@ -419,22 +438,6 @@ async function main() {
   const args = process.argv.slice(2);
 
   if (isWindows) applyPendingWindowsReplacement();
-
-  // A top-level release launcher is a stable bootstrap once versioned
-  // installs exist. Activate a fully verified pending version only when no
-  // backend is running, then hand off without retaining this process as a
-  // supervisor. This prevents mixed launcher/backend versions and restart
-  // process chains on macOS/Linux.
-  const installRoot = releaseInstallDir();
-  let versionedTarget: string | null = null;
-  if (installRoot && hasPendingVersion(installRoot) && !await backendRunning()) {
-    versionedTarget = activatePendingVersion(installRoot);
-  }
-  versionedTarget ??= versionedLauncherForBootstrap();
-  if (versionedTarget && resolve(versionedTarget) !== resolve(process.execPath)) {
-    await launchReplacement(versionedTarget, args);
-    process.exit(0);
-  }
 
   if (args[0] === "update") {
     await runUpdate(args.slice(1));
@@ -527,9 +530,12 @@ async function main() {
   let code = 0;
   if (launchTui) {
     let cleanupPromise: Promise<boolean> | undefined;
-    const cleanup = () => {
+    const cleanup = async () => {
       if (!iStartedIt) return Promise.resolve(true);
-      return (cleanupPromise ??= stopBackend(backendPid, false, backendProcess));
+      return (cleanupPromise ??= stopBackend(backendPid, false, backendProcess).then(async (stopped) => {
+        await reapBackendProcess(backendProcess);
+        return stopped;
+      }));
     };
     const tui = await runTui({ splashStyle: splash ?? savedSplashStyle() });
     if (iStartedIt) {
@@ -561,16 +567,13 @@ async function main() {
           logUpdateHelper("no backend on IPC; skipping pid-file signal (stale pid file is dropped below)");
         }
       }
-      try { backendProcess?.kill("SIGKILL"); } catch {}
-      try { backendProcess?.unref?.(); } catch {}
-      const restartValue = takeUpdateRestartPath();
-      if (!restartValue) throw new Error("Update restart target was not provided.");
-      const restartInstallDir = existsSync(restartValue) && statSync(restartValue).isDirectory() ? restartValue : dirname(restartValue);
-      const versionedRestart = activatePendingVersion(restartInstallDir);
-      if (versionedRestart) {
-        await launchReplacement(versionedRestart, []);
-        code = 0;
-      } else if (isWindows) {
+      await reapBackendProcess(backendProcess);
+      if (!isWindows) {
+        const restartPath = takeUpdateRestartPath();
+        if (!restartPath) throw new Error("Update restart target was not provided.");
+        if (!existsSync(restartPath)) throw new Error(`Updated launcher does not exist: ${restartPath}`);
+        code = await launchReplacement(restartPath, []);
+      } else {
         // The backend executable stays locked while the backend lives. The
         // replacement helper retries locked copies, but refuse early if the
         // backend is still alive so a lingering backend cannot pile up as an
@@ -616,8 +619,6 @@ async function main() {
         }
         logUpdateHelper("launcher exiting, helper owns the replacement + relaunch");
         code = 0;
-      } else {
-        throw new Error("The staged update does not contain a valid versioned launcher.");
       }
     } else {
       await cleanup();

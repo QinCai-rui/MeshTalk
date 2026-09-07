@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs"
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
-import { activeVersionLauncher, activatePendingVersion, buildWindowsReplacementScript, hasPendingVersion, installRelease, isNewerVersion, isStagingWithinInstallDir, parsePendingUpdate, type UpdateProgress } from "./updater"
+import { buildWindowsReplacementScript, installRelease, isNewerVersion, isStagingWithinInstallDir, parsePendingUpdate, type UpdateProgress } from "./updater"
 
 describe("isNewerVersion", () => {
   test("orders numeric release revisions after the base release", () => {
@@ -73,6 +73,8 @@ describe("buildWindowsReplacementScript", () => {
   test("cleans up the staging dir plus pending marker and relaunches", () => {
     const script = buildWindowsReplacementScript(pending, "C:\\install\\meshtalk.exe", "C:\\data\\update-helper.log")
     expect(script).toContain('rmdir /s /q "C:\\install\\.meshtalk-update-abc"')
+    expect(script).toContain('del "C:\\install\\.meshtalk-current.json"')
+    expect(script).toContain('rmdir /s /q "C:\\install\\versions"')
     expect(script).toContain('start "" /d "C:\\install" "C:\\install\\meshtalk.exe"')
     // Relaunch is retried (transient AV locks) and its outcome is logged.
     expect(script).toContain(":start_retry")
@@ -93,32 +95,6 @@ describe("buildWindowsReplacementScript", () => {
     expect(script).toContain("relaunched")
     expect(script).toContain("C:\\data\\update-helper.log")
   })
-})
-
-test("activeVersionLauncher falls back when the selected version is incomplete", () => {
-  const temporary = mkdtempSync(join(tmpdir(), "meshtalk-version-fallback-"))
-  const suffix = process.platform === "win32" ? ".exe" : ""
-  const launcher = `meshtalk${suffix}`
-  const backend = `meshtalk-backend${suffix}`
-  const previous = "1.0.0-aaaaaaaaaaaa"
-  try {
-    mkdirSync(join(temporary, "versions", previous), { recursive: true })
-    writeFileSync(join(temporary, "versions", previous, launcher), "launcher")
-    writeFileSync(join(temporary, "versions", previous, backend), "backend")
-    writeFileSync(join(temporary, ".meshtalk-current.json"), JSON.stringify({
-      schema: 1,
-      current: "1.1.0-bbbbbbbbbbbb",
-      previous,
-      targetVersion: "1.1.0",
-      files: {
-        [launcher]: { sha256: "b".repeat(64) },
-        [backend]: { sha256: "b".repeat(64) },
-      },
-    }))
-    expect(activeVersionLauncher(temporary)).toBe(join(realpathSync(join(temporary, "versions", previous)), launcher))
-  } finally {
-    rmSync(temporary, { recursive: true, force: true })
-  }
 })
 
 test("installRelease streams the archive and reports each install phase", async () => {
@@ -153,14 +129,12 @@ test("installRelease streams the archive and reports each install phase", async 
       downloadUrl: `http://127.0.0.1:${server.port}/release.tar.gz`,
       digest: `sha256:${digest}`,
     }, installDir, (event) => progress.push(event))
-    // Installation is immutable and does not touch the running flat release.
-    for (const name of files) expect(readFileSync(join(installDir, name), "utf-8")).toBe(`old ${name}`)
-    expect(hasPendingVersion(installDir)).toBe(true)
-    const launcher = activatePendingVersion(installDir)
-    expect(launcher).toBe(activeVersionLauncher(installDir))
-    expect(launcher).not.toBeNull()
-    for (const name of files) expect(readFileSync(join(launcher!, "..", name), "utf-8")).toBe(`new ${name}`)
-    expect(progress.map((event) => event.step)).toContain("Staging verified version for restart")
+    if (process.platform === "win32") {
+      expect(progress.map((event) => event.step)).toContain("Staging files for replacement after restart")
+    } else {
+      for (const name of files) expect(readFileSync(join(installDir, name), "utf-8")).toBe(`new ${name}`)
+      expect(progress.map((event) => event.step)).toContain("Replacing installed binaries")
+    }
     expect(progress.some((event) => event.current === 1 && event.total === 6 && event.receivedBytes === archiveBytes.length && event.totalBytes === archiveBytes.length)).toBe(true)
     expect(progress.map((event) => event.step)).toContain("Verifying SHA-256 digest")
     expect(progress.map((event) => event.step)).toContain("Inspecting release archive")
