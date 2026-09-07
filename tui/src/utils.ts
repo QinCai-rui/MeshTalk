@@ -35,6 +35,13 @@ export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
   if (unavailable) details.push(`unavailable ${unavailable}`)
   return details.join(" · ")
 }
+export function ackLabel(ackerNames: string[]): string | undefined {
+  const names = ackerNames.map((name) => name.trim()).filter(Boolean)
+  if (!names.length) return undefined
+  if (names.length === 1) return `✓ Acknowledged by ${names[0]}`
+  if (names.length === 2) return `✓ Acknowledged by ${names[0]}, ${names[1]}`
+  return `✓ Acknowledged by ${names[0]}, ${names[1]} +${names.length - 2}`
+}
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }
 export function isImageFile(filename: string): boolean { return ["png", "jpg", "jpeg", "gif", "webp"].includes(filename.split(".").pop()?.toLowerCase() ?? "") }
 export function toFileUrl(path: string, version?: number | null): string { let normalized = path.replace(/\\/g, "/"); if (/^[a-zA-Z]:\//.test(normalized)) normalized = "/" + normalized; const encoded = normalized.split("/").map((segment) => encodeURIComponent(segment)).join("/"); return "file://" + encoded + (version != null ? `?v=${version}` : "") }

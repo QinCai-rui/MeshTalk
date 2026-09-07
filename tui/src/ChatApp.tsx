@@ -33,6 +33,7 @@ import type {
   GroupMember,
   ImageProtocol,
   Message,
+  MessageAck,
   Peer,
   ReplyTarget,
   SplashPreference,
@@ -1106,6 +1107,59 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             .catch(() => {});
           return;
         }
+        if (
+          event.event === "message_acknowledged" ||
+          event.event === "group_message_acknowledged"
+        ) {
+          const targetId = (event.target_id as string | undefined) ??
+            (event.message_id as string | undefined);
+          if (!targetId) return;
+          const kind = (event.kind as string | undefined) ?? "message";
+          const ackerId = event.acker_id as string | undefined;
+          if (!ackerId || ackerId === identity?.peer_id) return;
+          const acked = event.acknowledged !== false;
+          const ackEntry: MessageAck = {
+            target_id: targetId,
+            message_id: targetId,
+            group_id: event.group_id as string | undefined,
+            acker_id: ackerId,
+            display_name: event.display_name as string | undefined,
+            kind,
+            created_at: (event.created_at as number | undefined) ?? Date.now() / 1000,
+          };
+          const mergeAcks = (current: MessageAck[] | undefined) => {
+            const list = current ?? [];
+            if (!acked) return list.filter((ack) => ack.acker_id !== ackerId);
+            if (list.some((ack) => ack.acker_id === ackerId))
+              return list.map((ack) => (ack.acker_id === ackerId ? ackEntry : ack));
+            return [...list, ackEntry];
+          };
+          if (kind === "file") {
+            setFileTransfers((current) =>
+              current.map((file) =>
+                file.file_id === targetId
+                  ? { ...file, acks: mergeAcks(file.acks) }
+                  : file,
+              ),
+            );
+          } else {
+            setMessages((current) =>
+              current.map((message) =>
+                message.message_id === targetId
+                  ? { ...message, acks: mergeAcks(message.acks) }
+                  : message,
+              ),
+            );
+          }
+          const name =
+            (event.display_name as string | undefined) ??
+            peers.find((peer) => peer.peer_id === ackerId)?.display_name ??
+            "Someone";
+          actions.showStatus(
+            acked ? `${name} acknowledged a message.` : `${name} removed acknowledgement.`,
+          );
+          return;
+        }
         if (event.event !== "message") {
           if (event.event === "peer_update") {
             void actions.refreshPeers();
@@ -1494,6 +1548,69 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       key.preventDefault();
       setReplyTo(selectedReplyTarget);
       setScrollFocused(false);
+      return;
+    }
+    if (scrollFocused && key.name === "a" && selectedReplyTarget) {
+      key.preventDefault();
+      const target = selectedReplyTarget;
+      const myId = identity?.peer_id;
+      const isGroup = Boolean(target.groupId ?? selectedGroupId);
+      const groupId = target.groupId ?? selectedGroupId;
+      const alreadyAcked = target.kind === "file"
+        ? fileTransfers.find((file) => file.file_id === target.id)?.acks?.some((ack) => ack.acker_id === myId)
+        : messages.find((message) => message.message_id === target.id)?.acks?.some((ack) => ack.acker_id === myId);
+      const acknowledged = !alreadyAcked;
+      const params: Record<string, unknown> = {
+        target_id: target.id,
+        message_id: target.id,
+        kind: target.kind,
+        acknowledged,
+      };
+      if (isGroup && groupId) params.group_id = groupId;
+      else if (selectedPeerId) params.recipient_id = selectedPeerId;
+      else if (selection?.kind === "peer") params.recipient_id = selection.id;
+      void ipc.send("acknowledge", params).then((response) => {
+        if (response.error) {
+          actions.showStatus(`Acknowledge error: ${response.error}`);
+          return;
+        }
+        if (target.kind === "file") {
+          setFileTransfers((current) =>
+            current.map((file) =>
+              file.file_id === target.id
+                ? {
+                    ...file,
+                    acks: acknowledged
+                      ? [
+                          ...(file.acks ?? []).filter((ack) => ack.acker_id !== myId),
+                          { target_id: target.id, acker_id: myId ?? "", kind: target.kind, created_at: Date.now() / 1000 },
+                        ]
+                      : (file.acks ?? []).filter((ack) => ack.acker_id !== myId),
+                  }
+                : file,
+            ),
+          );
+        } else {
+          setMessages((current) =>
+            current.map((message) =>
+              message.message_id === target.id
+                ? {
+                    ...message,
+                    acks: acknowledged
+                      ? [
+                          ...(message.acks ?? []).filter((ack) => ack.acker_id !== myId),
+                          { target_id: target.id, acker_id: myId ?? "", kind: target.kind, created_at: Date.now() / 1000 },
+                        ]
+                      : (message.acks ?? []).filter((ack) => ack.acker_id !== myId),
+                  }
+                : message,
+            ),
+          );
+        }
+        actions.showStatus(acknowledged ? "Acknowledged." : "Acknowledgement removed.");
+      }).catch((error) => {
+        actions.showStatus(`Acknowledge error: ${error instanceof Error ? error.message : String(error)}`);
+      });
       return;
     }
     if (

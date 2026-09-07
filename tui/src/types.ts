@@ -21,9 +21,10 @@ export type Peer = {
 }
 
 export type GroupDelivery = { recipient_id: string; display_name: string; status: string; updated_at: number }
+export type MessageAck = { target_id?: string; message_id?: string; group_id?: string; acker_id: string; display_name?: string; kind?: string; created_at: number; updated_at?: number }
 export type Message = {
   message_id: string; sender_id: string; recipient_id?: string; group_id?: string; content: string
-  created_at: number; kind?: string; deliveries?: GroupDelivery[]; delivered?: number; blocked?: number
+  created_at: number; kind?: string; deliveries?: GroupDelivery[]; acks?: MessageAck[]; delivered?: number; blocked?: number
   queued?: number; failed?: number; received_at?: number; reply_to_message_id?: string | null
 }
 export type UnreadMessageState = { conversationKey: string; receivedAt: number; visibleAt?: number }
@@ -39,7 +40,7 @@ export type ImageProtocol = "auto" | "kitty" | "sixel" | "blocks"
 export type SplashPreference = "card" | "boot-log" | "off"
 export type AdvancedConfig = { control_url?: string | null; control_pinned_ips: string[]; stun_server: string; stun_pinned_ips: string[]; image_protocol: ImageProtocol; splash_style: SplashPreference; splash_duration_ms?: number; splash_phase_ms?: number; splash_welcome_ms?: number }
 export type DebugInfo = { public_endpoint?: [string, number] | null; stun_server: string; local_tcp_port: number; rooms: RoomStatus[]; peers: Peer[] }
-export type FileTransfer = { file_id: string; filename: string; file_size: number; sender_id: string; recipient_id: string; group_id?: string | null; direction: string; status: string; file_path?: string | null; created_at: number; completed_at?: number | null; received_chunks?: number; total_chunks?: number }
+export type FileTransfer = { file_id: string; filename: string; file_size: number; sender_id: string; recipient_id: string; group_id?: string | null; direction: string; status: string; file_path?: string | null; created_at: number; completed_at?: number | null; received_chunks?: number; total_chunks?: number; acks?: MessageAck[] }
 export type ConversationItem = { type: "message"; createdAt: number; message: Message } | { type: "file"; createdAt: number; file: FileTransfer; allFiles: FileTransfer[] }
 export type ReplyTarget = { id: string; senderId: string; label: string; groupId?: string; kind: "message" | "file" }
 

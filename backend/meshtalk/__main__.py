@@ -22,6 +22,7 @@ from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
 from .group_router import GroupRouter
 from .message_router import MessageRouter
+from .ack_router import AckRouter
 from .typing_router import TypingRouter
 from .file_transfer import FileTransferManager
 from .ipc import IPCServer
@@ -64,6 +65,7 @@ async def main(debug: bool = False) -> None:
         identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router
     )
     typing_router = TypingRouter(identity, peer_manager, db, settings, friend_manager)
+    ack_router = AckRouter(identity, peer_manager, db, settings, friend_manager)
     file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings)
     tui_clients: set[str] = set()
     typing_clients: dict[tuple[str, str], set[str]] = {}
@@ -73,6 +75,8 @@ async def main(debug: bool = False) -> None:
         if await file_manager.handle_packet(peer, packet):
             return
         if await typing_router.handle_packet(peer, packet):
+            return
+        if await ack_router.handle_packet(peer, packet):
             return
         await router.handle_packet(peer, packet)
 
@@ -100,7 +104,13 @@ async def main(debug: bool = False) -> None:
         for item in items:
             packet_type = PacketType(item["packet_type"])
             required = capability_for_packet(packet_type)
+            is_ack = packet_type in (PacketType.MESSAGE_ACKNOWLEDGE, PacketType.GROUP_ACKNOWLEDGE)
             if required is not None and not peer.supports(required):
+                if is_ack:
+                    # Queued acks reference the original message id; dropping them
+                    # must not mark the original chat message as failed/unavailable.
+                    await db.remove_from_outqueue(item["id"])
+                    continue
                 if item["message_id"] and item.get("group_id"):
                     await db.set_group_delivery(item["message_id"], peer_id, "unavailable")
                 elif item["message_id"]:
@@ -113,18 +123,27 @@ async def main(debug: bool = False) -> None:
             if item["packet_type"] in (PacketType.FILE_OFFER.value, PacketType.FILE_CHUNK.value, PacketType.FILE_ACK.value):
                 continue
             if not await group_router.can_flush(peer, item):
+                if is_ack:
+                    await db.remove_from_outqueue(item["id"])
+                    continue
                 if item["message_id"] and item.get("group_id"):
                     await db.set_group_delivery(item["message_id"], peer_id, "unavailable")
                 await db.remove_from_outqueue(item["id"])
                 continue
+            if not await ack_router.can_flush(peer, item):
+                await db.remove_from_outqueue(item["id"])
+                continue
             try:
                 packet = Packet(packet_type, item["encrypted_payload"])
-                if item["message_id"] and item.get("group_id"):
+                if item["message_id"] and item.get("group_id") and not is_ack:
                     await db.set_group_delivery(item["message_id"], peer_id, "sent")
                 await peer_manager.send_packet(peer, packet)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to flush queued packet for %s: %s", peer_id, exc)
                 await db.increment_outqueue_attempts(item["id"])
+                continue
+            if is_ack:
+                await db.remove_from_outqueue(item["id"])
                 continue
             if item["message_id"] and item.get("group_id"):
                 await ipc.broadcast_event({
@@ -451,6 +470,57 @@ async def main(debug: bool = False) -> None:
         messages = await db.get_conversation(identity.peer_id, peer_id)
         await db.mark_conversation_read(identity.peer_id, peer_id)
         return {"messages": messages}
+
+    async def handle_acknowledge(req: dict) -> dict:
+        target_id = req.get("target_id", req.get("message_id"))
+        group_id = req.get("group_id")
+        kind = req.get("kind", "message")
+        acknowledged = req.get("acknowledged", True)
+        if not isinstance(target_id, str) or not target_id or len(target_id) > 128:
+            return {"error": "target_id must be a non-empty string up to 128 characters"}
+        if kind not in ("message", "file"):
+            return {"error": "kind must be 'message' or 'file'"}
+        if not isinstance(acknowledged, bool):
+            return {"error": "acknowledged must be boolean"}
+        try:
+            if group_id is not None:
+                if not isinstance(group_id, str) or not group_id:
+                    return {"error": "group_id must be a non-empty string"}
+                result = await ack_router.send_group(group_id, target_id, kind, acknowledged)
+                acks = await db.get_group_message_acks(target_id, group_id)
+                result["acks"] = acks
+                return result
+            # Direct ack needs the other peer: explicit recipient or inferred
+            # from the target message/file row.
+            recipient_id = req.get("recipient_id", req.get("peer_id"))
+            if not isinstance(recipient_id, str) or not recipient_id:
+                recipient_id = await _infer_direct_ack_recipient(target_id, kind)
+                if recipient_id is None:
+                    return {"error": "recipient_id required (could not infer from target)"}
+            result = await ack_router.send_direct(recipient_id, target_id, kind, acknowledged)
+            result["acks"] = await db.get_message_acks(target_id)
+            return result
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+    async def _infer_direct_ack_recipient(target_id: str, kind: str) -> str | None:
+        if kind == "file":
+            transfer = await db.get_file_transfer(target_id)
+            if transfer is None or transfer.get("group_id"):
+                return None
+            if transfer["sender_id"] == identity.peer_id:
+                return transfer["recipient_id"]
+            if transfer["recipient_id"] == identity.peer_id:
+                return transfer["sender_id"]
+            return None
+        row = await db.get_message(target_id)
+        if row is None:
+            return None
+        if row["sender_id"] == identity.peer_id:
+            return row["recipient_id"]
+        if row["recipient_id"] == identity.peer_id:
+            return row["sender_id"]
+        return None
 
     async def handle_set_display_name(req: dict) -> dict:
         display_name = Identity.normalize_display_name(req.get("display_name"))
@@ -799,6 +869,13 @@ async def main(debug: bool = False) -> None:
             if t.get("file_path"):
                 # Make path cross-platform display; use as-is
                 t["file_path"] = str(t["file_path"])
+            try:
+                if t.get("group_id"):
+                    t["acks"] = await db.get_group_message_acks(t["file_id"], t["group_id"])
+                else:
+                    t["acks"] = await db.get_message_acks(t["file_id"])
+            except Exception:
+                t["acks"] = []
         return {"files": transfers}
 
     async def handle_file_info(req: dict) -> dict:
@@ -874,6 +951,7 @@ async def main(debug: bool = False) -> None:
         "group_members": handle_group_members,
         "group_messages": handle_group_messages,
         "group_send": handle_group_send,
+        "acknowledge": handle_acknowledge,
         "delete_message": handle_delete_message,
         "group_leave": handle_group_leave,
         "mute": handle_mute,
@@ -899,6 +977,7 @@ async def main(debug: bool = False) -> None:
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
     group_router.on_event = ipc.broadcast_event
     typing_router.on_event = ipc.broadcast_event
+    ack_router.on_event = ipc.broadcast_event
     friend_manager.on_friend_request = lambda event: ipc.broadcast_event({"event": "friend_request", **event})
     friend_manager.on_friend_response = lambda event: ipc.broadcast_event({"event": "friend_response", **event})
     friend_manager.on_friend_cancelled = lambda event: ipc.broadcast_event({"event": "friend_cancelled", **event})

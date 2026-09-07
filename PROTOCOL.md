@@ -221,14 +221,15 @@ encrypted HANDSHAKE_CONFIRM ------------------------------>
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
 `file_transfer`, `typing_indicators`, `message_replies`,
-`direct_route_recovery`). The agreed capability set is the **intersection** of
+`message_acknowledgements`, `direct_route_recovery`). The agreed capability set is the **intersection** of
 both peers' advertised sets, and higher-level code gates behaviour on it:
 `text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
 enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
 `friend_requests` enables the friend-request packet family, `group_chat` enables
 the group packet family, and `file_transfer` enables file offer/chunk/ack
 packets (section 7.6). `message_replies` enables reply references on message
-packets. `direct_route_recovery` enables probing and promotion of an introduced
+packets. `message_acknowledgements` enables explicit `MESSAGE_ACKNOWLEDGE` /
+`GROUP_ACKNOWLEDGE` packets (section 7.7). `direct_route_recovery` enables probing and promotion of an introduced
 direct UDP route while an established remote UDP session is using DERP. It does
 not gate the initial direct connection attempt or the existing LAN TCP takeover
 behavior, so older peers retain their established behavior; an older peer
@@ -490,7 +491,7 @@ JSON hello (canonical, then Ed25519-signed):
 
 ```json
 {
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "typing_indicators", "message_replies", "direct_route_recovery"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "typing_indicators", "message_replies", "message_acknowledgements", "direct_route_recovery"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -521,6 +522,7 @@ During the handshake, peers exchange signed lists of supported capabilities.
     packets for cross-platform file transfer with image preview and download.
   - `typing_indicators`: Exchange encrypted, transient `TYPING` packets.
   - `message_replies`: Exchange messages that reference an original message or attachment.
+  - `message_acknowledgements`: Exchange explicit `MESSAGE_ACKNOWLEDGE` / `GROUP_ACKNOWLEDGE` packets (section 7.7).
   - `direct_route_recovery`: Probe and promote a direct UDP route after a DERP session is established; enabled only for the negotiated intersection.
 
 ### 6.3 Session Key Derivation
@@ -837,6 +839,8 @@ after key confirmation, all application packets use encrypted TCP records.
 | FILE_CHUNK | 0x12 | File Chunk | E2EE encrypted file data chunk with per-chunk signature. |
 | FILE_ACK | 0x13 | File Ack | Delivery acknowledgement with optional `missing_ranges` for retransmission. |
 | TYPING | 0x14 | Typing | Signed, pairwise-encrypted transient typing state. |
+| MESSAGE_ACKNOWLEDGE | 0x15 | Message Acknowledge | Signed explicit acknowledgement (toggleable) of a DM message or file. |
+| GROUP_ACKNOWLEDGE | 0x16 | Group Acknowledge | Signed explicit acknowledgement (toggleable) of a group message or file. |
 
 UDP transport-level frame types (udp_transport.py): HELLO=1, DATA=2, ACK=3,
 PING=4, PONG=5, READY=6, GOODBYE=7 (distinct from the application types above;
@@ -871,6 +875,17 @@ authenticated peer's signing key; mismatched sender_id/responder_id is rejected.
   named-room membership. They are sent only to connected peers that negotiated
   `typing_indicators`, are never persisted, acknowledged, retried, or queued,
   and recipients discard events older than 30 seconds.
+- Acknowledgements (MESSAGE_ACKNOWLEDGE / GROUP_ACKNOWLEDGE): signed
+  `{target_id, kind, acker_id, acknowledged, created_at, signature}` plus
+  `group_id` for groups. `target_id` is a `message_id` or `file_id` and `kind`
+  is `message` or `file`. Direct acks are friend-only; group acks require an
+  active named-room membership on both sides. Both require the negotiated
+  `message_acknowledgements` capability. Sending `acknowledged=true` records the
+  ack; sending `false` removes it (toggle off). Acks are persisted in
+  `message_acks` / `group_message_acks`, queued offline via `outgoing_queue`,
+  and broadcast as `message_acknowledged` / `group_message_acknowledged` IPC
+  events. History queries (`messages`, `group_messages`, `files`) attach
+  `acks[]` per item.
 
 ## 10. Local IPC API (backend/meshtalk/ipc.py, common/ipc-client.ts)
 
@@ -895,6 +910,7 @@ over IPC.
 | Action | Params | Returns |
 |--------|--------|---------|
 | send | recipient_id, content, reply_to_message_id? | message_id |
+| acknowledge | target_id (or message_id), kind? (`message`/`file`), acknowledged? (default true), recipient_id?/peer_id? (DM) or group_id? (group) | target_id, kind, acknowledged, acks[] |
 | delete_message | message_id, group_id?, file? | Removes the local message or attachment history and any local attachment file. Never transmitted to peers. |
 | peers | - | List of peers with presence, unread counts, friend/blocked flags, network info. |
 | remove_peer | peer_id | Removed (only if not connected). |
@@ -910,7 +926,7 @@ over IPC.
 | typing | client_id, recipient_id or group_id, is_typing | Transient typing update; exactly one conversation target is required. |
 | identity | - | peer_id, display_name, setup state. |
 | status | - | peer_id, connected peers + network info, control URL/connected, public endpoint, rooms. |
-| messages | peer_id | Conversation history (marks read). |
+| messages | peer_id | Conversation history with per-message `acks[]` (marks read). |
 | set_display_name | display_name | New name; broadcasts PROFILE. |
 | control | url?, dismiss_setup? | Control/STUN config + connection state. |
 | room_create | name | room_id, group_id, name, invite |
@@ -920,12 +936,12 @@ over IPC.
 | rooms | - | Room membership counts. |
 | groups | - | Named groups with cached active-member and unread counts. |
 | group_members | group_id | Cached active roster with online state. |
-| group_messages | group_id | Last 200 local messages/system events and per-recipient deliveries; marks read. |
+| group_messages | group_id | Last 200 local messages/system events, per-recipient deliveries, and per-message `acks[]`; marks read. |
 | group_send | group_id, content, reply_to_message_id? | message_id and per-recipient `sent`, `delivered`, `queued`, or `unavailable` status. |
 | group_leave | group_id | Sends/queues signed leave events, removes local room/group state, returns group_id. |
 | file_send | recipient_id, file_path | file_id — send a file to a direct peer. |
 | group_file_send | group_id, file_path | Per-recipient results — send a file to all active group members. |
-| files | - | List all file transfers (inbound and outbound) with status and metadata. |
+| files | - | List all file transfers (inbound and outbound) with status, metadata, and per-file `acks[]`. |
 | file_info | file_id | Detailed metadata for one transfer. |
 | file_download | file_id, dest_path? | dest_path — save a received file to a user-chosen location. |
 | files_dir | path? | Get or set the files storage directory (`~/.meshtalk/files` by default). |
@@ -939,8 +955,10 @@ over IPC.
 ### 10.2 Events (server to clients)
 
 `peer_update`, `message`, `delivered`, `friend_request`, `friend_response`,
-`friend_cancelled`, `message_blocked`, `group_message`, `group_member_joined`,
-`group_member_left`, `group_sent`, `group_delivered`, `typing`, and file transfer events:
+`friend_cancelled`, `message_blocked`, `message_acknowledged`,
+`group_message`, `group_member_joined`,
+`group_member_left`, `group_sent`, `group_delivered`,
+`group_message_acknowledged`, `typing`, and file transfer events:
 `file_offer` (incoming file metadata), `file_progress` (chunk received/sent),
 `file_completed` (all chunks received, file written to disk), `file_sent`
 (outbound transfer finished), `file_delivered` (recipient ACK received), and
@@ -950,6 +968,11 @@ being flushed, and `group_delivered` reports its recipient ACK.
 `typing` contains `sender_id`, `display_name`, `group_id` (or null),
 `is_typing`, and `created_at`; clients must order updates by `created_at` and
 expire active state locally if no refresh or stop arrives.
+`message_acknowledged` / `group_message_acknowledged` contain `target_id`
+(also echoed as `message_id`), `group_id` (group only), `kind`
+(`message`/`file`), `acker_id`, `display_name`, `acknowledged`, and
+`created_at`; clients merge them into the matching history item's `acks[]`
+(add on `true`, remove the acker's entry on `false`).
 
 The CLI exposes `room create <name>`, `room join`, `groups` / `group list`, and
 `group members|messages|send|leave`. `watch` prints incoming group messages and
@@ -1030,7 +1053,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators, message_replies, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators, message_replies, message_acknowledgements, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |

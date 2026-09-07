@@ -4,8 +4,8 @@ import { chatTheme as theme } from "../chatTheme"
 export function ChatFooter({ width, scrollFocused, status, openSettings }: { width: number; scrollFocused: boolean; status: string; openSettings: () => void }) {
   const compact = width < 70
   const hint = compact
-    ? [scrollFocused ? "↑↓ select · R reply · D delete · Esc" : "Enter send · PgUp · Ctrl+↑↓ chats"]
-    : [scrollFocused ? "↑↓ select / R reply / D delete / Enter enlarge image / End latest / Esc compose" : "Enter send / PgUp history / Ctrl+↑↓ chats / Ctrl+U attach"]
+    ? [scrollFocused ? "↑↓ select · R reply · A ack · D delete · Esc" : "Enter send · PgUp · Ctrl+↑↓ chats"]
+    : [scrollFocused ? "↑↓ select / R reply / A ack / D delete / Enter enlarge image / End latest / Esc compose" : "Enter send / PgUp history / Ctrl+↑↓ chats / Ctrl+U attach"]
   const notification = Boolean(status && status !== DEFAULT_STATUS)
   // Reserve the same area for hints and transient messages. Long notifications can
   // scroll within it, without moving the editor or stealing its keyboard focus.

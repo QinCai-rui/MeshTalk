@@ -2,9 +2,9 @@ import { ChatFooter } from "./ChatFooter"
 import { TypingDots } from "./TypingDots"
 import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
-import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
+import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, MessageAck, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
-import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
+import { ackLabel, clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
 import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 
 type ConversationPanelProps = {
@@ -120,6 +120,21 @@ export function ConversationPanel(props: ConversationPanelProps) {
   const replyHighlightProgress = (id: string) => replyHighlight?.id === id
     ? Math.min(1, Math.max(0, (replyHighlightNow - replyHighlight.startedAt) / UNREAD_MESSAGE_FADE_MS))
     : undefined
+  const ackDisplayName = (ackerId: string) => {
+    if (ackerId === identity?.peer_id) return "You"
+    const groupName = selectedGroupId
+      ? groupMembers[selectedGroupId]?.find((member) => (member.peer_id ?? member.member_id) === ackerId)?.display_name
+      : undefined
+    if (groupName) return groupName
+    const peerName = peers.find((peer) => peer.peer_id === ackerId)?.display_name
+    if (peerName) return peerName
+    if (selected && ackerId === selected.peer_id) return selected.display_name
+    return `${ackerId.slice(0, 8)}`
+  }
+  const ackText = (acks: MessageAck[] | undefined) => {
+    if (!acks?.length) return undefined
+    return ackLabel(acks.map((ack) => ackDisplayName(ack.acker_id)))
+  }
 
   useEffect(() => {
     if (!selectionKey || !Object.entries(unreadMessageStates).some(([, message]) => message.conversationKey === selectionKey && message.visibleAt === undefined)) return
@@ -221,6 +236,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 <text wrapMode="word"><span fg={theme.accent}>{file.filename}</span><span fg={theme.muted}> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
                 {fileUnavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
                 {!fileUnavailable && file.file_path ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage={isImageFile(file.filename)} scrollboxRef={scrollboxRef} maxWidth={Math.max(1, (scrollboxRef.current?.viewport.width ?? width - 3) - 2)} maxHeight={Math.min(16, Math.max(4, (scrollboxRef.current?.viewport.height ?? 16) - 4))} onOpen={() => openImage(file)} /> : null}
+                {ackText(file.acks) ? <text fg={theme.muted}>{ackText(file.acks)}</text> : null}
               </box>
             )
             return rows
@@ -272,6 +288,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
                 {message.reply_to_message_id && <box onMouseDown={replySelectTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); clearReplyTarget(); highlightReplyTarget(replySelectTarget.id); setScrollFocused(true); scrollboxRef.current?.scrollChildIntoView(replySelectTarget.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
                 <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
+                {ackText(message.acks) ? <text fg={theme.muted}>{ackText(message.acks)}</text> : null}
             </box>
           )
           return rows

@@ -20,6 +20,8 @@ Packet types:
   GROUP_MESSAGE          0x0E
   GROUP_MESSAGE_ACK      0x0F
   GROUP_LEAVE            0x10
+  MESSAGE_ACKNOWLEDGE    0x15
+  GROUP_ACKNOWLEDGE      0x16
   TYPING                 0x14
 """
 
@@ -47,6 +49,7 @@ CAP_GROUP_CHAT = "group_chat"
 CAP_FILE_TRANSFER = "file_transfer"
 CAP_TYPING_INDICATORS = "typing_indicators"
 CAP_MESSAGE_REPLIES = "message_replies"
+CAP_MESSAGE_ACKNOWLEDGEMENTS = "message_acknowledgements"
 CAP_DIRECT_ROUTE_RECOVERY = "direct_route_recovery"
 DEFAULT_CAPABILITIES = [
     CAP_TEXT_CHAT,
@@ -58,6 +61,7 @@ DEFAULT_CAPABILITIES = [
     CAP_FILE_TRANSFER,
     CAP_TYPING_INDICATORS,
     CAP_MESSAGE_REPLIES,
+    CAP_MESSAGE_ACKNOWLEDGEMENTS,
     CAP_DIRECT_ROUTE_RECOVERY,
 ]
 UDP_PORT = 24890
@@ -126,6 +130,8 @@ class PacketType(enum.IntEnum):
     FILE_CHUNK = 0x12
     FILE_ACK = 0x13
     TYPING = 0x14
+    MESSAGE_ACKNOWLEDGE = 0x15
+    GROUP_ACKNOWLEDGE = 0x16
 
 
 PACKET_CAPABILITIES = {
@@ -143,6 +149,8 @@ PACKET_CAPABILITIES = {
     PacketType.FILE_CHUNK: CAP_FILE_TRANSFER,
     PacketType.FILE_ACK: CAP_FILE_TRANSFER,
     PacketType.TYPING: CAP_TYPING_INDICATORS,
+    PacketType.MESSAGE_ACKNOWLEDGE: CAP_MESSAGE_ACKNOWLEDGEMENTS,
+    PacketType.GROUP_ACKNOWLEDGE: CAP_MESSAGE_ACKNOWLEDGEMENTS,
 }
 
 
@@ -1109,4 +1117,134 @@ class FileAckPayload:
             or len(payload.signature) != 64
         ):
             raise ValueError("Invalid file ack payload")
+        return payload
+
+
+ACK_TARGET_KINDS = ("message", "file")
+
+
+def _valid_ack_kind(kind: object) -> bool:
+    return isinstance(kind, str) and kind in ACK_TARGET_KINDS
+
+
+@dataclass
+class MessageAcknowledgePayload:
+    """An explicit, toggleable acknowledgement of a DM message or file."""
+
+    target_id: str
+    kind: str
+    acker_id: str
+    acknowledged: bool
+    created_at: float
+    signature: bytes = b""
+
+    def signed_bytes(self) -> bytes:
+        """Return canonical bytes for signature verification."""
+        return json.dumps({
+            "target_id": self.target_id,
+            "kind": self.kind,
+            "acker_id": self.acker_id,
+            "acknowledged": self.acknowledged,
+            "created_at": self.created_at,
+        }, separators=(",", ":"), sort_keys=True).encode()
+
+    def encode(self) -> bytes:
+        """Encode acknowledgement to JSON bytes."""
+        return json.dumps({
+            "target_id": self.target_id,
+            "kind": self.kind,
+            "acker_id": self.acker_id,
+            "acknowledged": self.acknowledged,
+            "created_at": self.created_at,
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> MessageAcknowledgePayload:
+        """Decode and validate an acknowledgement from JSON bytes."""
+        obj = json.loads(data)
+        payload = cls(
+            target_id=obj["target_id"],
+            kind=obj.get("kind", "message"),
+            acker_id=obj["acker_id"],
+            acknowledged=obj["acknowledged"],
+            created_at=obj["created_at"],
+            signature=bytes.fromhex(obj.get("signature", "")),
+        )
+        if (
+            not _valid_request_id(payload.target_id)
+            or not _valid_ack_kind(payload.kind)
+            or not _valid_peer_id(payload.acker_id)
+            or not isinstance(payload.acknowledged, bool)
+            or not isinstance(payload.created_at, (int, float))
+            or isinstance(payload.created_at, bool)
+            or not math.isfinite(payload.created_at)
+            or payload.created_at <= 0
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid message acknowledgement")
+        return payload
+
+
+@dataclass
+class GroupAcknowledgePayload:
+    """An explicit, toggleable acknowledgement of a group message or file."""
+
+    target_id: str
+    group_id: str
+    kind: str
+    acker_id: str
+    acknowledged: bool
+    created_at: float
+    signature: bytes = b""
+
+    def signed_bytes(self) -> bytes:
+        """Return canonical bytes for signature verification."""
+        return json.dumps({
+            "target_id": self.target_id,
+            "group_id": self.group_id,
+            "kind": self.kind,
+            "acker_id": self.acker_id,
+            "acknowledged": self.acknowledged,
+            "created_at": self.created_at,
+        }, separators=(",", ":"), sort_keys=True).encode()
+
+    def encode(self) -> bytes:
+        """Encode group acknowledgement to JSON bytes."""
+        return json.dumps({
+            "target_id": self.target_id,
+            "group_id": self.group_id,
+            "kind": self.kind,
+            "acker_id": self.acker_id,
+            "acknowledged": self.acknowledged,
+            "created_at": self.created_at,
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> GroupAcknowledgePayload:
+        """Decode and validate a group acknowledgement from JSON bytes."""
+        obj = json.loads(data)
+        payload = cls(
+            target_id=obj["target_id"],
+            group_id=obj["group_id"],
+            kind=obj.get("kind", "message"),
+            acker_id=obj["acker_id"],
+            acknowledged=obj["acknowledged"],
+            created_at=obj["created_at"],
+            signature=bytes.fromhex(obj.get("signature", "")),
+        )
+        if (
+            not _valid_request_id(payload.target_id)
+            or not re.fullmatch(r"[a-f0-9]{32}", payload.group_id or "")
+            or not _valid_ack_kind(payload.kind)
+            or not _valid_peer_id(payload.acker_id)
+            or not isinstance(payload.acknowledged, bool)
+            or not isinstance(payload.created_at, (int, float))
+            or isinstance(payload.created_at, bool)
+            or not math.isfinite(payload.created_at)
+            or payload.created_at <= 0
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid group acknowledgement")
         return payload

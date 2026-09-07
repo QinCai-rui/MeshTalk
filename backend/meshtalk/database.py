@@ -150,6 +150,25 @@ CREATE TABLE IF NOT EXISTS file_received_chunks (
     chunk_index INTEGER NOT NULL,
     PRIMARY KEY (file_id, chunk_index)
 );
+
+CREATE TABLE IF NOT EXISTS message_acks (
+    target_id TEXT NOT NULL,
+    acker_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'message',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (target_id, acker_id)
+);
+
+CREATE TABLE IF NOT EXISTS group_message_acks (
+    target_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    acker_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'message',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (target_id, group_id, acker_id)
+);
 """
 
 
@@ -240,6 +259,19 @@ class Database:
             gd_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_deliveries)")}
             if not gd_columns:
                 await self._db.execute("CREATE TABLE IF NOT EXISTS group_deliveries (message_id TEXT NOT NULL, recipient_id TEXT NOT NULL, status TEXT NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY (message_id, recipient_id))")
+        except Exception:
+            pass
+        # Ensure acknowledgement tables exist (new in 0.24.9; older DBs lack them)
+        try:
+            ack_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(message_acks)")}
+            if not ack_columns:
+                await self._db.execute("CREATE TABLE IF NOT EXISTS message_acks (target_id TEXT NOT NULL, acker_id TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'message', created_at REAL NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY (target_id, acker_id))")
+        except Exception:
+            pass
+        try:
+            gack_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_message_acks)")}
+            if not gack_columns:
+                await self._db.execute("CREATE TABLE IF NOT EXISTS group_message_acks (target_id TEXT NOT NULL, group_id TEXT NOT NULL, acker_id TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'message', created_at REAL NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY (target_id, group_id, acker_id))")
         except Exception:
             pass
         await self._encrypt_existing_message_content()
@@ -421,7 +453,17 @@ class Database:
             message["content"] = self._decrypt_content(message["content"]) or ""
             if isinstance(message["content"], bytes):
                 message["content"] = message["content"].decode("utf-8", errors="replace")
+            message["acks"] = await self.get_message_acks(message["message_id"])
         return messages
+
+    async def get_message(self, message_id: str) -> dict | None:
+        """Retrieve a specific direct message by message ID."""
+        async with self._db.execute(
+            "SELECT message_id, sender_id, recipient_id FROM messages WHERE message_id = ?",
+            (message_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
     async def save_message(self, msg: dict) -> None:
         """Store a message in the database with encrypted content."""
@@ -565,6 +607,7 @@ class Database:
     async def delete_message_locally(self, message_id: str, group_id: str | None = None) -> bool:
         """Remove a message and its local history row without notifying peers."""
         await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (message_id,))
+        await self._db.execute("DELETE FROM message_acks WHERE target_id = ?", (message_id,))
         if group_id is None:
             cursor = await self._db.execute(
                 "DELETE FROM messages WHERE message_id = ?",
@@ -576,6 +619,10 @@ class Database:
                 (message_id, group_id),
             )
             await self._db.execute("DELETE FROM group_deliveries WHERE message_id = ?", (message_id,))
+            await self._db.execute(
+                "DELETE FROM group_message_acks WHERE target_id = ? AND group_id = ?",
+                (message_id, group_id),
+            )
         await self._db.commit()
         return cursor.rowcount > 0
 
@@ -587,8 +634,99 @@ class Database:
         await self._db.execute("DELETE FROM file_transfers WHERE file_id = ?", (file_id,))
         await self._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (file_id,))
         await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (file_id,))
+        await self._db.execute("DELETE FROM message_acks WHERE target_id = ?", (file_id,))
+        group_id = transfer.get("group_id")
+        if group_id:
+            await self._db.execute(
+                "DELETE FROM group_message_acks WHERE target_id = ? AND group_id = ?",
+                (file_id, group_id),
+            )
+        else:
+            await self._db.execute("DELETE FROM group_message_acks WHERE target_id = ?", (file_id,))
         await self._db.commit()
         return transfer
+
+    # ------------------------------------------------------------------ acknowledgements
+    async def set_message_ack(
+        self, target_id: str, acker_id: str, kind: str = "message", created_at: float | None = None
+    ) -> dict:
+        """Record an acknowledgement of a DM message/file; toggle is handled by removal."""
+        now = created_at if created_at is not None else time.time()
+        await self._db.execute(
+            """INSERT INTO message_acks (target_id, acker_id, kind, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(target_id, acker_id) DO UPDATE SET
+                 kind = excluded.kind,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at""",
+            (target_id, acker_id, kind, now, time.time()),
+        )
+        await self._db.commit()
+        return {"target_id": target_id, "acker_id": acker_id, "kind": kind, "created_at": now}
+
+    async def remove_message_ack(self, target_id: str, acker_id: str) -> bool:
+        """Remove an acknowledgement (toggle off); returns True if a row was removed."""
+        cursor = await self._db.execute(
+            "DELETE FROM message_acks WHERE target_id = ? AND acker_id = ?",
+            (target_id, acker_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def get_message_acks(self, target_id: str) -> list[dict]:
+        """Return all acknowledgements for a DM message/file ordered by ack time."""
+        async with self._db.execute(
+            """SELECT target_id, acker_id, kind, created_at, updated_at
+               FROM message_acks WHERE target_id = ? ORDER BY updated_at ASC""",
+            (target_id,),
+        ) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def set_group_message_ack(
+        self,
+        target_id: str,
+        group_id: str,
+        acker_id: str,
+        kind: str = "message",
+        created_at: float | None = None,
+    ) -> dict:
+        """Record an acknowledgement of a group message/file."""
+        now = created_at if created_at is not None else time.time()
+        await self._db.execute(
+            """INSERT INTO group_message_acks (target_id, group_id, acker_id, kind, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(target_id, group_id, acker_id) DO UPDATE SET
+                 kind = excluded.kind,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at""",
+            (target_id, group_id, acker_id, kind, now, time.time()),
+        )
+        await self._db.commit()
+        return {
+            "target_id": target_id,
+            "group_id": group_id,
+            "acker_id": acker_id,
+            "kind": kind,
+            "created_at": now,
+        }
+
+    async def remove_group_message_ack(self, target_id: str, group_id: str, acker_id: str) -> bool:
+        """Remove a group acknowledgement (toggle off)."""
+        cursor = await self._db.execute(
+            "DELETE FROM group_message_acks WHERE target_id = ? AND group_id = ? AND acker_id = ?",
+            (target_id, group_id, acker_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def get_group_message_acks(self, target_id: str, group_id: str) -> list[dict]:
+        """Return all acknowledgements for a group message/file."""
+        async with self._db.execute(
+            """SELECT target_id, group_id, acker_id, kind, created_at, updated_at
+               FROM group_message_acks WHERE target_id = ? AND group_id = ? ORDER BY updated_at ASC""",
+            (target_id, group_id),
+        ) as cursor:
+            return [dict(row) async for row in cursor]
 
     async def upsert_group(self, group_id: str, name: str) -> None:
         """Insert or update a group with its name."""
@@ -724,6 +862,7 @@ class Database:
         for message in messages:
             message["content"] = self._decrypt_content(message["content"]) or ""
             message["deliveries"] = await self.get_group_deliveries(message["message_id"])
+            message["acks"] = await self.get_group_message_acks(message["message_id"], group_id)
         return messages
 
     async def get_group_message(self, message_id: str) -> dict | None:

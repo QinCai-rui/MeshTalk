@@ -85,7 +85,7 @@ Cancel. All settings colours come from chatTheme.ts.
 | Enter / Alt+Enter | Send / insert newline in composer |
 | PgUp/PgDn | Focus and scroll history |
 | Up/Down | Select a message or file while reading history |
-| R / D | Reply / request deletion of selected history item |
+| R / A / D | Reply / acknowledge (toggle) / request deletion of selected history item |
 | Enter | Open a selected image while reading history |
 | Home / End | First / latest history while history is focused |
 | Escape | Existing dialog, rename, reply, and deletion cancellation |
