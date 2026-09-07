@@ -569,8 +569,15 @@ async function main() {
       }
       await reapBackendProcess(backendProcess);
       if (!isWindows) {
-        const restartPath = takeUpdateRestartPath();
+        let restartPath = takeUpdateRestartPath();
         if (!restartPath) throw new Error("Update restart target was not provided.");
+        // Older releases wrote the install directory here; resolve it to the
+        // launcher so an update staged before this upgrade still relaunches.
+        try {
+          if (existsSync(restartPath) && statSync(restartPath).isDirectory()) {
+            restartPath = join(restartPath, "meshtalk");
+          }
+        } catch {}
         if (!existsSync(restartPath)) throw new Error(`Updated launcher does not exist: ${restartPath}`);
         code = await launchReplacement(restartPath, []);
       } else {
