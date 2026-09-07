@@ -85,9 +85,9 @@ export function unreadMessageBackground(progress: number): string {
   const start = [61, 103, 73]
   const end = [27, 40, 32]
   const amount = Math.min(1, Math.max(0, progress))
-  // Ease both ends of the transition so the highlight settles into the canvas
-  // without a visibly linear step through the darker mid-tones.
-  const easedAmount = amount * amount * (3 - 2 * amount)
+  // Hold the readable green for longer, then let it settle quickly near the
+  // end so the dark tail does not linger after the highlight has done its job.
+  const easedAmount = amount * amount
   const channels = start.map((channel, index) => Math.round(channel + (end[index] - channel) * easedAmount))
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`
 }
