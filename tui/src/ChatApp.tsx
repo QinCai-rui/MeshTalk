@@ -1811,6 +1811,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         unreadNow={unreadNow}
         markUnreadMessageVisible={markUnreadMessageVisible}
         openSettings={() => actions.showDialog({ kind: "settings" })}
+        openAttach={() => void actions.openFilePicker()}
+        openFiles={() => void actions.loadFiles()}
+        openFriends={() => actions.showDialog({ kind: "friends" })}
+        openGroups={() => void actions.loadRooms()}
         openImage={(file) => {
           if (file.file_path)
             actions.showDialog({
