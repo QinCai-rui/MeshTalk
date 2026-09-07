@@ -793,7 +793,15 @@ async def main(debug: bool = False) -> None:
         return {"results": results, "errors": errors}
 
     async def handle_files(req: dict) -> dict:
-        transfers = await file_manager.list_transfers()
+        peer_id = req.get("peer_id")
+        group_id = req.get("group_id")
+        if peer_id is not None and (not isinstance(peer_id, str) or not peer_id):
+            return {"error": "peer_id must be a non-empty string"}
+        if group_id is not None and (not isinstance(group_id, str) or not group_id):
+            return {"error": "group_id must be a non-empty string"}
+        if peer_id and group_id:
+            return {"error": "Specify either peer_id or group_id"}
+        transfers = await file_manager.list_transfers(peer_id=peer_id, group_id=group_id)
         # Normalize file_path for display: convert to string if Path
         for t in transfers:
             if t.get("file_path"):

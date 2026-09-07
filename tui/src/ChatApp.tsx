@@ -53,6 +53,7 @@ import {
 import { Sidebar } from "./components/Sidebar";
 import { ConversationPanel } from "./components/ConversationPanel";
 import { DialogPanel } from "./components/DialogPanel";
+import { clearImageCache } from "./components/ImageAttachment";
 import {
   notify,
   type NotificationDelivery,
@@ -185,6 +186,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     import("./types").DebugInfo | null
   >(null);
   const [fileTransfers, setFileTransfers] = useState<FileTransfer[]>([]);
+  const [conversationFileTransfers, setConversationFileTransfers] = useState<
+    FileTransfer[]
+  >([]);
+  const [conversationLoading, setConversationLoading] = useState(false);
   const [typingPeers, setTypingPeers] = useState<
     Record<string, Record<string, TypingPeer>>
   >({});
@@ -486,7 +491,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     await setPhase(StartupPhase.LoadData);
     await actions.refreshPeers();
     await actions.refreshGroups();
-    void actions.refreshFiles();
 
     const mutedResp = await ipc.send("muted_peers");
     if (!mutedResp.error)
@@ -720,7 +724,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         if (active && !backendDisconnected.current && selectedGroupId)
           setStatus(`Group member refresh error: ${String(error)}`);
       });
-      void actions.refreshFiles();
       void ipc
         .send("control")
         .then((control) => {
@@ -738,6 +741,31 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       clearInterval(interval);
     };
   }, [ipc, selectedGroupId]);
+
+  function refreshSelectedConversationFiles() {
+    const currentSelection = selection;
+    const currentSelectionKey = selectionKey;
+    if (!currentSelection || !currentSelectionKey) return;
+    const request =
+      currentSelection.kind === "peer"
+        ? ipc.send("files", { peer_id: currentSelection.id })
+        : ipc.send("files", { group_id: currentSelection.id });
+    void request
+      .then((response) => {
+        if (!response.error && selectionKeyRef.current === currentSelectionKey)
+          setConversationFileTransfers(response.files as FileTransfer[]);
+      })
+      .catch(() => {});
+  }
+
+  function fileEventMatchesSelection(event: IPCEvent) {
+    if (!selection) return false;
+    const groupId = event.group_id as string | null | undefined;
+    if (groupId)
+      return selection.kind === "group" && selection.id === groupId;
+    const peerId = (event.sender_id ?? event.recipient_id) as string | undefined;
+    return selection.kind === "peer" && selection.id === peerId;
+  }
 
   useEffect(() => {
     if (!flashingEnabled) return;
@@ -908,7 +936,12 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         }
         if (event.event === "delivered") {
           const messageId = event.message_id as string;
-          setDeliveredMessageIds((c) => new Set(c).add(messageId));
+          setDeliveredMessageIds((current) => {
+            const next = new Set(current);
+            next.add(messageId);
+            while (next.size > 1_024) next.delete(next.values().next().value!);
+            return next;
+          });
           setMessages((current) =>
             current.map((message) =>
               message.message_id === messageId
@@ -1030,16 +1063,11 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             renderer,
             `Incoming file ${filename} from ${sender}`,
           );
-          void ipc
-            .send("files")
-            .then((res) => {
-              if (!res.error) setFileTransfers(res.files as FileTransfer[]);
-            })
-            .catch(() => {});
+          if (fileEventMatchesSelection(event)) refreshSelectedConversationFiles();
           return;
         }
         if (event.event === "file_progress") {
-          setFileTransfers((cur) =>
+          setConversationFileTransfers((cur) =>
             cur.map((f) =>
               f.file_id === event.file_id
                 ? {
@@ -1065,7 +1093,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             renderer,
             `File received: ${filename}`,
           );
-          setFileTransfers((current) =>
+          setConversationFileTransfers((current) =>
             current.map((file) =>
               file.file_id === fileId
                 ? {
@@ -1077,12 +1105,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
                 : file,
             ),
           );
-          void ipc
-            .send("files")
-            .then((res) => {
-              if (!res.error) setFileTransfers(res.files as FileTransfer[]);
-            })
-            .catch(() => {});
+          if (fileEventMatchesSelection(event)) refreshSelectedConversationFiles();
           return;
         }
         if (
@@ -1098,12 +1121,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           else if (event.event === "file_delivered")
             actions.showStatus(`File ${name} delivered.`);
           else actions.showStatus(`File ${name} queued for offline peer.`);
-          void ipc
-            .send("files")
-            .then((res) => {
-              if (!res.error) setFileTransfers(res.files as FileTransfer[]);
-            })
-            .catch(() => {});
+          if (fileEventMatchesSelection(event)) refreshSelectedConversationFiles();
           return;
         }
         if (event.event !== "message") {
@@ -1137,9 +1155,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             `New message from ${sender}`,
           );
         updatePeerInteraction(senderId);
-        if (senderId !== selectedPeerId) {
+        const conversationKey = `peer:${senderId}`;
+        if (
+          senderId !== selectedPeerId ||
+          selectionKeyRef.current !== conversationKey
+        ) {
           rememberUnreadMessage(
-            `peer:${senderId}`,
+            conversationKey,
             event.message_id as string | undefined,
           );
           setPeers((current) =>
@@ -1167,7 +1189,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         void ipc
           .send("messages", { peer_id: senderId })
           .then((response) => {
-            if (!response.error) {
+            if (!response.error && selectionKeyRef.current === conversationKey) {
               setMessages(response.messages as Message[]);
               void actions.refreshPeers();
             }
@@ -1191,10 +1213,17 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     let cancelled = false;
     if (!selection || !selectionKey) {
       setMessages([]);
+      setConversationFileTransfers([]);
+      clearImageCache();
+      setConversationLoading(false);
       setDraftLength(0);
       setComposerHeight(MIN_COMPOSER_HEIGHT);
       return;
     }
+    setMessages([]);
+    setConversationFileTransfers([]);
+    clearImageCache();
+    setConversationLoading(true);
     const unreadCount =
       selection.kind === "peer"
         ? (peers.find((peer) => peer.peer_id === selection.id)?.unread_count ??
@@ -1240,15 +1269,27 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         const history = response.messages as Message[];
         rememberUnreadHistory(selectionKey, history, unreadCount);
         setMessages(history);
+        setConversationLoading(false);
         if (selection.kind === "peer") void actions.refreshPeers();
         else void actions.refreshGroups();
       })
       .catch((error) => {
+        if (!cancelled) setConversationLoading(false);
         if (!cancelled && !backendDisconnected.current)
           setStatus(
             `History error: ${error instanceof Error ? error.message : String(error)}`,
           );
       });
+    const filesRequest =
+      selection.kind === "peer"
+        ? ipc.send("files", { peer_id: selection.id })
+        : ipc.send("files", { group_id: selection.id });
+    filesRequest
+      .then((response) => {
+        if (!cancelled && !response.error)
+          setConversationFileTransfers(response.files as FileTransfer[]);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -1371,7 +1412,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           .then((response) => {
             if (response.error) throw new Error(response.error);
             if (message.kind === "file")
-              setFileTransfers((current) =>
+              setConversationFileTransfers((current) =>
                 current.filter((item) => item.file_id !== message.id),
               );
             else
@@ -1612,17 +1653,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       .map(([conversation]) => conversation),
   );
   const conversationFiles = useMemo(() => {
-    const matched = fileTransfers.filter((f) => {
-      if (selection?.kind === "peer")
-        return (
-          !f.group_id &&
-          (f.sender_id === selection.id || f.recipient_id === selection.id)
-        );
-      if (selection?.kind === "group") return f.group_id === selection.id;
-      return false;
-    });
     const grouped = new Map<string, FileTransfer[]>();
-    for (const f of matched) {
+    for (const f of conversationFileTransfers) {
       const key = `${f.filename}|${f.sender_id}|${f.group_id ?? ""}|${Math.round(f.created_at)}`;
       const list = grouped.get(key);
       if (list) list.push(f);
@@ -1644,7 +1676,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     return [...grouped.values()]
       .map((list) => ({ file: best(list), all: list }))
       .sort((a, b) => a.file.created_at - b.file.created_at);
-  }, [fileTransfers, selection]);
+  }, [conversationFileTransfers]);
   const conversationItems = useMemo<ConversationItem[]>(
     () =>
       [
@@ -1744,6 +1776,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         controlStatus={controlStatus}
         hasRooms={groups.length > 0}
         conversationItems={conversationItems}
+        conversationLoading={conversationLoading}
         deliveredMessageIds={deliveredMessageIds}
         dialogOpen={Boolean(dialog)}
         draftLength={draftLength}
@@ -1913,6 +1946,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             void ipc.send("delete_message", { message_id: file.file_id, group_id: file.group_id ?? undefined, file: true }).then((response: any) => {
               if (response?.error) { setStatus(`Delete failed: ${response.error}`); return }
               setFileTransfers((cur) => cur.filter((f) => f.file_id !== file.file_id))
+              setConversationFileTransfers((cur) => cur.filter((f) => f.file_id !== file.file_id))
               setDialog((prev) => prev?.kind === "file-list" ? { kind: "file-list", files: prev.files.filter((f) => f.file_id !== file.file_id) } : prev)
               setStatus(`Deleted ${file.filename} locally.`)
             }).catch((e: unknown) => setStatus(`Delete failed: ${e instanceof Error ? e.message : String(e)}`))

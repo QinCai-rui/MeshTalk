@@ -5,13 +5,14 @@ import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } 
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
 import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
-import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
+import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
 
 type ConversationPanelProps = {
   compact: boolean
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
   hasRooms: boolean
   conversationItems: ConversationItem[]
+  conversationLoading?: boolean
   deliveredMessageIds: Set<string>
   dialogOpen: boolean
   draftLength: number
@@ -83,7 +84,7 @@ const MESSAGE_MARKDOWN_STYLES = {
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, hasRooms, conversationItems, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send } = props
+  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send } = props
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
   const [replyHighlight, setReplyHighlight] = useState<{ id: string; startedAt: number }>()
   const [replyHighlightNow, setReplyHighlightNow] = useState(0)
@@ -147,6 +148,16 @@ export function ConversationPanel(props: ConversationPanelProps) {
     scrollboxRef.current?.scrollChildIntoView(selectedReplyTargetId)
   }, [selectedReplyTargetId])
 
+  useEffect(() => {
+    const scrollbar = scrollboxRef.current?.verticalScrollBar
+    if (!scrollbar) return
+    const refreshImageViewport = () => notifyImageViewportChanged()
+    scrollbar.on("change", refreshImageViewport)
+    return () => {
+      scrollbar.off("change", refreshImageViewport)
+    }
+  }, [scrollboxRef])
+
   return <box style={{ width, flexBasis: 0, flexGrow: 1, flexShrink: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: theme.canvas }}>
     <box style={{ flexShrink: 0, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, backgroundColor: theme.surface }}>
       <text fg={theme.text} wrapMode="word"><b>{selectedGroup?.name ?? selected?.display_name ?? "Your conversations"}</b></text>
@@ -161,10 +172,11 @@ export function ConversationPanel(props: ConversationPanelProps) {
         </>}
         {selectedGroup && limitedGroupMembers.length > 0 && <text id="group-capability-warning" fg={flashingWarningColor} wrapMode="word">Limited features: {limitedGroupMembers.map(member => member.display_name).join(", ")}. Shared features remain available.</text>}
       </box>
-      <scrollbox ref={scrollboxRef} focused={scrollFocused && !dialogOpen} onMouseDown={() => setScrollFocused(true)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, paddingLeft: 2, paddingRight: 1 }} contentOptions={{ flexDirection: "column" }} stickyScroll stickyStart="bottom" verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
+      <scrollbox ref={scrollboxRef} focused={scrollFocused && !dialogOpen} onMouseDown={() => setScrollFocused(true)} onMouseScroll={() => notifyImageViewportChanged()} onKeyDown={(key) => { if (["up", "down", "pageup", "pagedown", "home", "end"].includes(key.name)) queueMicrotask(() => notifyImageViewportChanged()) }} onSizeChange={() => notifyImageViewportChanged()} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, paddingLeft: 2, paddingRight: 1 }} contentOptions={{ flexDirection: "column" }} stickyScroll stickyStart="bottom" verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
         {!selected && !selectedGroup ? <box marginTop={2} gap={1}><text fg={theme.text}><b>A little closer, wherever you are.</b></text><text fg={theme.muted}>Ctrl+Up/Down selects a conversation. Ctrl+P opens settings to find peers, join a group, or share files.</text></box> : null}
-        {selected && !conversationItems.length ? <text fg={theme.muted}>No messages yet. Say hello.</text> : null}
-        {selectedGroup && !conversationItems.length ? <text fg={theme.muted}>No messages yet. Say hello to the group.</text> : null}
+        {conversationLoading ? <box style={{ alignItems: "center", marginTop: 2 }}><text fg={theme.warning}>Loading Messages</text></box> : null}
+        {selected && !conversationLoading && !conversationItems.length ? <text fg={theme.muted}>No messages yet. Say hello.</text> : null}
+        {selectedGroup && !conversationLoading && !conversationItems.length ? <text fg={theme.muted}>No messages yet. Say hello to the group.</text> : null}
         {conversationItems.map((item, index) => {
           const rows: ReactNode[] = []
           const prev = conversationItems[index - 1]
@@ -210,7 +222,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
             }))
             const fileReplyHighlightProgress = replyHighlightProgress(file.file_id)
             rows.push(
-              <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { messageRefs.current[file.file_id] = node }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ flexDirection: "column", marginBottom: 1, backgroundColor: fileReplyHighlightProgress !== undefined ? unreadMessageBackground(fileReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === file.file_id ? theme.selected : undefined }}>
+              <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ flexDirection: "column", marginBottom: 1, backgroundColor: fileReplyHighlightProgress !== undefined ? unreadMessageBackground(fileReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === file.file_id ? theme.selected : undefined }}>
                 <text>
                   <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === file.file_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(file.created_at)} </span>
                   <span fg={isLocal ? theme.accent : theme.text}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
@@ -262,7 +274,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
             formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
           const messageReplyHighlightProgress = replyHighlightProgress(message.message_id)
           rows.push(
-              <box id={message.message_id} key={message.message_id} ref={(node) => { messageRefs.current[message.message_id] = node }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: messageReplyHighlightProgress !== undefined ? unreadMessageBackground(messageReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === message.message_id ? theme.selected : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
+              <box id={message.message_id} key={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: messageReplyHighlightProgress !== undefined ? unreadMessageBackground(messageReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === message.message_id ? theme.selected : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
               <text>
                 <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === message.message_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(message.created_at)} </span>
                 <span fg={isSystem ? theme.warning : isLocal ? theme.accent : theme.text}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
