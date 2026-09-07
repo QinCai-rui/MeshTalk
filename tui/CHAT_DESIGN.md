@@ -34,7 +34,9 @@ its existing UI.
   addresses and long relay descriptions simplify when space is limited.
 - History retains Markdown, dates, reply navigation, delivery details, attachments,
   image previews, selection, scrolling, and unread highlights. Connection/delivery
-  warnings remain outside the scrolling history and use static text.
+  warnings remain outside the scrolling history. Rendezvous, capability, offline,
+  and friend-request warnings pulse between readable amber tones when flashing is
+  enabled; Accessibility settings can keep them static.
 - Typing, reply context, input, byte usage, and keyboard help each occupy their own
   layout rows. Temporary status messages replace keyboard hints in a fixed-height footer; long messages scroll inside that area without moving the composer. The footer aligns composer/history hints left and the highlighted settings shortcut right. Nothing is absolutely positioned over editable text.
 - The chat pane receives its actual available width. Its zero flex basis prevents
