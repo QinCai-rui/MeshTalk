@@ -96,6 +96,7 @@ function removeCachedImage(filePath: string) {
 }
 
 export function clearImageCache() {
+  pendingThumbnailLoads.clear()
   for (const filePath of [...cache.keys()]) removeCachedImage(filePath)
 }
 
