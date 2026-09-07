@@ -79,8 +79,11 @@ export const presenceIndicator = (presence: "active" | "away" | "offline") =>
   presence === "active" ? "●" : presence === "away" ? "~" : "○"
 
 export function unreadMessageBackground(progress: number): string {
-  const start = [103, 82, 40]
-  const end = [40, 32, 24]
+  // Keep unread/reply highlights in the same restrained green family as the
+  // success and presence colors; the former ochre fade fought the slate/mint
+  // theme and read like a warning state.
+  const start = [61, 103, 73]
+  const end = [27, 40, 32]
   const amount = Math.min(1, Math.max(0, progress))
   const channels = start.map((channel, index) => Math.round(channel + (end[index] - channel) * amount))
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`
