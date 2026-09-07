@@ -4,6 +4,7 @@ import { mkdir, rm } from "fs/promises"
 import { join } from "path"
 import { tmpdir } from "os"
 import { ImageAttachment, detectImageFormat, fittedImageSize, isFullyWithinViewport } from "./ImageAttachment"
+import { imageViewerPropsEqual } from "./DialogPanel"
 import { goBack } from "../navigation"
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JNNsAAAAASUVORK5CYII="
@@ -49,6 +50,16 @@ test("shows an unavailable state when an expected image cannot be loaded", async
   } finally {
     setup.renderer.destroy()
   }
+})
+
+test("memoizes the full-screen viewer until its display inputs change", () => {
+  const props = { filePath: "/tmp/image.png", filename: "image.png", dialogWidth: 28, dialogHeight: 10, imageProtocol: "blocks" as const }
+  expect(imageViewerPropsEqual(props, { ...props })).toBe(true)
+  expect(imageViewerPropsEqual(props, { ...props, filePath: "/tmp/other.png" })).toBe(false)
+  expect(imageViewerPropsEqual(props, { ...props, filename: "other.png" })).toBe(false)
+  expect(imageViewerPropsEqual(props, { ...props, dialogWidth: 29 })).toBe(false)
+  expect(imageViewerPropsEqual(props, { ...props, dialogHeight: 11 })).toBe(false)
+  expect(imageViewerPropsEqual(props, { ...props, imageProtocol: "kitty" })).toBe(false)
 })
 
 test("Escape navigation closes the full-screen image preview", () => {
