@@ -1,4 +1,4 @@
-import type { Group, GroupDelivery, Peer } from "./types"
+import type { ConversationItem, Group, GroupDelivery, Peer } from "./types"
 import type { TextareaRenderable } from "@opentui/core"
 import { chatTheme as theme, unreadMessageBackground as unreadBackground } from "./chatTheme"
 
@@ -34,6 +34,22 @@ export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
   if (queued) details.push(`queued ${queued}`)
   if (unavailable) details.push(`unavailable ${unavailable}`)
   return details.join(" · ")
+}
+export const MESSAGE_GROUP_WINDOW_SECONDS = 5 * 60
+function conversationSender(item: ConversationItem): string {
+  return item.type === "message" ? item.message.sender_id : item.file.sender_id
+}
+function isSystemItem(item: ConversationItem): boolean {
+  return item.type === "message" && Boolean(item.message.kind && item.message.kind !== "message" && item.message.kind !== "text")
+}
+export function shouldGroupWithPrev(prev: ConversationItem | undefined, curr: ConversationItem): boolean {
+  if (!prev) return false
+  if (conversationSender(prev) !== conversationSender(curr)) return false
+  if (Math.abs(curr.createdAt - prev.createdAt) >= MESSAGE_GROUP_WINDOW_SECONDS) return false
+  if (dayKey(prev.createdAt) !== dayKey(curr.createdAt)) return false
+  if (isSystemItem(prev) || isSystemItem(curr)) return false
+  if (curr.type === "message" && curr.message.reply_to_message_id) return false
+  return true
 }
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }
 export function isImageFile(filename: string): boolean { return ["png", "jpg", "jpeg", "gif", "webp"].includes(filename.split(".").pop()?.toLowerCase() ?? "") }

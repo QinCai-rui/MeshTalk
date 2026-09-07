@@ -95,6 +95,16 @@ Mouse selection, drag-to-select, scrolling, and existing detail/preview actions 
 Draft ownership, sending, limits, resizing, clipboard integration, and IPC contracts
 remain in their existing orchestration and action modules.
 
+## Message grouping
+
+Consecutive messages (and file attachments) from the same sender collapse
+Discord-style: the first item shows the full header (time + name + status),
+follow-ups show content only. A new group starts when the sender changes,
+5+ minutes pass (`MESSAGE_GROUP_WINDOW_SECONDS` in `utils.ts`), the day
+changes, either item is a system notice, or the current item is a reply.
+Grouping is purely presentational in `ConversationPanel.tsx`;
+selection, reply/delete targets, and unread tracking are unaffected.
+
 ## Verification
 
 Run from the repository root:
