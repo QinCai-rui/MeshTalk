@@ -11,6 +11,7 @@ export const chatTheme = {
   link: "#65a9ff",
   line: "#435568",
   warning: "#f0c674",
+  warningPulse: "#ab9667",
   danger: "#ff9292",
   dangerSurface: "#3a2022",
   success: "#66dd88",

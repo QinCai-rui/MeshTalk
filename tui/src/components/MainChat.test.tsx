@@ -61,6 +61,10 @@ async function close(setup: Awaited<ReturnType<typeof testRender>>) {
   await act(async () => setup.renderer.destroy())
 }
 
+function foregroundFor(setup: Awaited<ReturnType<typeof testRender>>, text: string) {
+  return setup.captureSpans().lines.flatMap(line => line.spans).find(span => span.text.includes(text))?.fg
+}
+
 for (const width of [120, 80, 64, 48, 32]) {
   test(`main chat fits ${width} columns with readable navigation and composer`, async () => {
     const { stacked, panelWidth } = chatLayout(width)
@@ -298,15 +302,15 @@ test("control status stays quiet until a room exists, then explains how to conne
   props.hasRooms = false
   const idle = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
   try {
-    expect(await settle(idle)).not.toContain("Control server disconnected")
+    expect(await settle(idle)).not.toContain("Out-of-sync with MeshTalk rendezvous server")
   } finally { await close(idle) }
 
   props.hasRooms = true
   const disconnected = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
   try {
-    const frame = await settle(disconnected, "Control server disconnected")
+    const frame = await settle(disconnected, "Out-of-sync with MeshTalk")
     expect(frame).toContain("reconnecting (0)")
-    expect(frame).toContain("Ctrl+P > Connection")
+    expect(frame).toContain("Peer connectivity may degrade")
   } finally { await close(disconnected) }
 
   props.controlStatus = { connected: false, reconnect_attempts: 0 }
@@ -315,6 +319,55 @@ test("control status stays quiet until a room exists, then explains how to conne
     const frame = await settle(unconfigured, "Remote discovery is not configured")
     expect(frame.replace(/\s+/g, " ")).toContain("connect these rooms")
   } finally { await close(unconfigured) }
+})
+
+test("rendezvous and capability warnings pulse softly and remain readable", async () => {
+  const warningProps = panelProps(80)
+  warningProps.hasRooms = true
+  warningProps.controlStatus = { connected: false, reconnect_attempts: 2, control_url: "wss://control.example/v1/rendezvous" }
+  warningProps.selected = { ...peers[0]!, delivery_warnings: ["offline", "not_friend"] }
+  warningProps.selectedHasCapabilityGap = true
+  warningProps.capabilityGapMessage = "This peer needs a newer client."
+  warningProps.flashingEnabled = true
+  warningProps.blinkOn = true
+  const bright = await testRender(<ConversationPanel {...warningProps} />, { width: 80, height: 26 })
+  let brightRendezvous: ReturnType<typeof foregroundFor>
+  let brightCapability: ReturnType<typeof foregroundFor>
+  let brightOffline: ReturnType<typeof foregroundFor>
+  let brightFriend: ReturnType<typeof foregroundFor>
+  try {
+    const frame = await settle(bright, "Out-of-sync with MeshTalk")
+    expect(frame).toContain("Limited: This peer needs a newer client.")
+    expect(frame).toContain("Offline: messages queue")
+    expect(frame).toContain("Messages blocked until your friend request")
+    brightRendezvous = foregroundFor(bright, "Out-of-sync with MeshTalk")
+    brightCapability = foregroundFor(bright, "Limited: This peer")
+    brightOffline = foregroundFor(bright, "Offline: messages queue")
+    brightFriend = foregroundFor(bright, "Messages blocked until")
+    expect(brightRendezvous).toBeDefined()
+    expect(brightCapability).toBeDefined()
+    expect(brightOffline).toBeDefined()
+    expect(brightFriend).toBeDefined()
+  } finally { await close(bright) }
+
+  const dim = await testRender(<ConversationPanel {...warningProps} blinkOn={false} />, { width: 80, height: 26 })
+  try {
+    const dimFrame = await settle(dim, "Out-of-sync with MeshTalk")
+    expect(dimFrame).toContain("Limited: This peer needs a newer client.")
+    expect(foregroundFor(dim, "Out-of-sync with MeshTalk")).not.toEqual(brightRendezvous)
+    expect(foregroundFor(dim, "Limited: This peer")).not.toEqual(brightCapability)
+    expect(foregroundFor(dim, "Offline: messages queue")).not.toEqual(brightOffline)
+    expect(foregroundFor(dim, "Messages blocked until")).not.toEqual(brightFriend)
+  } finally { await close(dim) }
+
+  const staticWarning = await testRender(<ConversationPanel {...warningProps} flashingEnabled={false} blinkOn={false} />, { width: 80, height: 26 })
+  try {
+    await settle(staticWarning, "Out-of-sync with MeshTalk")
+    expect(foregroundFor(staticWarning, "Out-of-sync with MeshTalk")).toEqual(brightRendezvous)
+    expect(foregroundFor(staticWarning, "Limited: This peer")).toEqual(brightCapability)
+    expect(foregroundFor(staticWarning, "Offline: messages queue")).toEqual(brightOffline)
+    expect(foregroundFor(staticWarning, "Messages blocked until")).toEqual(brightFriend)
+  } finally { await close(staticWarning) }
 })
 
 test("group history keeps system messages, replies, file status, and delivery details", async () => {

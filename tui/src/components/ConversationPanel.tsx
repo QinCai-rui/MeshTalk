@@ -95,6 +95,9 @@ export function ConversationPanel(props: ConversationPanelProps) {
   const byteCount = `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`
   const hasConversation = Boolean(selected || selectedGroup)
   const peerState = selected ? peerPresence(selected) === "active" ? "Online" : peerPresence(selected) === "away" ? "Away" : "Offline" : ""
+  // Keep warning text readable during the accessibility pulse. The prior UI faded
+  // it almost away; the calmer shell shifts between two amber tones instead.
+  const flashingWarningColor = !flashingEnabled || blinkOn ? theme.warning : theme.warningPulse
 
 
   useEffect(() => () => messageSyntaxStyle.destroy(), [messageSyntaxStyle])
@@ -151,12 +154,12 @@ export function ConversationPanel(props: ConversationPanelProps) {
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
       <box paddingLeft={2} paddingRight={1} flexShrink={0}>
-        {hasRooms && !controlStatus.connected && <text fg={theme.warning} wrapMode="word">{controlStatus.control_url ? `Control server disconnected; reconnecting (${controlStatus.reconnect_attempts}). Open Ctrl+P > Connection to check settings.` : "Remote discovery is not configured. Open Ctrl+P > Connection to connect these rooms."}</text>}
+        {hasRooms && !controlStatus.connected && <text id="rendezvous-warning" fg={flashingWarningColor} wrapMode="word">{controlStatus.control_url ? `Out-of-sync with MeshTalk rendezvous server. Peer connectivity may degrade over time; reconnecting (${controlStatus.reconnect_attempts}).` : "Remote discovery is not configured. Open Ctrl+P > Connection to connect these rooms."}</text>}
         {selected && <>
-          {(selected.delivery_warnings ?? []).map(kind => kind === "offline" ? <text key={kind} fg={theme.warning} wrapMode="word">Offline: messages queue until this peer reconnects.</text> : kind === "not_friend" ? <text key={kind} fg={theme.warning} wrapMode="word">Messages blocked until your friend request is accepted. Ctrl+P &gt; Friends &gt; Add friend.</text> : null)}
-          {selectedHasCapabilityGap && <text fg={theme.warning} wrapMode="word">Limited: {capabilityGapMessage}</text>}
+          {(selected.delivery_warnings ?? []).map(kind => kind === "offline" ? <text id="offline-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Offline: messages queue until this peer reconnects.</text> : kind === "not_friend" ? <text id="friend-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Messages blocked until your friend request is accepted. Ctrl+P &gt; Friends &gt; Add friend.</text> : null)}
+          {selectedHasCapabilityGap && <text id="capability-warning" fg={flashingWarningColor} wrapMode="word">Limited: {capabilityGapMessage}</text>}
         </>}
-        {selectedGroup && limitedGroupMembers.length > 0 && <text fg={theme.warning} wrapMode="word">Limited features: {limitedGroupMembers.map(member => member.display_name).join(", ")}. Shared features remain available.</text>}
+        {selectedGroup && limitedGroupMembers.length > 0 && <text id="group-capability-warning" fg={flashingWarningColor} wrapMode="word">Limited features: {limitedGroupMembers.map(member => member.display_name).join(", ")}. Shared features remain available.</text>}
       </box>
       <scrollbox ref={scrollboxRef} focused={scrollFocused && !dialogOpen} onMouseDown={() => setScrollFocused(true)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, paddingLeft: 2, paddingRight: 1 }} contentOptions={{ flexDirection: "column" }} stickyScroll stickyStart="bottom" verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
         {!selected && !selectedGroup ? <box marginTop={2} gap={1}><text fg={theme.text}><b>A little closer, wherever you are.</b></text><text fg={theme.muted}>Ctrl+Up/Down selects a conversation. Ctrl+P opens settings to find peers, join a group, or share files.</text></box> : null}
