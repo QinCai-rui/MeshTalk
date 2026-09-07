@@ -541,12 +541,16 @@ export async function installRelease(release: Release, installDir: string, onPro
     await Bun.sleep(16)
     staging = mkdtempSync(join(installDir, ".meshtalk-update-"))
     const installStaging = staging
-    for (const name of expectedFiles()) {
+    // Backend first, launcher last: an interruption then leaves the
+    // known-good launcher in place rather than a new launcher paired with an
+    // old backend.
+    for (const name of backendFirst(expectedFiles())) {
       const staged = join(installStaging, name)
       await copyFile(join(extracted, name), staged)
       await chmod(staged, 0o755)
     }
-    for (const name of expectedFiles()) await rename(join(installStaging, name), join(installDir, name))
+    for (const name of backendFirst(expectedFiles())) await rename(join(installStaging, name), join(installDir, name))
+    await rm(installStaging, { recursive: true, force: true })
     staging = undefined
     // Clear the old immutable-version layout once the flat pair is in place.
     for (const name of [".meshtalk-current.json", ".meshtalk-current.json.bak", ".meshtalk-pending.json"]) {
