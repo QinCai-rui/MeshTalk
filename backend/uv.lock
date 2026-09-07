@@ -175,7 +175,7 @@ wheels = [
 
 [[package]]
 name = "meshtalk-backend"
-version = "0.24.8"
+version = "0.24.9"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
