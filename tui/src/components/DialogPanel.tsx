@@ -7,7 +7,7 @@ import { MarqueeText } from "./MarqueeText"
 import { NotificationDialogs } from "./dialogs/NotificationDialogs"
 import { AboutDialog, SettingsLanding, UpdateDestinationDialog, UpdateDialog, UpdateTokenDialog } from "./dialogs/CommandDialogs"
 import { SettingsConfirm, SettingsField, SettingsMenu, SettingsNotice, SettingsScreen, SettingsSummary } from "./dialogs/SettingsPrimitives"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useKeyboard } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
@@ -156,7 +156,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
-      {dialog.kind === "image-view" && <ImageViewerDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
+      {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} />}
   </>
   if (usesSettingsPanel(dialog)) return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center">
@@ -171,17 +171,29 @@ export function DialogPanel(props: DialogPanelProps) {
   </box>
 }
 
-function ImageViewerDialogContent({ dialog, dialogWidth, dialogHeight, imageProtocol }: { dialog: Extract<Dialog, { kind: "image-view" }>; dialogWidth: number; dialogHeight: number; imageProtocol: ImageProtocol }) {
+type ImageViewerDialogContentProps = {
+  filePath: string
+  filename: string
+  dialogWidth: number
+  dialogHeight: number
+  imageProtocol: ImageProtocol
+}
+
+export function imageViewerPropsEqual(previous: ImageViewerDialogContentProps, next: ImageViewerDialogContentProps): boolean {
+  return previous.filePath === next.filePath && previous.filename === next.filename && previous.dialogWidth === next.dialogWidth && previous.dialogHeight === next.dialogHeight && previous.imageProtocol === next.imageProtocol
+}
+
+const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePath, filename, dialogWidth, dialogHeight, imageProtocol }: ImageViewerDialogContentProps) {
   return (
     <>
-      <text wrapMode="none"><span fg={theme.success}>{dialog.filename}</span></text>
+      <text wrapMode="none"><span fg={theme.success}>{filename}</span></text>
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, alignItems: "center", justifyContent: "center" }}>
-        <ImageAttachment filePath={dialog.filePath} filename={dialog.filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} />
+        <ImageAttachment filePath={filePath} filename={filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} />
       </box>
       <text fg={theme.muted}>Esc returns.</text>
     </>
   )
-}
+}, imageViewerPropsEqual)
 
 function DeliveryDetailsDialogContent({ dialog }: { dialog: Extract<Dialog, { kind: "delivery-details" }> }) {
   const statusOrder = ["delivered", "sent", "queued", "pending", "unavailable"]
