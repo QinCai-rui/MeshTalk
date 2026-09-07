@@ -1,6 +1,6 @@
 {
   "name": "meshtalk-cli",
-  "version": "0.24.6",
+  "version": "0.24.7",
   "private": true,
   "type": "module",
   "scripts": {
