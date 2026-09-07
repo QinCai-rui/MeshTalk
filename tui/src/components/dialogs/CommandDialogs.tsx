@@ -35,7 +35,15 @@ export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeig
   return <SettingsScreen breadcrumb={["About & updates"]} description="MeshTalk terminal messenger." dialogHeight={dialogHeight}>
   <box style={{ flexDirection: "column", gap: 1, width: "100%" }}>
     <text><span fg={theme.link}>Version </span><span fg={theme.success}><b>{appReleaseVersion}</b></span></text>
-    <text><span fg={theme.warning}>Made with love</span> <span fg={theme.muted}>by </span><span fg={theme.accent}>Raymont</span><span fg={theme.muted}>, </span><span fg={theme.link}>Kaesar, </span>and contributors.</text>
+    <MarqueeText width={dialogWidth - 4} animateInSettings segments={[
+      { text: "Made with love by ", fg: theme.muted },
+      { text: "Raymont", fg: theme.accent },
+      { text: ", ", fg: theme.muted },
+      { text: "Deven", fg: theme.link },
+      { text: ", ", fg: theme.muted },
+      { text: "Kaesar", fg: theme.success },
+      { text: ", and contributors.", fg: theme.muted },
+    ]} text="" />
      <text fg={theme.subdued}>Fully decentralised</text>
      <text fg={theme.subdued}>Private by architecture • Not by policy</text>
     {dialog.checked && <MarqueeText width={dialogWidth - 4} fg={isReleaseBuild ? theme.success : theme.danger} text={isReleaseBuild ? "You are up to date, or release metadata is unavailable." : "Updates are available only in compiled MeshTalk releases."} />}
