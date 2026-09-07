@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ConversationItem } from "./types";
-import { MESSAGE_GROUP_WINDOW_SECONDS, shouldGroupWithPrev } from "./utils";
+import { MESSAGE_GROUP_WINDOW_SECONDS, groupStartIndexes } from "./utils";
 
 function msg(id: string, sender: string, createdAt: number, extra = {}): ConversationItem {
   return {
@@ -34,59 +34,83 @@ function file(id: string, sender: string, createdAt: number): ConversationItem {
   };
 }
 
+function starts(items: ConversationItem[]): number[] {
+  return groupStartIndexes(items);
+}
+
 const T0 = 1_700_000_000;
+const MIN = 60;
 
-test("groups quick consecutive messages from the same sender", () => {
-  expect(shouldGroupWithPrev(msg("a", "alice", T0), msg("b", "alice", T0 + 60))).toBe(true);
+test("groups a quick burst from the same sender", () => {
+  expect(starts([msg("a", "alice", T0), msg("b", "alice", T0 + MIN)])).toEqual([0, 0]);
 });
 
-test("first message never groups", () => {
-  expect(shouldGroupWithPrev(undefined, msg("a", "alice", T0))).toBe(false);
+test("window constant is Discord's 8 minutes", () => {
+  expect(MESSAGE_GROUP_WINDOW_SECONDS).toBe(8 * 60);
 });
 
-test("different sender breaks the group", () => {
-  expect(shouldGroupWithPrev(msg("a", "alice", T0), msg("b", "bob", T0 + 10))).toBe(false);
-});
-
-test("5+ minute gap breaks the group", () => {
+test("different sender starts a fresh group", () => {
   expect(
-    shouldGroupWithPrev(
-      msg("a", "alice", T0),
-      msg("b", "alice", T0 + MESSAGE_GROUP_WINDOW_SECONDS),
-    ),
-  ).toBe(false);
-  expect(
-    shouldGroupWithPrev(
-      msg("a", "alice", T0),
-      msg("b", "alice", T0 + MESSAGE_GROUP_WINDOW_SECONDS - 1),
-    ),
-  ).toBe(true);
+    starts([msg("a", "alice", T0), msg("b", "bob", T0 + 10)]),
+  ).toEqual([0, 1]);
 });
 
-test("day change breaks the group", () => {
+test("group ends 8 minutes after its FIRST message, not the previous one", () => {
+  // Rapid typing never extends the window: everything past 8 minutes
+  // from the first message starts a new block even with tiny gaps.
+  const items = [
+    msg("a", "alice", T0),
+    msg("b", "alice", T0 + 4 * MIN),
+    msg("c", "alice", T0 + 7 * MIN),
+    msg("d", "alice", T0 + 8 * MIN),
+    msg("e", "alice", T0 + 9 * MIN),
+  ];
+  expect(starts(items)).toEqual([0, 0, 0, 3, 3]);
+});
+
+test("indefinite chaining is broken: steady typing still splits every 8 minutes", () => {
+  const items = Array.from(
+    { length: 11 },
+    (_, i) => msg(`m${i}`, "alice", T0 + i * 2 * MIN),
+  );
+  // m0..m3 group (0-6 min), m4 (8 min) restarts, m5..m7 group, m8 restarts, m9..m10 group.
+  expect(starts(items)).toEqual([0, 0, 0, 0, 4, 4, 4, 4, 8, 8, 8]);
+});
+
+test("day change starts a fresh group", () => {
   // A week later is a different calendar day in every timezone.
   const nextWeek = T0 + 7 * 24 * 3600;
-  expect(shouldGroupWithPrev(msg("a", "alice", T0), msg("b", "alice", nextWeek))).toBe(false);
+  expect(starts([msg("a", "alice", T0), msg("b", "alice", nextWeek)])).toEqual([0, 1]);
 });
 
-test("reply always starts a fresh header", () => {
+test("reply always starts a fresh header, next message groups under it", () => {
   expect(
-    shouldGroupWithPrev(
+    starts([
       msg("a", "alice", T0),
       msg("b", "alice", T0 + 10, { reply_to_message_id: "a" }),
-    ),
-  ).toBe(false);
+      msg("c", "alice", T0 + 20),
+    ]),
+  ).toEqual([0, 1, 1]);
 });
 
-test("system messages never group", () => {
-  const join = msg("j", "alice", T0 + 10, { kind: "join" });
-  expect(shouldGroupWithPrev(msg("a", "alice", T0), join)).toBe(false);
-  expect(shouldGroupWithPrev(join, msg("b", "alice", T0 + 20))).toBe(false);
+test("system messages never group on either side", () => {
+  expect(
+    starts([
+      msg("a", "alice", T0),
+      msg("j", "alice", T0 + 10, { kind: "join" }),
+      msg("b", "alice", T0 + 20),
+    ]),
+  ).toEqual([0, 1, 2]);
 });
 
 test("files group with adjacent same-sender messages", () => {
-  expect(shouldGroupWithPrev(msg("a", "alice", T0), file("f", "alice", T0 + 10))).toBe(true);
-  expect(shouldGroupWithPrev(file("f", "alice", T0), msg("b", "alice", T0 + 10))).toBe(true);
-  expect(shouldGroupWithPrev(file("f", "alice", T0), file("g", "alice", T0 + 10))).toBe(true);
-  expect(shouldGroupWithPrev(msg("a", "alice", T0), file("f", "bob", T0 + 10))).toBe(false);
+  expect(
+    starts([msg("a", "alice", T0), file("f", "alice", T0 + 10)]),
+  ).toEqual([0, 0]);
+  expect(
+    starts([file("f", "alice", T0), msg("b", "alice", T0 + 10)]),
+  ).toEqual([0, 0]);
+  expect(
+    starts([msg("a", "alice", T0), file("f", "bob", T0 + 10)]),
+  ).toEqual([0, 1]);
 });

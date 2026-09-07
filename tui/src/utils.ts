@@ -35,21 +35,43 @@ export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
   if (unavailable) details.push(`unavailable ${unavailable}`)
   return details.join(" · ")
 }
-export const MESSAGE_GROUP_WINDOW_SECONDS = 5 * 60
+export const MESSAGE_GROUP_WINDOW_SECONDS = 8 * 60
 function conversationSender(item: ConversationItem): string {
   return item.type === "message" ? item.message.sender_id : item.file.sender_id
 }
 function isSystemItem(item: ConversationItem): boolean {
   return item.type === "message" && Boolean(item.message.kind && item.message.kind !== "message" && item.message.kind !== "text")
 }
-export function shouldGroupWithPrev(prev: ConversationItem | undefined, curr: ConversationItem): boolean {
-  if (!prev) return false
+function canChainPair(prev: ConversationItem, curr: ConversationItem): boolean {
   if (conversationSender(prev) !== conversationSender(curr)) return false
-  if (Math.abs(curr.createdAt - prev.createdAt) >= MESSAGE_GROUP_WINDOW_SECONDS) return false
   if (dayKey(prev.createdAt) !== dayKey(curr.createdAt)) return false
   if (isSystemItem(prev) || isSystemItem(curr)) return false
   if (curr.type === "message" && curr.message.reply_to_message_id) return false
   return true
+}
+export function groupStartIndexes(items: ConversationItem[]): number[] {
+  // Discord-style grouping: a burst stays collapsed no matter how fast the
+  // sender types, but the group always ends 8 minutes after its FIRST
+  // message, which then starts a fresh header block.
+  const starts: number[] = new Array(items.length)
+  for (let index = 0; index < items.length; index++) {
+    const curr = items[index]!
+    if (index === 0) {
+      starts[index] = 0
+      continue
+    }
+    const prev = items[index - 1]!
+    const prevStart = starts[index - 1]!
+    if (
+      canChainPair(prev, curr) &&
+      curr.createdAt - items[prevStart]!.createdAt < MESSAGE_GROUP_WINDOW_SECONDS
+    ) {
+      starts[index] = prevStart
+    } else {
+      starts[index] = index
+    }
+  }
+  return starts
 }
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }
 export function isImageFile(filename: string): boolean { return ["png", "jpg", "jpeg", "gif", "webp"].includes(filename.split(".").pop()?.toLowerCase() ?? "") }

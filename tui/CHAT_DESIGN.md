@@ -99,9 +99,11 @@ remain in their existing orchestration and action modules.
 
 Consecutive messages (and file attachments) from the same sender collapse
 Discord-style: the first item shows the full header (time + name + status),
-follow-ups show content only. A new group starts when the sender changes,
-5+ minutes pass (`MESSAGE_GROUP_WINDOW_SECONDS` in `utils.ts`), the day
-changes, either item is a system notice, or the current item is a reply.
+follow-ups show content only. The window is anchored at the group's FIRST
+message: 8 minutes after it (`MESSAGE_GROUP_WINDOW_SECONDS` in `utils.ts`)
+a fresh header block starts, no matter how fast the sender keeps typing.
+A new group also starts when the sender changes, the day changes, either
+item is a system notice, or the current item is a reply.
 Grouping is purely presentational in `ConversationPanel.tsx`;
 selection, reply/delete targets, and unread tracking are unaffected.
 
