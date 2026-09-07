@@ -666,9 +666,11 @@ class FileTransferManager:
             await self.db.update_file_transfer(transfer["file_id"], status="queued")
             logger.warning("Failed to resume file %s: %s", transfer["file_id"], exc)
 
-    async def list_transfers(self) -> list[dict]:
-        """List all file transfers from the database."""
-        return await self.db.get_file_transfers()
+    async def list_transfers(
+        self, peer_id: str | None = None, group_id: str | None = None
+    ) -> list[dict]:
+        """List file transfers, optionally for one peer or group."""
+        return await self.db.get_file_transfers(peer_id=peer_id, group_id=group_id)
 
     async def get_transfer(self, file_id: str) -> dict | None:
         """Get a specific file transfer by ID."""

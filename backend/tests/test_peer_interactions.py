@@ -47,3 +47,11 @@ class PeerInteractionTest(unittest.IsolatedAsyncioTestCase):
             "message-peer": 20.0,
             "file-peer": 30.0,
         })
+        self.assertEqual(
+            [item["file_id"] for item in await self.db.get_file_transfers("file-peer")],
+            ["completed-file"],
+        )
+        self.assertEqual(
+            [item["file_id"] for item in await self.db.get_file_transfers(group_id="group")],
+            ["group-file"],
+        )

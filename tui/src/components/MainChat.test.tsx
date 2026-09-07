@@ -180,6 +180,18 @@ test("clicking the settings footer opens settings", async () => {
   } finally { await close(setup) }
 })
 
+test("conversation switches show an in-flow loading message instead of an empty-state flash", async () => {
+  const props = panelProps(80)
+  props.conversationItems = []
+  props.conversationLoading = true
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "Loading Messages")
+    expect(frame).toContain("Loading Messages")
+    expect(frame).not.toContain("No messages yet")
+  } finally { await close(setup) }
+})
+
 test("sidebar groups use contiguous two-line targets like DMs", async () => {
   const props = sidebarProps(120)
   props.selectedPeerId = undefined
