@@ -483,6 +483,10 @@ for (const width of [80, 48, 32]) {
       await act(async () => { changeStatus("Connection error: " + "More details. ".repeat(50) + "End of status.") })
       await settle(setup)
       expect(props.composerRef.current!.screenY).toBe(y)
+      const notification = setup.renderer.root.findDescendantById("chat-status") as ScrollBoxRenderable
+      await act(async () => { notification.scrollTo(notification.scrollHeight) })
+      frame = await settle(setup)
+      expect(frame.replace(/\s+/g, " ")).toContain("End of status.")
       await act(async () => { changeStatus(DEFAULT_STATUS) })
       frame = await settle(setup)
       expect(frame).toContain("Enter send")
