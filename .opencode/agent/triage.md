@@ -17,6 +17,7 @@ Cover the applicable points:
 
 - Whether the issue is valid, in scope, a duplicate, already implemented, or missing information.
 - For feature requests, the relevant areas or files, high-level implementation approach, and important trade-offs.
+- IMPORTANT: if a feature/request is breaking/against MeshTalk's central philosophy, clearly state it and provide arguments against the request.
 - For bug reports, the likely root cause, reproduction steps, and a suggested fix path including error handling.
 - For questions, chores, or other issues, give a direct helpful answer or next step.
 
