@@ -17,12 +17,12 @@ export function ChatFooter({ width, scrollFocused, status, openSettings }: { wid
       <box style={{ position: "absolute", right: 0, bottom: 0, flexDirection: "row", justifyContent: "flex-end" }}>
         <text id="settings-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openSettings() }}><span>Ctrl+P </span><u>settings</u></text>
       </box>
-    </box> : compact ? <box style={{ width: "100%", flexDirection: "column", alignItems: "flex-start" }}>
-      <text id="chat-hint" fg={theme.muted} wrapMode="word">{hint[0]}</text>
-      <text id="settings-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openSettings() }}><span>Ctrl+P </span><u>settings</u></text>
-    </box> : <box style={{ width: "100%", flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 1 }}>
-      <text fg={theme.muted} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{hint[0]}</text>
-      <text id="settings-shortcut" fg={theme.accent} style={{ flexShrink: 0 }} wrapMode="none" onMouseDown={event => { if (event.button === 0) openSettings() }}><span>Ctrl+P </span><u>settings</u></text>
+    </box> : compact ? <box style={{ position: "relative", width: "100%", flexDirection: "column", alignItems: "flex-start" }}>
+      <text id="chat-hint" fg={theme.muted} style={{ marginRight: 16 }} wrapMode="word">{hint[0]}</text>
+      <text id="settings-shortcut" fg={theme.accent} style={{ position: "absolute", right: 0, bottom: 0 }} wrapMode="none" onMouseDown={event => { if (event.button === 0) openSettings() }}><span>Ctrl+P </span><u>settings</u></text>
+    </box> : <box style={{ position: "relative", width: "100%", flexDirection: "row", alignItems: "flex-start", gap: 1 }}>
+      <text fg={theme.muted} style={{ flexGrow: 1, flexShrink: 1, marginRight: 16 }} wrapMode="word">{hint[0]}</text>
+      <text id="settings-shortcut" fg={theme.accent} style={{ position: "absolute", right: 0, bottom: 0 }} wrapMode="none" onMouseDown={event => { if (event.button === 0) openSettings() }}><span>Ctrl+P </span><u>settings</u></text>
     </box>}
   </box>
 }
