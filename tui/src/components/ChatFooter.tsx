@@ -9,10 +9,15 @@ export function ChatFooter({ width, scrollFocused, status, openSettings }: { wid
   const notification = Boolean(status && status !== DEFAULT_STATUS)
   // Reserve the same area for hints and transient messages. Long notifications can
   // scroll within it, without moving the editor or stealing its keyboard focus.
-  return <box height={width < 38 ? 5 : 3} flexShrink={0} paddingLeft={1} paddingRight={1} paddingTop={1}>
-    {notification ? <scrollbox id="chat-status" key={status} flexGrow={1} minHeight={0} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
-      <text fg={/error|lost|exceeds/i.test(status) ? theme.danger : theme.muted} wrapMode="word">{status}</text>
-    </scrollbox> : compact ? <box style={{ width: "100%", flexDirection: "column", alignItems: "flex-start" }}>
+  return <box style={{ position: "relative" }} height={width < 38 ? 5 : 3} flexShrink={0} paddingLeft={1} paddingRight={1} paddingTop={1}>
+    {notification ? <>
+      <scrollbox id="chat-status" key={status} flexGrow={1} minHeight={0} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
+        <text fg={/error|lost|exceeds/i.test(status) ? theme.danger : theme.muted} wrapMode="word">{status}</text>
+      </scrollbox>
+      <box style={{ position: "absolute", right: 0, bottom: 0, flexDirection: "row", justifyContent: "flex-end" }}>
+        <text id="settings-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openSettings() }}><span>Ctrl+P </span><u>settings</u></text>
+      </box>
+    </> : compact ? <box style={{ width: "100%", flexDirection: "column", alignItems: "flex-start" }}>
       <text id="chat-hint" fg={theme.muted} wrapMode="word">{hint[0]}</text>
       <text id="settings-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openSettings() }}><span>Ctrl+P </span><u>settings</u></text>
     </box> : <box style={{ width: "100%", flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 1 }}>
