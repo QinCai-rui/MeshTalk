@@ -17,6 +17,7 @@ type SidebarProps = {
   groupMembers: Record<string, GroupMember[]>
   identity: { peer_id: string; display_name: string } | undefined
   mutedPeers: Record<string, number>
+  mutedGroups?: Record<string, number>
   nameDraft: string
   peers: Peer[]
   selectedGroupId: string | undefined
@@ -31,7 +32,7 @@ type SidebarProps = {
   saveDisplayName: () => void
 }
 
-export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
+export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, mutedGroups = {}, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
   const renderer = useRenderer()
   const peerListRef = useRef<ScrollBoxRenderable>(null)
   const groupListRef = useRef<ScrollBoxRenderable>(null)
@@ -72,14 +73,20 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
         const markers = friendMarkers(peer)
         const typing = typingConversationKeys.has(`peer:${peer.peer_id}`)
         const label = nameLabel(peer.display_name, 0, terminalWidth(markers))
-        const flags = [peer.capability_gap && "Limited", peer.peer_id in mutedPeers && "Muted"].filter(Boolean).join(" / ")
-        return <box id={`nav-peer-${peer.peer_id}`} key={peer.peer_id} onMouseDown={() => pick({ kind: "peer", id: peer.peer_id })} style={rowStyle(selected)}>
+        const isMuted = peer.peer_id in mutedPeers
+        // Muted rows keep their normal colors; transparency comes from row
+        // opacity only. Unread badges and bold emphasis are suppressed so
+        // muted chats only move to the top.
+        const nameColor = color
+        const showUnread = peer.unread_count > 0 && !isMuted
+        const flags = [peer.capability_gap && "Limited", isMuted && "Muted"].filter(Boolean).join(" / ")
+        return <box id={`nav-peer-${peer.peer_id}`} key={peer.peer_id} onMouseDown={() => pick({ kind: "peer", id: peer.peer_id })} opacity={isMuted ? 0.30 : undefined} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
-            <text fg={color} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{presenceIndicator(presence)} {selected || peer.unread_count ? <b>{label}</b> : label}</text>
-            {markers.length > 0 && <text fg={color} flexShrink={0}>{markers}</text>}
+            <text fg={nameColor} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{presenceIndicator(presence)} {selected || showUnread ? <b>{label}</b> : label}</text>
+            {markers.length > 0 && <text fg={nameColor} flexShrink={0}>{markers}</text>}
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
-            {peer.unread_count > 0 && <text fg={theme.accent}>{peer.unread_count} new</text>}
+            {showUnread && <text fg={theme.accent}>{peer.unread_count} new</text>}
             {flags.length > 0 && <text fg={theme.muted}>{flags}</text>}
             {typing && <TypingDots />}
           </box>
@@ -106,12 +113,16 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
         const onlyYouOnline = Boolean(members && visibleMembers.some(member => (member.peer_id ?? member.member_id) === identity?.peer_id) && !otherOnline)
         const memberLabel = ` (${group.member_count} members)`
         const label = nameLabel(group.name, 0, terminalWidth(memberLabel))
-        return <box id={`nav-group-${group.group_id}`} key={group.group_id} onMouseDown={() => pick({ kind: "group", id: group.group_id })} style={rowStyle(selected)}>
+        const isMuted = group.group_id in mutedGroups
+        const nameColor = selected ? theme.accent : theme.text
+        const showUnread = group.unread_count > 0 && !isMuted
+        return <box id={`nav-group-${group.group_id}`} key={group.group_id} onMouseDown={() => pick({ kind: "group", id: group.group_id })} opacity={isMuted ? 0.30 : undefined} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
-            <text fg={selected ? theme.accent : theme.text} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{selected || group.unread_count ? <b>{label}</b> : label}<span fg={theme.muted}>{memberLabel}</span></text>
+            <text fg={nameColor} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{selected || showUnread ? <b>{label}</b> : label}<span fg={theme.muted}>{memberLabel}</span></text>
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
-            {group.unread_count > 0 && <text fg={theme.accent}>{group.unread_count} new</text>}
+            {showUnread && <text fg={theme.accent}>{group.unread_count} new</text>}
+            {isMuted && <text fg={theme.muted}>Muted</text>}
             {selected && onlyYouOnline && !typing && <text fg={theme.muted}>No one else online</text>}
             {typing && <TypingDots />}
           </box>

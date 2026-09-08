@@ -147,6 +147,7 @@ class Settings:
         self._stun_pinned_ips: tuple[str, ...] = ()
         self.rooms: dict[str, Room] = {}
         self.muted_peers: dict[str, float] = {}
+        self.muted_groups: dict[str, float] = {}
         self._files_dir: str | None = None
         self._image_protocol = "auto"
         self._splash_style = "card"
@@ -401,6 +402,27 @@ class Settings:
         self.muted_peers.pop(peer_id, None)
         self.save()
 
+    def mute_group(self, group_id: str, until: float = 0) -> None:
+        """Mute a group until the specified timestamp (0 for permanent)."""
+        self.muted_groups[group_id] = until
+        self.save()
+
+    def unmute_group(self, group_id: str) -> None:
+        """Unmute a previously muted group."""
+        self.muted_groups.pop(group_id, None)
+        self.save()
+
+    def is_group_muted(self, group_id: str) -> bool:
+        """Check if a group is currently muted."""
+        until = self.muted_groups.get(group_id)
+        if until is None:
+            return False
+        if until > 0 and time.time() >= until:
+            del self.muted_groups[group_id]
+            self.save()
+            return False
+        return True
+
     def is_peer_muted(self, peer_id: str) -> bool:
         """Check if a peer is currently muted."""
         until = self.muted_peers.get(peer_id)
@@ -465,6 +487,7 @@ class Settings:
                 for room in self.rooms.values()
             ],
             "muted_peers": self.muted_peers,
+            "muted_groups": self.muted_groups,
             "files_dir": self._files_dir,
             "image_protocol": self._image_protocol,
             "splash_style": self._splash_style,
@@ -543,6 +566,12 @@ class Settings:
                 continue
             if until <= 0 or now < until:
                 self.muted_peers[peer_id] = float(until)
+        raw_group_mutes = data.get("muted_groups", {})
+        for group_id, until in raw_group_mutes.items():
+            if not isinstance(group_id, str) or not isinstance(until, (int, float)):
+                continue
+            if until <= 0 or now < until:
+                self.muted_groups[group_id] = float(until)
         files_dir = data.get("files_dir")
         if isinstance(files_dir, str) and files_dir.strip():
             # Validate but don't fail load if old path no longer exists - keep stored value

@@ -66,6 +66,8 @@ type DialogPanelProps = {
 
   mutePeer: (peerId: string, timeout: number) => void
   unmutePeer: (peerId: string) => void
+  muteGroup?: (groupId: string, timeout: number) => void
+  unmuteGroup?: (groupId: string) => void
   sendFriendRequest: (peerId: string, note: string) => void
   respondToFriendRequest: (request: FriendRequest, accept: boolean) => void
   cancelFriendRequest: (requestId: string) => void
@@ -103,7 +105,7 @@ export function DialogPanel(props: DialogPanelProps) {
   const { runCommand, showDialog, closeDialog, goBack, setDialogDraft, setDialogError, setNameDraft } = props
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
-  const { mutePeer, unmutePeer, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
+  const { mutePeer, unmutePeer, muteGroup, unmuteGroup, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
   const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, downloadFile, defaultDownloadPath, onDeleteFile } = props
   const { testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent } = props
   const { saveDisplayName, checkForUpdatesFromAbout, installUpdate, saveUpdateToken, restartUpdate } = props
@@ -136,8 +138,8 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "room-detail" && <RoomDetailDialogContent dialog={dialog} dialogHeight={dialogHeight} groups={groups} leaveGroup={leaveGroup} leaveRoom={leaveRoom} loadRoomInvite={loadRoomInvite} loadRooms={loadRooms} />}
        {dialog.kind === "group-detail" && <GroupDetailDialogContent dialog={dialog} identity={identity} peers={peers} closeDialog={closeDialog} leaveGroup={leaveGroup} />}
       {dialog.kind === "rename" && <RenameDialogContent dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setNameDraft={setNameDraft} saveDisplayName={saveDisplayName} />}
-      {dialog.kind === "mute-timeout" && <MuteTimeoutDialogContent dialog={dialog} dialogHeight={dialogHeight} mutePeer={mutePeer} />}
-      {dialog.kind === "unmute-confirm" && <UnmuteConfirmDialogContent dialog={dialog} dialogHeight={dialogHeight} unmutePeer={unmutePeer} showDialog={showDialog} />}
+      {dialog.kind === "mute-timeout" && <MuteTimeoutDialogContent dialog={dialog} dialogHeight={dialogHeight} mutePeer={mutePeer} muteGroup={muteGroup} />}
+      {dialog.kind === "unmute-confirm" && <UnmuteConfirmDialogContent dialog={dialog} dialogHeight={dialogHeight} unmutePeer={unmutePeer} unmuteGroup={unmuteGroup} showDialog={showDialog} />}
       {dialog.kind === "add-friend" && <AddFriendDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFriendRequest={sendFriendRequest} />}
       {dialog.kind === "remove-friend" && <RemoveFriendDialogContent dialog={dialog} dialogHeight={dialogHeight} unfriendPeer={unfriendPeer} showDialog={showDialog} />}
       {dialog.kind === "friend-requests" && <FriendRequestsDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
@@ -309,7 +311,7 @@ function RenameDialogContent({ dialogHeight, dialogDraft, setDialogDraft, setNam
   )
 }
 
-function MuteTimeoutDialogContent({ dialog, dialogHeight, mutePeer }: { dialog: Extract<Dialog, { kind: "mute-timeout" }>; dialogHeight: number; mutePeer: (peerId: string, timeout: number) => void }) {
+function MuteTimeoutDialogContent({ dialog, dialogHeight, mutePeer, muteGroup }: { dialog: Extract<Dialog, { kind: "mute-timeout" }>; dialogHeight: number; mutePeer: (peerId: string, timeout: number) => void; muteGroup?: (groupId: string, timeout: number) => void }) {
   return (
     <SettingsScreen breadcrumb={["Notifications", "Mute"]} description={`Choose how long notifications from ${dialog.displayName} will stay muted.`} dialogHeight={dialogHeight}>
       <MouseSelect focused height={Math.max(5, dialogHeight - 6)} options={[
@@ -318,13 +320,18 @@ function MuteTimeoutDialogContent({ dialog, dialogHeight, mutePeer }: { dialog: 
         { name: "4 hours", description: "Mute for half a workday", value: String(4 * 60 * 60) },
         { name: "8 hours", description: "Mute for a full workday", value: String(8 * 60 * 60) },
         { name: "Permanent", description: "Mute until you manually unmute", value: "0" },
-      ]} onSelect={(_, option) => option && void mutePeer(dialog.peerId, Number(option.value))} wrapSelection showDescription />
+      ]} onSelect={(_, option) => {
+        if (!option) return
+        const timeout = Number(option.value)
+        if (dialog.groupId) void muteGroup?.(dialog.groupId, timeout)
+        else if (dialog.peerId) void mutePeer(dialog.peerId, timeout)
+      }} wrapSelection showDescription />
     </SettingsScreen>
   )
 }
 
-function UnmuteConfirmDialogContent({ dialog, dialogHeight, unmutePeer, showDialog }: { dialog: Extract<Dialog, { kind: "unmute-confirm" }>; dialogHeight: number; unmutePeer: (peerId: string) => void; showDialog: (d: Dialog) => void }) {
-  return <SettingsScreen breadcrumb={["Notifications", "Unmute"]} description="Desktop notifications from this peer will be allowed again." dialogHeight={dialogHeight}><SettingsConfirm question={<>Resume notifications from <span fg={theme.accent}>{dialog.displayName}</span>?</>} detail="Desktop notifications from this peer will be allowed again." confirmLabel="Unmute notifications" onConfirm={() => void unmutePeer(dialog.peerId)} onCancel={() => showDialog({ kind: "settings" })} /></SettingsScreen>
+function UnmuteConfirmDialogContent({ dialog, dialogHeight, unmutePeer, unmuteGroup, showDialog }: { dialog: Extract<Dialog, { kind: "unmute-confirm" }>; dialogHeight: number; unmutePeer: (peerId: string) => void; unmuteGroup?: (groupId: string) => void; showDialog: (d: Dialog) => void }) {
+  return <SettingsScreen breadcrumb={["Notifications", "Unmute"]} description={dialog.groupId ? "Desktop notifications from this group will be allowed again." : "Desktop notifications from this peer will be allowed again."} dialogHeight={dialogHeight}><SettingsConfirm question={<>Resume notifications from <span fg={theme.accent}>{dialog.displayName}</span>?</>} detail={dialog.groupId ? "Desktop notifications from this group will be allowed again." : "Desktop notifications from this peer will be allowed again."} confirmLabel="Unmute notifications" onConfirm={() => { if (dialog.groupId) void unmuteGroup?.(dialog.groupId); else if (dialog.peerId) void unmutePeer(dialog.peerId) }} onCancel={() => showDialog({ kind: "settings" })} /></SettingsScreen>
 }
 
 function AddFriendDialogContent({ dialog, dialogHeight, dialogDraft, setDialogDraft, sendFriendRequest }: { dialog: Extract<Dialog, { kind: "add-friend" }>; dialogHeight: number; dialogDraft: string; setDialogDraft: (v: string) => void; sendFriendRequest: (peerId: string, note: string) => void }) {

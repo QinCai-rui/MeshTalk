@@ -670,19 +670,31 @@ async def main(debug: bool = False) -> None:
 
     async def handle_mute(req: dict) -> dict:
         peer_id = req.get("peer_id")
-        if not isinstance(peer_id, str) or not peer_id:
-            return {"error": "peer_id required"}
+        group_id = req.get("group_id")
         timeout = req.get("timeout")
         if timeout is not None and not isinstance(timeout, (int, float)):
             return {"error": "timeout must be a number (seconds) or 0 for permanent"}
         if timeout is None:
             timeout = 0
         until = time.time() + float(timeout) if float(timeout) > 0 else 0
+        if isinstance(group_id, str) and group_id:
+            if isinstance(peer_id, str) and peer_id:
+                return {"error": "Specify either peer_id or group_id"}
+            settings.mute_group(group_id, until)
+            return {"group_id": group_id, "until": until}
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
         settings.mute_peer(peer_id, until)
         return {"peer_id": peer_id, "until": until}
 
     async def handle_unmute(req: dict) -> dict:
         peer_id = req.get("peer_id")
+        group_id = req.get("group_id")
+        if isinstance(group_id, str) and group_id:
+            if isinstance(peer_id, str) and peer_id:
+                return {"error": "Specify either peer_id or group_id"}
+            settings.unmute_group(group_id)
+            return {"group_id": group_id}
         if not isinstance(peer_id, str) or not peer_id:
             return {"error": "peer_id required"}
         settings.unmute_peer(peer_id)
@@ -694,7 +706,11 @@ async def main(debug: bool = False) -> None:
         for peer_id, until in settings.muted_peers.items():
             if until <= 0 or now < until:
                 muted[peer_id] = until
-        return {"muted_peers": muted}
+        muted_groups = {}
+        for group_id, until in settings.muted_groups.items():
+            if until <= 0 or now < until:
+                muted_groups[group_id] = until
+        return {"muted_peers": muted, "muted_groups": muted_groups}
 
     async def handle_notifications(req: dict) -> dict:
         setup_dismissed = req.get("setup_dismissed")

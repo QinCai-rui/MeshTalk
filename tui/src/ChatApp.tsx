@@ -170,6 +170,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const [splashWelcomeMs, setSplashWelcomeMs] = useState(MIN_SPLASH_WELCOME_MS);
   const [copyToast, setCopyToast] = useState(false);
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({});
+  const [mutedGroups, setMutedGroups] = useState<Record<string, number>>({});
+  const [groupActivity, setGroupActivity] = useState<Record<string, number>>({});
   const [notificationPreferences, setNotificationPreferences] =
     useState<NotificationPreferences | null>(null);
   const [notificationTestDelivery, setNotificationTestDelivery] =
@@ -399,6 +401,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     setCopyToast,
     mutedPeers,
     setMutedPeers,
+    mutedGroups,
+    setMutedGroups,
     notificationPreferences,
     setNotificationPreferences,
     notificationTestDelivery,
@@ -493,8 +497,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     await actions.refreshGroups();
 
     const mutedResp = await ipc.send("muted_peers");
-    if (!mutedResp.error)
-      setMutedPeers(mutedResp.muted_peers as Record<string, number>);
+    if (!mutedResp.error) {
+      setMutedPeers((mutedResp.muted_peers as Record<string, number>) ?? {});
+      setMutedGroups((mutedResp.muted_groups as Record<string, number>) ?? {});
+    }
 
     const notificationResponse = await ipc.send("notifications");
     if (notificationResponse.error)
@@ -846,7 +852,14 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
               (member) => (member.peer_id ?? member.member_id) === senderId,
             )?.display_name ??
             "a member";
-          if (event.event === "group_message")
+          const groupMutedUntil = mutedGroups[groupId];
+          const isGroupMuted =
+            groupMutedUntil !== undefined &&
+            (groupMutedUntil <= 0 || Date.now() / 1000 < groupMutedUntil);
+          // Muted groups still move to the top via recency, but show no
+          // notification, unread badge, or highlight.
+          setGroupActivity((current) => ({ ...current, [groupId]: Date.now() }));
+          if (event.event === "group_message" && !isGroupMuted)
             void notify(
               notificationPreferences,
               "messages",
@@ -854,18 +867,19 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
               `New message from ${sender} in ${group?.name ?? "a group"}`,
             );
           if (groupId !== selectedGroupId) {
-            if (event.event === "group_message")
+            if (event.event === "group_message" && !isGroupMuted)
               rememberUnreadMessage(
                 `group:${groupId}`,
                 event.message_id as string | undefined,
               );
-            setGroups((current) =>
-              current.map((item) =>
-                item.group_id === groupId
-                  ? { ...item, unread_count: item.unread_count + 1 }
-                  : item,
-              ),
-            );
+            if (!isGroupMuted)
+              setGroups((current) =>
+                current.map((item) =>
+                  item.group_id === groupId
+                    ? { ...item, unread_count: item.unread_count + 1 }
+                    : item,
+                ),
+              );
           } else {
             void ipc
               .send("group_messages", { group_id: groupId })
@@ -1049,20 +1063,27 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         }
         if (event.event === "file_offer") {
           const filename = event.filename as string;
-          if (!event.group_id)
-            updatePeerInteraction(event.sender_id as string | undefined);
+          const offerGroupId = event.group_id as string | null | undefined;
+          const offerSenderId = event.sender_id as string | undefined;
+          if (!offerGroupId)
+            updatePeerInteraction(offerSenderId);
+          else setGroupActivity((current) => ({ ...current, [offerGroupId]: Date.now() }));
           const sender =
             peers.find((p) => p.peer_id === event.sender_id)?.display_name ??
             String(event.sender_id).slice(0, 8);
           actions.showStatus(
             `Incoming file: ${filename} (${event.file_size} bytes) from ${sender}`,
           );
-          void notify(
-            notificationPreferences,
-            "file_offers",
-            renderer,
-            `Incoming file ${filename} from ${sender}`,
-          );
+          const offerMuted = offerGroupId
+            ? offerGroupId in mutedGroups
+            : offerSenderId !== undefined && offerSenderId in mutedPeers;
+          if (!offerMuted)
+            void notify(
+              notificationPreferences,
+              "file_offers",
+              renderer,
+              `Incoming file ${filename} from ${sender}`,
+            );
           if (fileEventMatchesSelection(event)) refreshSelectedConversationFiles();
           return;
         }
@@ -1084,15 +1105,22 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           const filename = event.filename as string;
           const fpath = event.file_path as string;
           const fileId = event.file_id as string;
-          if (!event.group_id)
-            updatePeerInteraction(event.sender_id as string | undefined);
+          const completedGroupId = event.group_id as string | null | undefined;
+          const completedSenderId = event.sender_id as string | undefined;
+          if (!completedGroupId)
+            updatePeerInteraction(completedSenderId);
+          else setGroupActivity((current) => ({ ...current, [completedGroupId]: Date.now() }));
           actions.showStatus(`File received: ${filename} -> ${fpath}`);
-          void notify(
-            notificationPreferences,
-            "file_completed",
-            renderer,
-            `File received: ${filename}`,
-          );
+          const completedMuted = completedGroupId
+            ? completedGroupId in mutedGroups
+            : completedSenderId !== undefined && completedSenderId in mutedPeers;
+          if (!completedMuted)
+            void notify(
+              notificationPreferences,
+              "file_completed",
+              renderer,
+              `File received: ${filename}`,
+            );
           setConversationFileTransfers((current) =>
             current.map((file) =>
               file.file_id === fileId
@@ -1160,17 +1188,21 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           senderId !== selectedPeerId ||
           selectionKeyRef.current !== conversationKey
         ) {
-          rememberUnreadMessage(
-            conversationKey,
-            event.message_id as string | undefined,
-          );
-          setPeers((current) =>
-            current.map((peer) =>
-              peer.peer_id === senderId
-                ? { ...peer, unread_count: peer.unread_count + 1 }
-                : peer,
-            ),
-          );
+          // Muted peers still move to the top via updatePeerInteraction above,
+          // but show no unread badge or highlight.
+          if (!isMuted) {
+            rememberUnreadMessage(
+              conversationKey,
+              event.message_id as string | undefined,
+            );
+            setPeers((current) =>
+              current.map((peer) =>
+                peer.peer_id === senderId
+                  ? { ...peer, unread_count: peer.unread_count + 1 }
+                  : peer,
+              ),
+            );
+          }
           return;
         }
         setMessages((current) => [
@@ -1199,6 +1231,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     [
       ipc,
       mutedPeers,
+      mutedGroups,
       peers,
       groups,
       groupMembers,
@@ -1642,6 +1675,17 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const selectedGroup = groups.find(
     (group) => group.group_id === selectedGroupId,
   );
+  // Groups move to the top on recent activity (including muted groups);
+  // otherwise fall back to alphabetical order.
+  const orderedGroups = useMemo(
+    () =>
+      [...groups].sort(
+        (a, b) =>
+          (groupActivity[b.group_id] ?? 0) - (groupActivity[a.group_id] ?? 0) ||
+          a.name.localeCompare(b.name),
+      ),
+    [groups, groupActivity],
+  );
   const selectedTypingNames = Object.values(
     typingPeers[selectionKey ?? ""] ?? {},
   )
@@ -1754,10 +1798,11 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         stacked={stacked}
         dialogOpen={Boolean(dialog)}
         editingName={editingName}
-        groups={groups}
+        groups={orderedGroups}
         groupMembers={groupMembers}
         identity={identity}
         mutedPeers={mutedPeers}
+        mutedGroups={mutedGroups}
         nameDraft={nameDraft}
         peers={peers}
         selectedGroupId={selectedGroupId}
@@ -1793,6 +1838,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         isSending={isSending}
         limitColor={limitColor}
         mutedPeers={mutedPeers}
+        mutedGroups={mutedGroups}
         peers={peers}
         selected={selected}
         selectedGroup={selectedGroup}
@@ -1811,6 +1857,12 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         unreadNow={unreadNow}
         markUnreadMessageVisible={markUnreadMessageVisible}
         openSettings={() => actions.showDialog({ kind: "settings" })}
+        onToggleMute={() => actions.runCommand(
+          (selectedPeerId != null && selectedPeerId in mutedPeers) ||
+          (selectedGroupId != null && selectedGroupId in mutedGroups)
+            ? "unmute"
+            : "mute",
+        )}
         openImage={(file) => {
           if (file.file_path)
             actions.showDialog({
@@ -1834,8 +1886,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         onComposerChange={handleComposerChange}
         send={() => {
           stopOutgoingTyping();
+          const sentSelection = selection;
           void actions.send(replyTo?.id).then((sent) => {
-            if (sent) setReplyTo(undefined);
+            if (sent) {
+              setReplyTo(undefined);
+              if (sentSelection?.kind === "group")
+                setGroupActivity((current) => ({ ...current, [sentSelection.id]: Date.now() }));
+            }
           });
         }}
       />
@@ -1925,6 +1982,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           loadGroupDetails={actions.loadGroupDetails}
           mutePeer={actions.mutePeer}
           unmutePeer={actions.unmutePeer}
+          muteGroup={actions.muteGroup}
+          unmuteGroup={actions.unmuteGroup}
           sendFriendRequest={actions.sendFriendRequest}
           respondToFriendRequest={actions.respondToFriendRequest}
           cancelFriendRequest={actions.cancelFriendRequest}

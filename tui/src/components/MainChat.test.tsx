@@ -98,18 +98,50 @@ test("sidebar uses friend/request markers and mouse selection retains the conver
   let selection: unknown
   const props = sidebarProps(120)
   props.peers = [{ ...peers[0]!, presence: "away", capability_gap: true, friend_request: "both" }]
-  props.mutedPeers = { alex: 1 }
+  props.mutedPeers = {}
   props.setSelection = value => { selection = value }
   const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
   try {
     const frame = await settle(setup)
     expect(frame).toContain("Groups (1)")
     expect(frame).not.toContain("──── Groups")
-    for (const label of ["~", "♥", "↙", "↗", "Limited", "Muted", "3 new"]) expect(frame).toContain(label)
+    for (const label of ["~", "♥", "↙", "↗", "Limited", "3 new"]) expect(frame).toContain(label)
+    expect(frame).not.toContain("Muted")
     for (const label of ["Away", "Offline", "Friend", "Request received", "Request sent"]) expect(frame).not.toContain(label)
     const row = setup.renderer.root.findDescendantById("nav-peer-alex")!
     await act(async () => { await setup.mockMouse.click(row.screenX + 1, row.screenY) })
     expect(selection).toEqual({ kind: "peer", id: "alex" })
+  } finally { await close(setup) }
+})
+
+test("muted peers and groups hide unread badges while staying dimmed", async () => {
+  const props = sidebarProps(120)
+  props.peers = [{ ...peers[0]!, unread_count: 3 }]
+  props.groups = [{ ...group, unread_count: 2 }]
+  props.mutedPeers = { alex: 0 }
+  props.mutedGroups = { team: 0 }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup)
+    expect(frame).toContain("Muted")
+    expect(frame).not.toContain("3 new")
+    expect(frame).not.toContain("2 new")
+  } finally { await close(setup) }
+})
+
+test("top bar shows a mute toggle for the selected conversation", async () => {
+  const props = panelProps(80)
+  let toggled = 0
+  props.mutedPeers = {}
+  props.mutedGroups = {}
+  props.onToggleMute = () => { toggled++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    await settle(setup, "Alex Morgan")
+    const toggle = setup.renderer.root.findDescendantById("mute-toggle")!
+    expect(toggle).toBeDefined()
+    await act(async () => { await setup.mockMouse.click(toggle.screenX + 1, toggle.screenY) })
+    expect(toggled).toBe(1)
   } finally { await close(setup) }
 })
 
