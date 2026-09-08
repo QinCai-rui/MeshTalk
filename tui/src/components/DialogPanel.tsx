@@ -389,61 +389,91 @@ function FriendRequestIncomingDialogContent({ dialog, dialogHeight, blockSenderF
   )
 }
 
+type FriendsTab = "requests" | "add" | "friends" | "blocked"
+
 function FriendsDialogContent({ dialogHeight, peers, identity, friendRequests, loadBlockedPeers, showDialog, unblockPeer }: { dialogHeight: number; peers: Peer[]; identity: { peer_id: string; display_name: string } | undefined; friendRequests: FriendRequest[]; loadBlockedPeers: () => void; showDialog: (d: Dialog) => void; unblockPeer: (peerId: string, displayName: string) => void }) {
+  const [tab, setTab] = useState<FriendsTab>("requests")
+  useKeyboard((key) => {
+    if (key.ctrl || key.meta || key.defaultPrevented) return
+    const order: FriendsTab[] = ["requests", "add", "friends", "blocked"]
+    const index = ["1", "2", "3", "4"].indexOf(key.name)
+    if (index >= 0 && order[index] !== tab) {
+      key.preventDefault()
+      setTab(order[index]!)
+    }
+  })
   const incoming = friendRequests.filter((request) => request.direction === "incoming")
   const outgoing = friendRequests.filter((request) => request.direction === "outgoing")
   const addable = addablePeers(peers, identity?.peer_id)
   const friends = peers.filter((peer) => peer.is_friend).sort((a, b) => a.display_name.localeCompare(b.display_name))
   const blocked = peers.filter((peer) => peer.is_blocked).sort((a, b) => a.display_name.localeCompare(b.display_name))
-  const empty = !incoming.length && !outgoing.length && !addable.length && !friends.length && !blocked.length
+  const tabs = [
+    { id: "requests" as const, label: `Requests (${incoming.length + outgoing.length})` },
+    { id: "add" as const, label: `Add (${addable.length})` },
+    { id: "friends" as const, label: `Friends (${friends.length})` },
+    { id: "blocked" as const, label: `Blocked (${blocked.length})` },
+  ]
+  const tabBar = <box flexDirection="column" flexShrink={0}>
+    {tabs.map((entry, index) => <box key={entry.id} id={`friends-tab-${entry.id}`} height={1} overflow="hidden" onMouseDown={(event) => { if (event.button === 0) setTab(entry.id) }}><text fg={tab === entry.id ? theme.accent : theme.muted} wrapMode="none">{tab === entry.id ? `> [${index + 1}] ${entry.label}` : `  [${index + 1}] ${entry.label}`}</text></box>)}
+  </box>
+  const selectRequest = (option: { value?: string }) => {
+    const value = option.value
+    if (!value) return
+    if (value.startsWith("incoming:")) {
+      const request = friendRequests.find((item) => item.request_id === value.slice("incoming:".length))
+      if (request) showDialog({ kind: "friend-request-incoming", request })
+    } else if (value.startsWith("outgoing:")) {
+      const request = friendRequests.find((item) => item.request_id === value.slice("outgoing:".length))
+      if (request) showDialog({ kind: "cancel-friend-confirm", requestId: request.request_id, displayName: request.recipient_name ?? request.sender_name })
+    }
+  }
   return (
     <SettingsScreen breadcrumb={["Friends", "Inbox"]} dialogHeight={dialogHeight}>
-      {empty ? <SettingsNotice>No friend requests are pending. Join a room to discover more people.</SettingsNotice> : null}
-      <SettingsMenu dialogHeight={dialogHeight} headerRows={empty ? 7 : 4} marqueeNames options={[
+      {tabBar}
+      {tab === "requests" && (<>
+        {!incoming.length && !outgoing.length ? <SettingsNotice>No friend requests are pending.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={[
           ...incoming.map((request) => ({
-            section: `Incoming (${incoming.length})`, name: request.sender_name, description: request.note || "Accept, decline, or block this request.", value: `incoming:${request.request_id}`, status: "Needs response", tone: "accent" as const,
+            name: request.sender_name, description: request.note || "Accept, decline, or block this request.", value: `incoming:${request.request_id}`, status: "Needs response", tone: "accent" as const,
           })),
           ...outgoing.map((request) => ({
-            section: `Sent (${outgoing.length})`, name: request.recipient_name ?? request.sender_name, description: "Pending. Cancel this request if you no longer want to connect.", value: `outgoing:${request.request_id}`, status: "Pending",
+            name: request.recipient_name ?? request.sender_name, description: "Pending. Cancel this request if you no longer want to connect.", value: `outgoing:${request.request_id}`, status: "Pending",
           })),
-          ...addable.map((peer) => ({
-            section: `People you can add (${addable.length})`, name: peer.display_name, description: peer.is_online ? "Online. Send them a friend request." : "Offline. The request sends when you connect.", value: `add:${peer.peer_id}`, status: peer.is_online ? "Online" : "Offline", tone: "accent" as const,
-          })),
-          ...friends.map((peer) => ({
-            section: `Friends (${friends.length})`, name: peer.display_name, description: "Remove this friend. Their future messages stay blocked until re-accepted.", value: `friend:${peer.peer_id}`, status: peer.is_online ? "Online" : "Offline",
-          })),
-          ...blocked.map((peer) => ({ section: `Blocked (${blocked.length})`, name: peer.display_name, description: "Allow friend requests from this person again.", value: `unblock:${peer.peer_id}`, status: "Blocked", tone: "warning" as const })),
-          { section: "Safety", name: "Block a peer", description: "Ignore future friend requests from a specific person.", value: "block-pick", tone: "danger" as const },
-          { section: "Safety", name: "Manage blocked list", description: "Open the full blocked-people manager.", value: "manage" },
+        ]} onSelect={(option) => selectRequest(option)} />
+      </>)}
+      {tab === "add" && (<>
+        {!addable.length ? <SettingsNotice>No addable peers right now. Join a room to discover more people.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={addable.map((peer) => ({
+          name: peer.display_name, description: peer.is_online ? "Online. Send them a friend request." : "Offline. The request sends when you connect.", value: `add:${peer.peer_id}`, status: peer.is_online ? "Online" : "Offline", tone: "accent" as const,
+        }))} onSelect={(option) => {
+          const peer = addable.find((item) => item.peer_id === option.value.slice("add:".length))
+          if (peer) showDialog({ kind: "add-friend", peerId: peer.peer_id, displayName: peer.display_name })
+        }} />
+      </>)}
+      {tab === "friends" && (<>
+        {!friends.length ? <SettingsNotice>No friends yet. Accept a request or add someone from the Add tab.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={friends.map((peer) => ({
+          name: peer.display_name, description: "Remove this friend. Their future messages stay blocked until re-accepted.", value: `friend:${peer.peer_id}`, status: peer.is_online ? "Online" : "Offline",
+        }))} onSelect={(option) => {
+          const peer = friends.find((item) => item.peer_id === option.value.slice("friend:".length))
+          if (peer) showDialog({ kind: "remove-friend", peerId: peer.peer_id, displayName: peer.display_name })
+        }} />
+      </>)}
+      {tab === "blocked" && (<>
+        {!blocked.length ? <SettingsNotice>No people are blocked.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={[
+          ...blocked.map((peer) => ({ name: peer.display_name, description: "Allow friend requests from this person again.", value: `unblock:${peer.peer_id}`, status: "Blocked", tone: "warning" as const })),
+          { name: "Block a peer", description: "Ignore future friend requests from a specific person.", value: "block-pick", tone: "danger" as const },
+          { name: "Manage blocked list", description: "Open the full blocked-people manager.", value: "manage" },
         ]} onSelect={(option) => {
-          if (!option) return
           if (option.value === "block-pick") { showDialog({ kind: "block-peer-pick" }); return }
           if (option.value === "manage") { void loadBlockedPeers(); return }
-          if (option.value.startsWith("incoming:")) {
-            const request = friendRequests.find((item) => item.request_id === option.value.slice("incoming:".length))
-            if (request) showDialog({ kind: "friend-request-incoming", request })
-            return
-          }
-          if (option.value.startsWith("outgoing:")) {
-            const request = friendRequests.find((item) => item.request_id === option.value.slice("outgoing:".length))
-            if (request) showDialog({ kind: "cancel-friend-confirm", requestId: request.request_id, displayName: request.recipient_name ?? request.sender_name })
-            return
-          }
-          if (option.value.startsWith("add:")) {
-            const peer = addable.find((item) => item.peer_id === option.value.slice("add:".length))
-            if (peer) showDialog({ kind: "add-friend", peerId: peer.peer_id, displayName: peer.display_name })
-            return
-          }
-          if (option.value.startsWith("friend:")) {
-            const peer = friends.find((item) => item.peer_id === option.value.slice("friend:".length))
-            if (peer) showDialog({ kind: "remove-friend", peerId: peer.peer_id, displayName: peer.display_name })
-            return
-          }
           if (option.value.startsWith("unblock:")) {
             const peer = blocked.find((item) => `unblock:${item.peer_id}` === option.value)
             if (peer) void unblockPeer(peer.peer_id, peer.display_name)
           }
         }} />
+      </>)}
     </SettingsScreen>
   )
 }
