@@ -472,12 +472,16 @@ for (const width of [80, 48, 32]) {
     try {
       await settle(setup)
       const y = props.composerRef.current!.screenY
+      const shortcut = setup.renderer.root.findDescendantById("settings-shortcut")!
+      const shortcutPosition = { x: shortcut.screenX, y: shortcut.screenY }
       const historyHeight = props.scrollboxRef.current!.viewport.height
       await act(async () => { changeStatus("Message sent.") })
       let frame = await settle(setup)
       expect(frame).toContain("Message sent.")
       expect(frame).not.toContain("Enter send")
       expect(frame).toContain("Ctrl+P settings")
+      const toastShortcut = setup.renderer.root.findDescendantById("settings-shortcut")!
+      expect({ x: toastShortcut.screenX, y: toastShortcut.screenY }).toEqual(shortcutPosition)
       expect(props.composerRef.current!.screenY).toBe(y)
       expect(props.scrollboxRef.current!.viewport.height).toBe(historyHeight)
       await act(async () => { changeStatus("Connection error: " + "More details. ".repeat(50) + "End of status.") })
