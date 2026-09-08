@@ -4,7 +4,7 @@ import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type Textare
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
-import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
+import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, inlineFriendActions, isImageFile, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
 
 type ConversationPanelProps = {
@@ -56,6 +56,8 @@ type ConversationPanelProps = {
   clearReplyTarget: () => void
   onComposerChange: (content: string) => void
   send: () => void
+  inboxCount?: number
+  onFriendAction?: (action: InlineFriendAction) => void
 }
 
 const MESSAGE_MARKDOWN_STYLES = {
@@ -84,7 +86,7 @@ const MESSAGE_MARKDOWN_STYLES = {
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send } = props
+  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction } = props
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
   const [replyHighlight, setReplyHighlight] = useState<{ id: string; startedAt: number }>()
   const [replyHighlightNow, setReplyHighlightNow] = useState(0)
@@ -169,6 +171,12 @@ export function ConversationPanel(props: ConversationPanelProps) {
         {selected && <>
           {(selected.delivery_warnings ?? []).map(kind => kind === "offline" ? <text id="offline-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Offline: messages queue until this peer reconnects.</text> : kind === "not_friend" ? <text id="friend-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Messages blocked until your friend request is accepted. Ctrl+P &gt; Friends &gt; Add friend.</text> : null)}
           {selectedHasCapabilityGap && <text id="capability-warning" fg={flashingWarningColor} wrapMode="word">Limited: {capabilityGapMessage}</text>}
+          {!selectedGroup && peerFriendState(selected) !== "friend" && onFriendAction && <box id="friend-inline-actions" flexDirection="column">
+            <text fg={theme.muted} wrapMode="word">{peerFriendStatusText(selected)}{inboxCount > 0 ? ` ${inboxCount} request${inboxCount === 1 ? "" : "s"} pending in the inbox.` : ""}</text>
+            <box flexDirection="row" gap={2}>
+              {inlineFriendActions(selected).map(action => <box key={action.id} id={`friend-inline-${action.id}`} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); onFriendAction(action.id) } }}><text fg={theme.accent}><u>{action.hint} {action.label}</u></text></box>)}
+            </box>
+          </box>}
         </>}
         {selectedGroup && limitedGroupMembers.length > 0 && <text id="group-capability-warning" fg={flashingWarningColor} wrapMode="word">Limited features: {limitedGroupMembers.map(member => member.display_name).join(", ")}. Shared features remain available.</text>}
       </box>

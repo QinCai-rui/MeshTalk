@@ -32,6 +32,7 @@ export type GroupMember = { peer_id?: string; member_id?: string; display_name: 
 export type Conversation = { kind: "peer" | "group"; id: string }
 export type TypingPeer = { displayName: string; createdAt: number; expiresAt: number; isTyping: boolean }
 export type FriendRequest = { request_id: string; sender_id: string; sender_name: string; recipient_id?: string; recipient_name?: string; note?: string | null; created_at: number; direction: "incoming" | "outgoing"; status?: string }
+export type Friend = { peer_id: string; display_name: string; created_at: number }
 export type BlockedPeer = { peer_id: string; display_name: string; created_at: number }
 export type RoomStatus = { room_id: string; members: number; group_id?: string | null; name?: string | null }
 export type ControlStatus = { url?: string; connected: boolean; setup_dismissed: boolean; stun_server: string; reconnect_attempts: number; public_endpoint?: unknown[] }
@@ -42,6 +43,8 @@ export type DebugInfo = { public_endpoint?: [string, number] | null; stun_server
 export type FileTransfer = { file_id: string; filename: string; file_size: number; sender_id: string; recipient_id: string; group_id?: string | null; direction: string; status: string; file_path?: string | null; created_at: number; completed_at?: number | null; received_chunks?: number; total_chunks?: number }
 export type ConversationItem = { type: "message"; createdAt: number; message: Message } | { type: "file"; createdAt: number; file: FileTransfer; allFiles: FileTransfer[] }
 export type ReplyTarget = { id: string; senderId: string; label: string; groupId?: string; kind: "message" | "file" }
+
+export type FriendInboxTab = "requests" | "add" | "friends" | "blocked"
 
 export type Dialog =
   | { kind: "settings" } | { kind: "control"; firstRun?: boolean } | { kind: "control-custom"; firstRun?: boolean }
@@ -54,7 +57,7 @@ export type Dialog =
   | { kind: "rename"; firstRun?: boolean } | { kind: "mute-timeout"; peerId: string; displayName: string }
   | { kind: "unmute-confirm"; peerId: string; displayName: string } | { kind: "add-friend"; peerId: string; displayName: string }
   | { kind: "remove-friend"; peerId: string; displayName: string } | { kind: "friend-requests"; requests: FriendRequest[] }
-  | { kind: "friend-request-incoming"; request: FriendRequest } | { kind: "friends" } | { kind: "blocked"; blocked: BlockedPeer[] }
+  | { kind: "friend-request-incoming"; request: FriendRequest } | { kind: "friends"; tab?: FriendInboxTab } | { kind: "blocked"; blocked: BlockedPeer[] }
   | { kind: "block-peer-pick" } | { kind: "block-peer"; peerId: string; displayName: string }
   | { kind: "cancel-friend-confirm"; requestId: string; displayName: string } | { kind: "notifications" }
   | { kind: "notification-enable"; firstRun?: boolean }

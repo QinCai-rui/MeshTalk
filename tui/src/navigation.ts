@@ -117,10 +117,11 @@ type CommandDependencies = {
   loadFriendRequests: () => Promise<void>
   loadGroupDetails: (group: Group) => Promise<void>
   loadRooms: () => Promise<void>
+  openFriendsInbox?: (tab?: import("./types").FriendInboxTab) => void
 }
 
 export function runCommand(command: string, dependencies: CommandDependencies) {
-  const { groups, groupMembers, identity, mutedPeers, peers, selectedGroupId, selectedPeerId, selection, showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft, setRenameDialog, loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms } = dependencies
+  const { groups, groupMembers, identity, mutedPeers, peers, selectedGroupId, selectedPeerId, selection, showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft, setRenameDialog, loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms, openFriendsInbox } = dependencies
   if (command === "control") showDialog({ kind: "control" })
   else if (command === "rooms") { showDialog({ kind: "rooms", rooms: [] }); void loadRooms() }
   else if (command === "group-details") {
@@ -128,7 +129,10 @@ export function runCommand(command: string, dependencies: CommandDependencies) {
     if (!group) { showStatus("Select a group first."); return }
     showDialog({ kind: "group-detail", group, members: groupMembers[group.group_id] ?? [] })
     void loadGroupDetails(group)
-  } else if (command === "friends") showDialog({ kind: "friends" })
+  } else if (command === "friends") {
+    if (openFriendsInbox) openFriendsInbox("requests")
+    else showDialog({ kind: "friends", tab: "requests" })
+  }
   else if (command === "notifications") showDialog({ kind: "notifications" })
   else if (command === "accessibility") showDialog({ kind: "accessibility" })
   else if (command === "customisation") showDialog({ kind: "customisation" })

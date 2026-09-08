@@ -29,9 +29,11 @@ type SidebarProps = {
   setSelection: (selection: Conversation) => void
   setScrollFocused: (value: boolean) => void
   saveDisplayName: () => void
+  friendRequestCount?: number
+  onOpenInbox?: () => void
 }
 
-export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
+export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName, friendRequestCount = 0, onOpenInbox }: SidebarProps) {
   const renderer = useRenderer()
   const peerListRef = useRef<ScrollBoxRenderable>(null)
   const groupListRef = useRef<ScrollBoxRenderable>(null)
@@ -60,6 +62,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
       {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <text fg={theme.text} wrapMode="none">{clipTextToWidth(`You: ${identity?.display_name ?? "Connecting..."}`, sidebarWidth - 2)}</text>}
       {!stacked && <text fg={theme.muted}>Ctrl+Up/Down switch chats</text>}
     </box>
+    {friendRequestCount > 0 && <box paddingLeft={1} paddingRight={1} flexShrink={0} id="sidebar-friend-inbox" onMouseDown={event => { if (event.button === 0) onOpenInbox?.() }}><text fg={theme.warning} wrapMode="none">Friend requests ({friendRequestCount})</text></box>}
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
       <box id="sidebar-dm-section" style={{ flexGrow: 3, flexBasis: 0, flexShrink: 1, minHeight: 1, flexDirection: "column" }}>
         <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.accent}><b>DMs ({peers.length}) / {peers.filter(peer => peer.is_online).length} online</b></text></box>
