@@ -32,7 +32,6 @@ export type GroupMember = { peer_id?: string; member_id?: string; display_name: 
 export type Conversation = { kind: "peer" | "group"; id: string }
 export type TypingPeer = { displayName: string; createdAt: number; expiresAt: number; isTyping: boolean }
 export type FriendRequest = { request_id: string; sender_id: string; sender_name: string; recipient_id?: string; recipient_name?: string; note?: string | null; created_at: number; direction: "incoming" | "outgoing"; status?: string }
-export type Friend = { peer_id: string; display_name: string; created_at: number }
 export type BlockedPeer = { peer_id: string; display_name: string; created_at: number }
 export type RoomStatus = { room_id: string; members: number; group_id?: string | null; name?: string | null }
 export type ControlStatus = { url?: string; connected: boolean; setup_dismissed: boolean; stun_server: string; reconnect_attempts: number; public_endpoint?: unknown[] }

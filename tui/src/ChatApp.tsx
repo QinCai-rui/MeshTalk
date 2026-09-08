@@ -29,7 +29,6 @@ import type {
   ConversationItem,
   Dialog,
   FileTransfer,
-  Friend,
   FriendRequest,
   Group,
   GroupMember,
@@ -190,7 +189,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   >(null);
   const [fileTransfers, setFileTransfers] = useState<FileTransfer[]>([]);
   const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
-  const [friendsList, setFriendsList] = useState<Friend[]>([]);
   const [conversationFileTransfers, setConversationFileTransfers] = useState<
     FileTransfer[]
   >([]);
@@ -424,7 +422,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     setDialogError,
     setDialogBusy,
     setFriendRequests,
-    setFriendsList,
     statusResetRef: statusReset,
     copyToastResetRef: copyToastReset,
     dialogActionRef: dialogAction,
@@ -499,7 +496,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     await actions.refreshPeers();
     await actions.refreshGroups();
     void actions.refreshFriendRequestsSilent().catch(() => {});
-    void actions.refreshFriendsSilent().catch(() => {});
 
     const mutedResp = await ipc.send("muted_peers");
     if (!mutedResp.error)
@@ -726,7 +722,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           setStatus(`Peer refresh error: ${String(error)}`);
       });
       void actions.refreshFriendRequestsSilent().catch(() => {});
-      void actions.refreshFriendsSilent().catch(() => {});
       void actions.refreshGroups().catch((error) => {
         if (active && !backendDisconnected.current)
           setStatus(`Group refresh error: ${String(error)}`);
@@ -1037,7 +1032,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             );
           void actions.refreshPeers();
           void actions.refreshFriendRequestsSilent();
-          void actions.refreshFriendsSilent();
           return;
         }
         if (event.event === "friend_response") {
@@ -1050,7 +1044,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           );
           void actions.refreshPeers();
           void actions.refreshFriendRequestsSilent();
-          void actions.refreshFriendsSilent();
           return;
         }
         if (event.event === "friend_cancelled") {
@@ -2000,7 +1993,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           selectedGroupId={selectedGroupId}
           selection={selection}
           friendRequests={friendRequests}
-          friendsList={friendsList}
           dialogWidthFor={dialogWidthFor}
           appReleaseVersion={APP_RELEASE_VERSION}
           isReleaseBuild={IS_RELEASE_BUILD}

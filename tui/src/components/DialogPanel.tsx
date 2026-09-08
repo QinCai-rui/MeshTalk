@@ -1,4 +1,4 @@
-import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, Friend, FriendRequest, Group, GroupDelivery, ImageProtocol, RoomStatus, SplashPreference } from "../types"
+import type { Dialog, AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, FileTransfer, FriendRequest, Group, GroupDelivery, ImageProtocol, RoomStatus, SplashPreference } from "../types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "../notifications"
 import type { GroupMember, Peer } from "../types"
 import type { Release } from "../../../common/updater"
@@ -38,7 +38,6 @@ type DialogPanelProps = {
   selectedGroupId: string | undefined
   selection: { kind: "peer" | "group"; id: string } | undefined
   friendRequests?: FriendRequest[]
-  friendsList?: Friend[]
   dialogWidthFor: (kind: Dialog["kind"]) => number
   appReleaseVersion: string
   isReleaseBuild: boolean
@@ -101,7 +100,7 @@ type DialogPanelProps = {
 }
 
 export function DialogPanel(props: DialogPanelProps) {
-  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, friendRequests = [], friendsList = [], dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
+  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, friendRequests = [], dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
   const { runCommand, showDialog, closeDialog, goBack, setDialogDraft, setDialogError, setNameDraft } = props
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
@@ -144,7 +143,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "remove-friend" && <RemoveFriendDialogContent dialog={dialog} dialogHeight={dialogHeight} unfriendPeer={unfriendPeer} showDialog={showDialog} />}
       {dialog.kind === "friend-requests" && <FriendRequestsDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "friend-request-incoming" && <FriendRequestIncomingDialogContent dialog={dialog} dialogHeight={dialogHeight} blockSenderFromRequest={blockSenderFromRequest} respondToFriendRequest={respondToFriendRequest} />}
-      {dialog.kind === "friends" && <FriendsDialogContent dialogHeight={dialogHeight} peers={peers} identity={identity} friendRequests={friendRequests} friendsList={friendsList} loadBlockedPeers={loadBlockedPeers} showDialog={showDialog} unblockPeer={unblockPeer} />}
+      {dialog.kind === "friends" && <FriendsDialogContent dialogHeight={dialogHeight} peers={peers} identity={identity} friendRequests={friendRequests} loadBlockedPeers={loadBlockedPeers} showDialog={showDialog} unblockPeer={unblockPeer} />}
       {["notification-enable", "notification-confirm", "notification-fallback", "notifications", "notification-settings", "notification-peer"].includes(dialog.kind) && <NotificationDialogs dialog={dialog as Extract<Dialog, { kind: "notification-enable" | "notification-confirm" | "notification-fallback" | "notifications" | "notification-settings" | "notification-peer" }>} dialogBusy={dialogBusy} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} identity={identity} mutedPeers={mutedPeers} notificationPreferences={notificationPreferences} notificationTestDelivery={notificationTestDelivery} peers={peers} selectedPeerId={selected?.peer_id} showDialog={showDialog} testNotificationDelivery={testNotificationDelivery} disableNotifications={disableNotifications} confirmNotificationDelivery={confirmNotificationDelivery} toggleNotificationEvent={toggleNotificationEvent} runCommand={runCommand} />}
       {dialog.kind === "accessibility" && <AccessibilityDialogContent dialogHeight={dialogHeight} flashingEnabled={flashingEnabled} setAccessibilityFlashing={setAccessibilityFlashing} />}
       {dialog.kind === "blocked" && <BlockedDialogContent dialog={dialog} dialogHeight={dialogHeight} loadBlockedPeers={loadBlockedPeers} showDialog={showDialog} unblockPeer={unblockPeer} />}
@@ -390,14 +389,11 @@ function FriendRequestIncomingDialogContent({ dialog, dialogHeight, blockSenderF
   )
 }
 
-function FriendsDialogContent({ dialogHeight, peers, identity, friendRequests, friendsList, loadBlockedPeers, showDialog, unblockPeer }: { dialogHeight: number; peers: Peer[]; identity: { peer_id: string; display_name: string } | undefined; friendRequests: FriendRequest[]; friendsList: Friend[]; loadBlockedPeers: () => void; showDialog: (d: Dialog) => void; unblockPeer: (peerId: string, displayName: string) => void }) {
+function FriendsDialogContent({ dialogHeight, peers, identity, friendRequests, loadBlockedPeers, showDialog, unblockPeer }: { dialogHeight: number; peers: Peer[]; identity: { peer_id: string; display_name: string } | undefined; friendRequests: FriendRequest[]; loadBlockedPeers: () => void; showDialog: (d: Dialog) => void; unblockPeer: (peerId: string, displayName: string) => void }) {
   const incoming = friendRequests.filter((request) => request.direction === "incoming")
   const outgoing = friendRequests.filter((request) => request.direction === "outgoing")
   const addable = addablePeers(peers, identity?.peer_id)
-  const peersById = new Map(peers.map((peer) => [peer.peer_id, peer]))
-  const friends = friendsList
-    .map((friend) => ({ friend, peer: peersById.get(friend.peer_id) }))
-    .sort((a, b) => a.friend.display_name.localeCompare(b.friend.display_name))
+  const friends = peers.filter((peer) => peer.is_friend).sort((a, b) => a.display_name.localeCompare(b.display_name))
   const blocked = peers.filter((peer) => peer.is_blocked).sort((a, b) => a.display_name.localeCompare(b.display_name))
   const empty = !incoming.length && !outgoing.length && !addable.length && !friends.length && !blocked.length
   return (
@@ -413,8 +409,8 @@ function FriendsDialogContent({ dialogHeight, peers, identity, friendRequests, f
           ...addable.map((peer) => ({
             section: `People you can add (${addable.length})`, name: peer.display_name, description: peer.is_online ? "Online. Send them a friend request." : "Offline. The request sends when you connect.", value: `add:${peer.peer_id}`, status: peer.is_online ? "Online" : "Offline", tone: "accent" as const,
           })),
-          ...friends.map(({ friend, peer }) => ({
-            section: `Friends (${friends.length})`, name: friend.display_name, description: peer ? "Remove this friend. Their future messages stay blocked until re-accepted." : "Offline. Removed from the peer list — reappears here when they reconnect.", value: `friend:${friend.peer_id}`, status: peer ? (peer.is_online ? "Online" : "Offline") : "Offline",
+          ...friends.map((peer) => ({
+            section: `Friends (${friends.length})`, name: peer.display_name, description: "Remove this friend. Their future messages stay blocked until re-accepted.", value: `friend:${peer.peer_id}`, status: peer.is_online ? "Online" : "Offline",
           })),
           ...blocked.map((peer) => ({ section: `Blocked (${blocked.length})`, name: peer.display_name, description: "Allow friend requests from this person again.", value: `unblock:${peer.peer_id}`, status: "Blocked", tone: "warning" as const })),
           { section: "Safety", name: "Block a peer", description: "Ignore future friend requests from a specific person.", value: "block-pick", tone: "danger" as const },
@@ -439,8 +435,8 @@ function FriendsDialogContent({ dialogHeight, peers, identity, friendRequests, f
             return
           }
           if (option.value.startsWith("friend:")) {
-            const entry = friends.find(({ friend }) => friend.peer_id === option.value.slice("friend:".length))
-            if (entry) showDialog({ kind: "remove-friend", peerId: entry.friend.peer_id, displayName: entry.friend.display_name })
+            const peer = friends.find((item) => item.peer_id === option.value.slice("friend:".length))
+            if (peer) showDialog({ kind: "remove-friend", peerId: peer.peer_id, displayName: peer.display_name })
             return
           }
           if (option.value.startsWith("unblock:")) {

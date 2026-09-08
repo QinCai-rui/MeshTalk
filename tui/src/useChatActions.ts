@@ -1,7 +1,7 @@
 import type { IPCClient } from "../../common/ipc-client"
 import type { Release } from "../../common/updater"
 import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, UPDATE_RESTART_EXIT_CODE } from "../../common/updater"
-import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, Friend, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus, SplashPreference } from "./types"
+import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus, SplashPreference } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
 import { join, resolve } from "path"
 import { tmpdir } from "os"
@@ -87,7 +87,6 @@ type ChatActionsDeps = {
   setDialogError: (s: string) => void
   setDialogBusy: (b: boolean) => void
   setFriendRequests?: React.Dispatch<React.SetStateAction<FriendRequest[]>>
-  setFriendsList?: React.Dispatch<React.SetStateAction<Friend[]>>
 
   statusResetRef: { current: ReturnType<typeof setTimeout> | undefined }
   copyToastResetRef: { current: ReturnType<typeof setTimeout> | undefined }
@@ -112,7 +111,6 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps
   const { statusResetRef, copyToastResetRef, dialogActionRef, dialogBusyRef, filePickerOpenRef, composerRef, selectionKey } = deps
   const setFriendRequests = deps.setFriendRequests
-  const setFriendsList = deps.setFriendsList
 
   function showStatus(message: string, durationMs = 2_000) {
     if (statusResetRef.current) clearTimeout(statusResetRef.current)
@@ -126,13 +124,6 @@ export function useChatActions(deps: ChatActionsDeps) {
     try {
       const response = await ipc.send("friend_requests")
       if (!response.error && setFriendRequests) setFriendRequests(response.requests as FriendRequest[])
-    } catch {}
-  }
-
-  async function refreshFriendsSilent() {
-    try {
-      const response = await ipc.send("friends")
-      if (!response.error && setFriendsList) setFriendsList(response.friends as Friend[])
     } catch {}
   }
 
@@ -554,7 +545,6 @@ export function useChatActions(deps: ChatActionsDeps) {
       showStatus(accept ? `You and ${request.sender_name} are now friends.` : `Declined ${request.sender_name}'s friend request. You can add them again later.`, FRIEND_STATUS_MS)
       await refreshPeers()
       await refreshFriendRequestsSilent()
-      await refreshFriendsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -586,7 +576,6 @@ export function useChatActions(deps: ChatActionsDeps) {
       showStatus(`Removed ${peer?.display_name ?? peerId} as a friend.`, FRIEND_STATUS_MS)
       await refreshPeers()
       await refreshFriendRequestsSilent()
-      await refreshFriendsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -614,7 +603,6 @@ export function useChatActions(deps: ChatActionsDeps) {
       showStatus(`Blocked ${displayName}. Their friend requests are now ignored.`, FRIEND_STATUS_MS)
       await refreshPeers()
       await refreshFriendRequestsSilent()
-      await refreshFriendsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -630,7 +618,6 @@ export function useChatActions(deps: ChatActionsDeps) {
       showStatus(`Unblocked ${displayName}. They can send friend requests again.`, FRIEND_STATUS_MS)
       await refreshPeers()
       await refreshFriendRequestsSilent()
-      await refreshFriendsSilent()
       finishDialogAction(action)
       void loadBlockedPeers()
     } catch (error) { failDialogAction(action, error) }
@@ -646,7 +633,6 @@ export function useChatActions(deps: ChatActionsDeps) {
       showStatus(`Blocked ${request.sender_name}. Their friend requests are now ignored.`, FRIEND_STATUS_MS)
       await refreshPeers()
       await refreshFriendRequestsSilent()
-      await refreshFriendsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -953,7 +939,7 @@ export function useChatActions(deps: ChatActionsDeps) {
 
   return {
     showStatus, showCopyToast,
-    refreshPeers, refreshGroups, refreshGroupMembers, refreshFiles, refreshFriendRequestsSilent, refreshFriendsSilent, openFriendsInbox,
+    refreshPeers, refreshGroups, refreshGroupMembers, refreshFiles, refreshFriendRequestsSilent, openFriendsInbox,
     closeDialog, showDialog, goBack,
     installUpdate, saveUpdateToken, restartUpdate, checkForUpdatesFromAbout,
     loadControlStatus, configureControl, dismissControlSetup,
