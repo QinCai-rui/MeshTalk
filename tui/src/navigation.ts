@@ -64,8 +64,7 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
   } else if (dialog.kind === "mute-timeout" || dialog.kind === "unmute-confirm") {
     showDialog({ kind: "notifications" })
   } else if (dialog.kind === "friend-request-incoming") {
-    showDialog({ kind: "friend-requests", requests: [] })
-    void loadFriendRequests()
+    showDialog({ kind: "friends" })
   } else if (dialog.kind === "friend-requests" || dialog.kind === "add-friend" || dialog.kind === "remove-friend") {
     showDialog({ kind: "friends" })
   } else if (dialog.kind === "friends" || dialog.kind === "notifications") {
@@ -81,8 +80,7 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
     showDialog({ kind: "blocked", blocked: [] })
     void loadBlockedPeers()
   } else if (dialog.kind === "cancel-friend-confirm") {
-    showDialog({ kind: "friend-requests", requests: [] })
-    void loadFriendRequests()
+    showDialog({ kind: "friends" })
   } else if (dialog.kind === "debug-peer") {
     showDialog({ kind: "debug-endpoints" })
   } else if (dialog.kind === "debug-endpoints") {
@@ -117,10 +115,11 @@ type CommandDependencies = {
   loadFriendRequests: () => Promise<void>
   loadGroupDetails: (group: Group) => Promise<void>
   loadRooms: () => Promise<void>
+  openFriendsInbox?: () => void
 }
 
 export function runCommand(command: string, dependencies: CommandDependencies) {
-  const { groups, groupMembers, identity, mutedPeers, peers, selectedGroupId, selectedPeerId, selection, showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft, setRenameDialog, loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms } = dependencies
+  const { groups, groupMembers, identity, mutedPeers, peers, selectedGroupId, selectedPeerId, selection, showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft, setRenameDialog, loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms, openFriendsInbox } = dependencies
   if (command === "control") showDialog({ kind: "control" })
   else if (command === "rooms") { showDialog({ kind: "rooms", rooms: [] }); void loadRooms() }
   else if (command === "group-details") {
@@ -128,7 +127,10 @@ export function runCommand(command: string, dependencies: CommandDependencies) {
     if (!group) { showStatus("Select a group first."); return }
     showDialog({ kind: "group-detail", group, members: groupMembers[group.group_id] ?? [] })
     void loadGroupDetails(group)
-  } else if (command === "friends") showDialog({ kind: "friends" })
+  } else if (command === "friends") {
+    if (openFriendsInbox) openFriendsInbox()
+    else showDialog({ kind: "friends" })
+  }
   else if (command === "notifications") showDialog({ kind: "notifications" })
   else if (command === "accessibility") showDialog({ kind: "accessibility" })
   else if (command === "customisation") showDialog({ kind: "customisation" })

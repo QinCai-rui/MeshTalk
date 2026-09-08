@@ -29,6 +29,7 @@ import type {
   ConversationItem,
   Dialog,
   FileTransfer,
+  FriendRequest,
   Group,
   GroupMember,
   ImageProtocol,
@@ -44,6 +45,7 @@ import {
   composerLimitColor,
   DEFAULT_STATUS,
   getComposerHeight,
+  inlineFriendActions,
   isImageFile,
   MIN_COMPOSER_HEIGHT,
   peerPresence,
@@ -186,6 +188,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     import("./types").DebugInfo | null
   >(null);
   const [fileTransfers, setFileTransfers] = useState<FileTransfer[]>([]);
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
   const [conversationFileTransfers, setConversationFileTransfers] = useState<
     FileTransfer[]
   >([]);
@@ -418,6 +421,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     setDialogDraft,
     setDialogError,
     setDialogBusy,
+    setFriendRequests,
     statusResetRef: statusReset,
     copyToastResetRef: copyToastReset,
     dialogActionRef: dialogAction,
@@ -491,6 +495,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     await setPhase(StartupPhase.LoadData);
     await actions.refreshPeers();
     await actions.refreshGroups();
+    void actions.refreshFriendRequestsSilent().catch(() => {});
 
     const mutedResp = await ipc.send("muted_peers");
     if (!mutedResp.error)
@@ -716,6 +721,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         if (active && !backendDisconnected.current)
           setStatus(`Peer refresh error: ${String(error)}`);
       });
+      void actions.refreshFriendRequestsSilent().catch(() => {});
       void actions.refreshGroups().catch((error) => {
         if (active && !backendDisconnected.current)
           setStatus(`Group refresh error: ${String(error)}`);
@@ -1025,6 +1031,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
               `Friend request from ${request.sender_name}. Open Settings > Friends to respond.`,
             );
           void actions.refreshPeers();
+          void actions.refreshFriendRequestsSilent();
           return;
         }
         if (event.event === "friend_response") {
@@ -1033,14 +1040,17 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             event.accepted
               ? `${name} accepted your friend request. You can now chat.`
               : `${name} declined your friend request.`,
+            5_000,
           );
           void actions.refreshPeers();
+          void actions.refreshFriendRequestsSilent();
           return;
         }
         if (event.event === "friend_cancelled") {
           const name = (event.display_name as string) ?? "a peer";
-          actions.showStatus(`${name} cancelled their friend request.`);
+          actions.showStatus(`${name} cancelled their friend request.`, 5_000);
           void actions.refreshPeers();
+          void actions.refreshFriendRequestsSilent();
           return;
         }
         if (event.event === "peer_capability_gap") {
@@ -1482,11 +1492,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       void actions.openFilePicker();
       return;
     }
-    if (key.ctrl && key.name === "d") {
-      key.preventDefault();
-      void actions.removeSelectedPeer();
-      return;
-    }
     if (
       scrollFocused &&
       !key.ctrl &&
@@ -1574,13 +1579,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     if (
       (key.name === "up" || key.name === "down") &&
       key.ctrl &&
-      (peers.length || groups.length)
+      (visiblePeers.length || groups.length)
     ) {
       key.preventDefault();
       setScrollFocused(false);
       setEditingName(false);
       const conversations: Conversation[] = [
-        ...peers.map((peer) => ({ kind: "peer" as const, id: peer.peer_id })),
+        ...visiblePeers.map((peer) => ({ kind: "peer" as const, id: peer.peer_id })),
         ...groups.map((group) => ({
           kind: "group" as const,
           id: group.group_id,
@@ -1625,6 +1630,89 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   });
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId);
+  const inboxCount = friendRequests.length;
+  const visiblePeers = useMemo(() => peers.filter((peer) => !peer.is_blocked), [peers]);
+
+  useEffect(() => {
+    if (selection?.kind !== "peer") return;
+    const peer = peers.find((item) => item.peer_id === selection.id);
+    if (peer && !peer.is_blocked) return;
+    const next = visiblePeers[0];
+    setSelection(next ? { kind: "peer", id: next.peer_id } : groups[0] ? { kind: "group", id: groups[0].group_id } : undefined);
+  }, [selection, peers, visiblePeers, groups]);
+
+  function resolvePeerRequest(peerId: string, direction: "incoming" | "outgoing"): FriendRequest | undefined {
+    return friendRequests.find((request) => request.direction === direction && (request.sender_id === peerId || request.recipient_id === peerId));
+  }
+
+  function handleInlineFriendAction(action: import("./utils").InlineFriendAction) {
+    const peer = peers.find((item) => item.peer_id === selectedPeerId);
+    if (!peer || selectedGroupId) return;
+    if (action === "add") {
+      actions.showDialog({ kind: "add-friend", peerId: peer.peer_id, displayName: peer.display_name });
+      return;
+    }
+    if (action === "inbox") {
+      actions.openFriendsInbox();
+      return;
+    }
+    if (action === "block") {
+      actions.showDialog({ kind: "block-peer", peerId: peer.peer_id, displayName: peer.display_name });
+      return;
+    }
+    if (action === "unblock") {
+      void ipc.send("unblock_peer", { peer_id: peer.peer_id }).then((response) => {
+        if (response.error) {
+          if (!backendDisconnected.current) setStatus(`Unblock error: ${response.error}`);
+          return;
+        }
+        actions.showStatus(`Unblocked ${peer.display_name}. They can send friend requests again.`, 5_000);
+        void actions.refreshPeers();
+        void actions.refreshFriendRequestsSilent();
+      }).catch((error) => {
+        if (!backendDisconnected.current) setStatus(`Unblock error: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      return;
+    }
+    if (action === "cancel") {
+      const request = resolvePeerRequest(peer.peer_id, "outgoing");
+      if (!request) {
+        actions.showStatus("No pending outgoing request found. Refreshing the inbox…");
+        void actions.refreshFriendRequestsSilent();
+        void actions.refreshPeers();
+        return;
+      }
+      actions.showDialog({ kind: "cancel-friend-confirm", requestId: request.request_id, displayName: peer.display_name });
+      return;
+    }
+    if (action === "accept" || action === "decline") {
+      const request = resolvePeerRequest(peer.peer_id, "incoming");
+      if (!request) {
+        actions.showStatus("No pending incoming request found. Refreshing the inbox…");
+        void actions.refreshFriendRequestsSilent();
+        void actions.refreshPeers();
+        return;
+      }
+      void actions.respondToFriendRequest(request, action === "accept");
+    }
+  }
+
+  useKeyboard((key) => {
+    if (key.ctrl && key.name === "f") {
+      key.preventDefault();
+      actions.openFriendsInbox();
+      return;
+    }
+    const modifier = (key as unknown as { alt?: boolean }).alt || key.meta || key.ctrl;
+    if (modifier && ["1", "2", "3", "4"].includes(key.name) && !dialog && !editingName && !isSending && selected && !selectedGroup) {
+      const options = inlineFriendActions(selected);
+      const option = options[Number(key.name) - 1];
+      if (option) {
+        key.preventDefault();
+        handleInlineFriendAction(option.id);
+      }
+    }
+  });
   const selectedHasCapabilityGap = Boolean(selected?.capability_gap);
   const capabilityGapParts = selected
     ? [
@@ -1759,11 +1847,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         identity={identity}
         mutedPeers={mutedPeers}
         nameDraft={nameDraft}
-        peers={peers}
+        peers={visiblePeers}
         selectedGroupId={selectedGroupId}
         selectedPeerId={selectedPeerId}
         sidebarWidth={sidebarWidth}
         typingConversationKeys={typingConversationKeys}
+        friendRequestCount={inboxCount}
+        onOpenInbox={() => actions.openFriendsInbox()}
         openGroupDetails={(group) => void actions.loadGroupDetails(group)}
         setEditingName={setEditingName}
         setNameDraft={setNameDraft}
@@ -1838,6 +1928,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             if (sent) setReplyTo(undefined);
           });
         }}
+        inboxCount={inboxCount}
+        onFriendAction={handleInlineFriendAction}
       />
       {deleteConfirmation && (
         <box
@@ -1900,6 +1992,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           selected={selected}
           selectedGroupId={selectedGroupId}
           selection={selection}
+          friendRequests={friendRequests}
           dialogWidthFor={dialogWidthFor}
           appReleaseVersion={APP_RELEASE_VERSION}
           isReleaseBuild={IS_RELEASE_BUILD}

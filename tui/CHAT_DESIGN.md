@@ -81,7 +81,7 @@ Cancel. All settings colours come from chatTheme.ts.
 | Ctrl+N | Edit display name |
 | Ctrl+U | Open file picker |
 | Ctrl+V (also platform Meta/Super+V) | Clipboard/image paste in composer |
-| Ctrl+D | Remove selected peer through existing action |
+| Ctrl+D | Unbound (peer removal removed; manage unwanted peers via Block/Unfriend in the Friends inbox) |
 | Enter / Alt+Enter | Send / insert newline in composer |
 | PgUp/PgDn | Focus and scroll history |
 | Up/Down | Select a message or file while reading history |

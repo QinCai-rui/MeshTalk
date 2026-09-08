@@ -6,7 +6,7 @@ export const MIN_COMPOSER_HEIGHT = 3
 export const MAX_COMPOSER_HEIGHT = 5
 export const MAX_MESSAGE_BYTES = 30 * 1024
 export const UNREAD_MESSAGE_FADE_MS = 3_000
-export const DEFAULT_STATUS = "Ctrl+P: Settings  Ctrl+U: upload  Ctrl+V: paste image  Ctrl+Up/Down: switch chats  PgUp: history  Ctrl+D: remove offline  Ctrl+C: quit"
+export const DEFAULT_STATUS = "Ctrl+P: Settings  Ctrl+U: upload  Ctrl+V: paste image  Ctrl+Up/Down: switch chats  PgUp: history  Ctrl+C: quit"
 
 export function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
@@ -23,6 +23,61 @@ export function peerConnectionLabel(peer: Peer): string { if (!peer.is_online) r
 export function peerPresence(peer: Peer): "active" | "away" | "offline" { return peer.presence ?? "offline" }
 export function sortPeersByInteraction(peers: Peer[]): Peer[] { return [...peers].sort((a, b) => (b.last_interaction ?? 0) - (a.last_interaction ?? 0) || a.display_name.localeCompare(b.display_name)) }
 export function friendMarkers(peer: Peer): string { const markers: string[] = []; if (peer.is_friend) markers.push("\u2665"); if (peer.friend_request === "incoming" || peer.friend_request === "both") markers.push("\u2199"); if (peer.friend_request === "outgoing" || peer.friend_request === "both") markers.push("\u2197"); return markers.length ? ` ${markers.join("")}` : "" }
+
+export type FriendState = "friend" | "incoming" | "outgoing" | "both" | "blocked" | "stranger"
+
+export function peerFriendState(peer: Peer): FriendState {
+  if (peer.is_blocked) return "blocked"
+  if (peer.is_friend) return "friend"
+  if (peer.friend_request === "incoming" || peer.friend_request === "outgoing" || peer.friend_request === "both") return peer.friend_request
+  return "stranger"
+}
+
+export function peerFriendStatusText(peer: Peer): string {
+  const state = peerFriendState(peer)
+  if (state === "friend") return "Friends — messages go through."
+  if (state === "incoming") return "They sent you a friend request."
+  if (state === "outgoing") return "Friend request sent — waiting for them to accept."
+  if (state === "both") return "You both sent requests — accept to become friends."
+  if (state === "blocked") return "Blocked — their requests and messages are ignored."
+  return "Not friends yet — messages are blocked until they accept."
+}
+
+export type InlineFriendAction = "add" | "cancel" | "accept" | "decline" | "block" | "unblock" | "inbox"
+
+export function inlineFriendActions(peer: Peer): { id: InlineFriendAction; label: string; hint: string }[] {
+  const state = peerFriendState(peer)
+  if (state === "friend") return [{ id: "inbox", label: "Inbox", hint: "Alt+1" }]
+  if (state === "blocked") return [
+    { id: "unblock", label: "Unblock", hint: "Alt+1" },
+    { id: "inbox", label: "Inbox", hint: "Alt+2" },
+  ]
+  if (state === "incoming") return [
+    { id: "accept", label: "Accept", hint: "Alt+1" },
+    { id: "decline", label: "Decline", hint: "Alt+2" },
+    { id: "block", label: "Block", hint: "Alt+3" },
+  ]
+  if (state === "outgoing") return [
+    { id: "cancel", label: "Cancel request", hint: "Alt+1" },
+    { id: "block", label: "Block", hint: "Alt+2" },
+    { id: "inbox", label: "Inbox", hint: "Alt+3" },
+  ]
+  if (state === "both") return [
+    { id: "accept", label: "Accept", hint: "Alt+1" },
+    { id: "decline", label: "Decline", hint: "Alt+2" },
+    { id: "cancel", label: "Cancel mine", hint: "Alt+3" },
+    { id: "block", label: "Block", hint: "Alt+4" },
+  ]
+  return [
+    { id: "add", label: "Add friend", hint: "Alt+1" },
+    { id: "block", label: "Block", hint: "Alt+2" },
+    { id: "inbox", label: "Inbox", hint: "Alt+3" },
+  ]
+}
+
+export function addablePeers(peers: Peer[], identityPeerId?: string): Peer[] {
+  return peers.filter((peer) => peer.peer_id !== identityPeerId && !peer.is_friend && !peer.is_blocked && !peer.friend_request).sort((a, b) => a.display_name.localeCompare(b.display_name))
+}
 export function composerLimitColor(length: number): string | undefined { const usage = length / MAX_MESSAGE_BYTES; if (usage >= 1) return theme.danger; if (usage >= 0.9) return theme.caution; if (usage >= 0.75) return theme.warning; return undefined }
 export const unreadMessageBackground = unreadBackground
 export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {

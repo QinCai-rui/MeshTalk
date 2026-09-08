@@ -10,7 +10,7 @@ import { SettingsConfirm, SettingsField, SettingsMenu, SettingsNotice, SettingsS
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useKeyboard } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
-import { isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
+import { addablePeers, isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
 import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 import { chatTheme as theme } from "../chatTheme"
 import { SettingsPanel, usesSettingsPanel } from "./dialogs/SettingsPanel"
@@ -37,6 +37,7 @@ type DialogPanelProps = {
   selected: Peer | undefined
   selectedGroupId: string | undefined
   selection: { kind: "peer" | "group"; id: string } | undefined
+  friendRequests?: FriendRequest[]
   dialogWidthFor: (kind: Dialog["kind"]) => number
   appReleaseVersion: string
   isReleaseBuild: boolean
@@ -99,7 +100,7 @@ type DialogPanelProps = {
 }
 
 export function DialogPanel(props: DialogPanelProps) {
-  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
+  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, friendRequests = [], dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
   const { runCommand, showDialog, closeDialog, goBack, setDialogDraft, setDialogError, setNameDraft } = props
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
@@ -142,7 +143,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "remove-friend" && <RemoveFriendDialogContent dialog={dialog} dialogHeight={dialogHeight} unfriendPeer={unfriendPeer} showDialog={showDialog} />}
       {dialog.kind === "friend-requests" && <FriendRequestsDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "friend-request-incoming" && <FriendRequestIncomingDialogContent dialog={dialog} dialogHeight={dialogHeight} blockSenderFromRequest={blockSenderFromRequest} respondToFriendRequest={respondToFriendRequest} />}
-      {dialog.kind === "friends" && <FriendsDialogContent dialogHeight={dialogHeight} loadBlockedPeers={loadBlockedPeers} runCommand={runCommand} showDialog={showDialog} />}
+      {dialog.kind === "friends" && <FriendsDialogContent dialogHeight={dialogHeight} peers={peers} identity={identity} friendRequests={friendRequests} loadBlockedPeers={loadBlockedPeers} showDialog={showDialog} unblockPeer={unblockPeer} />}
       {["notification-enable", "notification-confirm", "notification-fallback", "notifications", "notification-settings", "notification-peer"].includes(dialog.kind) && <NotificationDialogs dialog={dialog as Extract<Dialog, { kind: "notification-enable" | "notification-confirm" | "notification-fallback" | "notifications" | "notification-settings" | "notification-peer" }>} dialogBusy={dialogBusy} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} identity={identity} mutedPeers={mutedPeers} notificationPreferences={notificationPreferences} notificationTestDelivery={notificationTestDelivery} peers={peers} selectedPeerId={selected?.peer_id} showDialog={showDialog} testNotificationDelivery={testNotificationDelivery} disableNotifications={disableNotifications} confirmNotificationDelivery={confirmNotificationDelivery} toggleNotificationEvent={toggleNotificationEvent} runCommand={runCommand} />}
       {dialog.kind === "accessibility" && <AccessibilityDialogContent dialogHeight={dialogHeight} flashingEnabled={flashingEnabled} setAccessibilityFlashing={setAccessibilityFlashing} />}
       {dialog.kind === "blocked" && <BlockedDialogContent dialog={dialog} dialogHeight={dialogHeight} loadBlockedPeers={loadBlockedPeers} showDialog={showDialog} unblockPeer={unblockPeer} />}
@@ -388,18 +389,91 @@ function FriendRequestIncomingDialogContent({ dialog, dialogHeight, blockSenderF
   )
 }
 
-function FriendsDialogContent({ dialogHeight, loadBlockedPeers, runCommand, showDialog }: { dialogHeight: number; loadBlockedPeers: () => void; runCommand: (cmd: string) => void; showDialog: (d: Dialog) => void }) {
+type FriendsTab = "requests" | "add" | "friends" | "blocked"
+
+function FriendsDialogContent({ dialogHeight, peers, identity, friendRequests, loadBlockedPeers, showDialog, unblockPeer }: { dialogHeight: number; peers: Peer[]; identity: { peer_id: string; display_name: string } | undefined; friendRequests: FriendRequest[]; loadBlockedPeers: () => void; showDialog: (d: Dialog) => void; unblockPeer: (peerId: string, displayName: string) => void }) {
+  const [tab, setTab] = useState<FriendsTab>("requests")
+  useKeyboard((key) => {
+    if (key.ctrl || key.meta || key.defaultPrevented) return
+    const order: FriendsTab[] = ["requests", "add", "friends", "blocked"]
+    const index = ["1", "2", "3", "4"].indexOf(key.name)
+    if (index >= 0 && order[index] !== tab) {
+      key.preventDefault()
+      setTab(order[index]!)
+    }
+  })
+  const incoming = friendRequests.filter((request) => request.direction === "incoming")
+  const outgoing = friendRequests.filter((request) => request.direction === "outgoing")
+  const addable = addablePeers(peers, identity?.peer_id)
+  const friends = peers.filter((peer) => peer.is_friend).sort((a, b) => a.display_name.localeCompare(b.display_name))
+  const blocked = peers.filter((peer) => peer.is_blocked).sort((a, b) => a.display_name.localeCompare(b.display_name))
+  const tabs = [
+    { id: "requests" as const, label: `Requests (${incoming.length + outgoing.length})` },
+    { id: "add" as const, label: `Add (${addable.length})` },
+    { id: "friends" as const, label: `Friends (${friends.length})` },
+    { id: "blocked" as const, label: `Blocked (${blocked.length})` },
+  ]
+  const tabBar = <box flexDirection="column" flexShrink={0}>
+    {tabs.map((entry, index) => <box key={entry.id} id={`friends-tab-${entry.id}`} height={1} overflow="hidden" onMouseDown={(event) => { if (event.button === 0) setTab(entry.id) }}><text fg={tab === entry.id ? theme.accent : theme.muted} wrapMode="none">{tab === entry.id ? `> [${index + 1}] ${entry.label}` : `  [${index + 1}] ${entry.label}`}</text></box>)}
+  </box>
+  const selectRequest = (option: { value?: string }) => {
+    const value = option.value
+    if (!value) return
+    if (value.startsWith("incoming:")) {
+      const request = friendRequests.find((item) => item.request_id === value.slice("incoming:".length))
+      if (request) showDialog({ kind: "friend-request-incoming", request })
+    } else if (value.startsWith("outgoing:")) {
+      const request = friendRequests.find((item) => item.request_id === value.slice("outgoing:".length))
+      if (request) showDialog({ kind: "cancel-friend-confirm", requestId: request.request_id, displayName: request.recipient_name ?? request.sender_name })
+    }
+  }
   return (
-    <SettingsScreen breadcrumb={["Friends"]} description="Manage trusted peers, requests, and request blocking." dialogHeight={dialogHeight}>
-      <SettingsMenu dialogHeight={dialogHeight} options={[
-        { section: "Requests", name: "Friend requests", description: "Review incoming requests or cancel your pending requests.", value: "friend-requests" },
-        { section: "Selected peer", name: "Add friend", description: "Send a friend request to the peer selected in the conversation list.", value: "add-friend" },
-        { section: "Selected peer", name: "Remove friend", description: "Remove the selected friend and block future messages until a new request is accepted.", value: "remove-friend", tone: "warning" },
-        { section: "Privacy", name: "Blocked requests", description: "Block a person or unblock a previously blocked requester.", value: "blocked" },
-      ]} onSelect={(option) => {
-      if (option.value === "blocked") void loadBlockedPeers()
-      else runCommand(option.value)
-      }} />
+    <SettingsScreen breadcrumb={["Friends", "Inbox"]} dialogHeight={dialogHeight}>
+      {tabBar}
+      {tab === "requests" && (<>
+        {!incoming.length && !outgoing.length ? <SettingsNotice>No friend requests are pending.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={[
+          ...incoming.map((request) => ({
+            name: request.sender_name, description: request.note || "Accept, decline, or block this request.", value: `incoming:${request.request_id}`, status: "Needs response", tone: "accent" as const,
+          })),
+          ...outgoing.map((request) => ({
+            name: request.recipient_name ?? request.sender_name, description: "Pending. Cancel this request if you no longer want to connect.", value: `outgoing:${request.request_id}`, status: "Pending",
+          })),
+        ]} onSelect={(option) => selectRequest(option)} />
+      </>)}
+      {tab === "add" && (<>
+        {!addable.length ? <SettingsNotice>No addable peers right now. Join a room to discover more people.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={addable.map((peer) => ({
+          name: peer.display_name, description: peer.is_online ? "Online. Send them a friend request." : "Offline. The request sends when you connect.", value: `add:${peer.peer_id}`, status: peer.is_online ? "Online" : "Offline", tone: "accent" as const,
+        }))} onSelect={(option) => {
+          const peer = addable.find((item) => item.peer_id === option.value.slice("add:".length))
+          if (peer) showDialog({ kind: "add-friend", peerId: peer.peer_id, displayName: peer.display_name })
+        }} />
+      </>)}
+      {tab === "friends" && (<>
+        {!friends.length ? <SettingsNotice>No friends yet. Accept a request or add someone from the Add tab.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={friends.map((peer) => ({
+          name: peer.display_name, description: "Remove this friend. Their future messages stay blocked until re-accepted.", value: `friend:${peer.peer_id}`, status: peer.is_online ? "Online" : "Offline",
+        }))} onSelect={(option) => {
+          const peer = friends.find((item) => item.peer_id === option.value.slice("friend:".length))
+          if (peer) showDialog({ kind: "remove-friend", peerId: peer.peer_id, displayName: peer.display_name })
+        }} />
+      </>)}
+      {tab === "blocked" && (<>
+        {!blocked.length ? <SettingsNotice>No people are blocked.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={[
+          ...blocked.map((peer) => ({ name: peer.display_name, description: "Allow friend requests from this person again.", value: `unblock:${peer.peer_id}`, status: "Blocked", tone: "warning" as const })),
+          { name: "Block a peer", description: "Ignore future friend requests from a specific person.", value: "block-pick", tone: "danger" as const },
+          { name: "Manage blocked list", description: "Open the full blocked-people manager.", value: "manage" },
+        ]} onSelect={(option) => {
+          if (option.value === "block-pick") { showDialog({ kind: "block-peer-pick" }); return }
+          if (option.value === "manage") { void loadBlockedPeers(); return }
+          if (option.value.startsWith("unblock:")) {
+            const peer = blocked.find((item) => `unblock:${item.peer_id}` === option.value)
+            if (peer) void unblockPeer(peer.peer_id, peer.display_name)
+          }
+        }} />
+      </>)}
     </SettingsScreen>
   )
 }
@@ -458,7 +532,7 @@ function BlockPeerDialogContent({ dialog, dialogHeight, blockPeer, loadBlockedPe
 }
 
 function CancelFriendConfirmDialogContent({ dialog, dialogHeight, cancelFriendRequest, loadFriendRequests, showDialog }: { dialog: Extract<Dialog, { kind: "cancel-friend-confirm" }>; dialogHeight: number; cancelFriendRequest: (requestId: string) => void; loadFriendRequests: () => void; showDialog: (d: Dialog) => void }) {
-  return <SettingsScreen breadcrumb={["Friends", "Requests", "Cancel request"]} description="The pending request will be withdrawn and no longer visible to them." dialogHeight={dialogHeight}><SettingsConfirm question={<>Cancel the friend request to <span fg={theme.accent}>{dialog.displayName}</span>?</>} detail="The pending request will be withdrawn and no longer visible to them." confirmLabel="Cancel request" cancelLabel="Keep request" destructive onConfirm={() => void cancelFriendRequest(dialog.requestId)} onCancel={() => { showDialog({ kind: "friend-requests", requests: [] }); void loadFriendRequests() }} /></SettingsScreen>
+  return <SettingsScreen breadcrumb={["Friends", "Requests", "Cancel request"]} description="The pending request will be withdrawn and no longer visible to them." dialogHeight={dialogHeight}><SettingsConfirm question={<>Cancel the friend request to <span fg={theme.accent}>{dialog.displayName}</span>?</>} detail="The pending request will be withdrawn and no longer visible to them." confirmLabel="Cancel request" cancelLabel="Keep request" destructive onConfirm={() => void cancelFriendRequest(dialog.requestId)} onCancel={() => showDialog({ kind: "friends" })} /></SettingsScreen>
 }
 
 function DebugDialogContent({ dialog, controlStatus, debugInfo, dialogHeight, reStun, loadDebugInfo, showDialog }: { dialog: Extract<Dialog, { kind: "debug" }>; controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }; debugInfo: DebugInfo | null; dialogHeight: number; reStun: () => void; loadDebugInfo: () => void; showDialog: (d: Dialog) => void }) {
