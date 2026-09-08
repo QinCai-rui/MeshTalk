@@ -64,8 +64,7 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
   } else if (dialog.kind === "mute-timeout" || dialog.kind === "unmute-confirm") {
     showDialog({ kind: "notifications" })
   } else if (dialog.kind === "friend-request-incoming") {
-    showDialog({ kind: "friend-requests", requests: [] })
-    void loadFriendRequests()
+    showDialog({ kind: "friends" })
   } else if (dialog.kind === "friend-requests" || dialog.kind === "add-friend" || dialog.kind === "remove-friend") {
     showDialog({ kind: "friends" })
   } else if (dialog.kind === "friends" || dialog.kind === "notifications") {
@@ -81,8 +80,7 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
     showDialog({ kind: "blocked", blocked: [] })
     void loadBlockedPeers()
   } else if (dialog.kind === "cancel-friend-confirm") {
-    showDialog({ kind: "friend-requests", requests: [] })
-    void loadFriendRequests()
+    showDialog({ kind: "friends" })
   } else if (dialog.kind === "debug-peer") {
     showDialog({ kind: "debug-endpoints" })
   } else if (dialog.kind === "debug-endpoints") {
