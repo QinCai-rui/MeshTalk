@@ -117,7 +117,7 @@ type CommandDependencies = {
   loadFriendRequests: () => Promise<void>
   loadGroupDetails: (group: Group) => Promise<void>
   loadRooms: () => Promise<void>
-  openFriendsInbox?: (tab?: import("./types").FriendInboxTab) => void
+  openFriendsInbox?: () => void
 }
 
 export function runCommand(command: string, dependencies: CommandDependencies) {
@@ -130,8 +130,8 @@ export function runCommand(command: string, dependencies: CommandDependencies) {
     showDialog({ kind: "group-detail", group, members: groupMembers[group.group_id] ?? [] })
     void loadGroupDetails(group)
   } else if (command === "friends") {
-    if (openFriendsInbox) openFriendsInbox("requests")
-    else showDialog({ kind: "friends", tab: "requests" })
+    if (openFriendsInbox) openFriendsInbox()
+    else showDialog({ kind: "friends" })
   }
   else if (command === "notifications") showDialog({ kind: "notifications" })
   else if (command === "accessibility") showDialog({ kind: "accessibility" })

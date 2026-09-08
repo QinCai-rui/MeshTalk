@@ -43,8 +43,6 @@ export type FileTransfer = { file_id: string; filename: string; file_size: numbe
 export type ConversationItem = { type: "message"; createdAt: number; message: Message } | { type: "file"; createdAt: number; file: FileTransfer; allFiles: FileTransfer[] }
 export type ReplyTarget = { id: string; senderId: string; label: string; groupId?: string; kind: "message" | "file" }
 
-export type FriendInboxTab = "requests" | "add" | "friends" | "blocked"
-
 export type Dialog =
   | { kind: "settings" } | { kind: "control"; firstRun?: boolean } | { kind: "control-custom"; firstRun?: boolean }
   | { kind: "control-status"; control: ControlStatus } | { kind: "advanced"; config: AdvancedConfig }
@@ -56,7 +54,7 @@ export type Dialog =
   | { kind: "rename"; firstRun?: boolean } | { kind: "mute-timeout"; peerId: string; displayName: string }
   | { kind: "unmute-confirm"; peerId: string; displayName: string } | { kind: "add-friend"; peerId: string; displayName: string }
   | { kind: "remove-friend"; peerId: string; displayName: string } | { kind: "friend-requests"; requests: FriendRequest[] }
-  | { kind: "friend-request-incoming"; request: FriendRequest } | { kind: "friends"; tab?: FriendInboxTab } | { kind: "blocked"; blocked: BlockedPeer[] }
+  | { kind: "friend-request-incoming"; request: FriendRequest } | { kind: "friends" } | { kind: "blocked"; blocked: BlockedPeer[] }
   | { kind: "block-peer-pick" } | { kind: "block-peer"; peerId: string; displayName: string }
   | { kind: "cancel-friend-confirm"; requestId: string; displayName: string } | { kind: "notifications" }
   | { kind: "notification-enable"; firstRun?: boolean }

@@ -127,9 +127,9 @@ export function useChatActions(deps: ChatActionsDeps) {
     } catch {}
   }
 
-  function openFriendsInbox(tab: import("./types").FriendInboxTab = "requests") {
+  function openFriendsInbox() {
     void refreshFriendRequestsSilent()
-    showDialog({ kind: "friends", tab })
+    showDialog({ kind: "friends" })
   }
 
   function showCopyToast() {

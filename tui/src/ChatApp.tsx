@@ -1653,7 +1653,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       return;
     }
     if (action === "inbox") {
-      actions.openFriendsInbox("requests");
+      actions.openFriendsInbox();
       return;
     }
     if (action === "block") {
@@ -1700,7 +1700,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   useKeyboard((key) => {
     if (key.ctrl && key.name === "f") {
       key.preventDefault();
-      actions.openFriendsInbox("requests");
+      actions.openFriendsInbox();
       return;
     }
     const modifier = (key as unknown as { alt?: boolean }).alt || key.meta || key.ctrl;
@@ -1853,7 +1853,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         sidebarWidth={sidebarWidth}
         typingConversationKeys={typingConversationKeys}
         friendRequestCount={inboxCount}
-        onOpenInbox={() => actions.openFriendsInbox("requests")}
+        onOpenInbox={() => actions.openFriendsInbox()}
         openGroupDetails={(group) => void actions.loadGroupDetails(group)}
         setEditingName={setEditingName}
         setNameDraft={setNameDraft}
