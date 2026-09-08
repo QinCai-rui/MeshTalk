@@ -460,7 +460,7 @@ test("history selection and unread visibility retain their message IDs", async (
 })
 
 for (const width of [80, 48, 32]) {
-  test(`status replaces hints without moving the composer at ${width} columns`, async () => {
+  test(`status keeps the settings shortcut without moving the composer at ${width} columns`, async () => {
     const props = panelProps(chatLayout(width).panelWidth)
     let changeStatus: (status: string) => void = noop
     function Fixture() {
@@ -477,7 +477,7 @@ for (const width of [80, 48, 32]) {
       let frame = await settle(setup)
       expect(frame).toContain("Message sent.")
       expect(frame).not.toContain("Enter send")
-      expect(frame).not.toContain("Ctrl+P settings")
+      expect(frame).toContain("Ctrl+P settings")
       expect(props.composerRef.current!.screenY).toBe(y)
       expect(props.scrollboxRef.current!.viewport.height).toBe(historyHeight)
       await act(async () => { changeStatus("Connection error: " + "More details. ".repeat(50) + "End of status.") })
