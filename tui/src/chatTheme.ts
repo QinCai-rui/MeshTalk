@@ -22,6 +22,7 @@ export const chatTheme = {
     away: "#f0c674",
     offline: "#a4b2c2",
     self: "#65a9ff",
+    dnd: "#ff5f5f",
   },
   markdown: {
     default: "#d6deeb",
@@ -75,8 +76,8 @@ export const chatTheme = {
   },
 } as const
 
-export const presenceIndicator = (presence: "active" | "away" | "offline") =>
-  presence === "active" ? "●" : presence === "away" ? "~" : "○"
+export const presenceIndicator = (presence: "active" | "away" | "offline", dnd = false) =>
+  dnd && presence !== "offline" ? "●" : presence === "active" ? "●" : presence === "away" ? "~" : "○"
 
 export function unreadMessageBackground(progress: number): string {
   // Keep unread/reply highlights in the same restrained green family as the

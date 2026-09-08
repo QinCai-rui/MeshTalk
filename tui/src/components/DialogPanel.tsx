@@ -31,6 +31,7 @@ type DialogPanelProps = {
   groups: Group[]
   identity: { peer_id: string; display_name: string } | undefined
   mutedPeers: Record<string, number>
+  dndEnabled?: boolean
   notificationPreferences: NotificationPreferences | null
   notificationTestDelivery: Exclude<NotificationDelivery, "disabled"> | null
   peers: Peer[]
@@ -101,7 +102,7 @@ type DialogPanelProps = {
 }
 
 export function DialogPanel(props: DialogPanelProps) {
-  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
+  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, dndEnabled = false, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
   const { runCommand, showDialog, closeDialog, goBack, setDialogDraft, setDialogError, setNameDraft } = props
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
@@ -145,7 +146,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "friend-requests" && <FriendRequestsDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "friend-request-incoming" && <FriendRequestIncomingDialogContent dialog={dialog} dialogHeight={dialogHeight} blockSenderFromRequest={blockSenderFromRequest} respondToFriendRequest={respondToFriendRequest} />}
       {dialog.kind === "friends" && <FriendsDialogContent dialogHeight={dialogHeight} loadBlockedPeers={loadBlockedPeers} runCommand={runCommand} showDialog={showDialog} />}
-      {["notification-enable", "notification-confirm", "notification-fallback", "notifications", "notification-settings", "notification-peer"].includes(dialog.kind) && <NotificationDialogs dialog={dialog as Extract<Dialog, { kind: "notification-enable" | "notification-confirm" | "notification-fallback" | "notifications" | "notification-settings" | "notification-peer" }>} dialogBusy={dialogBusy} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} identity={identity} mutedPeers={mutedPeers} notificationPreferences={notificationPreferences} notificationTestDelivery={notificationTestDelivery} peers={peers} selectedPeerId={selected?.peer_id} showDialog={showDialog} testNotificationDelivery={testNotificationDelivery} disableNotifications={disableNotifications} confirmNotificationDelivery={confirmNotificationDelivery} toggleNotificationEvent={toggleNotificationEvent} runCommand={runCommand} />}
+      {["notification-enable", "notification-confirm", "notification-fallback", "notifications", "notification-settings", "notification-peer"].includes(dialog.kind) && <NotificationDialogs dialog={dialog as Extract<Dialog, { kind: "notification-enable" | "notification-confirm" | "notification-fallback" | "notifications" | "notification-settings" | "notification-peer" }>} dialogBusy={dialogBusy} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} identity={identity} mutedPeers={mutedPeers} dndEnabled={dndEnabled} notificationPreferences={notificationPreferences} notificationTestDelivery={notificationTestDelivery} peers={peers} selectedPeerId={selected?.peer_id} showDialog={showDialog} testNotificationDelivery={testNotificationDelivery} disableNotifications={disableNotifications} confirmNotificationDelivery={confirmNotificationDelivery} toggleNotificationEvent={toggleNotificationEvent} runCommand={runCommand} />}
       {dialog.kind === "accessibility" && <AccessibilityDialogContent dialogHeight={dialogHeight} flashingEnabled={flashingEnabled} setAccessibilityFlashing={setAccessibilityFlashing} />}
       {dialog.kind === "blocked" && <BlockedDialogContent dialog={dialog} dialogHeight={dialogHeight} loadBlockedPeers={loadBlockedPeers} showDialog={showDialog} unblockPeer={unblockPeer} />}
       {dialog.kind === "block-peer-pick" && <BlockPeerPickDialogContent dialogHeight={dialogHeight} peers={peers} identity={identity} showDialog={showDialog} />}
@@ -288,7 +289,7 @@ function GroupDetailDialogContent({ dialog, identity, peers, closeDialog, leaveG
         {dialog.members.map((member, index) => {
           const memberId = member.peer_id ?? member.member_id
           const knownPeer = peers.find((peer) => peer.peer_id === memberId)
-          const color = memberId === identity?.peer_id ? theme.presence.self : knownPeer ? peerPresence(knownPeer) === "active" ? theme.success : peerPresence(knownPeer) === "away" ? theme.warning : theme.muted : member.is_online ? theme.success : theme.muted
+          const color = memberId === identity?.peer_id ? theme.presence.self : knownPeer && knownPeer.dnd && peerPresence(knownPeer) !== "offline" ? theme.presence.dnd : knownPeer ? peerPresence(knownPeer) === "active" ? theme.success : peerPresence(knownPeer) === "away" ? theme.warning : theme.muted : member.is_online ? theme.success : theme.muted
           return <text key={memberId ?? String(index)}>
             <span fg={color}>{member.display_name}</span>
             <span fg={theme.subdued}> {(memberId ?? "").slice(0, 12)}</span>

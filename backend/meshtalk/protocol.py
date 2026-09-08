@@ -304,6 +304,8 @@ class ProfilePayload:
     display_name: str
     tui_active: bool
     signature: bytes
+    dnd: bool = False
+    dnd_signature: bytes = b""
 
     def signed_bytes(self) -> bytes:
         """Return canonical bytes for signature verification."""
@@ -313,6 +315,18 @@ class ProfilePayload:
             "tui_active": self.tui_active,
         }, separators=(",", ":"), sort_keys=True).encode()
 
+    def dnd_signed_bytes(self) -> bytes:
+        """Return canonical bytes for the Do Not Disturb signature.
+
+        Signed separately from the legacy profile signature so older clients
+        (which verify only ``signed_bytes``) keep accepting profile updates
+        from newer clients; they simply ignore the unknown DND fields.
+        """
+        return json.dumps({
+            "peer_id": self.peer_id,
+            "dnd": self.dnd,
+        }, separators=(",", ":"), sort_keys=True).encode()
+
     def encode(self) -> bytes:
         """Encode profile to JSON bytes."""
         return json.dumps({
@@ -320,19 +334,30 @@ class ProfilePayload:
             "display_name": self.display_name,
             "tui_active": self.tui_active,
             "signature": self.signature.hex(),
+            "dnd": self.dnd,
+            "dnd_signature": self.dnd_signature.hex(),
         }).encode()
 
     @classmethod
     def decode(cls, data: bytes) -> ProfilePayload:
         """Decode profile from JSON bytes."""
         obj = json.loads(data)
+        dnd_signature = obj.get("dnd_signature", "")
+        try:
+            dnd_signature_bytes = bytes.fromhex(dnd_signature) if dnd_signature else b""
+        except ValueError as exc:
+            raise ValueError("Invalid profile signature") from exc
         payload = cls(
             peer_id=obj["peer_id"],
             display_name=obj["display_name"],
             tui_active=obj["tui_active"],
             signature=bytes.fromhex(obj["signature"]),
+            dnd=obj.get("dnd", False),
+            dnd_signature=dnd_signature_bytes,
         )
         if not isinstance(payload.tui_active, bool) or len(payload.signature) != 64:
+            raise ValueError("Invalid profile signature")
+        if not isinstance(payload.dnd, bool):
             raise ValueError("Invalid profile signature")
         return payload
 

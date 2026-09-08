@@ -178,6 +178,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     useState<Exclude<NotificationDelivery, "disabled"> | null>(null);
   const [blinkOn, setBlinkOn] = useState(true);
   const [flashingEnabled, setFlashingEnabled] = useState(true);
+  const [dndEnabled, setDndEnabled] = useState(false);
   const [imageProtocol, setImageProtocol] = useState<ImageProtocol>("auto");
   const [controlStatus, setControlStatus] = useState<{
     connected: boolean;
@@ -409,6 +410,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     setNotificationTestDelivery,
     flashingEnabled,
     setFlashingEnabled,
+    dndEnabled,
+    setDndEnabled,
     setImageProtocol,
     setSplashStyle: setConfiguredSplashStyle,
     controlStatus,
@@ -483,6 +486,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     };
     setIdentity(nextIdentity);
     setFlashingEnabled(response.flashing_enabled as boolean);
+    setDndEnabled(Boolean(response.dnd_enabled));
     setNameDraft(nextIdentity.display_name);
 
     await setPhase(StartupPhase.AnnouncePresence);
@@ -865,6 +869,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
               "messages",
               renderer,
               `New message from ${sender} in ${group?.name ?? "a group"}`,
+              dndEnabled,
             );
           if (groupId !== selectedGroupId) {
             if (event.event === "group_message" && !isGroupMuted)
@@ -1032,6 +1037,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             "friend_requests",
             renderer,
             `Friend request from ${request.sender_name}`,
+            dndEnabled,
           );
           if (!dialog) setDialog({ kind: "friend-request-incoming", request });
           else
@@ -1083,6 +1089,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
               "file_offers",
               renderer,
               `Incoming file ${filename} from ${sender}`,
+              dndEnabled,
             );
           if (fileEventMatchesSelection(event)) refreshSelectedConversationFiles();
           return;
@@ -1120,6 +1127,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
               "file_completed",
               renderer,
               `File received: ${filename}`,
+              dndEnabled,
             );
           setConversationFileTransfers((current) =>
             current.map((file) =>
@@ -1181,6 +1189,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             "messages",
             renderer,
             `New message from ${sender}`,
+            dndEnabled,
           );
         updatePeerInteraction(senderId);
         const conversationKey = `peer:${senderId}`;
@@ -1232,6 +1241,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       ipc,
       mutedPeers,
       mutedGroups,
+      dndEnabled,
       peers,
       groups,
       groupMembers,
@@ -1797,6 +1807,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         appVersion={APP_RELEASE_VERSION}
         stacked={stacked}
         dialogOpen={Boolean(dialog)}
+        dndEnabled={dndEnabled}
         editingName={editingName}
         groups={orderedGroups}
         groupMembers={groupMembers}
@@ -1951,6 +1962,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           groups={groups}
           identity={identity}
           mutedPeers={mutedPeers}
+          dndEnabled={dndEnabled}
           notificationPreferences={notificationPreferences}
           notificationTestDelivery={notificationTestDelivery}
           peers={peers}

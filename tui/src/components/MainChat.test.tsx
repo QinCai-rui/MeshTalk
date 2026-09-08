@@ -145,6 +145,52 @@ test("top bar shows a mute toggle for the selected conversation", async () => {
   } finally { await close(setup) }
 })
 
+test("peers with Do Not Disturb show a red circle and DND flag", async () => {
+  const props = sidebarProps(120)
+  props.peers = [{ ...peers[0]!, dnd: true }]
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Alex Morgan")
+    expect(frame).toContain("DND")
+    const fg = foregroundFor(setup, "Alex Morgan") as unknown as { toInts: () => number[] }
+    expect(fg?.toInts()).toEqual([255, 95, 95, 255])
+  } finally { await close(setup) }
+})
+
+test("sidebar shows a Do Not Disturb indicator when DND is on", async () => {
+  const props = sidebarProps(120)
+  props.dndEnabled = true
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Do Not Disturb on")
+    expect(frame).toContain("Do Not Disturb on")
+    const fg = foregroundFor(setup, "Do Not Disturb on") as unknown as { toInts: () => number[] }
+    expect(fg?.toInts()).toEqual([255, 95, 95, 255])
+  } finally { await close(setup) }
+})
+
+test("conversation header marks a peer with Do Not Disturb", async () => {
+  const props = panelProps(80)
+  props.selected = { ...peers[0]!, dnd: true }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "Alex Morgan")
+    expect(frame).toContain("DND")
+  } finally { await close(setup) }
+})
+
+test("Do Not Disturb blocks all desktop notifications", async () => {
+  const { notify } = await import("../notifications")
+  let triggered = 0
+  const renderer = { capabilities: { notifications: true }, triggerNotification: () => { triggered++ } }
+  const preferences = { setup_dismissed: true, delivery: "terminal" as const, events: { messages: true, friend_requests: true, file_offers: true, file_completed: true } }
+  for (const event of ["messages", "friend_requests", "file_offers", "file_completed"] as const)
+    await notify(preferences, event, renderer, "hello", true)
+  expect(triggered).toBe(0)
+  await notify(preferences, "messages", renderer, "hello", false)
+  expect(triggered).toBe(1)
+})
+
 test("sidebar peers use contiguous two-line click targets", async () => {
   const props = sidebarProps(120)
   props.peers = Array.from({ length: 3 }, (_, index) => ({ ...peers[0]!, peer_id: `peer-${index}`, display_name: `Peer ${index}`, unread_count: 0, is_friend: false }))

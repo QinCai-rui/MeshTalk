@@ -6,6 +6,7 @@ export type Peer = {
   last_interaction: number
   unread_count: number
   presence?: "active" | "away" | "offline"
+  dnd?: boolean
   is_friend?: boolean
   is_blocked?: boolean
   friend_request?: "incoming" | "outgoing" | "both" | null

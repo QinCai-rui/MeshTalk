@@ -249,3 +249,20 @@ class MutePeerPersistenceTest(unittest.TestCase):
 
             self.assertFalse(settings.is_peer_muted("peer5"))
             self.assertNotIn("peer5", settings.muted_peers)
+
+
+class DndPersistenceTest(unittest.TestCase):
+    def test_dnd_defaults_off_and_survives_reload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            self.assertFalse(settings.dnd_enabled)
+
+            settings.set_dnd_enabled(True)
+            self.assertTrue(settings.dnd_enabled)
+
+            loaded = Settings(path)
+            self.assertTrue(loaded.dnd_enabled)
+
+            loaded.set_dnd_enabled(False)
+            self.assertFalse(Settings(path).dnd_enabled)

@@ -28,7 +28,8 @@ its existing UI.
    An underlined `+ N more` link beneath the members opens the full member list.
    Group entries are contiguous with no gap, like DMs.
 - Sidebar peers use the original green/amber/gray presence colours and heart/request
-  arrow markers. The conversation header retains textual state labels; muted state,
+  arrow markers; peers with Do Not Disturb on show a red presence circle and a
+  DND flag instead. The conversation header retains textual state labels; muted state,
   capability limits, and delivery state still use words. Selected rows and the active composer also have a plain `>` marker.
 - The header holds the conversation name and connection/state details. Endpoint
   addresses and long relay descriptions simplify when space is limited.

@@ -58,6 +58,7 @@ async def main(debug: bool = False) -> None:
     settings = Settings(DATA_DIR / "settings.json")
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
+    peer_manager.dnd_enabled = settings.dnd_enabled
     friend_manager = FriendManager(identity, peer_manager, db)
     group_router = GroupRouter(identity, peer_manager, db, settings)
     router = MessageRouter(
@@ -234,6 +235,7 @@ async def main(debug: bool = False) -> None:
                 "last_interaction": interaction_times.get(peer["peer_id"], 0),
                 "is_online": int((connection := peer_manager.get_connected_peer(peer["peer_id"])) is not None),
                 "presence": "active" if connection and connection.tui_active else "away" if connection else "offline",
+                "dnd": bool(connection.dnd) if connection else bool(peer.get("dnd", 0)),
                 "unread_count": unread_counts.get(peer["peer_id"], 0),
                 "is_friend": peer["peer_id"] in friends,
                 "is_blocked": peer["peer_id"] in blocked,
@@ -399,7 +401,17 @@ async def main(debug: bool = False) -> None:
             "display_name": identity.display_name,
             "setup_dismissed": settings.identity_setup_dismissed or identity.display_name != "Anonymous",
             "flashing_enabled": settings.flashing_enabled,
+            "dnd_enabled": settings.dnd_enabled,
         }
+
+    async def handle_dnd(req: dict) -> dict:
+        enabled = req.get("enabled")
+        if enabled is not None:
+            if not isinstance(enabled, bool):
+                return {"error": "enabled must be boolean"}
+            settings.set_dnd_enabled(enabled)
+            await peer_manager.set_dnd_enabled(settings.dnd_enabled)
+        return {"dnd_enabled": settings.dnd_enabled}
 
     async def handle_accessibility(req: dict) -> dict:
         flashing_enabled = req.get("flashing_enabled")
@@ -884,6 +896,7 @@ async def main(debug: bool = False) -> None:
         "typing": handle_typing,
         "identity": handle_identity,
         "accessibility": handle_accessibility,
+        "dnd": handle_dnd,
         "status": handle_status,
         "messages": handle_messages,
         "set_display_name": handle_set_display_name,

@@ -6,12 +6,14 @@ import { chatTheme as theme, presenceIndicator } from "../chatTheme"
 import type { Conversation, Group, GroupMember, Peer } from "../types"
 import { clipTextToWidth, friendMarkers, peerPresence, terminalWidth } from "../utils"
 
-const presenceColor = (presence: "active" | "away" | "offline") => theme.presence[presence]
+const presenceColor = (presence: "active" | "away" | "offline", dnd = false) =>
+  dnd && presence !== "offline" ? theme.presence.dnd : theme.presence[presence]
 
 type SidebarProps = {
   appVersion: string
   stacked?: boolean
   dialogOpen: boolean
+  dndEnabled?: boolean
   editingName: boolean
   groups: Group[]
   groupMembers: Record<string, GroupMember[]>
@@ -32,7 +34,7 @@ type SidebarProps = {
   saveDisplayName: () => void
 }
 
-export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, mutedGroups = {}, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
+export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = false, editingName, groups, groupMembers, identity, mutedPeers, mutedGroups = {}, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
   const renderer = useRenderer()
   const peerListRef = useRef<ScrollBoxRenderable>(null)
   const groupListRef = useRef<ScrollBoxRenderable>(null)
@@ -59,6 +61,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
     <box style={{ paddingLeft: 1, paddingRight: 1, paddingTop: stacked ? 0 : 1, paddingBottom: stacked ? 0 : 1, flexShrink: 0 }} onMouseDown={() => setEditingName(true)}>
       <text fg={theme.accent}><b>MeshTalk</b><span fg={theme.muted}> {appVersion}</span></text>
       {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <text fg={theme.text} wrapMode="none">{clipTextToWidth(`You: ${identity?.display_name ?? "Connecting..."}`, sidebarWidth - 2)}</text>}
+      {dndEnabled && !editingName && <text fg={theme.presence.dnd} wrapMode="none">● Do Not Disturb on</text>}
       {!stacked && <text fg={theme.muted}>Ctrl+Up/Down switch chats</text>}
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
@@ -69,7 +72,8 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
           {peers.map(peer => {
         const selected = peer.peer_id === selectedPeerId
         const presence = peerPresence(peer)
-        const color = presenceColor(presence)
+        const peerDnd = Boolean(peer.dnd) && presence !== "offline"
+        const color = presenceColor(presence, peer.dnd)
         const markers = friendMarkers(peer)
         const typing = typingConversationKeys.has(`peer:${peer.peer_id}`)
         const label = nameLabel(peer.display_name, 0, terminalWidth(markers))
@@ -79,10 +83,10 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
         // muted chats only move to the top.
         const nameColor = color
         const showUnread = peer.unread_count > 0 && !isMuted
-        const flags = [peer.capability_gap && "Limited", isMuted && "Muted"].filter(Boolean).join(" / ")
+        const flags = [peer.capability_gap && "Limited", isMuted && "Muted", peerDnd && "DND"].filter(Boolean).join(" / ")
         return <box id={`nav-peer-${peer.peer_id}`} key={peer.peer_id} onMouseDown={() => pick({ kind: "peer", id: peer.peer_id })} opacity={isMuted ? 0.30 : undefined} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
-            <text fg={nameColor} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{presenceIndicator(presence)} {selected || showUnread ? <b>{label}</b> : label}</text>
+            <text fg={nameColor} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{presenceIndicator(presence, peer.dnd)} {selected || showUnread ? <b>{label}</b> : label}</text>
             {markers.length > 0 && <text fg={nameColor} flexShrink={0}>{markers}</text>}
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
@@ -130,7 +134,8 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
             const id = member.peer_id ?? member.member_id
             const peer = id ? peersById.get(id) : undefined
             const presence = peer ? peerPresence(peer) : member.is_online ? "active" : "offline"
-            return <text key={id ?? index} fg={id === identity?.peer_id ? theme.presence.self : presenceColor(presence)}>  {presenceIndicator(presence)} {member.display_name}{id === identity?.peer_id ? " (you)" : ""}{peer ? friendMarkers(peer) : ""}</text>
+            const memberDnd = peer?.dnd
+            return <text key={id ?? index} fg={id === identity?.peer_id ? theme.presence.self : presenceColor(presence, memberDnd)}>  {presenceIndicator(presence, memberDnd)} {member.display_name}{id === identity?.peer_id ? " (you)" : ""}{peer ? friendMarkers(peer) : ""}</text>
           })}
           {selected && members && (() => {
             const hidden = Math.max(0, group.member_count - visibleMembers.length)

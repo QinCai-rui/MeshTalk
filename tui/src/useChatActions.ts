@@ -75,6 +75,8 @@ type ChatActionsDeps = {
   setNotificationTestDelivery: React.Dispatch<React.SetStateAction<Exclude<NotificationDelivery, "disabled"> | null>>
   flashingEnabled: boolean
   setFlashingEnabled: (b: boolean) => void
+  dndEnabled: boolean
+  setDndEnabled: (b: boolean) => void
   setImageProtocol: (protocol: ImageProtocol) => void
   setSplashStyle: (style: SplashPreference) => void
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
@@ -107,7 +109,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
   const { mutedPeers, setMutedPeers, mutedGroups, setMutedGroups, notificationPreferences, setNotificationPreferences } = deps
   const { notificationTestDelivery, setNotificationTestDelivery } = deps
-  const { flashingEnabled, setFlashingEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
+  const { flashingEnabled, setFlashingEnabled, dndEnabled, setDndEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps
   const { statusResetRef, copyToastResetRef, dialogActionRef, dialogBusyRef, filePickerOpenRef, composerRef, selectionKey } = deps
@@ -844,6 +846,29 @@ export function useChatActions(deps: ChatActionsDeps) {
     finally { finishDialogAction(action) }
   }
 
+  async function saveDndEnabled(enabled: boolean) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("dnd", { enabled })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      setDndEnabled(response.dnd_enabled as boolean)
+      showStatus(
+        response.dnd_enabled
+          ? "Do Not Disturb on. All notifications are paused and peers see you as unavailable."
+          : "Do Not Disturb off. Notifications resumed.",
+      )
+      if (dialog && dialog.kind !== "settings" && dialog.kind.startsWith("notification"))
+        showDialog({ kind: "notifications" })
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  function toggleDnd() {
+    void saveDndEnabled(!dndEnabled)
+  }
+
   function notificationEventEnabled(event: NotificationEvent): boolean {
     return Boolean(notificationPreferences?.events[event])
   }
@@ -959,6 +984,10 @@ export function useChatActions(deps: ChatActionsDeps) {
   }
 
   function runCommand(command: string) {
+    if (command === "dnd") {
+      toggleDnd()
+      return
+    }
     navigationRunCommand(command, {
       groups, groupMembers, identity, mutedPeers, mutedGroups, peers, selectedGroupId, selectedPeerId, selection,
       showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft,
@@ -981,7 +1010,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest,
     reStun, loadDebugInfo, loadFiles,
     sendFile, sendImage, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
-    saveDisplayName, setAccessibilityFlashing,
+    saveDisplayName, setAccessibilityFlashing, saveDndEnabled, toggleDnd,
     testNotificationDelivery, confirmNotificationDelivery, disableNotifications, toggleNotificationEvent,
     removeSelectedPeer, send, runCommand,
   }

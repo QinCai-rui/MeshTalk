@@ -133,6 +133,7 @@ class Settings:
         self._control_setup_dismissed = False
         self._identity_setup_dismissed = False
         self._flashing_enabled = True
+        self._dnd_enabled = False
         self._notification_setup_dismissed = False
         self._notification_delivery = "terminal"
         self._notification_events = {
@@ -331,6 +332,16 @@ class Settings:
         self.save()
 
     @property
+    def dnd_enabled(self) -> bool:
+        """Return whether Do Not Disturb is enabled (all notifications blocked)."""
+        return self._dnd_enabled
+
+    def set_dnd_enabled(self, enabled: bool) -> None:
+        """Enable or disable Do Not Disturb."""
+        self._dnd_enabled = bool(enabled)
+        self.save()
+
+    @property
     def github_token(self) -> str:
         """Return the stored GitHub personal access token."""
         return self._github_token
@@ -474,6 +485,7 @@ class Settings:
             "control_setup_dismissed": self._control_setup_dismissed,
             "identity_setup_dismissed": self._identity_setup_dismissed,
             "flashing_enabled": self._flashing_enabled,
+            "dnd_enabled": self._dnd_enabled,
             "notifications": self.notification_preferences,
             "github_token": self._github_token,
             "stun_server": {"host": self._stun_host, "port": self._stun_port},
@@ -520,6 +532,7 @@ class Settings:
         self._control_setup_dismissed = bool(data.get("control_setup_dismissed", False))
         self._identity_setup_dismissed = bool(data.get("identity_setup_dismissed", False))
         self._flashing_enabled = bool(data.get("flashing_enabled", True))
+        self._dnd_enabled = bool(data.get("dnd_enabled", False))
         notifications = data.get("notifications", {})
         if isinstance(notifications, dict):
             self._notification_setup_dismissed = bool(notifications.get("setup_dismissed", False))

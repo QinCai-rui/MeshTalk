@@ -861,10 +861,17 @@ authenticated peer's signing key; mismatched sender_id/responder_id is rejected.
   the removal locally so both views converge.
 - Mute: mute(peer_id, timeout) silences notifications for timeout seconds (0 =
   permanent). Stored in settings.json.
-- Profiles (PROFILE): {peer_id, display_name, tui_active, signature}. Broadcast
-  to every active peer on name change (broadcast_profile_update); tui_active
-  reflects whether any TUI client is connected (drives "active/away/offline"
-   presence in peers).
+- Profiles (PROFILE): {peer_id, display_name, tui_active, signature, dnd,
+  dnd_signature}. Broadcast to every active peer on name change
+  (broadcast_profile_update); tui_active reflects whether any TUI client is
+  connected (drives "active/away/offline" presence in peers). dnd carries Do
+  Not Disturb state under a separate signature so older clients (which verify
+  only the legacy signature and ignore the unknown fields) keep accepting
+  profile updates.
+- Do Not Disturb: dnd(enabled) pauses all notifications locally and broadcasts
+  the state to peers, who render the peer with a red presence circle. Stored
+  in settings.json and reported as dnd (per peer) in peers and dnd_enabled
+  in identity.
 - Typing (TYPING): a signed envelope `{sender_id, recipient_id, created_at,
   encrypted_content, signature}`. The encrypted body is `{group_id|null,
   is_typing}`. Direct events are friend-only; group events require an active
@@ -896,7 +903,7 @@ over IPC.
 |--------|--------|---------|
 | send | recipient_id, content, reply_to_message_id? | message_id |
 | delete_message | message_id, group_id?, file? | Removes the local message or attachment history and any local attachment file. Never transmitted to peers. |
-| peers | - | List of peers with presence, unread counts, friend/blocked flags, network info. |
+| peers | - | List of peers with presence, DND state, unread counts, friend/blocked flags, network info. |
 | remove_peer | peer_id | Removed (only if not connected). |
 | friend_send | peer_id, note? | request_id |
 | friend_respond | request_id, accept | request_id, accepted |
@@ -908,7 +915,7 @@ over IPC.
 | blocked_peers | - | Blocked list. |
 | tui_presence | client_id, active | Toggles TUI-active presence. |
 | typing | client_id, recipient_id or group_id, is_typing | Transient typing update; exactly one conversation target is required. |
-| identity | - | peer_id, display_name, setup state. |
+| identity | - | peer_id, display_name, setup state, DND state. |
 | status | - | peer_id, connected peers + network info, control URL/connected, public endpoint, rooms. |
 | messages | peer_id | Conversation history (marks read). |
 | set_display_name | display_name | New name; broadcasts PROFILE. |
@@ -931,6 +938,7 @@ over IPC.
 | files_dir | path? | Get or set the files storage directory (`~/.meshtalk/files` by default). |
 | mute / unmute | peer_id, timeout? | Mute state. |
 | muted_peers | - | Current mutes. |
+| dnd | enabled? | Global Do Not Disturb state; pauses all notifications and broadcasts DND presence to peers. |
 | notifications | setup_dismissed?, delivery?, events? | Global notification preferences. Delivery is `terminal`, `native`, or `disabled`; events controls messages, friend requests, file offers, and completed files. |
 | debug_re_stun | - | Re-run STUN + re-announce. |
 | debug_info | - | Full peer/endpoint/room diagnostic dump. |
