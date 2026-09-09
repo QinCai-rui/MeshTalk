@@ -43,17 +43,17 @@ services:
       context: .
       dockerfile: telemetry/Dockerfile
     environment:
-      - PORT=8080
+      - PORT=8089
     volumes:
       - telemetry-data:/data
     ports:
       # Anonymous ingest is spammable by design: bind localhost by default,
-      # put the Worker ORIGIN behind a firewall, treat counts as approximate.
-      - "127.0.0.1:${TELEMETRY_PORT:-8080}:8080"
+      # put the Worker ORIGIN behind a firewall
+      - "127.0.0.1:${TELEMETRY_PORT:-8089}:8089"
     restart: unless-stopped
 
   telemetry-dashboard:
-    # Pretty read-only dashboard for the aggregate store (no IPs exist to show).
+    # Read-only dashboard for the aggregate store (no IPs exist to show).
     # Shares the ingest SQLite volume read-only; never writes.
     # Same image as telemetry; only the command differs.
     image: ghcr.io/qincai-rui/meshtalk/telemetry:latest
