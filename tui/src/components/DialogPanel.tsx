@@ -110,6 +110,11 @@ export function DialogPanel(props: DialogPanelProps) {
 
   if (!dialog) return null
   const fileManagerOpen = dialog.kind === "file-list"
+  const dismissible = !dialogBusy && !("firstRun" in dialog && dialog.firstRun)
+  const dismissOnOverlay = (event: { button?: number }) => {
+    if (event.button !== undefined && event.button !== 0) return
+    if (dismissible) closeDialog()
+  }
 
   const content = <>
       {dialog.kind === "settings" && <SettingsLanding dialogHeight={dialogHeight} />}
@@ -153,19 +158,19 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "debug-endpoints" && <DebugEndpointsDialogContent debugInfo={debugInfo} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "debug-peer" && <DebugPeerDialogContent dialog={dialog} debugInfo={debugInfo} dialogHeight={dialogHeight} />}
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
-      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
+      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
       {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} />}
   </>
-  if (usesSettingsPanel(dialog)) return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center">
-    <box width={dialogWidthFor(dialog.kind)} height={dialogHeight} border borderColor={theme.line} backgroundColor={theme.surfaceRaised} paddingX={1} paddingY={dialogHeight > 12 ? 1 : 0}>
+  if (usesSettingsPanel(dialog)) return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center" onMouseDown={dismissOnOverlay}>
+    <box width={dialogWidthFor(dialog.kind)} height={dialogHeight} border borderColor={theme.line} backgroundColor={theme.surfaceRaised} paddingX={1} paddingY={dialogHeight > 12 ? 1 : 0} onMouseDown={event => event.stopPropagation()}>
       <SettingsPanel dialog={dialog} width={dialogWidthFor(dialog.kind) - 4} height={dialogHeight - 4} busy={dialogBusy} error={dialogError} runCommand={runCommand} goBack={goBack}>{content}</SettingsPanel>
     </box>
   </box>
-  return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center">
-    <box width={dialogWidthFor(dialog.kind)} height={dialogHeight} border={!fileManagerOpen} borderColor={theme.line} backgroundColor={fileManagerOpen ? theme.canvas : theme.surfaceRaised} padding={fileManagerOpen ? 0 : 1} gap={fileManagerOpen ? 0 : 1} overflow="hidden" flexDirection="column">
+  return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center" onMouseDown={dismissOnOverlay}>
+    <box width={dialogWidthFor(dialog.kind)} height={dialogHeight} border={!fileManagerOpen} borderColor={theme.line} backgroundColor={fileManagerOpen ? theme.canvas : theme.surfaceRaised} padding={fileManagerOpen ? 0 : 1} gap={fileManagerOpen ? 0 : 1} overflow="hidden" flexDirection="column" onMouseDown={event => event.stopPropagation()}>
       {content}
     </box>
   </box>
@@ -324,7 +329,7 @@ function MuteTimeoutDialogContent({ dialog, dialogHeight, mutePeer }: { dialog: 
 }
 
 function UnmuteConfirmDialogContent({ dialog, dialogHeight, unmutePeer, showDialog }: { dialog: Extract<Dialog, { kind: "unmute-confirm" }>; dialogHeight: number; unmutePeer: (peerId: string) => void; showDialog: (d: Dialog) => void }) {
-  return <SettingsScreen breadcrumb={["Notifications", "Unmute"]} description="Desktop notifications from this peer will be allowed again." dialogHeight={dialogHeight}><SettingsConfirm question={<>Resume notifications from <span fg={theme.accent}>{dialog.displayName}</span>?</>} detail="Desktop notifications from this peer will be allowed again." confirmLabel="Unmute notifications" onConfirm={() => void unmutePeer(dialog.peerId)} onCancel={() => showDialog({ kind: "settings" })} /></SettingsScreen>
+  return <SettingsScreen breadcrumb={["Notifications", "Unmute"]} description="Desktop notifications from this peer will be allowed again." dialogHeight={dialogHeight}><SettingsConfirm question={<>Resume notifications from <span fg={theme.accent}>{dialog.displayName}</span>?</>} detail="Desktop notifications from this peer will be allowed again." confirmLabel="Unmute notifications" onConfirm={() => void unmutePeer(dialog.peerId)} onCancel={() => showDialog({ kind: "notifications" })} /></SettingsScreen>
 }
 
 function AddFriendDialogContent({ dialog, dialogHeight, dialogDraft, setDialogDraft, sendFriendRequest }: { dialog: Extract<Dialog, { kind: "add-friend" }>; dialogHeight: number; dialogDraft: string; setDialogDraft: (v: string) => void; sendFriendRequest: (peerId: string, note: string) => void }) {
@@ -338,7 +343,7 @@ function AddFriendDialogContent({ dialog, dialogHeight, dialogDraft, setDialogDr
 }
 
 function RemoveFriendDialogContent({ dialog, dialogHeight, unfriendPeer, showDialog }: { dialog: Extract<Dialog, { kind: "remove-friend" }>; dialogHeight: number; unfriendPeer: (peerId: string) => void; showDialog: (d: Dialog) => void }) {
-  return <SettingsScreen breadcrumb={["Friends", "Remove friend"]} description="Their future messages will be blocked until you accept a new friend request." dialogHeight={dialogHeight}><SettingsConfirm question={<>Remove <span fg={theme.accent}>{dialog.displayName}</span> as a friend?</>} detail="Their future messages will be blocked until you accept a new friend request." confirmLabel="Remove friend" destructive onConfirm={() => void unfriendPeer(dialog.peerId)} onCancel={() => showDialog({ kind: "settings" })} /></SettingsScreen>
+  return <SettingsScreen breadcrumb={["Friends", "Remove friend"]} description="Their future messages will be blocked until you accept a new friend request." dialogHeight={dialogHeight}><SettingsConfirm question={<>Remove <span fg={theme.accent}>{dialog.displayName}</span> as a friend?</>} detail="Their future messages will be blocked until you accept a new friend request." confirmLabel="Remove friend" destructive onConfirm={() => void unfriendPeer(dialog.peerId)} onCancel={() => showDialog({ kind: "friends" })} /></SettingsScreen>
 }
 
 function FriendRequestsDialogContent({ dialog, dialogHeight, showDialog }: { dialog: Extract<Dialog, { kind: "friend-requests" }>; dialogHeight: number; showDialog: (d: Dialog) => void }) {
@@ -538,7 +543,7 @@ function FileSendDialogContent({ dialog, dialogWidth, selection, peers, groups, 
   )
 }
 
-export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, peers, groups, loadFiles, loadFilesDir, setDialogDraft, showDialog, defaultDownloadPath, onDeleteFile }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; defaultDownloadPath: (filename: string) => string; onDeleteFile?: (file: FileTransfer) => void }) {
+export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, peers, groups, loadFiles, loadFilesDir, setDialogDraft, showDialog, closeDialog, defaultDownloadPath, onDeleteFile }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; closeDialog: () => void; defaultDownloadPath: (filename: string) => string; onDeleteFile?: (file: FileTransfer) => void }) {
   const [filter, setFilter] = useState<"all" | "inbound" | "outbound" | "images" | "other">("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<FileTransfer | null>(null)
@@ -683,7 +688,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
       <FileManagerAction shortcut="D" label="elete" onPress={requestDelete} danger />
       <FileManagerAction shortcut="L" label="ocation" onPress={() => void loadFilesDir()} />
       <FileManagerAction shortcut="R" label="efresh" onPress={() => void loadFiles()} />
-      <FileManagerAction shortcut="Esc" label=" Back" onPress={() => showDialog({ kind: "settings" })} />
+      <FileManagerAction shortcut="Esc" label=" Close" onPress={() => closeDialog()} />
       <text fg={theme.muted}>Up/Down or J/K select</text>
     </box>
     {pendingDelete ? <box style={{ position: "absolute", left: 2, right: 2, top: Math.max(1, Math.floor(dialogHeight / 2) - 3), border: true, borderColor: theme.danger, backgroundColor: theme.dangerSurface, padding: 1, flexDirection: "column", gap: 1 }}>

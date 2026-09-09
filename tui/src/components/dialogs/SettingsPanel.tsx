@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useKeyboard, useRenderer } from "@opentui/react"
 import type { Renderable, ScrollBoxRenderable } from "@opentui/core"
 import { chatTheme as theme } from "../../chatTheme"
-import { dialogUsesTextInput } from "../../navigation"
+import { dialogUsesTextInput, isFirstLevelSettingsDialog } from "../../navigation"
 import type { Dialog } from "../../types"
 import { SettingsBusyContext, SettingsPanelContext } from "./SettingsInteraction"
 
@@ -104,7 +104,7 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
   return <SettingsPanelContext.Provider value={true}><SettingsBusyContext.Provider value={busy}><box id="settings-panel" width="100%" height="100%" flexDirection="column" minHeight={0}>
     <box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
       <text fg={theme.accent}><b>{firstRun ? "Welcome to MeshTalk" : "Settings"}</b></text>
-      <box onMouseDown={() => { if (!busy) goBack() }}><text fg={theme.muted}>{dialogUsesTextInput(dialog) ? "Cancel [Esc]" : "Back [Esc]"}</text></box>
+      <box onMouseDown={() => { if (!busy) goBack() }}><text fg={theme.muted}>{dialogUsesTextInput(dialog) ? "Cancel [Esc]" : isFirstLevelSettingsDialog(dialog) ? "Close [Esc]" : "Back [Esc]"}</text></box>
     </box>
     {!wide && !firstRun && <box height={1} flexShrink={0} onMouseDown={() => railFocused ? focusContent() : focusRail()}><text fg={theme.accent}>Categories [Tab] / {active >= 0 ? categories[active]![1] : "Choose a section"}</text></box>}
     <box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0} marginTop={height > 12 ? 1 : 0}>
@@ -137,6 +137,6 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
         </box>
       </scrollbox>
     </box>
-    <text fg={busy ? theme.warning : theme.muted} flexShrink={0} wrapMode="word">{busy ? "Working…" : dialogUsesTextInput(dialog) ? "Enter save · Esc cancel · Tab categories" : width < 50 ? "↑↓/JK · Enter · Esc back · Tab" : "↑↓/JK · Enter · Esc/Bksp back · Tab categories · PgUp/Dn details"}</text>
+    <text fg={busy ? theme.warning : theme.muted} flexShrink={0} wrapMode="word">{busy ? "Working…" : dialogUsesTextInput(dialog) ? "Enter save · Esc cancel · Tab categories" : isFirstLevelSettingsDialog(dialog) ? (width < 50 ? "↑↓/JK · Enter · Esc close · Tab" : "↑↓/JK · Enter · Esc close · Tab categories · PgUp/Dn details") : width < 50 ? "↑↓/JK · Enter · Esc back · Tab" : "↑↓/JK · Enter · Esc/Bksp back · Tab categories · PgUp/Dn details"}</text>
   </box></SettingsBusyContext.Provider></SettingsPanelContext.Provider>
 }

@@ -31,8 +31,30 @@ export function dialogUsesTextInput(dialog: Dialog): boolean {
   return TEXT_INPUT_DIALOGS.has(dialog.kind)
 }
 
+export function isFirstLevelSettingsDialog(dialog: Dialog): boolean {
+  if ("firstRun" in dialog && dialog.firstRun) return false
+  return [
+    "settings",
+    "rename",
+    "customisation",
+    "notifications",
+    "accessibility",
+    "control",
+    "friends",
+    "rooms",
+    "advanced",
+    "debug",
+    "about",
+    "file-list",
+    "file-send",
+    "group-file-send",
+  ].includes(dialog.kind)
+}
+
 export function goBack({ dialog, selection, fileTransfers, closeDialog, showDialog, loadAdvancedConfig, loadRooms, loadFriendRequests, loadBlockedPeers }: NavigationDependencies) {
   if (!dialog || dialog.kind === "settings" || dialog.kind === "update" || (dialog.kind === "control" && dialog.firstRun) || (dialog.kind === "rename" && dialog.firstRun)) {
+    closeDialog()
+  } else if (isFirstLevelSettingsDialog(dialog)) {
     closeDialog()
   } else if (dialog.kind === "image-view") {
     if (dialog.returnTo === "files") showDialog({ kind: "file-list", files: fileTransfers })
@@ -54,8 +76,6 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
     else closeDialog()
   } else if (dialog.kind === "customisation-splash") {
     showDialog({ kind: "customisation" })
-  } else if (dialog.kind === "customisation" || dialog.kind === "advanced" || dialog.kind === "about") {
-    showDialog({ kind: "settings" })
   } else if (["room-create", "room-join", "room-created", "room-detail"].includes(dialog.kind)) {
     showDialog({ kind: "rooms", rooms: [] })
     void loadRooms()
@@ -68,8 +88,6 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
     void loadFriendRequests()
   } else if (dialog.kind === "friend-requests" || dialog.kind === "add-friend" || dialog.kind === "remove-friend") {
     showDialog({ kind: "friends" })
-  } else if (dialog.kind === "friends" || dialog.kind === "notifications") {
-    showDialog({ kind: "settings" })
   } else if (dialog.kind === "notification-enable" || dialog.kind === "notification-confirm" || dialog.kind === "notification-fallback") {
     if (dialog.firstRun) closeDialog()
     else showDialog({ kind: "notification-settings" })
@@ -87,12 +105,10 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
     showDialog({ kind: "debug-endpoints" })
   } else if (dialog.kind === "debug-endpoints") {
     showDialog({ kind: "debug" })
-  } else if (dialog.kind === "debug" || dialog.kind === "file-send" || dialog.kind === "group-file-send" || dialog.kind === "file-list") {
-    showDialog({ kind: "settings" })
   } else if (dialog.kind === "file-download" || dialog.kind === "files-dir") {
     showDialog({ kind: "file-list", files: fileTransfers })
   } else {
-    showDialog({ kind: "settings" })
+    closeDialog()
   }
 }
 
