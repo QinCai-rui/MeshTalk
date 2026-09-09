@@ -8,12 +8,12 @@ type Choice = { label: string; detail: string; value: string };
 
 export function AnalyticsConsent({ version, done }: { version: string; done: () => void }) {
   const { width, height } = useTerminalDimensions();
-  const [selected, setSelected] = useState(2);
+  const [selected, setSelected] = useState(-1);
   const [confirm, setConfirm] = useState(false);
   const [neverAskAgain, setNeverAskAgain] = useState(false);
   const [error, setError] = useState("");
   const saving = useRef(false);
-  const selectedRef = useRef(2);
+  const selectedRef = useRef(-1);
   const confirmRef = useRef(false);
   const neverAskAgainRef = useRef(false);
   const scroll = useRef<ScrollBoxRenderable>(null);
@@ -37,9 +37,9 @@ export function AnalyticsConsent({ version, done }: { version: string; done: () 
     const currentChoices = confirmRef.current ? confirmChoices : mainChoices;
     const value = currentChoices[index]?.value;
     if (!value || saving.current) return;
-    if (value === "off") { setConfirmMode(true); selectIndex(1); neverAskAgainRef.current = false; setNeverAskAgain(false); setError(""); return; }
+    if (value === "off") { setConfirmMode(true); selectIndex(-1); neverAskAgainRef.current = false; setNeverAskAgain(false); setError(""); return; }
     if (value === "toggle") { neverAskAgainRef.current = !neverAskAgainRef.current; setNeverAskAgain(neverAskAgainRef.current); return; }
-    if (value === "back") { setConfirmMode(false); selectIndex(2); setError(""); return; }
+    if (value === "back") { setConfirmMode(false); selectIndex(-1); setError(""); return; }
     saving.current = true;
     try {
       writeLevel(value === "keep" ? "off" : value as AnalyticsLevel);
@@ -56,12 +56,15 @@ export function AnalyticsConsent({ version, done }: { version: string; done: () 
     key.preventDefault();
     if (key.ctrl || key.meta || key.super) return;
     const currentChoices = confirmRef.current ? confirmChoices : mainChoices;
-    if (key.name === "escape" && confirmRef.current) { setConfirmMode(false); selectIndex(2); return; }
-    let next = selectedRef.current;
-    if (key.name === "up" || key.name === "k" || (key.name === "tab" && key.shift)) next = (selectedRef.current + currentChoices.length - 1) % currentChoices.length;
-    else if (key.name === "down" || key.name === "j" || key.name === "tab") next = (selectedRef.current + 1) % currentChoices.length;
+    if (key.name === "escape" && confirmRef.current) { setConfirmMode(false); selectIndex(-1); return; }
+    const cur = selectedRef.current;
+    let next = cur;
+    if (cur < 0) next = (key.name === "up" || key.name === "k" || (key.name === "tab" && key.shift)) ? currentChoices.length - 1 : 0;
+    else if (key.name === "up" || key.name === "k" || (key.name === "tab" && key.shift)) next = (cur + currentChoices.length - 1) % currentChoices.length;
+    else if (key.name === "down" || key.name === "j" || key.name === "tab") next = (cur + 1) % currentChoices.length;
     else if (key.name === "return" || key.name === "linefeed") { activate(selectedRef.current); return; }
-    else if (key.name === "space") { if (confirmRef.current && currentChoices[selectedRef.current]?.value === "toggle") { neverAskAgainRef.current = !neverAskAgainRef.current; setNeverAskAgain(neverAskAgainRef.current); } else activate(selectedRef.current); return; }
+    else if (key.name === "space") { if (confirmRef.current && currentChoices[cur]?.value === "toggle") { neverAskAgainRef.current = !neverAskAgainRef.current; setNeverAskAgain(neverAskAgainRef.current); } else activate(cur); return; }
+    else return;
     selectIndex(next);
     scroll.current?.scrollChildIntoView("consent-" + next);
   });

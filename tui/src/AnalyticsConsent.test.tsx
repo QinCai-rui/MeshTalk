@@ -34,8 +34,11 @@ test("explicit never-ask confirmation persists off and never_ask_again", async (
   const setup = await testRender(<AnalyticsConsent version="test" done={() => { finished = true; }} />, { width: 60, height: 32 });
   try {
     await act(async () => { await setup.renderOnce(); });
-    // Default selection is "Keep analytics off" (index 2); Enter opens the confirm step.
-    await act(async () => { setup.mockInput.pressEnter(); await setup.renderOnce(); });
+    // Nothing is preselected; Up wraps to "Keep analytics off", Enter opens confirm.
+    await act(async () => { setup.mockInput.pressArrow("up"); });
+    await act(async () => { await setup.renderOnce(); });
+    await act(async () => { setup.mockInput.pressEnter(); });
+    await act(async () => { await setup.renderOnce(); });
     expect(finished).toBe(false);
     const confirmationFrame = setup.captureCharFrame();
     expect(confirmationFrame).toContain("Keep analytics off?");
@@ -43,7 +46,7 @@ test("explicit never-ask confirmation persists off and never_ask_again", async (
     expect(confirmationFrame).toContain("Go back");
     expect(confirmationFrame).toContain("Re-review your privacy options");
     expect(confirmationFrame).not.toContain("Analyticsystays");
-    await act(async () => { setup.mockInput.pressArrow("up"); setup.mockInput.pressArrow("up"); setup.mockInput.pressKey(" "); setup.mockInput.pressArrow("down"); setup.mockInput.pressArrow("down"); });
+    await act(async () => { setup.mockInput.pressArrow("up"); setup.mockInput.pressKey(" "); setup.mockInput.pressArrow("down"); setup.mockInput.pressArrow("down"); });
     await act(async () => { setup.mockInput.pressEnter(); });
     expect(finished).toBe(true);
     const settings = JSON.parse(readFileSync(join(directory, "settings.json"), "utf8"));
