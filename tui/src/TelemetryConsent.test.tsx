@@ -34,7 +34,7 @@ test("explicit never-ask confirmation persists off and never_ask_again", async (
   const setup = await testRender(<TelemetryConsent version="test" done={() => { finished = true; }} />, { width: 60, height: 32 });
   try {
     await act(async () => { await setup.renderOnce(); });
-    for (let i = 0; i < 2; i++) await act(async () => { setup.mockInput.pressArrow("down"); await setup.renderOnce(); });
+    // Default selection is "Keep telemetry off" (index 2); Enter opens the confirm step.
     await act(async () => { setup.mockInput.pressEnter(); await setup.renderOnce(); });
     expect(finished).toBe(false);
     const confirmationFrame = setup.captureCharFrame();

@@ -8,21 +8,21 @@ type Choice = { label: string; detail: string; value: string };
 
 export function TelemetryConsent({ version, done }: { version: string; done: () => void }) {
   const { width, height } = useTerminalDimensions();
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelected] = useState(2);
   const [confirm, setConfirm] = useState(false);
   const [neverAskAgain, setNeverAskAgain] = useState(false);
   const [error, setError] = useState("");
   const saving = useRef(false);
-  const selectedRef = useRef(0);
+  const selectedRef = useRef(2);
   const confirmRef = useRef(false);
   const neverAskAgainRef = useRef(false);
   const scroll = useRef<ScrollBoxRenderable>(null);
   const compact = width < 72;
   const cardWidth = Math.max(24, Math.min(86, width - 4));
   const mainChoices: Choice[] = [
-    { label: "Enable extended telemetry", detail: "Version + aggregate usage and stability counters", value: "extended" },
+    { label: "Enable extended telemetry", detail: "Version + room/group/transport counters (no message or file activity)", value: "extended" },
     { label: "Enable basic telemetry", detail: "Version, operating system and architecture only", value: "basic" },
-    { label: "Keep telemetry off", detail: "Change anytime in Settings > Diagnostics.", value: "off" },
+    { label: "Keep telemetry off", detail: "Off by default", value: "off" },
   ];
   const confirmChoices: Choice[] = [
     { label: "Go back — Re-review your privacy options", detail: "", value: "back" },
@@ -78,8 +78,8 @@ export function TelemetryConsent({ version, done }: { version: string; done: () 
         <text fg={theme.muted} wrapMode="word">{confirm
           ? "We respect that you may prefer not to share telemetry. You can re-enable it anytime in Settings > Diagnostics."
           : "A few anonymous counters help us spot connection hiccups and learn what people actually use. Less guessing for us, a smoother MeshTalk for everyone."}</text>
-        {!confirm && <text fg="#a9bde1" wrapMode="word">Optional and off until you choose. No chat content, filenames, identities or stored IPs in telemetry.</text>}
-        {!confirm && <text fg={theme.accent}>Extended gives us the most useful debugging clues. Thank you!</text>}
+        {!confirm && <text fg="#a9bde1" wrapMode="word">Optional and off by default. No chat content, filenames, identities, or message/file activity. IPs are visible transiently for delivery and rate-limiting, never stored.</text>}
+        {!confirm && <text fg={theme.accent}>Off is the default. Extended is optional and can be changed anytime.</text>}
         {confirm && <box height={1} flexShrink={0} />}
         {choices.map((choice, index) => <box key={choice.value} flexDirection="column" flexShrink={0}>
           {choice.value === "toggle" ? <box id={"consent-" + index} width="100%" height={2} flexShrink={0} alignItems="center" justifyContent="center" onMouseMove={() => selectIndex(index)} onMouseDown={event => { event.stopPropagation(); if (event.button === 0) { neverAskAgainRef.current = !neverAskAgainRef.current; setNeverAskAgain(neverAskAgainRef.current); } }}>

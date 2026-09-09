@@ -448,7 +448,7 @@ class Settings:
         self.save()
 
     def set_telemetry_level(self, level: str) -> None:
-        """Set the telemetry level: extended (Tier 0 + Tier 1, default), basic (Tier 0 only), or off."""
+        """Set the telemetry level: extended (Tier 0 + Tier 1), basic (Tier 0 only), or off (default)."""
         if level not in {"extended", "basic", "off"}:
             raise ValueError("telemetry level must be extended, basic, or off")
         self.telemetry_level = level

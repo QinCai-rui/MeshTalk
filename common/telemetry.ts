@@ -1,4 +1,4 @@
-/** Privacy-preserving release telemetry shared by the launcher and TUI. */
+/** Optional aggregate release telemetry shared by the launcher and TUI. Off by default, privacy-minimised. */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -6,7 +6,8 @@ export const TELEMETRY_URL = "https://meshtalk-telemetry.raymont.workers.dev/v1/
 export const TIMEOUT_MS = 3_000;
 export const PRIVACY_URL = "https://github.com/QinCai-rui/MeshTalk/blob/main/PRIVACY.md";
 export const TIER0_ALLOW = { os: ["darwin", "linux", "win32"], arch: ["arm64", "x64"] } as const;
-export const ALLOWED_EVENTS = new Set(["msg.sent", "msg.received", "file.sent", "file.completed", "room.created", "room.joined", "group.created", "transport.lan_ok", "transport.udp_ok", "transport.relay_fallback", "transport.stun_fail"]);
+// No msg.*/file.* counters. Room/group + transport-path only. No transport.stun_fail (never emitted).
+export const ALLOWED_EVENTS = new Set(["room.created", "room.joined", "group.created", "transport.lan_ok", "transport.udp_ok", "transport.relay_fallback"]);
 export type Consent = "pending" | "accepted" | "declined" | "never_ask_again";
 export type ConsentState = { consent: Consent; seenVersions: string[] };
 /** Telemetry level: `extended` (Tier 0 + Tier 1), `basic` (Tier 0 only), `off`. */

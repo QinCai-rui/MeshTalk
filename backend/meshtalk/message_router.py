@@ -79,7 +79,6 @@ class MessageRouter:
             "read_at": now, "queued": 1 if peer is None else 0, "reply_to_message_id": reply_to_message_id,
         })
         await self.db.mark_message_seen(message.message_id)
-        if self.telemetry: self.telemetry.incr("msg.sent")
         if peer is not None:
             await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE, encoded_message))
             return message.message_id, False
@@ -135,7 +134,6 @@ class MessageRouter:
             "created_at": message.created_at,
             "hop_count": 0, "max_hops": 0, "read_at": None, "received_at": time.time(), "reply_to_message_id": message.reply_to_message_id,
         })
-        if self.telemetry: self.telemetry.incr("msg.received")
         await self._send_delivery_receipt(peer, message.message_id)
         logger.info("Received encrypted message %s from %s", message.message_id, peer.peer_id)
         if self.on_received:

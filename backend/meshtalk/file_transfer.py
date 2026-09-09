@@ -173,7 +173,6 @@ class FileTransferManager:
 
     async def send_file(self, recipient_id: str, file_path_str: str, group_id: str | None = None) -> str:
         """Send a file to a peer, chunking and encrypting it for transmission."""
-        if self.telemetry: self.telemetry.incr("file.sent")
         # Cross-platform path handling: expanduser, handle both separators,
         # resolve without requiring existence of intermediate symlinks.
         raw = file_path_str.strip().strip('"').strip("'")
@@ -584,7 +583,6 @@ class FileTransferManager:
         if file_path.stat().st_size != transfer["file_size"]:
             raise ValueError("Received file has an invalid size")
         await self.db.complete_file_transfer(transfer["file_id"], time.time())
-        if self.telemetry: self.telemetry.incr("file.completed")
         await self._send_completion_ack(peer, transfer["file_id"])
         self._emit({"event": "file_completed", "file_id": transfer["file_id"], "filename": transfer["filename"], "file_path": str(file_path), "file_size": transfer["file_size"], "sender_id": peer.peer_id, "group_id": transfer["group_id"]})
         logger.info("Completed file %s from %s -> %s", transfer["file_id"], peer.peer_id, file_path)

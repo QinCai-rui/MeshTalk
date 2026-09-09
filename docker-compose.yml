@@ -45,8 +45,33 @@ services:
     volumes:
       - telemetry-data:/data
     ports:
-      - "${TELEMETRY_PORT:-8080}:8080"
+      # Anonymous ingest is spammable by design: bind localhost by default,
+      # put the Worker ORIGIN behind a firewall, treat counts as approximate.
+      - "127.0.0.1:${TELEMETRY_PORT:-8080}:8080"
     restart: unless-stopped
+
+  telemetry-dashboard:
+    # Pretty read-only dashboard for the aggregate store (no IPs exist to show).
+    # Shares the ingest SQLite volume read-only; never writes.
+    build:
+      context: .
+      dockerfile: telemetry/Dockerfile
+    command: ["python", "dashboard.py"]
+    environment:
+      - TELEMETRY_DB=/data/telemetry.sqlite
+      - DASHBOARD_PORT=8090
+      - BIND=0.0.0.0
+    volumes:
+      - telemetry-data:/data:ro
+    ports:
+      - "127.0.0.1:${TELEMETRY_DASHBOARD_PORT:-8090}:8090"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
 volumes:
   meshtalk-data:

@@ -968,14 +968,21 @@ async def main(debug: bool = False) -> None:
     async def periodic_telemetry() -> None:
         while True:
             await asyncio.sleep(3600)
-            await telemetry.flush()
+            try:
+                await telemetry.flush()
+            except Exception:
+                pass
     telemetry_task = asyncio.create_task(periodic_telemetry())
 
     try:
         await stop_event.wait()
     finally:
         telemetry_task.cancel()
-        await telemetry.flush()
+        # Telemetry must never delay shutdown: best-effort flush with a short timeout.
+        try:
+            await asyncio.wait_for(telemetry.flush(), timeout=1.5)
+        except Exception:
+            pass
         await ipc.stop()
         await rendezvous.stop()
         await peer_manager.stop()
