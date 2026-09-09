@@ -2059,6 +2059,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           toggleNotificationEvent={actions.toggleNotificationEvent}
           saveDisplayName={actions.saveDisplayName}
           checkForUpdatesFromAbout={actions.checkForUpdatesFromAbout}
+          saveUpdateChannel={actions.saveUpdateChannel}
           installUpdate={actions.installUpdate}
           saveUpdateToken={actions.saveUpdateToken}
           restartUpdate={actions.restartUpdate}

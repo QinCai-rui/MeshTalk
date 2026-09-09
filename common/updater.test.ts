@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
-import { buildWindowsReplacementScript, installRelease, isNewerVersion, isStagingWithinInstallDir, parsePendingUpdate, type UpdateProgress } from "./updater"
+import { buildWindowsReplacementScript, installRelease, isNewerVersion, isStagingWithinInstallDir, parsePendingUpdate, readUpdateChannel, saveUpdateChannel, type UpdateProgress } from "./updater"
 
 describe("isNewerVersion", () => {
   test("orders numeric release revisions after the base release", () => {
@@ -19,6 +19,51 @@ describe("isNewerVersion", () => {
   test("rejects malformed versions", () => {
     expect(isNewerVersion("0.7.1-preview", "0.7.1")).toBe(false)
     expect(isNewerVersion("0.7.1", "0.7")).toBe(false)
+  })
+
+  test("orders snapshot prereleases below the same-base stable", () => {
+    expect(isNewerVersion("0.24.13", "0.24.13-SNAPSHOT+250-4b1cbcd")).toBe(true)
+    expect(isNewerVersion("0.24.13-SNAPSHOT+250-4b1cbcd", "0.24.13")).toBe(false)
+    expect(isNewerVersion("0.24.13-SNAPSHOT", "0.24.13")).toBe(false)
+  })
+
+  test("orders snapshots by run number", () => {
+    expect(isNewerVersion("0.24.13-SNAPSHOT+251-aaaaaaa", "0.24.13-SNAPSHOT+250-4b1cbcd")).toBe(true)
+    expect(isNewerVersion("0.24.13-SNAPSHOT+250-4b1cbcd", "0.24.13-SNAPSHOT+251-aaaaaaa")).toBe(false)
+    expect(isNewerVersion("0.24.13-SNAPSHOT+250-4b1cbcd", "0.24.13-SNAPSHOT+250-4b1cbcd")).toBe(false)
+  })
+
+  test("orders base versions across stability levels", () => {
+    expect(isNewerVersion("0.24.14-SNAPSHOT+1-aaaaaaa", "0.24.13")).toBe(true)
+    expect(isNewerVersion("0.24.13", "0.24.14-SNAPSHOT+99-aaaaaaa")).toBe(false)
+  })
+
+  test("rejects dev and malformed versions", () => {
+    expect(isNewerVersion("0.24.14-SNAPSHOT+1-aaaaaaa", "dev")).toBe(false)
+    expect(isNewerVersion("dev", "0.24.13")).toBe(false)
+  })
+})
+
+describe("updateChannel", () => {
+  test("defaults to stable and round-trips unstable", () => {
+    const directory = mkdtempSync(join(tmpdir(), "meshtalk-channel-"))
+    const settingsPath = join(directory, "settings.json")
+    const dataDir = directory
+    expect(readUpdateChannel(settingsPath)).toBe("stable")
+    saveUpdateChannel("unstable", settingsPath, dataDir)
+    expect(readUpdateChannel(settingsPath)).toBe("unstable")
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8")).update_channel).toBe("unstable")
+    saveUpdateChannel("stable", settingsPath, dataDir)
+    expect(readUpdateChannel(settingsPath)).toBe("stable")
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  test("treats unknown values as stable", () => {
+    const directory = mkdtempSync(join(tmpdir(), "meshtalk-channel-"))
+    const settingsPath = join(directory, "settings.json")
+    writeFileSync(settingsPath, JSON.stringify({ update_channel: "beta" }))
+    expect(readUpdateChannel(settingsPath)).toBe("stable")
+    rmSync(directory, { recursive: true, force: true })
   })
 })
 

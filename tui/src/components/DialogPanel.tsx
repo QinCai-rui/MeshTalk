@@ -6,6 +6,7 @@ import { MouseSelect } from "./MouseSelect"
 import { MarqueeText } from "./MarqueeText"
 import { NotificationDialogs } from "./dialogs/NotificationDialogs"
 import { AboutDialog, SettingsLanding, UpdateDestinationDialog, UpdateDialog, UpdateTokenDialog } from "./dialogs/CommandDialogs"
+import { readUpdateChannel, type UpdateChannel } from "../../../common/updater"
 import { SettingsConfirm, SettingsField, SettingsMenu, SettingsNotice, SettingsScreen, SettingsSummary } from "./dialogs/SettingsPrimitives"
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useKeyboard } from "@opentui/react"
@@ -97,6 +98,7 @@ type DialogPanelProps = {
 
   saveDisplayName: (value?: string) => void
   checkForUpdatesFromAbout: () => void
+  saveUpdateChannel: (channel: UpdateChannel) => void
   installUpdate: (release: Release, destination?: string) => void
   saveUpdateToken: (release: Release | undefined, destination: string | undefined, token: string) => void
   restartUpdate: (installDir: string) => void
@@ -110,7 +112,7 @@ export function DialogPanel(props: DialogPanelProps) {
   const { mutePeer, unmutePeer, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
   const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, downloadFile, defaultDownloadPath, onDeleteFile } = props
   const { testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent } = props
-  const { saveDisplayName, checkForUpdatesFromAbout, installUpdate, saveUpdateToken, restartUpdate } = props
+  const { saveDisplayName, checkForUpdatesFromAbout, saveUpdateChannel, installUpdate, saveUpdateToken, restartUpdate } = props
 
   if (!dialog) return null
   const fileManagerOpen = dialog.kind === "file-list"
@@ -122,7 +124,7 @@ export function DialogPanel(props: DialogPanelProps) {
 
   const content = <>
       {dialog.kind === "settings" && <SettingsLanding dialogHeight={dialogHeight} />}
-      {dialog.kind === "about" && <AboutDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} isReleaseBuild={isReleaseBuild} checkForUpdates={checkForUpdatesFromAbout} />}
+      {dialog.kind === "about" && <AboutDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} isReleaseBuild={isReleaseBuild} checkForUpdates={checkForUpdatesFromAbout} updateChannel={readUpdateChannel()} saveUpdateChannel={saveUpdateChannel} />}
       {dialog.kind === "update" && <UpdateDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} closeDialog={closeDialog} installing={dialogBusy} installUpdate={installUpdate} restartUpdate={restartUpdate} chooseUpdateDestination={(release) => { setDialogError(""); setDialogDraft(""); showDialog({ kind: "update-directory", release }) }} />}
       {dialog.kind === "update-directory" && <UpdateDestinationDialog dialog={dialog} dialogHeight={dialogHeight} dialogError={dialogError} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} installUpdate={installUpdate} />}
       {dialog.kind === "update-token" && <UpdateTokenDialog dialog={dialog} dialogHeight={dialogHeight} dialogError={dialogError} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} saveUpdateToken={saveUpdateToken} />}
