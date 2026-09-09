@@ -1,5 +1,6 @@
 /** Optional aggregate release analytics shared by the launcher and TUI. Off by default, privacy-minimised. */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export const ANALYTICS_URL = "https://meshtalk-analytics.raymont.workers.dev/v1/analytics";
@@ -14,8 +15,13 @@ export type ConsentState = { consent: Consent; seenVersions: string[] };
 export type AnalyticsLevel = "extended" | "basic" | "off";
 export const DEFAULT_ANALYTICS_LEVEL: AnalyticsLevel = "off";
 
-function settingsPath(dataDir = process.env.MESHTALK_DATA_DIR): string {
-  return join(dataDir || `${process.env.HOME || process.env.USERPROFILE || ""}/.meshtalk`, "settings.json");
+export function settingsPath(dataDir = process.env.MESHTALK_DATA_DIR): string {
+  // Use os.homedir() — same source as the launcher (bin/meshtalk.ts) and the
+  // backend (Python Path.home()). $HOME/$USERPROFILE must NOT be used: on
+  // Windows they can point at POSIX-style MSYS paths (e.g. Git Bash sets
+  // HOME=/c/Users/X), which made the TUI write settings.json to a bogus
+  // location the launcher/backend never read -> prompt on every restart.
+  return join(dataDir || join(homedir(), ".meshtalk"), "settings.json");
 }
 export function readConsent(dataDir?: string): ConsentState {
   try {

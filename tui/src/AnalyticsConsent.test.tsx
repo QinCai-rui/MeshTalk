@@ -5,7 +5,27 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AnalyticsConsent } from "./AnalyticsConsent";
+import { settingsPath } from "../../common/analytics";
+import { homedir } from "node:os";
 import { ChatApp } from "./ChatApp";
+
+test("settings path uses os.homedir, ignoring misleading HOME/USERPROFILE", async () => {
+  const prevDataDir = process.env.MESHTALK_DATA_DIR;
+  const prevHome = process.env.HOME;
+  const prevProfile = process.env.USERPROFILE;
+  delete process.env.MESHTALK_DATA_DIR;
+  // Git Bash on Windows sets HOME to a POSIX path Node cannot resolve to the
+  // real profile dir; the launcher/backend use os.homedir(), so must we.
+  process.env.HOME = "/c/Users/somebody";
+  process.env.USERPROFILE = "C:\\Other\\Place";
+  try {
+    expect(settingsPath()).toBe(join(homedir(), ".meshtalk", "settings.json"));
+  } finally {
+    if (prevDataDir === undefined) delete process.env.MESHTALK_DATA_DIR; else process.env.MESHTALK_DATA_DIR = prevDataDir;
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
+  }
+});
 
 test("consent gates chat and hides never-ask from the main menu", async () => {
   const previous = process.env.MESHTALK_DATA_DIR;
