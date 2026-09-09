@@ -3,7 +3,7 @@ import { createRoot } from "@opentui/react"
 import { ChatApp } from "./ChatApp"
 import type { SplashStyle } from "./SplashScreen"
 import { installWarningLog } from "./warningLog"
-import { hasExplicitTelemetryChoice, shouldPrompt } from "../../common/telemetry"
+import { hasExplicitAnalyticsChoice, shouldPrompt } from "../../common/analytics"
 import { APP_RELEASE_VERSION, IS_RELEASE_BUILD } from "./SplashScreen"
 
 type Tui = {
@@ -13,7 +13,7 @@ type Tui = {
 
 export type TuiOptions = {
   splashStyle?: SplashStyle | false
-  telemetryPrompt?: boolean
+  analyticsPrompt?: boolean
 }
 
 export async function runTui(options: TuiOptions = {}): Promise<Tui> {
@@ -24,8 +24,8 @@ export async function runTui(options: TuiOptions = {}): Promise<Tui> {
   // so raise the limit instead of warning on normal operation.
   renderer.setMaxListeners(30)
   installWarningLog(() => renderer.eventNames().map((event) => `${String(event)}:${renderer.listenerCount(event)}`).join(" "))
-  const telemetryPrompt = options.telemetryPrompt ?? (!hasExplicitTelemetryChoice() && shouldPrompt(APP_RELEASE_VERSION))
-  createRoot(renderer).render(<ChatApp splashStyle={options.splashStyle} telemetryPrompt={telemetryPrompt} />)
+  const analyticsPrompt = options.analyticsPrompt ?? (!hasExplicitAnalyticsChoice() && shouldPrompt(APP_RELEASE_VERSION))
+  createRoot(renderer).render(<ChatApp splashStyle={options.splashStyle} analyticsPrompt={analyticsPrompt} />)
   return {
     destroy: () => renderer.destroy(),
     exited: new Promise((resolve) => renderer.once("destroy", () => resolve(typeof process.exitCode === "number" ? process.exitCode : 0))),

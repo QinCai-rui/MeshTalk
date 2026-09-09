@@ -1,5 +1,0 @@
-name = "meshtalk-telemetry"
-main = "worker.js"
-compatibility_date = "2025-01-01"
-[vars]
-ORIGIN = "https://meshtalk-telemetry.qincai.xyz"

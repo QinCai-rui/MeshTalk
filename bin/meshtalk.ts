@@ -10,7 +10,7 @@ import { applyPendingWindowsReplacement, checkForUpdate, githubRepository, insta
 import { main as cliMain } from "../cli/src/index";
 import { runTui } from "./tui-entry";
 import type { SplashStyle } from "../tui/src/SplashScreen";
-import { hasExplicitTelemetryChoice, isTier0Allowed, markPrompted, PRIVACY_URL, promptedVersions, readConsent, sendTier0, shouldPrompt, writeConsent } from "../common/telemetry";
+import { hasExplicitAnalyticsChoice, isTier0Allowed, markPrompted, PRIVACY_URL, promptedVersions, readConsent, sendTier0, shouldPrompt, writeConsent } from "../common/analytics";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -439,7 +439,7 @@ async function main() {
 
   const args = process.argv.slice(2);
 
-  // This is deliberately detached from startup: telemetry may never delay chat.
+  // This is deliberately detached from startup: analytics may never delay chat.
   // Tier 0 version pings send only after an explicit basic or extended choice.
   const consentState = readConsent(DATA_DIR);
   const dryRun = args.includes("--dry-run");
@@ -552,7 +552,7 @@ async function main() {
         return stopped;
       }));
     };
-    const tui = await runTui({ splashStyle: splash ?? savedSplashStyle(), telemetryPrompt: !dryRun && !hasExplicitTelemetryChoice(DATA_DIR) && shouldPrompt(APP_RELEASE_VERSION, consentState, promptedVersions(DATA_DIR)) });
+    const tui = await runTui({ splashStyle: splash ?? savedSplashStyle(), analyticsPrompt: !dryRun && !hasExplicitAnalyticsChoice(DATA_DIR) && shouldPrompt(APP_RELEASE_VERSION, consentState, promptedVersions(DATA_DIR)) });
     if (iStartedIt) {
       // The TUI owns the visible startup state while the launcher waits silently.
       const ready = await waitForBackend(backendProcess);
@@ -646,8 +646,8 @@ async function main() {
       await cleanup();
     }
   } else {
-    if (IS_RELEASE_BUILD && process.stderr.isTTY && !hasExplicitTelemetryChoice(DATA_DIR) && shouldPrompt(APP_RELEASE_VERSION, consentState, promptedVersions(DATA_DIR))) {
-      console.error(`Telemetry is disabled by default. Enable extended or basic telemetry with MESHTALK_TELEMETRY=extended|basic, or choose in Settings > Diagnostics. Privacy policy: ${PRIVACY_URL}`);
+    if (IS_RELEASE_BUILD && process.stderr.isTTY && !hasExplicitAnalyticsChoice(DATA_DIR) && shouldPrompt(APP_RELEASE_VERSION, consentState, promptedVersions(DATA_DIR))) {
+      console.error(`Analytics is disabled by default. Enable extended or basic analytics with MESHTALK_ANALYTICS=extended|basic, or choose in Settings > Diagnostics. Privacy policy: ${PRIVACY_URL}`);
       markPrompted(APP_RELEASE_VERSION, DATA_DIR);
     }
     process.env.MESHTALK_PROGRAM = PROGRAM;

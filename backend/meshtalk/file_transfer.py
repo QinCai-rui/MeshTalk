@@ -101,7 +101,7 @@ class FileTransferManager:
         data_dir: Path,
         on_event: Callable[[dict], Awaitable[None]] | None = None,
         settings=None,
-        telemetry=None,
+        analytics=None,
     ) -> None:
         """Initialize file transfer manager with identity, peer manager, and storage location."""
         self.identity = identity
@@ -110,7 +110,7 @@ class FileTransferManager:
         self.data_dir = data_dir
         self.settings = settings
         self.on_event = on_event
-        self.telemetry = telemetry
+        self.analytics = analytics
         self._packet_locks: dict[str, asyncio.Lock] = {}
         self._early_chunks: dict[str, tuple[float, list[tuple[PeerConnection, FileChunkPayload]]]] = {}
 

@@ -1,6 +1,6 @@
 FROM python:3.12-alpine
 WORKDIR /app
-COPY telemetry/ /app/
+COPY analytics/ /app/
 RUN mkdir -p /data
-ENV TELEMETRY_DB=/data/telemetry.sqlite
+ENV ANALYTICS_DB=/data/analytics.sqlite
 CMD ["python", "app.py"]

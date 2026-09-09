@@ -28,7 +28,7 @@ jobs:
     outputs:
       client: ${{ steps.filter.outputs.client }}
       control: ${{ steps.filter.outputs.control }}
-      telemetry: ${{ steps.filter.outputs.telemetry }}
+      analytics: ${{ steps.filter.outputs.analytics }}
       build_matrix: ${{ steps.set-matrix.outputs.matrix }}
       merge_matrix: ${{ steps.set-matrix.outputs.merge_matrix }}
     steps:
@@ -58,8 +58,8 @@ jobs:
               - 'package.json'
               - 'bun.lock*'
               - '.dockerignore'
-            telemetry:
-              - 'telemetry/**'
+            analytics:
+              - 'analytics/**'
 
       - name: Set build matrix
         id: set-matrix
@@ -73,8 +73,8 @@ jobs:
             MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"control"}]')
             BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"client","dockerfile":"Dockerfile.client","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"client","dockerfile":"Dockerfile.client","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
             MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"client"}]')
-            BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"telemetry","dockerfile":"telemetry/Dockerfile","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"telemetry","dockerfile":"telemetry/Dockerfile","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
-            MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"telemetry"}]')
+            BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
+            MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"analytics"}]')
           else
             if [ "${{ steps.filter.outputs.control }}" = "true" ]; then
               BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"control","dockerfile":"Dockerfile.control","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"control","dockerfile":"Dockerfile.control","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
@@ -86,9 +86,9 @@ jobs:
               MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"client"}]')
             fi
 
-            if [ "${{ steps.filter.outputs.telemetry }}" = "true" ]; then
-              BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"telemetry","dockerfile":"telemetry/Dockerfile","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"telemetry","dockerfile":"telemetry/Dockerfile","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
-              MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"telemetry"}]')
+            if [ "${{ steps.filter.outputs.analytics }}" = "true" ]; then
+              BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
+              MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"analytics"}]')
             fi
           fi
 

@@ -36,39 +36,39 @@ services:
     network_mode: host
     restart: no
 
-  telemetry:
-    image: ghcr.io/qincai-rui/meshtalk/telemetry:latest
-    # docker compose up --build telemetry
+  analytics:
+    image: ghcr.io/qincai-rui/meshtalk/analytics:latest
+    # docker compose up --build analytics
     build:
       context: .
-      dockerfile: telemetry/Dockerfile
+      dockerfile: analytics/Dockerfile
     environment:
       - PORT=8089
     volumes:
-      - telemetry-data:/data
+      - analytics-data:/data
     ports:
       # Anonymous ingest is spammable by design: bind localhost by default,
       # put the Worker ORIGIN behind a firewall
-      - "127.0.0.1:${TELEMETRY_PORT:-8089}:8089"
+      - "127.0.0.1:${ANALYTICS_PORT:-8089}:8089"
     restart: unless-stopped
 
-  telemetry-dashboard:
+  analytics-dashboard:
     # Read-only dashboard for the aggregate store (no IPs exist to show).
     # Shares the ingest SQLite volume read-only; never writes.
-    # Same image as telemetry; only the command differs.
-    image: ghcr.io/qincai-rui/meshtalk/telemetry:latest
+    # Same image as analytics; only the command differs.
+    image: ghcr.io/qincai-rui/meshtalk/analytics:latest
     build:
       context: .
-      dockerfile: telemetry/Dockerfile
+      dockerfile: analytics/Dockerfile
     command: ["python", "dashboard.py"]
     environment:
-      - TELEMETRY_DB=/data/telemetry.sqlite
+      - ANALYTICS_DB=/data/analytics.sqlite
       - DASHBOARD_PORT=8090
       - BIND=0.0.0.0
     volumes:
-      - telemetry-data:/data:ro
+      - analytics-data:/data:ro
     ports:
-      - "127.0.0.1:${TELEMETRY_DASHBOARD_PORT:-8090}:8090"
+      - "127.0.0.1:${ANALYTICS_DASHBOARD_PORT:-8090}:8090"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
@@ -79,4 +79,4 @@ services:
 
 volumes:
   meshtalk-data:
-  telemetry-data:
+  analytics-data:

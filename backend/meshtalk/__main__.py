@@ -28,7 +28,7 @@ from .ipc import IPCServer
 from .protocol import Packet, PacketType, capability_for_packet
 from .rendezvous import RendezvousService
 from .settings import Settings
-from .telemetry import Telemetry
+from .analytics import Analytics
 
 logger = logging.getLogger("meshtalk")
 
@@ -57,16 +57,16 @@ async def main(debug: bool = False) -> None:
     db = Database(DATA_DIR / "meshtalk.db", identity.storage_key())
     await db.connect()
     settings = Settings(DATA_DIR / "settings.json")
-    telemetry = Telemetry(DATA_DIR / "settings.json")
+    analytics = Analytics(DATA_DIR / "settings.json")
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
     friend_manager = FriendManager(identity, peer_manager, db)
     group_router = GroupRouter(identity, peer_manager, db, settings)
     router = MessageRouter(
-        identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router, telemetry=telemetry
+        identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router, analytics=analytics
     )
     typing_router = TypingRouter(identity, peer_manager, db, settings, friend_manager)
-    file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings, telemetry=telemetry)
+    file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings, analytics=analytics)
     tui_clients: set[str] = set()
     typing_clients: dict[tuple[str, str], set[str]] = {}
 
@@ -160,11 +160,11 @@ async def main(debug: bool = False) -> None:
         if peer is not None:
             transport = peer_manager.get_network_info(peer_id).get("active_transport")
             if transport == "lan_tcp":
-                telemetry.incr("transport.lan_ok")
+                analytics.incr("transport.lan_ok")
             elif transport == "remote_udp":
-                telemetry.incr("transport.udp_ok")
+                analytics.incr("transport.udp_ok")
             elif transport == "remote_derp":
-                telemetry.incr("transport.relay_fallback")
+                analytics.incr("transport.relay_fallback")
             await group_router.peer_connected(peer_id)
             await flush_outgoing(peer_id)
 
@@ -561,27 +561,27 @@ async def main(debug: bool = False) -> None:
             "splash_duration_ms": settings.splash_duration_ms,
             "splash_phase_ms": settings.splash_phase_ms,
             "splash_welcome_ms": settings.splash_welcome_ms,
-            "telemetry_level": settings.telemetry_level,
+            "analytics_level": settings.analytics_level,
         }
 
-    async def handle_telemetry(req: dict) -> dict:
-        if "level" in req or "telemetry_level" in req:
-            level = req.get("level", req.get("telemetry_level"))
+    async def handle_analytics(req: dict) -> dict:
+        if "level" in req or "analytics_level" in req:
+            level = req.get("level", req.get("analytics_level"))
             if not isinstance(level, str):
-                return {"error": "telemetry level must be a string"}
+                return {"error": "analytics level must be a string"}
             try:
-                settings.set_telemetry_level(level)
+                settings.set_analytics_level(level)
             except ValueError as exc:
                 return {"error": str(exc)}
-        return {"telemetry_level": settings.telemetry_level}
+        return {"analytics_level": settings.analytics_level}
 
     async def handle_room_create(req: dict) -> dict:
         name = req.get("name")
         if name is not None and not isinstance(name, str):
             return {"error": "name must be a string"}
         room = settings.create_room(name)
-        telemetry.incr("room.created")
-        if room.group_name: telemetry.incr("group.created")
+        analytics.incr("room.created")
+        if room.group_name: analytics.incr("group.created")
         await group_router.sync_groups()
         if room.group_name:
             await group_router.record_local_join(room.id)
@@ -598,7 +598,7 @@ async def main(debug: bool = False) -> None:
         if not isinstance(invite, str):
             return {"error": "invite required"}
         room = settings.join_room(invite)
-        telemetry.incr("room.joined")
+        analytics.incr("room.joined")
         await group_router.sync_groups()
         if room.group_name:
             await group_router.record_local_join(room.id)
@@ -897,7 +897,7 @@ async def main(debug: bool = False) -> None:
         "set_display_name": handle_set_display_name,
         "control": handle_control,
         "advanced_config": handle_advanced_config,
-        "telemetry": handle_telemetry,
+        "analytics": handle_analytics,
         "room_create": handle_room_create,
         "room_join": handle_room_join,
         "room_leave": handle_room_leave,
@@ -965,22 +965,22 @@ async def main(debug: bool = False) -> None:
 
     asyncio.create_task(periodic_cleanup())
 
-    async def periodic_telemetry() -> None:
+    async def periodic_analytics() -> None:
         while True:
             await asyncio.sleep(3600)
             try:
-                await telemetry.flush()
+                await analytics.flush()
             except Exception:
                 pass
-    telemetry_task = asyncio.create_task(periodic_telemetry())
+    analytics_task = asyncio.create_task(periodic_analytics())
 
     try:
         await stop_event.wait()
     finally:
-        telemetry_task.cancel()
-        # Telemetry must never delay shutdown: best-effort flush with a short timeout.
+        analytics_task.cancel()
+        # Analytics must never delay shutdown: best-effort flush with a short timeout.
         try:
-            await asyncio.wait_for(telemetry.flush(), timeout=1.5)
+            await asyncio.wait_for(analytics.flush(), timeout=1.5)
         except Exception:
             pass
         await ipc.stop()

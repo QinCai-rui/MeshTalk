@@ -1,11 +1,11 @@
-"""Optional aggregate release telemetry. Privacy-minimised, off by default, no identifiers."""
+"""Optional aggregate release analytics. Privacy-minimised, off by default, no identifiers."""
 
 # Notes on accuracy (kept here so code/docs cannot drift):
 # - Release gate is best-effort runtime env MESHTALK_RELEASE (set by the launcher
 #   from its build flag). It is not compile-time stripping: running a source
-#   checkout with MESHTALK_RELEASE=1 can still send if telemetry is enabled.
-# - MESHTALK_TELEMETRY=extended|basic|off overrides the stored level, even an
-#   explicit declined/never_ask_again choice. MESHTALK_NO_TELEMETRY=1,
+#   checkout with MESHTALK_RELEASE=1 can still send if analytics is enabled.
+# - MESHTALK_ANALYTICS=extended|basic|off overrides the stored level, even an
+#   explicit declined/never_ask_again choice. MESHTALK_NO_ANALYTICS=1,
 #   DO_NOT_TRACK=1, CI/GITHUB_ACTIONS always disable.
 # - No message or file-activity counters are collected (no msg.*, no file.*).
 from __future__ import annotations
@@ -20,7 +20,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-TELEMETRY_URL = "https://meshtalk-telemetry.raymont.workers.dev/v1/telemetry"
+ANALYTICS_URL = "https://meshtalk-analytics.raymont.workers.dev/v1/analytics"
 TIMEOUT_SECONDS = 3
 DEFAULT_LEVEL = "off"
 # Deliberately excludes msg.sent/msg.received/file.sent/file.completed and
@@ -41,10 +41,10 @@ def sanitize_error(exc: BaseException) -> str:
     return f"error.{name}"
 
 def _env_disabled() -> bool:
-    return os.environ.get("MESHTALK_NO_TELEMETRY") == "1" or os.environ.get("DO_NOT_TRACK") == "1" or bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+    return os.environ.get("MESHTALK_NO_ANALYTICS") == "1" or os.environ.get("DO_NOT_TRACK") == "1" or bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
 
 def _env_level() -> str | None:
-    raw = (os.environ.get("MESHTALK_TELEMETRY") or "").strip().lower()
+    raw = (os.environ.get("MESHTALK_ANALYTICS") or "").strip().lower()
     if raw in {"off", "0", "disabled"}: return "off"
     if raw in {"basic", "tier0", "minimal"}: return "basic"
     if raw in {"1", "true", "extended", "tier1"}: return "extended"
@@ -57,10 +57,10 @@ def read_level(settings_path: Path | None = None) -> str:
     path = settings_path or Path(os.environ.get("MESHTALK_DATA_DIR", Path.home() / ".meshtalk")) / "settings.json"
     try:
         data = json.loads(path.read_text())
-        if data.get("telemetry_level") in {"extended", "basic", "off"}: return data["telemetry_level"]
+        if data.get("analytics_level") in {"extended", "basic", "off"}: return data["analytics_level"]
         # Migrate legacy consent; missing consent remains disabled until the prompt.
-        if data.get("telemetry_consent") == "accepted": return "extended"
-        if data.get("telemetry_consent") in {"declined", "never_ask_again"}: return "off"
+        if data.get("analytics_consent") == "accepted": return "extended"
+        if data.get("analytics_consent") in {"declined", "never_ask_again"}: return "off"
     except Exception: pass
     return DEFAULT_LEVEL
 
@@ -79,7 +79,7 @@ def is_enabled(settings_path: Path | None = None) -> bool:
     """Tier-1 ("extended") gate. Basic sends Tier 0 only; missing consent is off."""
     return is_tier1_allowed(settings_path)
 
-class Telemetry:
+class Analytics:
     def __init__(self, settings_path: Path, app_version: str | None = None) -> None:
         self.settings_path, self.app_version = settings_path, app_version or os.environ.get("MESHTALK_APP_VERSION", "unknown")
         self.counter: collections.Counter[str] = collections.Counter()
@@ -144,7 +144,7 @@ class Telemetry:
         if payload["os"] is None or payload["arch"] is None:
             return False
         def send() -> bool:
-            request = urllib.request.Request(TELEMETRY_URL, data=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            request = urllib.request.Request(ANALYTICS_URL, data=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json"}, method="POST")
             try:
                 with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response: return 200 <= response.status < 300
             except Exception: return False

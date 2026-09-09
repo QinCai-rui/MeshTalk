@@ -1,6 +1,6 @@
-"""Pretty read-only dashboard for the aggregate telemetry store. Stdlib only.
+"""Pretty read-only dashboard for the aggregate analytics store. Stdlib only.
 
-Run:  TELEMETRY_DB=/data/telemetry.sqlite DASHBOARD_PORT=8090 python dashboard.py
+Run:  ANALYTICS_DB=/data/analytics.sqlite DASHBOARD_PORT=8090 python dashboard.py
 Binds localhost by default; never writes to the DB (opens read-only) and the
 DB holds only daily aggregates -- no IPs or identifiers exist to display.
 
@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-DB_PATH = os.environ.get("TELEMETRY_DB", "/data/telemetry.sqlite")
+DB_PATH = os.environ.get("ANALYTICS_DB", "/data/analytics.sqlite")
 _lock = threading.Lock()
 
 
@@ -104,7 +104,7 @@ def summary(days: int):
 PAGE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MeshTalk Telemetry</title>
+<title>MeshTalk Analytics</title>
 <style>
 :root{--bg:#0b1020;--card:#151d33;--card2:#1a2340;--line:#2a355a;--txt:#e8eefc;--mut:#93a1c4;--acc:#7aa2ff;--grn:#4ade80;--org:#fbbf24;--red:#f87171}
 *{box-sizing:border-box}body{margin:0;font:15px/1.5 -apple-system,"Segoe UI",Inter,Roboto,sans-serif;background:radial-gradient(1200px 500px at 20% -10%,#1c2a5e 0%,transparent 60%),radial-gradient(900px 500px at 90% 0%,#123f3a 0%,transparent 55%),var(--bg);color:var(--txt);min-height:100vh}
@@ -125,7 +125,7 @@ table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}th,td{te
 .tip{position:fixed;pointer-events:none;background:#0d1430f0;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12px;display:none;z-index:9}
 footer{color:var(--mut);font-size:12px;margin-top:14px}.err{background:#3a1620;border:1px solid var(--red);border-radius:10px;padding:10px 14px;display:none;margin:12px 0}
 </style></head><body><div class="wrap">
-<header><div><h1>◈ MeshTalk <span>Telemetry</span></h1>
+<header><div><h1>◈ MeshTalk <span>Analytics</span></h1>
 <div class="sub">Aggregate install census + room/group/transport counters. No message or file activity, no IPs, no identifiers. Counts are approximate and poisonable by design.</div></div>
 <div class="days" id="days"><button data-d="7">7d</button><button data-d="14">14d</button><button data-d="30" class="on">30d</button><button data-d="90">90d</button></div></header>
 <div class="err" id="err"></div>
@@ -182,7 +182,7 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",
 function hbars(el,map){const totAll=Math.max(1,...Object.values(map).map(tot));el.innerHTML=Object.keys(map).sort((a,b)=>tot(map[b])-tot(map[a])).slice(0,10).map(k=>{const t=tot(map[k]);return `<div class="bar-row"><div class="n">${esc(k)}</div><div class="track"><div class="fill" style="width:${(100*t/totAll).toFixed(1)}%"></div></div><div class="n" style="text-align:right">${fmt(t)}</div></div>`}).join("")||'<div class="sub">no data</div>'}
 async function load(){const e=document.getElementById("err");e.style.display="none";
   try{const r=await fetch("/api/summary?days="+DAYS);if(!r.ok)throw new Error("HTTP "+r.status);DATA=await r.json();render()}
-  catch(err){e.textContent="Could not load telemetry API: "+err+" (is the ingest DB present?)";e.style.display="block"}}
+  catch(err){e.textContent="Could not load analytics API: "+err+" (is the ingest DB present?)";e.style.display="block"}}
 function render(){const d=DATA;document.getElementById("kPings").textContent=fmt(d.pings_total);
   document.getElementById("kPingsS").textContent="version pings / "+d.days.length+"d";
   document.getElementById("kEvents").textContent=fmt(d.events_total);
@@ -198,7 +198,7 @@ function render(){const d=DATA;document.getElementById("kPings").textContent=fmt
   hbars(document.getElementById("bArch"),d.pings_by_arch);
   document.getElementById("tPings").innerHTML=d.recent_pings.slice(0,20).map(r=>`<tr><td>${r.day}</td><td>${esc(r.version)}</td><td>${esc(r.os)} / ${esc(r.arch)}</td><td class="n">${r.count}</td></tr>`).join("")||'<tr><td colspan="4">no data</td></tr>';
   document.getElementById("tEvents").innerHTML=d.recent_events.slice(0,20).map(r=>`<tr><td>${r.day}</td><td>${esc(r.event)}</td><td class="n">${r.count}</td></tr>`).join("")||'<tr><td colspan="3">no data</td></tr>';
-  document.getElementById("foot").textContent=!d.db_exists?"DB not found at server start — showing zeros. Set TELEMETRY_DB to your ingest SQLite file.":"90-day retention · UTC days · generated "+new Date().toISOString()+" · counts approximate";
+  document.getElementById("foot").textContent=!d.db_exists?"DB not found at server start — showing zeros. Set ANALYTICS_DB to your ingest SQLite file.":"90-day retention · UTC days · generated "+new Date().toISOString()+" · counts approximate";
 }
 document.getElementById("days").onclick=e=>{const b=e.target.closest("button");if(!b)return;DAYS=+b.dataset.d;document.querySelectorAll("#days button").forEach(x=>x.classList.toggle("on",x===b));load()};
 load();setInterval(load,60000);

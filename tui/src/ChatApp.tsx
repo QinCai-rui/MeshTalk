@@ -77,7 +77,7 @@ import {
   type StartupOutcome,
   type SplashStyle,
 } from "./SplashScreen";
-import { TelemetryConsent } from "./TelemetryConsent";
+import { AnalyticsConsent } from "./AnalyticsConsent";
 
 declare const APP_VERSION: string;
 
@@ -131,10 +131,10 @@ type StartupResult = {
   };
 };
 
-export function ChatApp({ splashStyle, telemetryPrompt = false }: { splashStyle?: SplashStyle | false; telemetryPrompt?: boolean } = {}) {
-  const [consentOpen, setConsentOpen] = useState(telemetryPrompt);
+export function ChatApp({ splashStyle, analyticsPrompt = false }: { splashStyle?: SplashStyle | false; analyticsPrompt?: boolean } = {}) {
+  const [consentOpen, setConsentOpen] = useState(analyticsPrompt);
   // Mount chat (and its global keyboard/paste listeners) only after consent.
-  if (consentOpen) return <TelemetryConsent version={APP_RELEASE_VERSION} done={() => setConsentOpen(false)} />;
+  if (consentOpen) return <AnalyticsConsent version={APP_RELEASE_VERSION} done={() => setConsentOpen(false)} />;
   return <ChatSession splashStyle={splashStyle} />;
 }
 

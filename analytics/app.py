@@ -1,4 +1,4 @@
-"""Optional aggregate telemetry ingest. IPs used transiently for rate-limit, never stored."""
+"""Optional aggregate analytics ingest. IPs used transiently for rate-limit, never stored."""
 import json, os, re, threading, time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,12 +17,12 @@ OS, ARCH = {"darwin", "linux", "win32"}, {"arm64", "x64"}
 # restart storms (e.g. an office upgrading at once). Abuse impact stays bounded
 # because payloads are validated (<=20 events, count<=10k) and aggregated.
 # Tune via env without code changes.
-BURST = int(os.environ.get("TELEMETRY_RATELIMIT_BURST", "120"))
-PER_HOUR = float(os.environ.get("TELEMETRY_RATELIMIT_PER_HOUR", "600"))
+BURST = int(os.environ.get("ANALYTICS_RATELIMIT_BURST", "120"))
+PER_HOUR = float(os.environ.get("ANALYTICS_RATELIMIT_PER_HOUR", "600"))
 BUCKETS: dict[str, tuple[float, float]] = {}
 BUCKETS_LOCK = threading.Lock()
 MAX_BUCKETS = 10_000
-STORE = Store(os.environ.get("TELEMETRY_DB", "/data/telemetry.sqlite"))
+STORE = Store(os.environ.get("ANALYTICS_DB", "/data/analytics.sqlite"))
 _RECORDS = 0
 _RECORDS_LOCK = threading.Lock()
 
@@ -81,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self): self._reply(200, b"ok") if self.path == "/health" else self._reply(404)
     def do_POST(self):
-        if self.path != "/v1/telemetry": return self._reply(404)
+        if self.path != "/v1/analytics": return self._reply(404)
         now = time.monotonic()
         if not check_rate_limit(client_ip(self), now):
             return self._reply(429)
