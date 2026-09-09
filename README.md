@@ -44,13 +44,13 @@ The quick installer downloads the latest release for your platform and places
 the binaries in `~/.local/bin` (or `%LOCALAPPDATA%\MeshTalk` on Windows):
 
 ```bash
-bash <(curl -fssL go.qincai.xyz/getmeshtalk)
+bash <(curl -fssL https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.sh)
 ```
 
 Pass `--non-interactive` to skip prompts and accept all defaults:
 
 ```bash
-bash <(curl -fssL go.qincai.xyz/getmeshtalk) --non-interactive --yes
+bash <(curl -fssL https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.sh) --non-interactive --yes
 ```
 
 Other options: `--version TAG`, `--install-dir DIR`, `--prerelease`, `--uninstall`, `--dry-run`. Run with `--help` for the full list.
@@ -58,13 +58,13 @@ Other options: `--version TAG`, `--install-dir DIR`, `--prerelease`, `--uninstal
 On Windows (PowerShell):
 
 ```powershell
-irm https://go.qincai.xyz/getmeshtalk.ps1 | iex
+irm https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.ps1 | iex
 ```
 
 Pass `-Simple` to accept defaults; `-NonInteractive` to skip prompts:
 
 ```powershell
-irm https://go.qincai.xyz/getmeshtalk.ps1 | iex - -NonInteractive -Simple
+irm https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.ps1 | iex - -NonInteractive -Simple
 ```
 
 Other options: `-Version TAG`, `-InstallDir DIR`, `-Prerelease`, `-Uninstall`, `-DryRun`, `-Method auto|gh|webrequest`. Run with `-Help` for the full list.
