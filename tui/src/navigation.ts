@@ -31,6 +31,10 @@ export function dialogUsesTextInput(dialog: Dialog): boolean {
   return TEXT_INPUT_DIALOGS.has(dialog.kind)
 }
 
+export function isUpdaterDialog(dialog: Dialog): boolean {
+  return dialog.kind === "update" || dialog.kind === "update-directory" || dialog.kind === "update-token"
+}
+
 export function isFirstLevelSettingsDialog(dialog: Dialog): boolean {
   if ("firstRun" in dialog && dialog.firstRun) return false
   return [
@@ -52,8 +56,12 @@ export function isFirstLevelSettingsDialog(dialog: Dialog): boolean {
 }
 
 export function goBack({ dialog, selection, fileTransfers, closeDialog, showDialog, loadAdvancedConfig, loadRooms, loadFriendRequests, loadBlockedPeers }: NavigationDependencies) {
-  if (!dialog || dialog.kind === "settings" || dialog.kind === "update" || (dialog.kind === "control" && dialog.firstRun) || (dialog.kind === "rename" && dialog.firstRun)) {
+  if (!dialog || dialog.kind === "settings" || (dialog.kind === "control" && dialog.firstRun) || (dialog.kind === "rename" && dialog.firstRun)) {
     closeDialog()
+  } else if (dialog.kind === "update") {
+    // Updater is a sticky modal: Esc/back must not dismiss it. Use the
+    // explicit Install / Ignore / Dismiss / Restart actions instead.
+    return
   } else if (isFirstLevelSettingsDialog(dialog)) {
     closeDialog()
   } else if (dialog.kind === "image-view") {
@@ -73,7 +81,7 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
     showDialog({ kind: "update", release: dialog.release })
   } else if (dialog.kind === "update-token") {
     if (dialog.release) showDialog({ kind: "update", release: dialog.release })
-    else closeDialog()
+    else showDialog({ kind: "about" })
   } else if (dialog.kind === "customisation-splash") {
     showDialog({ kind: "customisation" })
   } else if (["room-create", "room-join", "room-created", "room-detail"].includes(dialog.kind)) {

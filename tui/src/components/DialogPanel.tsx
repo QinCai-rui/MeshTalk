@@ -14,6 +14,7 @@ import { isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
 import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 import { chatTheme as theme } from "../chatTheme"
 import { SettingsPanel, usesSettingsPanel } from "./dialogs/SettingsPanel"
+import { isUpdaterDialog } from "../navigation"
 import { ControlDialogContent, ControlCustomDialogContent, ControlStatusDialogContent, AdvancedDialogContent, CustomisationDialogContent, SplashStyleDialogContent, ImageProtocolDialogContent, IpPinningDialogContent, AdvancedControlDialogContent, AdvancedStunDialogContent, AdvancedControlIpDialogContent, AdvancedStunIpDialogContent } from "./dialogs/PreferenceDialogs"
 
 type DialogPanelProps = {
@@ -110,7 +111,7 @@ export function DialogPanel(props: DialogPanelProps) {
 
   if (!dialog) return null
   const fileManagerOpen = dialog.kind === "file-list"
-  const dismissible = !dialogBusy && !("firstRun" in dialog && dialog.firstRun)
+  const dismissible = !dialogBusy && !("firstRun" in dialog && dialog.firstRun) && !isUpdaterDialog(dialog)
   const dismissOnOverlay = (event: { button?: number }) => {
     if (event.button !== undefined && event.button !== 0) return
     if (dismissible) closeDialog()

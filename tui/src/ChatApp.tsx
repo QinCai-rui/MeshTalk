@@ -1454,6 +1454,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     }
     if (key.ctrl && key.name === "p") {
       key.preventDefault();
+      if (dialog && (dialog.kind === "update" || dialog.kind === "update-directory" || dialog.kind === "update-token")) return;
       if (dialog?.kind === "settings") actions.closeDialog();
       else actions.showDialog({ kind: "settings" });
       return;
