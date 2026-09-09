@@ -53,4 +53,5 @@ Material changes will be noted here with a new date and, where feasible, announc
 
 ## 10. Contact
 
-Questions or requests: open an issue at `QinCai-rui/MeshTalk` or contact the operator of the ingest host above. If we cannot resolve a concern, you may complain to your local data-protection authority.
+Questions or requests: open an issue at [`QinCai-rui/MeshTalk`
+](https://github.com/QinCai-rui/MeshTalk/issues/new)
