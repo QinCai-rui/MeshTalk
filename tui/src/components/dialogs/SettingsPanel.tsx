@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useKeyboard, useRenderer } from "@opentui/react"
 import type { Renderable, ScrollBoxRenderable } from "@opentui/core"
 import { chatTheme as theme } from "../../chatTheme"
-import { dialogUsesTextInput } from "../../navigation"
+import { dialogUsesTextInput, isFirstLevelSettingsDialog, isUpdaterDialog } from "../../navigation"
 import type { Dialog } from "../../types"
 import { SettingsBusyContext, SettingsPanelContext } from "./SettingsInteraction"
 
@@ -50,9 +50,10 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
   const active = categories.findIndex(([id]) => id === category)
   const [railIndex, setRailIndex] = useState(Math.max(0, active))
   const firstRun = "firstRun" in dialog && dialog.firstRun
+  const updaterLocked = isUpdaterDialog(dialog)
   const wide = width >= 76 && !firstRun
   const [showCategories, setShowCategories] = useState(false)
-  const showRail = !firstRun && (wide || showCategories)
+  const showRail = !firstRun && !updaterLocked && (wide || showCategories)
 
   function focusContent() {
     setRailFocused(false)
@@ -86,7 +87,7 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
   }, [renderer])
 
   useKeyboard(key => {
-    if (busy || firstRun || key.defaultPrevented) return
+    if (busy || firstRun || updaterLocked || key.defaultPrevented) return
     if (key.name === "tab") {
       key.preventDefault()
       if (railFocused) focusContent()
@@ -95,7 +96,7 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
     if (key.name === "left" && !dialogUsesTextInput(dialog) && !railFocused) { key.preventDefault(); focusRail() }
   })
   const selectCategory = (index: number) => {
-    if (busy) return
+    if (busy || updaterLocked) return
     focusContent()
     setRailFocused(false)
     setShowCategories(false)
@@ -104,9 +105,9 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
   return <SettingsPanelContext.Provider value={true}><SettingsBusyContext.Provider value={busy}><box id="settings-panel" width="100%" height="100%" flexDirection="column" minHeight={0}>
     <box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
       <text fg={theme.accent}><b>{firstRun ? "Welcome to MeshTalk" : "Settings"}</b></text>
-      <box onMouseDown={() => { if (!busy) goBack() }}><text fg={theme.muted}>{dialogUsesTextInput(dialog) ? "Cancel [Esc]" : "Back [Esc]"}</text></box>
+      <box onMouseDown={() => { if (!busy && dialog.kind !== "update") goBack() }}><text fg={theme.muted}>{dialog.kind === "update" ? "Choose an option" : dialogUsesTextInput(dialog) ? "Cancel [Esc]" : isFirstLevelSettingsDialog(dialog) ? "Close [Esc]" : "Back [Esc]"}</text></box>
     </box>
-    {!wide && !firstRun && <box height={1} flexShrink={0} onMouseDown={() => railFocused ? focusContent() : focusRail()}><text fg={theme.accent}>Categories [Tab] / {active >= 0 ? categories[active]![1] : "Choose a section"}</text></box>}
+    {!wide && !firstRun && !updaterLocked && <box height={1} flexShrink={0} onMouseDown={() => railFocused ? focusContent() : focusRail()}><text fg={theme.accent}>Categories [Tab] / {active >= 0 ? categories[active]![1] : "Choose a section"}</text></box>}
     <box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0} marginTop={height > 12 ? 1 : 0}>
       {showRail && <scrollbox id="settings-categories" ref={rail} focused={railFocused} width={wide ? 21 : "100%"} flexShrink={0} backgroundColor={theme.surface}
         contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface } }}
@@ -137,6 +138,6 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
         </box>
       </scrollbox>
     </box>
-    <text fg={busy ? theme.warning : theme.muted} flexShrink={0} wrapMode="word">{busy ? "Working…" : dialogUsesTextInput(dialog) ? "Enter save · Esc cancel · Tab categories" : width < 50 ? "↑↓/JK · Enter · Esc back · Tab" : "↑↓/JK · Enter · Esc/Bksp back · Tab categories · PgUp/Dn details"}</text>
+    <text fg={busy ? theme.warning : theme.muted} flexShrink={0} wrapMode="word">{busy ? "Working…" : dialog.kind === "update" ? "↑↓/JK · Enter · Choose an option above" : dialogUsesTextInput(dialog) ? (updaterLocked ? "Enter save · Esc cancel" : "Enter save · Esc cancel · Tab categories") : isFirstLevelSettingsDialog(dialog) ? (width < 50 ? "↑↓/JK · Enter · Esc close · Tab" : "↑↓/JK · Enter · Esc close · Tab categories · PgUp/Dn details") : width < 50 ? "↑↓/JK · Enter · Esc back · Tab" : "↑↓/JK · Enter · Esc/Bksp back · Tab categories · PgUp/Dn details"}</text>
   </box></SettingsBusyContext.Provider></SettingsPanelContext.Provider>
 }
