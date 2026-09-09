@@ -37,6 +37,8 @@ services:
     restart: no
 
   telemetry:
+    image: ghcr.io/qincai-rui/meshtalk/telemetry:latest
+    # docker compose up --build telemetry
     build:
       context: .
       dockerfile: telemetry/Dockerfile
@@ -53,6 +55,8 @@ services:
   telemetry-dashboard:
     # Pretty read-only dashboard for the aggregate store (no IPs exist to show).
     # Shares the ingest SQLite volume read-only; never writes.
+    # Same image as telemetry; only the command differs.
+    image: ghcr.io/qincai-rui/meshtalk/telemetry:latest
     build:
       context: .
       dockerfile: telemetry/Dockerfile
