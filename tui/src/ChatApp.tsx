@@ -132,6 +132,13 @@ type StartupResult = {
 };
 
 export function ChatApp({ splashStyle, telemetryPrompt = false }: { splashStyle?: SplashStyle | false; telemetryPrompt?: boolean } = {}) {
+  const [consentOpen, setConsentOpen] = useState(telemetryPrompt);
+  // Mount chat (and its global keyboard/paste listeners) only after consent.
+  if (consentOpen) return <TelemetryConsent version={APP_RELEASE_VERSION} done={() => setConsentOpen(false)} />;
+  return <ChatSession splashStyle={splashStyle} />;
+}
+
+function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const renderer = useRenderer();
   const { width, height } = useTerminalDimensions();
   const [ipc] = useState(() => new IPCClient());
@@ -201,7 +208,6 @@ export function ChatApp({ splashStyle, telemetryPrompt = false }: { splashStyle?
   const [dialogDraft, setDialogDraft] = useState("");
   const [dialogError, setDialogError] = useState("");
   const [dialogBusy, setDialogBusy] = useState(false);
-  const [showTelemetryPrompt, setShowTelemetryPrompt] = useState(telemetryPrompt);
   const scrollboxRef = useRef<ScrollBoxRenderable>(null);
   const composerRef = useRef<TextareaRenderable>(null);
   const backendDisconnected = useRef(false);
@@ -2058,7 +2064,6 @@ export function ChatApp({ splashStyle, telemetryPrompt = false }: { splashStyle?
           restartUpdate={actions.restartUpdate}
         />
       )}
-      {showTelemetryPrompt && <TelemetryConsent version={APP_RELEASE_VERSION} done={() => setShowTelemetryPrompt(false)} />}
     </box>
   );
 }
