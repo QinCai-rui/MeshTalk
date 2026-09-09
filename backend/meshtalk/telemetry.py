@@ -1,4 +1,4 @@
-"""Aggregate-only release telemetry (Tier 1 "extended" is the default).  No identifiers or local queue."""
+"""Aggregate-only opt-in release telemetry. No identifiers or local queue."""
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +12,7 @@ from pathlib import Path
 
 TELEMETRY_URL = "https://meshtalk-telemetry.raymont.workers.dev/v1/telemetry"
 TIMEOUT_SECONDS = 3
-DEFAULT_LEVEL = "extended"
+DEFAULT_LEVEL = "off"
 ALLOWED_EVENTS = {
     "msg.sent", "msg.received", "file.sent", "file.completed", "room.created", "room.joined",
     "group.created", "transport.lan_ok", "transport.udp_ok", "transport.relay_fallback", "transport.stun_fail",
@@ -36,14 +36,14 @@ def _env_level() -> str | None:
     return None
 
 def read_level(settings_path: Path | None = None) -> str:
-    """Return the effective Tier-1 level: extended (default), basic, or off."""
+    """Return the effective Tier-1 level: extended, basic, or off (default)."""
     override = _env_level()
     if override: return override
     path = settings_path or Path(os.environ.get("MESHTALK_DATA_DIR", Path.home() / ".meshtalk")) / "settings.json"
     try:
         data = json.loads(path.read_text())
         if data.get("telemetry_level") in {"extended", "basic", "off"}: return data["telemetry_level"]
-        # Migrate legacy consent; missing consent defaults to extended.
+        # Migrate legacy consent; missing consent remains disabled until the prompt.
         if data.get("telemetry_consent") == "accepted": return "extended"
         if data.get("telemetry_consent") in {"declined", "never_ask_again"}: return "off"
     except Exception: pass
@@ -61,7 +61,7 @@ def is_tier1_allowed(settings_path: Path | None = None) -> bool:
     return read_level(settings_path) == "extended"
 
 def is_enabled(settings_path: Path | None = None) -> bool:
-    """Tier-1 ("extended") gate.  Extended is the default; Basic sends Tier 0 only."""
+    """Tier-1 ("extended") gate. Basic sends Tier 0 only; missing consent is off."""
     return is_tier1_allowed(settings_path)
 
 class Telemetry:

@@ -9,9 +9,9 @@ export const TIER0_ALLOW = { os: ["darwin", "linux", "win32"], arch: ["arm64", "
 export const ALLOWED_EVENTS = new Set(["msg.sent", "msg.received", "file.sent", "file.completed", "room.created", "room.joined", "group.created", "transport.lan_ok", "transport.udp_ok", "transport.relay_fallback", "transport.stun_fail"]);
 export type Consent = "pending" | "accepted" | "declined" | "never_ask_again";
 export type ConsentState = { consent: Consent; seenVersions: string[] };
-/** Telemetry level: `extended` (Tier 0 + Tier 1, the default), `basic` (Tier 0 only), `off`. */
+/** Telemetry level: `extended` (Tier 0 + Tier 1), `basic` (Tier 0 only), `off`. */
 export type TelemetryLevel = "extended" | "basic" | "off";
-export const DEFAULT_TELEMETRY_LEVEL: TelemetryLevel = "extended";
+export const DEFAULT_TELEMETRY_LEVEL: TelemetryLevel = "off";
 
 function settingsPath(dataDir = process.env.MESHTALK_DATA_DIR): string {
   return join(dataDir || `${process.env.HOME || process.env.USERPROFILE || ""}/.meshtalk`, "settings.json");

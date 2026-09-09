@@ -154,7 +154,7 @@ class Settings:
         self._splash_phase_ms = DEFAULT_SPLASH_PHASE_MS
         self._splash_welcome_ms = DEFAULT_SPLASH_WELCOME_MS
         self.telemetry_consent = "pending"
-        self.telemetry_level = "extended"
+        self.telemetry_level = "off"
         self.telemetry_seen_versions: list[str] = []
         self.telemetry_prompted_versions: list[str] = []
         self._telemetry_dirty = False
@@ -613,20 +613,21 @@ class Settings:
         splash_welcome_ms = data.get("splash_welcome_ms", DEFAULT_SPLASH_WELCOME_MS)
         if isinstance(splash_welcome_ms, (int, float)) and splash_welcome_ms >= 0:
             self._splash_welcome_ms = int(splash_welcome_ms)
-        if data.get("telemetry_level") in {"extended", "basic", "off"}:
+        has_telemetry_level = data.get("telemetry_level") in {"extended", "basic", "off"}
+        if has_telemetry_level:
             self.telemetry_level = data["telemetry_level"]
         elif data.get("telemetry_consent") == "accepted":
             self.telemetry_level = "extended"
         elif data.get("telemetry_consent") in {"declined", "never_ask_again"}:
             self.telemetry_level = "off"
         else:
-            self.telemetry_level = "extended"
+            self.telemetry_level = "off"
         if data.get("telemetry_consent") in {"accepted", "declined", "never_ask_again"}:
             self.telemetry_consent = data["telemetry_consent"]
-        elif self.telemetry_level == "off":
+        elif has_telemetry_level and self.telemetry_level == "off":
             self.telemetry_consent = "declined"
         else:
-            self.telemetry_consent = "accepted"
+            self.telemetry_consent = "pending"
         if isinstance(data.get("telemetry_prompted_versions"), list):
             self.telemetry_prompted_versions = [value for value in data["telemetry_prompted_versions"] if isinstance(value, str)]
         if isinstance(data.get("telemetry_seen_versions"), list):
