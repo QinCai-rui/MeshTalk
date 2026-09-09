@@ -533,7 +533,10 @@ class Settings:
             return
         self.path.chmod(0o600)
         data = json.loads(self.path.read_text())
-        if data.get("version") != 1:
+        # Tolerate files first created by the launcher/TUI consent writers,
+        # which only store analytics keys and no "version" yet. Only an
+        # explicit unknown version is rejected.
+        if "version" in data and data.get("version") != 1:
             raise ValueError("Unsupported settings version")
         self._control_url = data.get("control_url", "")
         control_pinned_ips = data.get("control_pinned_ips", data.get("control_pinned_ip"))
