@@ -27,7 +27,7 @@ services:
       - MESHTALK_CONTROL_URL=wss://meshtalk-control.qincai.xyz/v1/rendezvous
       - MESHTALK_STUN_SERVER=stun.l.google.com:19302
     volumes:
-      - meshtalk-data:/data/meshtalk
+      - ./docker_data/meshtalk:/data/meshtalk
     stdin_open: true
     tty: true
     # Host networking is required for LAN peer discovery (UDP broadcast).
@@ -45,7 +45,7 @@ services:
     environment:
       - PORT=8089
     volumes:
-      - analytics-data:/data
+      - ./docker_data/analytics:/data
     ports:
       # Anonymous ingest is spammable by design: bind localhost by default,
       # put the Worker ORIGIN behind a firewall
@@ -66,7 +66,7 @@ services:
       - DASHBOARD_PORT=8090
       - BIND=0.0.0.0
     volumes:
-      - analytics-data:/data:ro
+      - ./docker_data/analytics:/data:ro
     ports:
       - "127.0.0.1:${ANALYTICS_DASHBOARD_PORT:-8090}:8090"
     restart: unless-stopped
@@ -76,7 +76,3 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
-
-volumes:
-  meshtalk-data:
-  analytics-data:
