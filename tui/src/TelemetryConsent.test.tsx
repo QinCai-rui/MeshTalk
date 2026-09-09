@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { TelemetryConsent } from "./TelemetryConsent";
 import { ChatApp } from "./ChatApp";
 
-test("consent gates chat and requires confirmation before never asking again", async () => {
+test("consent gates chat and hides never-ask from the main menu", async () => {
   const previous = process.env.MESHTALK_DATA_DIR;
   const directory = mkdtempSync(join(tmpdir(), "meshtalk-consent-"));
   process.env.MESHTALK_DATA_DIR = directory;
@@ -18,16 +18,8 @@ test("consent gates chat and requires confirmation before never asking again", a
     expect(frame).toContain("Enable extended telemetry");
     expect(frame).toContain("Enable basic telemetry");
     expect(frame).toContain("Keep telemetry off");
-    expect(frame).toContain("Don't ask again");
+    expect(frame).not.toContain("[ ] Don't ask again");
     expect(frame).not.toContain("Enter send");
-    await act(async () => { setup.mockInput.pressKey("\u0010"); await setup.renderOnce(); });
-    expect(setup.captureCharFrame()).toContain("A LITTLE HELP");
-    for (let i = 0; i < 3; i++) await act(async () => { setup.mockInput.pressTab(); });
-    await act(async () => { setup.mockInput.pressEnter(); await setup.renderOnce(); });
-    expect(setup.captureCharFrame()).toContain("Retire this little popup?");
-    expect(setup.captureCharFrame()).toContain("Settings > Diagnostics");
-    await act(async () => { setup.mockInput.pressEnter(); await setup.renderOnce(); });
-    expect(setup.captureCharFrame()).toContain("Enable extended telemetry");
   } finally {
     await act(async () => { setup.renderer.destroy(); });
     if (previous === undefined) delete process.env.MESHTALK_DATA_DIR; else process.env.MESHTALK_DATA_DIR = previous;
@@ -42,10 +34,16 @@ test("explicit never-ask confirmation persists off and never_ask_again", async (
   const setup = await testRender(<TelemetryConsent version="test" done={() => { finished = true; }} />, { width: 60, height: 24 });
   try {
     await act(async () => { await setup.renderOnce(); });
-    for (let i = 0; i < 3; i++) await act(async () => { setup.mockInput.pressTab(); });
+    for (let i = 0; i < 2; i++) await act(async () => { setup.mockInput.pressArrow("down"); });
     await act(async () => { setup.mockInput.pressEnter(); await setup.renderOnce(); });
     expect(finished).toBe(false);
-    await act(async () => { setup.mockInput.pressTab(); });
+    const confirmationFrame = setup.captureCharFrame();
+    expect(confirmationFrame).toContain("Keep telemetry off?");
+    expect(confirmationFrame).toContain("Don't ask again");
+    expect(confirmationFrame).toContain("Go back");
+    expect(confirmationFrame).toContain("re-review your privacy options");
+    expect(confirmationFrame).not.toContain("Telemetryystays");
+    await act(async () => { setup.mockInput.pressArrow("up"); setup.mockInput.pressArrow("up"); setup.mockInput.pressKey(" "); setup.mockInput.pressArrow("down"); setup.mockInput.pressArrow("down"); });
     await act(async () => { setup.mockInput.pressEnter(); });
     expect(finished).toBe(true);
     const settings = JSON.parse(readFileSync(join(directory, "settings.json"), "utf8"));

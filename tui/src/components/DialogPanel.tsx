@@ -15,7 +15,7 @@ import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 import { chatTheme as theme } from "../chatTheme"
 import { SettingsPanel, usesSettingsPanel } from "./dialogs/SettingsPanel"
 import { isUpdaterDialog } from "../navigation"
-import { PRIVACY_URL, readLevel, writeLevel, type TelemetryLevel } from "../../../common/telemetry"
+import { readLevel, writeLevel, type TelemetryLevel } from "../../../common/telemetry"
 import { ControlDialogContent, ControlCustomDialogContent, ControlStatusDialogContent, AdvancedDialogContent, CustomisationDialogContent, SplashStyleDialogContent, ImageProtocolDialogContent, IpPinningDialogContent, AdvancedControlDialogContent, AdvancedStunDialogContent, AdvancedControlIpDialogContent, AdvancedStunIpDialogContent } from "./dialogs/PreferenceDialogs"
 
 type DialogPanelProps = {
@@ -571,7 +571,6 @@ function DebugDialogContent({ dialog, controlStatus, debugInfo, dialogHeight, re
         else if (option.value === "telemetry-basic") applyTelemetryLevel("basic")
         else if (option.value === "telemetry-off") applyTelemetryLevel("off")
       }} />
-      <text fg={theme.subdued} wrapMode="word">Anonymous: no identifiers, content, or stored IPs. {PRIVACY_URL}</text>
     </SettingsScreen>
   )
 }
