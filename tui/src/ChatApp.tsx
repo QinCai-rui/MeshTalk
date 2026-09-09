@@ -77,6 +77,7 @@ import {
   type StartupOutcome,
   type SplashStyle,
 } from "./SplashScreen";
+import { TelemetryConsent } from "./TelemetryConsent";
 
 declare const APP_VERSION: string;
 
@@ -130,7 +131,7 @@ type StartupResult = {
   };
 };
 
-export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } = {}) {
+export function ChatApp({ splashStyle, telemetryPrompt = false }: { splashStyle?: SplashStyle | false; telemetryPrompt?: boolean } = {}) {
   const renderer = useRenderer();
   const { width, height } = useTerminalDimensions();
   const [ipc] = useState(() => new IPCClient());
@@ -200,6 +201,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const [dialogDraft, setDialogDraft] = useState("");
   const [dialogError, setDialogError] = useState("");
   const [dialogBusy, setDialogBusy] = useState(false);
+  const [showTelemetryPrompt, setShowTelemetryPrompt] = useState(telemetryPrompt);
   const scrollboxRef = useRef<ScrollBoxRenderable>(null);
   const composerRef = useRef<TextareaRenderable>(null);
   const backendDisconnected = useRef(false);
@@ -2056,6 +2058,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           restartUpdate={actions.restartUpdate}
         />
       )}
+      {showTelemetryPrompt && <TelemetryConsent version={APP_RELEASE_VERSION} done={() => setShowTelemetryPrompt(false)} />}
     </box>
   );
 }

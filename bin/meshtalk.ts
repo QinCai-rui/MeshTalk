@@ -10,6 +10,7 @@ import { applyPendingWindowsReplacement, checkForUpdate, githubRepository, insta
 import { main as cliMain } from "../cli/src/index";
 import { runTui } from "./tui-entry";
 import type { SplashStyle } from "../tui/src/SplashScreen";
+import { isTelemetryAllowed, markPrompted, PRIVACY_URL, readConsent, sendTier0, shouldPrompt, writeConsent } from "../common/telemetry";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -419,6 +420,7 @@ function startBackend(backend: Component, daemonise = true): ChildProcess {
       detached,
       stdio: ["ignore", logFile, logFile],
       windowsHide: true,
+      env: { ...process.env, MESHTALK_RELEASE: IS_RELEASE_BUILD ? "1" : "0", MESHTALK_APP_VERSION: APP_RELEASE_VERSION },
     });
     if (daemonise) {
       proc.unref();
@@ -436,6 +438,18 @@ async function main() {
   mkdirSync(DATA_DIR, { recursive: true });
 
   const args = process.argv.slice(2);
+
+  // This is deliberately detached from startup: telemetry may never delay chat.
+  const consentState = readConsent(DATA_DIR);
+  const dryRun = args.includes("--dry-run");
+  if (isTelemetryAllowed(IS_RELEASE_BUILD, consentState.consent, dryRun) && !consentState.seenVersions.includes(APP_RELEASE_VERSION)) {
+    void sendTier0(APP_RELEASE_VERSION).then((sent) => {
+      if (sent) {
+        const current = readConsent(DATA_DIR);
+        writeConsent(current.consent, [...current.seenVersions, APP_RELEASE_VERSION], DATA_DIR);
+      }
+    });
+  }
 
   if (isWindows) applyPendingWindowsReplacement();
 
@@ -537,7 +551,7 @@ async function main() {
         return stopped;
       }));
     };
-    const tui = await runTui({ splashStyle: splash ?? savedSplashStyle() });
+    const tui = await runTui({ splashStyle: splash ?? savedSplashStyle(), telemetryPrompt: IS_RELEASE_BUILD && !isTelemetryAllowed(true, consentState.consent, dryRun) && shouldPrompt(APP_RELEASE_VERSION, consentState) });
     if (iStartedIt) {
       // The TUI owns the visible startup state while the launcher waits silently.
       const ready = await waitForBackend(backendProcess);
@@ -631,6 +645,10 @@ async function main() {
       await cleanup();
     }
   } else {
+    if (IS_RELEASE_BUILD && process.stderr.isTTY && shouldPrompt(APP_RELEASE_VERSION, consentState)) {
+      console.error(`Telemetry is disabled by default. Enable with MESHTALK_TELEMETRY=1. Privacy policy: ${PRIVACY_URL}`);
+      markPrompted(APP_RELEASE_VERSION, DATA_DIR);
+    }
     process.env.MESHTALK_PROGRAM = PROGRAM;
     process.argv = [process.argv[0], process.argv[1], ...args];
     await cliMain();

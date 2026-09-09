@@ -153,6 +153,8 @@ class Settings:
         self._splash_duration_ms = DEFAULT_SPLASH_DURATION_MS
         self._splash_phase_ms = DEFAULT_SPLASH_PHASE_MS
         self._splash_welcome_ms = DEFAULT_SPLASH_WELCOME_MS
+        self.telemetry_consent = "pending"
+        self.telemetry_seen_versions: list[str] = []
         self._load()
 
     @property
@@ -471,6 +473,8 @@ class Settings:
             "splash_duration_ms": self._splash_duration_ms,
             "splash_phase_ms": self._splash_phase_ms,
             "splash_welcome_ms": self._splash_welcome_ms,
+            "telemetry_consent": self.telemetry_consent,
+            "telemetry_seen_versions": self.telemetry_seen_versions,
         }
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, indent=2))
@@ -562,3 +566,7 @@ class Settings:
         splash_welcome_ms = data.get("splash_welcome_ms", DEFAULT_SPLASH_WELCOME_MS)
         if isinstance(splash_welcome_ms, (int, float)) and splash_welcome_ms >= 0:
             self._splash_welcome_ms = int(splash_welcome_ms)
+        if data.get("telemetry_consent") in {"accepted", "declined", "never_ask_again"}:
+            self.telemetry_consent = data["telemetry_consent"]
+        if isinstance(data.get("telemetry_seen_versions"), list):
+            self.telemetry_seen_versions = [value for value in data["telemetry_seen_versions"] if isinstance(value, str)]

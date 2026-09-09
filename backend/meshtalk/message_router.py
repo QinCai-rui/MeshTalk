@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, TYPE_CHECKING
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -31,18 +31,21 @@ from .protocol import (
     PacketType,
 )
 from .group_router import GroupRouter
+if TYPE_CHECKING:
+    from .telemetry import Telemetry
 
 logger = logging.getLogger(__name__)
 MAX_MESSAGE_CONTENT_SIZE = 30 * 1024
 
 
 class MessageRouter:
-    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None, friend_manager: FriendManager | None = None, group_router: GroupRouter | None = None) -> None:
+    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None, friend_manager: FriendManager | None = None, group_router: GroupRouter | None = None, telemetry: "Telemetry | None" = None) -> None:
         self.identity, self.peer_manager, self.db = identity, peer_manager, db
         self.on_received = on_received
         self.on_delivered = on_delivered
         self.friend_manager = friend_manager or FriendManager(identity, peer_manager, db)
         self.group_router = group_router
+        self.telemetry = telemetry
 
     async def send_message(self, recipient_id: str, plaintext: bytes, reply_to_message_id: str | None = None) -> tuple[str, bool]:
         if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:
@@ -76,6 +79,7 @@ class MessageRouter:
             "read_at": now, "queued": 1 if peer is None else 0, "reply_to_message_id": reply_to_message_id,
         })
         await self.db.mark_message_seen(message.message_id)
+        if self.telemetry: self.telemetry.incr("msg.sent")
         if peer is not None:
             await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE, encoded_message))
             return message.message_id, False
@@ -131,6 +135,7 @@ class MessageRouter:
             "created_at": message.created_at,
             "hop_count": 0, "max_hops": 0, "read_at": None, "received_at": time.time(), "reply_to_message_id": message.reply_to_message_id,
         })
+        if self.telemetry: self.telemetry.incr("msg.received")
         await self._send_delivery_receipt(peer, message.message_id)
         logger.info("Received encrypted message %s from %s", message.message_id, peer.peer_id)
         if self.on_received:

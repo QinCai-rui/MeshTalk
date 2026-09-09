@@ -28,6 +28,7 @@ from .ipc import IPCServer
 from .protocol import Packet, PacketType, capability_for_packet
 from .rendezvous import RendezvousService
 from .settings import Settings
+from .telemetry import Telemetry
 
 logger = logging.getLogger("meshtalk")
 
@@ -56,15 +57,16 @@ async def main(debug: bool = False) -> None:
     db = Database(DATA_DIR / "meshtalk.db", identity.storage_key())
     await db.connect()
     settings = Settings(DATA_DIR / "settings.json")
+    telemetry = Telemetry(DATA_DIR / "settings.json")
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
     friend_manager = FriendManager(identity, peer_manager, db)
     group_router = GroupRouter(identity, peer_manager, db, settings)
     router = MessageRouter(
-        identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router
+        identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router, telemetry=telemetry
     )
     typing_router = TypingRouter(identity, peer_manager, db, settings, friend_manager)
-    file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings)
+    file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings, telemetry=telemetry)
     tui_clients: set[str] = set()
     typing_clients: dict[tuple[str, str], set[str]] = {}
 
@@ -156,6 +158,13 @@ async def main(debug: bool = False) -> None:
                 **peer.negotiated(),
             })
         if peer is not None:
+            transport = peer_manager.get_network_info(peer_id).get("active_transport")
+            if transport == "lan_tcp":
+                telemetry.incr("transport.lan_ok")
+            elif transport == "remote_udp":
+                telemetry.incr("transport.udp_ok")
+            elif transport == "remote_derp":
+                telemetry.incr("transport.relay_fallback")
             await group_router.peer_connected(peer_id)
             await flush_outgoing(peer_id)
 
@@ -559,6 +568,8 @@ async def main(debug: bool = False) -> None:
         if name is not None and not isinstance(name, str):
             return {"error": "name must be a string"}
         room = settings.create_room(name)
+        telemetry.incr("room.created")
+        if room.group_name: telemetry.incr("group.created")
         await group_router.sync_groups()
         if room.group_name:
             await group_router.record_local_join(room.id)
@@ -575,6 +586,7 @@ async def main(debug: bool = False) -> None:
         if not isinstance(invite, str):
             return {"error": "invite required"}
         room = settings.join_room(invite)
+        telemetry.incr("room.joined")
         await group_router.sync_groups()
         if room.group_name:
             await group_router.record_local_join(room.id)
@@ -940,9 +952,17 @@ async def main(debug: bool = False) -> None:
 
     asyncio.create_task(periodic_cleanup())
 
+    async def periodic_telemetry() -> None:
+        while True:
+            await asyncio.sleep(3600)
+            await telemetry.flush()
+    telemetry_task = asyncio.create_task(periodic_telemetry())
+
     try:
         await stop_event.wait()
     finally:
+        telemetry_task.cancel()
+        await telemetry.flush()
         await ipc.stop()
         await rendezvous.stop()
         await peer_manager.stop()
