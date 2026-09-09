@@ -77,6 +77,7 @@ import {
   type StartupOutcome,
   type SplashStyle,
 } from "./SplashScreen";
+import { AnalyticsConsent } from "./AnalyticsConsent";
 
 declare const APP_VERSION: string;
 
@@ -130,7 +131,14 @@ type StartupResult = {
   };
 };
 
-export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } = {}) {
+export function ChatApp({ splashStyle, analyticsPrompt = false }: { splashStyle?: SplashStyle | false; analyticsPrompt?: boolean } = {}) {
+  const [consentOpen, setConsentOpen] = useState(analyticsPrompt);
+  // Mount chat (and its global keyboard/paste listeners) only after consent.
+  if (consentOpen) return <AnalyticsConsent version={APP_RELEASE_VERSION} done={() => setConsentOpen(false)} />;
+  return <ChatSession splashStyle={splashStyle} />;
+}
+
+function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const renderer = useRenderer();
   const { width, height } = useTerminalDimensions();
   const [ipc] = useState(() => new IPCClient());

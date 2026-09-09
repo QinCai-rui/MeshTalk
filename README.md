@@ -14,6 +14,8 @@
 
 Peer-to-peer encrypted messaging over a LAN or direct NAT-traversed UDP links.
 
+Optional release analytics is disabled until explicitly enabled as extended or basic; switch levels or turn it off in Settings » Diagnostics. See [Analytics](docs/ANALYTICS.md) and the [privacy policy](PRIVACY.md).
+
 MeshTalk keeps the original offline LAN path: UDP broadcast discovers peers and
 TCP carries authenticated messages. Private rooms add remote discovery through
  an opaque control service and public STUN. MeshTalk Relay provides a bounded,

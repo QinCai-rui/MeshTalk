@@ -15,6 +15,8 @@ import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 import { chatTheme as theme } from "../chatTheme"
 import { SettingsPanel, usesSettingsPanel } from "./dialogs/SettingsPanel"
 import { isUpdaterDialog } from "../navigation"
+import { readLevel, writeLevel, markPrompted, type AnalyticsLevel } from "../../../common/analytics"
+import { APP_RELEASE_VERSION } from "../SplashScreen"
 import { ControlDialogContent, ControlCustomDialogContent, ControlStatusDialogContent, AdvancedDialogContent, CustomisationDialogContent, SplashStyleDialogContent, ImageProtocolDialogContent, IpPinningDialogContent, AdvancedControlDialogContent, AdvancedStunDialogContent, AdvancedControlIpDialogContent, AdvancedStunIpDialogContent } from "./dialogs/PreferenceDialogs"
 
 type DialogPanelProps = {
@@ -542,20 +544,41 @@ function CancelFriendConfirmDialogContent({ dialog, dialogHeight, cancelFriendRe
 }
 
 function DebugDialogContent({ dialog, controlStatus, debugInfo, dialogHeight, reStun, loadDebugInfo, showDialog }: { dialog: Extract<Dialog, { kind: "debug" }>; controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }; debugInfo: DebugInfo | null; dialogHeight: number; reStun: () => void; loadDebugInfo: () => void; showDialog: (d: Dialog) => void }) {
+  const [analyticsLevel, setAnalyticsLevel] = useState<AnalyticsLevel>(() => {
+    try { return readLevel() } catch { return "off" }
+  })
+  const applyAnalyticsLevel = (level: AnalyticsLevel) => {
+    try {
+      writeLevel(level);
+      // Persist the prompt marker so a Diagnostics choice counts as an
+      // explicit choice and does not re-prompt on next launch. Off stays
+      // soft-off: it re-asks after an upgrade by design.
+      try { markPrompted(APP_RELEASE_VERSION); } catch {}
+      setAnalyticsLevel(level)
+    } catch {}
+  }
+  const analyticsStatus = analyticsLevel === "extended" ? "On" : analyticsLevel === "basic" ? "Basic" : "Off"
   return (
-    <SettingsScreen breadcrumb={["Diagnostics"]} description="Inspect connection state and peer endpoints." dialogHeight={dialogHeight}>
+    <SettingsScreen breadcrumb={["Diagnostics"]} description="Connection health, peer endpoints, and analytics." dialogHeight={dialogHeight}>
       <text><span fg={theme.muted}>Control: </span>{controlStatus.connected ? "Connected" : "Disconnected"}{controlStatus.reconnect_attempts ? ` (reconnects: ${controlStatus.reconnect_attempts})` : ""}</text>
       <text><span fg={theme.muted}>STUN server: </span>{debugInfo?.stun_server ?? "..."}</text>
-      <MouseSelect focused height={Math.min(8, Math.max(1, dialogHeight - 8))} options={[
-        { name: "Re-STUN", description: "Re-query STUN server and republish endpoint cards", value: "re-stun" },
-        { name: "Endpoints", description: "View your endpoint and connected peers", value: "endpoints" },
-        { name: "Refresh", description: "Reload debug information", value: "refresh" },
-      ]} onSelect={(_, option) => {
+      <text><span fg={theme.muted}>Analytics: </span>{analyticsStatus}<span fg={theme.subdued}> — {analyticsLevel === "extended" ? "version ping + room/group/transport counters" : analyticsLevel === "basic" ? "version ping only" : "disabled"}</span></text>
+      <SettingsMenu dialogHeight={dialogHeight} headerRows={11} options={[
+        { section: "Connection", name: "Re-STUN", description: "Re-query STUN server and republish endpoint cards", value: "re-stun" },
+        { section: "Connection", name: "Endpoints", description: "View your endpoint and connected peers", value: "endpoints" },
+        { section: "Connection", name: "Refresh", description: "Reload connection information", value: "refresh" },
+        { section: "Analytics", name: "Extended analytics", description: "Version ping + room/group/transport counters", value: "analytics-extended", status: analyticsLevel === "extended" ? "Current" : undefined, tone: "accent" },
+        { section: "Analytics", name: "Basic analytics", description: "Version ping only, no usage counters", value: "analytics-basic", status: analyticsLevel === "basic" ? "Current" : undefined },
+        { section: "Analytics", name: "Analytics off", description: "Send nothing (asks again after upgrades)", value: "analytics-off", status: analyticsLevel === "off" ? "Current" : undefined, tone: "warning" },
+      ]} onSelect={(option) => {
         if (!option) return
         if (option.value === "re-stun") void reStun()
         else if (option.value === "endpoints") { showDialog({ kind: "debug-endpoints" }); void loadDebugInfo() }
         else if (option.value === "refresh") void loadDebugInfo()
-      }} wrapSelection showDescription />
+        else if (option.value === "analytics-extended") applyAnalyticsLevel("extended")
+        else if (option.value === "analytics-basic") applyAnalyticsLevel("basic")
+        else if (option.value === "analytics-off") applyAnalyticsLevel("off")
+      }} />
     </SettingsScreen>
   )
 }

@@ -28,6 +28,7 @@ __pycache__/
 
 # Data
 .meshtalk/
+docker_data/
 
 # IDE
 .vscode/
