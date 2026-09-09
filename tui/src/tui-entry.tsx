@@ -3,7 +3,7 @@ import { createRoot } from "@opentui/react"
 import { ChatApp } from "./ChatApp"
 import type { SplashStyle } from "./SplashScreen"
 import { installWarningLog } from "./warningLog"
-import { isTelemetryAllowed, readConsent, shouldPrompt } from "../../common/telemetry"
+import { hasExplicitTelemetryChoice, shouldPrompt } from "../../common/telemetry"
 import { APP_RELEASE_VERSION, IS_RELEASE_BUILD } from "./SplashScreen"
 
 type Tui = {
@@ -24,7 +24,7 @@ export async function runTui(options: TuiOptions = {}): Promise<Tui> {
   // so raise the limit instead of warning on normal operation.
   renderer.setMaxListeners(30)
   installWarningLog(() => renderer.eventNames().map((event) => `${String(event)}:${renderer.listenerCount(event)}`).join(" "))
-  const telemetryPrompt = options.telemetryPrompt ?? (IS_RELEASE_BUILD && !isTelemetryAllowed(true, readConsent().consent) && shouldPrompt(APP_RELEASE_VERSION))
+  const telemetryPrompt = options.telemetryPrompt ?? (IS_RELEASE_BUILD && !hasExplicitTelemetryChoice() && shouldPrompt(APP_RELEASE_VERSION))
   createRoot(renderer).render(<ChatApp splashStyle={options.splashStyle} telemetryPrompt={telemetryPrompt} />)
   return {
     destroy: () => renderer.destroy(),

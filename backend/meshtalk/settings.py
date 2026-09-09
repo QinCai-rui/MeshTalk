@@ -154,7 +154,10 @@ class Settings:
         self._splash_phase_ms = DEFAULT_SPLASH_PHASE_MS
         self._splash_welcome_ms = DEFAULT_SPLASH_WELCOME_MS
         self.telemetry_consent = "pending"
+        self.telemetry_level = "extended"
         self.telemetry_seen_versions: list[str] = []
+        self.telemetry_prompted_versions: list[str] = []
+        self._telemetry_dirty = False
         self._load()
 
     @property
@@ -444,8 +447,50 @@ class Settings:
             self._notification_events.update(events)
         self.save()
 
+    def set_telemetry_level(self, level: str) -> None:
+        """Set the telemetry level: extended (Tier 0 + Tier 1, default), basic (Tier 0 only), or off."""
+        if level not in {"extended", "basic", "off"}:
+            raise ValueError("telemetry level must be extended, basic, or off")
+        self.telemetry_level = level
+        self.telemetry_consent = "declined" if level == "off" else "accepted"
+        self._telemetry_dirty = True
+        self.save()
+
+    def _merge_telemetry_from_disk(self) -> None:
+        """Adopt telemetry keys written directly by the launcher/TUI.
+
+        The launcher and TUI write telemetry_level / consent / prompted /
+        seen versions straight to settings.json; the backend must not clobber
+        those on its next unrelated save().  Union the version lists and, when
+        this process did not just change the level itself, adopt the on-disk
+        level/consent.
+        """
+        try:
+            if not self.path.exists():
+                return
+            data = json.loads(self.path.read_text())
+        except Exception:
+            return
+        if isinstance(data.get("telemetry_seen_versions"), list):
+            seen = [value for value in data["telemetry_seen_versions"] if isinstance(value, str)]
+            self.telemetry_seen_versions = list(dict.fromkeys([*self.telemetry_seen_versions, *seen]))
+        if isinstance(data.get("telemetry_prompted_versions"), list):
+            prompted = [value for value in data["telemetry_prompted_versions"] if isinstance(value, str)]
+            self.telemetry_prompted_versions = list(dict.fromkeys([*self.telemetry_prompted_versions, *prompted]))
+        if not self._telemetry_dirty:
+            if data.get("telemetry_level") in {"extended", "basic", "off"}:
+                self.telemetry_level = data["telemetry_level"]
+            elif data.get("telemetry_consent") == "accepted":
+                self.telemetry_level = "extended"
+            elif data.get("telemetry_consent") in {"declined", "never_ask_again"}:
+                self.telemetry_level = "off"
+            if data.get("telemetry_consent") in {"accepted", "declined", "never_ask_again"}:
+                self.telemetry_consent = data["telemetry_consent"]
+
     def save(self) -> None:
         """Save settings to disk as a JSON file."""
+        self._merge_telemetry_from_disk()
+        self._telemetry_dirty = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "version": 1,
@@ -474,6 +519,8 @@ class Settings:
             "splash_phase_ms": self._splash_phase_ms,
             "splash_welcome_ms": self._splash_welcome_ms,
             "telemetry_consent": self.telemetry_consent,
+            "telemetry_level": self.telemetry_level,
+            "telemetry_prompted_versions": self.telemetry_prompted_versions,
             "telemetry_seen_versions": self.telemetry_seen_versions,
         }
         temporary = self.path.with_suffix(".tmp")
@@ -566,7 +613,21 @@ class Settings:
         splash_welcome_ms = data.get("splash_welcome_ms", DEFAULT_SPLASH_WELCOME_MS)
         if isinstance(splash_welcome_ms, (int, float)) and splash_welcome_ms >= 0:
             self._splash_welcome_ms = int(splash_welcome_ms)
+        if data.get("telemetry_level") in {"extended", "basic", "off"}:
+            self.telemetry_level = data["telemetry_level"]
+        elif data.get("telemetry_consent") == "accepted":
+            self.telemetry_level = "extended"
+        elif data.get("telemetry_consent") in {"declined", "never_ask_again"}:
+            self.telemetry_level = "off"
+        else:
+            self.telemetry_level = "extended"
         if data.get("telemetry_consent") in {"accepted", "declined", "never_ask_again"}:
             self.telemetry_consent = data["telemetry_consent"]
+        elif self.telemetry_level == "off":
+            self.telemetry_consent = "declined"
+        else:
+            self.telemetry_consent = "accepted"
+        if isinstance(data.get("telemetry_prompted_versions"), list):
+            self.telemetry_prompted_versions = [value for value in data["telemetry_prompted_versions"] if isinstance(value, str)]
         if isinstance(data.get("telemetry_seen_versions"), list):
             self.telemetry_seen_versions = [value for value in data["telemetry_seen_versions"] if isinstance(value, str)]

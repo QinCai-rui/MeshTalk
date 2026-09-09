@@ -10,7 +10,7 @@ import { applyPendingWindowsReplacement, checkForUpdate, githubRepository, insta
 import { main as cliMain } from "../cli/src/index";
 import { runTui } from "./tui-entry";
 import type { SplashStyle } from "../tui/src/SplashScreen";
-import { isTelemetryAllowed, markPrompted, PRIVACY_URL, readConsent, sendTier0, shouldPrompt, writeConsent } from "../common/telemetry";
+import { hasExplicitTelemetryChoice, isTier0Allowed, markPrompted, PRIVACY_URL, readConsent, sendTier0, shouldPrompt, writeConsent } from "../common/telemetry";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
@@ -440,9 +440,11 @@ async function main() {
   const args = process.argv.slice(2);
 
   // This is deliberately detached from startup: telemetry may never delay chat.
+  // Tier 1 ("extended") is the default; Tier 0 ("basic") version pings send for
+  // both extended and basic levels.
   const consentState = readConsent(DATA_DIR);
   const dryRun = args.includes("--dry-run");
-  if (isTelemetryAllowed(IS_RELEASE_BUILD, consentState.consent, dryRun) && !consentState.seenVersions.includes(APP_RELEASE_VERSION)) {
+  if (isTier0Allowed(IS_RELEASE_BUILD, DATA_DIR, dryRun) && !consentState.seenVersions.includes(APP_RELEASE_VERSION)) {
     void sendTier0(APP_RELEASE_VERSION).then((sent) => {
       if (sent) {
         const current = readConsent(DATA_DIR);
@@ -551,7 +553,7 @@ async function main() {
         return stopped;
       }));
     };
-    const tui = await runTui({ splashStyle: splash ?? savedSplashStyle(), telemetryPrompt: IS_RELEASE_BUILD && !isTelemetryAllowed(true, consentState.consent, dryRun) && shouldPrompt(APP_RELEASE_VERSION, consentState) });
+    const tui = await runTui({ splashStyle: splash ?? savedSplashStyle(), telemetryPrompt: IS_RELEASE_BUILD && !dryRun && !hasExplicitTelemetryChoice(DATA_DIR) && shouldPrompt(APP_RELEASE_VERSION, consentState) });
     if (iStartedIt) {
       // The TUI owns the visible startup state while the launcher waits silently.
       const ready = await waitForBackend(backendProcess);
@@ -645,8 +647,8 @@ async function main() {
       await cleanup();
     }
   } else {
-    if (IS_RELEASE_BUILD && process.stderr.isTTY && shouldPrompt(APP_RELEASE_VERSION, consentState)) {
-      console.error(`Telemetry is disabled by default. Enable with MESHTALK_TELEMETRY=1. Privacy policy: ${PRIVACY_URL}`);
+    if (IS_RELEASE_BUILD && process.stderr.isTTY && !hasExplicitTelemetryChoice(DATA_DIR) && shouldPrompt(APP_RELEASE_VERSION, consentState)) {
+      console.error(`Extended telemetry is on by default (version + aggregate usage). Switch to basic or off with MESHTALK_TELEMETRY=basic|off, or in Settings > Diagnostics. Privacy policy: ${PRIVACY_URL}`);
       markPrompted(APP_RELEASE_VERSION, DATA_DIR);
     }
     process.env.MESHTALK_PROGRAM = PROGRAM;

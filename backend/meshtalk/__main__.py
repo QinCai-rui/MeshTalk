@@ -561,7 +561,19 @@ async def main(debug: bool = False) -> None:
             "splash_duration_ms": settings.splash_duration_ms,
             "splash_phase_ms": settings.splash_phase_ms,
             "splash_welcome_ms": settings.splash_welcome_ms,
+            "telemetry_level": settings.telemetry_level,
         }
+
+    async def handle_telemetry(req: dict) -> dict:
+        if "level" in req or "telemetry_level" in req:
+            level = req.get("level", req.get("telemetry_level"))
+            if not isinstance(level, str):
+                return {"error": "telemetry level must be a string"}
+            try:
+                settings.set_telemetry_level(level)
+            except ValueError as exc:
+                return {"error": str(exc)}
+        return {"telemetry_level": settings.telemetry_level}
 
     async def handle_room_create(req: dict) -> dict:
         name = req.get("name")
@@ -885,6 +897,7 @@ async def main(debug: bool = False) -> None:
         "set_display_name": handle_set_display_name,
         "control": handle_control,
         "advanced_config": handle_advanced_config,
+        "telemetry": handle_telemetry,
         "room_create": handle_room_create,
         "room_join": handle_room_join,
         "room_leave": handle_room_leave,

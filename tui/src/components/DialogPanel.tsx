@@ -15,6 +15,7 @@ import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 import { chatTheme as theme } from "../chatTheme"
 import { SettingsPanel, usesSettingsPanel } from "./dialogs/SettingsPanel"
 import { isUpdaterDialog } from "../navigation"
+import { PRIVACY_URL, readLevel, writeLevel, type TelemetryLevel } from "../../../common/telemetry"
 import { ControlDialogContent, ControlCustomDialogContent, ControlStatusDialogContent, AdvancedDialogContent, CustomisationDialogContent, SplashStyleDialogContent, ImageProtocolDialogContent, IpPinningDialogContent, AdvancedControlDialogContent, AdvancedStunDialogContent, AdvancedControlIpDialogContent, AdvancedStunIpDialogContent } from "./dialogs/PreferenceDialogs"
 
 type DialogPanelProps = {
@@ -542,20 +543,35 @@ function CancelFriendConfirmDialogContent({ dialog, dialogHeight, cancelFriendRe
 }
 
 function DebugDialogContent({ dialog, controlStatus, debugInfo, dialogHeight, reStun, loadDebugInfo, showDialog }: { dialog: Extract<Dialog, { kind: "debug" }>; controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }; debugInfo: DebugInfo | null; dialogHeight: number; reStun: () => void; loadDebugInfo: () => void; showDialog: (d: Dialog) => void }) {
+  const [telemetryLevel, setTelemetryLevel] = useState<TelemetryLevel>(() => {
+    try { return readLevel() } catch { return "extended" }
+  })
+  const applyTelemetryLevel = (level: TelemetryLevel) => {
+    try { writeLevel(level); setTelemetryLevel(level) } catch {}
+  }
+  const telemetryStatus = telemetryLevel === "extended" ? "On" : telemetryLevel === "basic" ? "Basic" : "Off"
   return (
-    <SettingsScreen breadcrumb={["Diagnostics"]} description="Inspect connection state and peer endpoints." dialogHeight={dialogHeight}>
+    <SettingsScreen breadcrumb={["Diagnostics"]} description="Connection health, peer endpoints, and telemetry." dialogHeight={dialogHeight}>
       <text><span fg={theme.muted}>Control: </span>{controlStatus.connected ? "Connected" : "Disconnected"}{controlStatus.reconnect_attempts ? ` (reconnects: ${controlStatus.reconnect_attempts})` : ""}</text>
       <text><span fg={theme.muted}>STUN server: </span>{debugInfo?.stun_server ?? "..."}</text>
-      <MouseSelect focused height={Math.min(8, Math.max(1, dialogHeight - 8))} options={[
-        { name: "Re-STUN", description: "Re-query STUN server and republish endpoint cards", value: "re-stun" },
-        { name: "Endpoints", description: "View your endpoint and connected peers", value: "endpoints" },
-        { name: "Refresh", description: "Reload debug information", value: "refresh" },
-      ]} onSelect={(_, option) => {
+      <text><span fg={theme.muted}>Telemetry: </span>{telemetryStatus}<span fg={theme.subdued}> — {telemetryLevel === "extended" ? "version ping + aggregate usage" : telemetryLevel === "basic" ? "version ping only" : "disabled"}</span></text>
+      <SettingsMenu dialogHeight={dialogHeight} headerRows={11} options={[
+        { section: "Connection", name: "Re-STUN", description: "Re-query STUN server and republish endpoint cards", value: "re-stun" },
+        { section: "Connection", name: "Endpoints", description: "View your endpoint and connected peers", value: "endpoints" },
+        { section: "Connection", name: "Refresh", description: "Reload connection information", value: "refresh" },
+        { section: "Telemetry", name: "Extended telemetry", description: "Version ping + aggregate usage counters (default)", value: "telemetry-extended", status: telemetryLevel === "extended" ? "Current" : undefined, tone: "accent" },
+        { section: "Telemetry", name: "Basic telemetry", description: "Version ping only, no usage counters", value: "telemetry-basic", status: telemetryLevel === "basic" ? "Current" : undefined },
+        { section: "Telemetry", name: "Telemetry off", description: "Send nothing (asks again after upgrades)", value: "telemetry-off", status: telemetryLevel === "off" ? "Current" : undefined, tone: "warning" },
+      ]} onSelect={(option) => {
         if (!option) return
         if (option.value === "re-stun") void reStun()
         else if (option.value === "endpoints") { showDialog({ kind: "debug-endpoints" }); void loadDebugInfo() }
         else if (option.value === "refresh") void loadDebugInfo()
-      }} wrapSelection showDescription />
+        else if (option.value === "telemetry-extended") applyTelemetryLevel("extended")
+        else if (option.value === "telemetry-basic") applyTelemetryLevel("basic")
+        else if (option.value === "telemetry-off") applyTelemetryLevel("off")
+      }} />
+      <text fg={theme.subdued} wrapMode="word">Anonymous: no identifiers, content, or stored IPs. {PRIVACY_URL}</text>
     </SettingsScreen>
   )
 }
