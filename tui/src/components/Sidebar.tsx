@@ -20,6 +20,7 @@ type SidebarProps = {
   identity: { peer_id: string; display_name: string } | undefined
   mutedPeers: Record<string, number>
   mutedGroups?: Record<string, number>
+  mentionCounts?: Record<string, number>
   nameDraft: string
   peers: Peer[]
   selectedGroupId: string | undefined
@@ -34,7 +35,7 @@ type SidebarProps = {
   saveDisplayName: () => void
 }
 
-export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = false, editingName, groups, groupMembers, identity, mutedPeers, mutedGroups = {}, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
+export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = false, editingName, groups, groupMembers, identity, mutedPeers, mutedGroups = {}, mentionCounts = {}, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName }: SidebarProps) {
   const renderer = useRenderer()
   const peerListRef = useRef<ScrollBoxRenderable>(null)
   const groupListRef = useRef<ScrollBoxRenderable>(null)
@@ -120,12 +121,14 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
         const isMuted = group.group_id in mutedGroups
         const nameColor = selected ? theme.accent : theme.text
         const showUnread = group.unread_count > 0 && !isMuted
+        const mentionCount = !isMuted ? (mentionCounts[group.group_id] ?? 0) : 0
         return <box id={`nav-group-${group.group_id}`} key={group.group_id} onMouseDown={() => pick({ kind: "group", id: group.group_id })} opacity={isMuted ? 0.30 : undefined} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
-            <text fg={nameColor} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{selected || showUnread ? <b>{label}</b> : label}<span fg={theme.muted}>{memberLabel}</span></text>
+            <text fg={nameColor} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{selected || showUnread || mentionCount > 0 ? <b>{label}</b> : label}<span fg={theme.muted}>{memberLabel}</span></text>
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {showUnread && <text fg={theme.accent}>{group.unread_count} new</text>}
+            {mentionCount > 0 && <text fg={theme.warning}>@{mentionCount} mentioned</text>}
             {isMuted && <text fg={theme.muted}>Muted</text>}
             {selected && onlyYouOnline && !typing && <text fg={theme.muted}>No one else online</text>}
             {typing && <TypingDots />}

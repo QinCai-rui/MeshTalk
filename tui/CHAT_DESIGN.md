@@ -40,6 +40,11 @@ its existing UI.
   enabled; Accessibility settings can keep them static.
 - Typing, reply context, input, byte usage, and keyboard help each occupy their own
   layout rows. Temporary status messages replace keyboard hints in a fixed-height footer; long messages scroll inside that area without moving the composer. The footer aligns composer/history hints left and the highlighted settings shortcut right. Nothing is absolutely positioned over editable text.
+- In group chats, typing `@` opens an inline member picker directly above the
+  input (Up/Down moves, Tab/Enter picks, Esc cancels, click also picks). Picks
+  are stored as `<@user_id>` tokens and rendered as `@Display Name`. Messages
+  mentioning you keep a yellow row highlight, and the group's sidebar entry
+  shows a yellow `@N mentioned` badge unless the group is muted.
 - The chat pane receives its actual available width. Its zero flex basis prevents
   an old horizontal layout measurement from pushing the composer offscreen on resize.
 

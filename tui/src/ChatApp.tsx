@@ -66,6 +66,13 @@ import {
   type PastedImageDedupRecord,
 } from "./pastedImageDedup";
 import {
+  applyMentionCompletion,
+  filterMentionCandidates,
+  mentionQueryAt,
+  mentionsPeer,
+  type MentionCandidate,
+} from "./mentions";
+import {
   APP_RELEASE_VERSION,
   IS_RELEASE_BUILD,
   MIN_SPLASH_PHASE_MS,
@@ -172,6 +179,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({});
   const [mutedGroups, setMutedGroups] = useState<Record<string, number>>({});
   const [groupActivity, setGroupActivity] = useState<Record<string, number>>({});
+  const [mention, setMention] = useState<{ query: string; selected: number } | null>(null);
+  const [mentionUnread, setMentionUnread] = useState<Record<string, number>>({});
   const [notificationPreferences, setNotificationPreferences] =
     useState<NotificationPreferences | null>(null);
   const [notificationTestDelivery, setNotificationTestDelivery] =
@@ -332,6 +341,15 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   function handleComposerChange(content: string) {
     if (selectionKey)
       setDrafts((current) => ({ ...current, [selectionKey]: content }));
+    if (selection?.kind === "group" && !scrollFocused && !editingName) {
+      const cursor = composerRef.current?.cursorOffset ?? content.length;
+      const query = mentionQueryAt(content, cursor);
+      setMention((current) =>
+        query ? { query: query.query, selected: 0 } : current ? null : current,
+      );
+    } else if (mention) {
+      setMention(null);
+    }
     if (!selection || !content) {
       stopOutgoingTyping();
       return;
@@ -863,7 +881,22 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           // Muted groups still move to the top via recency, but show no
           // notification, unread badge, or highlight.
           setGroupActivity((current) => ({ ...current, [groupId]: Date.now() }));
-          if (event.event === "group_message" && !isGroupMuted)
+          const mentionedMe =
+            event.event === "group_message" &&
+            senderId !== undefined &&
+            senderId !== identity?.peer_id &&
+            identity !== undefined &&
+            mentionsPeer(event.content as string, identity.peer_id);
+          if (event.event === "group_message" && mentionedMe)
+            // Mention notifications bypass per-group mutes; only DND blocks them.
+            void notify(
+              notificationPreferences,
+              "messages",
+              renderer,
+              `${sender} mentioned you in ${group?.name ?? "a group"}`,
+              dndEnabled,
+            );
+          else if (event.event === "group_message" && !isGroupMuted)
             void notify(
               notificationPreferences,
               "messages",
@@ -877,6 +910,11 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
                 `group:${groupId}`,
                 event.message_id as string | undefined,
               );
+            if (event.event === "group_message" && mentionedMe && !isGroupMuted)
+              setMentionUnread((current) => ({
+                ...current,
+                [groupId]: (current[groupId] ?? 0) + 1,
+              }));
             if (!isGroupMuted)
               setGroups((current) =>
                 current.map((item) =>
@@ -1261,6 +1299,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       setConversationLoading(false);
       setDraftLength(0);
       setComposerHeight(MIN_COMPOSER_HEIGHT);
+      setMention(null);
       return;
     }
     setMessages([]);
@@ -1274,6 +1313,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         : (groups.find((group) => group.group_id === selection.id)
             ?.unread_count ?? 0);
     setScrollFocused(false);
+    setMention(null);
     setDraftLength(new TextEncoder().encode(drafts[selectionKey] ?? "").length);
     setComposerHeight(MIN_COMPOSER_HEIGHT);
     if (selection.kind === "peer") {
@@ -1290,6 +1330,11 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             : group,
         ),
       );
+      setMentionUnread((current) => {
+        if (!(selection.id in current)) return current;
+        const { [selection.id]: _, ...rest } = current;
+        return rest;
+      });
       void ipc
         .send("group_members", { group_id: selection.id })
         .then((response) => {
@@ -1508,6 +1553,33 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       }
       return;
     }
+    if (mentionOpen) {
+      if (key.name === "up" || key.name === "down") {
+        key.preventDefault();
+        const direction = key.name === "up" ? -1 : 1;
+        setMention((current) =>
+          current
+            ? {
+                ...current,
+                selected:
+                  (current.selected + direction + mentionCandidates.length) %
+                  mentionCandidates.length,
+              }
+            : current,
+        );
+        return;
+      }
+      if (key.name === "tab") {
+        key.preventDefault();
+        completeMention(mentionCandidates[mentionSelected]!.peerId);
+        return;
+      }
+      if (key.name === "escape") {
+        key.preventDefault();
+        setMention(null);
+        return;
+      }
+    }
     if (key.name === "escape" && editingName) {
       setEditingName(false);
       setNameDraft(identity?.display_name ?? "");
@@ -1696,6 +1768,54 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       ),
     [groups, groupActivity],
   );
+  const mentionMembers = useMemo<MentionCandidate[]>(() => {
+    if (selection?.kind !== "group" || !selectedGroupId) return [];
+    const members = groupMembers[selectedGroupId] ?? [];
+    return members
+      .map((member) => {
+        const id = member.peer_id ?? member.member_id;
+        if (!id) return undefined;
+        return {
+          peerId: id,
+          displayName: member.display_name,
+          isSelf: id === identity?.peer_id,
+        };
+      })
+      .filter((member): member is MentionCandidate => member !== undefined);
+  }, [selection, selectedGroupId, groupMembers, identity]);
+  const mentionCandidates = useMemo(
+    () => (mention ? filterMentionCandidates(mentionMembers, mention.query) : []),
+    [mention, mentionMembers],
+  );
+  const mentionOpen =
+    selection?.kind === "group" &&
+    mention !== null &&
+    mentionCandidates.length > 0 &&
+    !dialog &&
+    !editingName &&
+    !scrollFocused &&
+    !isSending;
+  const mentionSelected = mention
+    ? Math.min(mention.selected, Math.max(0, mentionCandidates.length - 1))
+    : 0;
+
+  function completeMention(peerId: string) {
+    const composer = composerRef.current;
+    const content = composer?.plainText ?? (selectionKey ? drafts[selectionKey] ?? "" : "");
+    const cursor = composer?.cursorOffset ?? content.length;
+    const query = mentionQueryAt(content, cursor);
+    if (!composer || !query) {
+      setMention(null);
+      return;
+    }
+    applyMentionCompletion(composer, query.query.length, peerId);
+    const updated = composer.plainText;
+    if (selectionKey) setDrafts((current) => ({ ...current, [selectionKey]: updated }));
+    setDraftLength(new TextEncoder().encode(updated).length);
+    setComposerHeight(getComposerHeight(composer));
+    setMention(null);
+    handleComposerChange(updated);
+  }
   const selectedTypingNames = Object.values(
     typingPeers[selectionKey ?? ""] ?? {},
   )
@@ -1814,6 +1934,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         identity={identity}
         mutedPeers={mutedPeers}
         mutedGroups={mutedGroups}
+        mentionCounts={mentionUnread}
         nameDraft={nameDraft}
         peers={peers}
         selectedGroupId={selectedGroupId}
@@ -1874,6 +1995,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             ? "unmute"
             : "mute",
         )}
+        mentionOpen={mentionOpen}
+        mentionCandidates={mentionCandidates}
+        mentionSelected={mentionSelected}
+        onMentionPick={(peerId) => completeMention(peerId)}
         openImage={(file) => {
           if (file.file_path)
             actions.showDialog({
@@ -1896,6 +2021,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         clearReplyTarget={() => setSelectedReplyTarget(undefined)}
         onComposerChange={handleComposerChange}
         send={() => {
+          // Enter with the mention popup open completes the highlighted
+          // mention instead of sending (single path: the global keyboard
+          // handler deliberately ignores Enter to avoid double handling).
+          if (mentionOpen) {
+            completeMention(mentionCandidates[mentionSelected]!.peerId);
+            return;
+          }
           stopOutgoingTyping();
           const sentSelection = selection;
           void actions.send(replyTo?.id).then((sent) => {

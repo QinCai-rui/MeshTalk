@@ -861,6 +861,11 @@ authenticated peer's signing key; mismatched sender_id/responder_id is rejected.
   the removal locally so both views converge.
 - Mute: mute(peer_id, timeout) silences notifications for timeout seconds (0 =
   permanent). Stored in settings.json.
+- Mentions: group message content may carry `<@user_id>` tokens (inserted by
+  the sender's `@` member picker). Content stays opaque to the backend;
+  receivers detect their own ID in tokens to highlight the message, badge the
+  group, and raise a mention notification (bypasses group mutes, still gated
+  by Do Not Disturb). Clients render tokens as `@Display Name`.
 - Profiles (PROFILE): {peer_id, display_name, tui_active, signature, dnd,
   dnd_signature}. Broadcast to every active peer on name change
   (broadcast_profile_update); tui_active reflects whether any TUI client is

@@ -191,6 +191,80 @@ test("Do Not Disturb blocks all desktop notifications", async () => {
   expect(triggered).toBe(1)
 })
 
+test("mention popup lists matching members above the input and picks on click", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "me", display_name: "Taylor" }] }
+  props.mentionOpen = true
+  props.mentionCandidates = [
+    { peerId: "alex", displayName: "Alex Morgan" },
+    { peerId: "me", displayName: "Taylor", isSelf: true },
+  ]
+  props.mentionSelected = 1
+  let picked: string | undefined
+  props.onMentionPick = (peerId) => { picked = peerId }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    const frame = await settle(setup, "Alex Morgan")
+    expect(setup.renderer.root.findDescendantById("mention-popup")).toBeDefined()
+    expect(frame).toContain("@Alex Morgan")
+    expect(frame).toContain("@Taylor (you)")
+    const row = setup.renderer.root.findDescendantById("mention-pick-alex")!
+    await act(async () => { await setup.mockMouse.click(row.screenX + 1, row.screenY) })
+    expect(picked).toBe("alex")
+  } finally { await close(setup) }
+})
+
+test("stored mention tokens render as display names with a yellow highlight", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "me", display_name: "Taylor" }] }
+  props.conversationItems = [
+    { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "hi <@me> and <@sam> and <@gone>!", created_at: 1788580800 } },
+    { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "alex", content: "no mentions here", created_at: 1788580860 } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    const frame = await settle(setup, "@Taylor")
+    expect(frame).toContain("hi @Taylor and @Sam Chen and @unknown!")
+    expect(frame).not.toContain("<@me>")
+    expect(frame).toContain("no mentions here")
+    const spans = setup.captureSpans().lines.flatMap((line) => line.spans)
+    const mentionSpan = spans.find((span) => span.text.includes("@Taylor"))
+    expect(mentionSpan).toBeDefined()
+    expect((mentionSpan!.bg as unknown as { toInts: () => number[] })?.toInts()).toEqual([77, 63, 30, 255])
+  } finally { await close(setup) }
+})
+
+test("sidebar highlights groups with unread mentions", async () => {
+  const props = sidebarProps(120)
+  props.groups = [{ ...group, unread_count: 1 }]
+  props.mentionCounts = { team: 2 }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Design studio")
+    expect(frame).toContain("@2 mentioned")
+  } finally { await close(setup) }
+})
+
+test("sidebar hides mention highlights for muted groups", async () => {
+  const props = sidebarProps(120)
+  props.groups = [{ ...group, unread_count: 1 }]
+  props.mentionCounts = { team: 2 }
+  props.mutedGroups = { team: 0 }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Design studio")
+    expect(frame).not.toContain("mentioned")
+  } finally { await close(setup) }
+})
+
 test("sidebar peers use contiguous two-line click targets", async () => {
   const props = sidebarProps(120)
   props.peers = Array.from({ length: 3 }, (_, index) => ({ ...peers[0]!, peer_id: `peer-${index}`, display_name: `Peer ${index}`, unread_count: 0, is_friend: false }))
