@@ -25,9 +25,9 @@ export function TelemetryConsent({ version, done }: { version: string; done: () 
     { label: "Keep telemetry off", detail: "Change anytime in Settings > Diagnostics.", value: "off" },
   ];
   const confirmChoices: Choice[] = [
-    { label: "Don't ask again", detail: "", value: "toggle" },
-    { label: "Go back", detail: "re-review your privacy options", value: "back" },
+    { label: "Go back — Re-review your privacy options", detail: "", value: "back" },
     { label: "Keep telemetry off", detail: "", value: "keep" },
+    { label: "Don't ask again", detail: "", value: "toggle" },
   ];
   const choices = confirm ? confirmChoices : mainChoices;
   const selectIndex = (index: number) => { selectedRef.current = index; setSelected(index); };
@@ -37,7 +37,7 @@ export function TelemetryConsent({ version, done }: { version: string; done: () 
     const currentChoices = confirmRef.current ? confirmChoices : mainChoices;
     const value = currentChoices[index]?.value;
     if (!value || saving.current) return;
-    if (value === "off") { setConfirmMode(true); selectIndex(2); neverAskAgainRef.current = false; setNeverAskAgain(false); setError(""); return; }
+    if (value === "off") { setConfirmMode(true); selectIndex(1); neverAskAgainRef.current = false; setNeverAskAgain(false); setError(""); return; }
     if (value === "toggle") { neverAskAgainRef.current = !neverAskAgainRef.current; setNeverAskAgain(neverAskAgainRef.current); return; }
     if (value === "back") { setConfirmMode(false); selectIndex(2); setError(""); return; }
     saving.current = true;
@@ -61,7 +61,7 @@ export function TelemetryConsent({ version, done }: { version: string; done: () 
     if (key.name === "up" || key.name === "k" || (key.name === "tab" && key.shift)) next = (selectedRef.current + currentChoices.length - 1) % currentChoices.length;
     else if (key.name === "down" || key.name === "j" || key.name === "tab") next = (selectedRef.current + 1) % currentChoices.length;
     else if (key.name === "return" || key.name === "linefeed") { activate(selectedRef.current); return; }
-    else if (key.name === "space") { if (confirmRef.current && selectedRef.current === 0) { neverAskAgainRef.current = !neverAskAgainRef.current; setNeverAskAgain(neverAskAgainRef.current); } else activate(selectedRef.current); return; }
+    else if (key.name === "space") { if (confirmRef.current && currentChoices[selectedRef.current]?.value === "toggle") { neverAskAgainRef.current = !neverAskAgainRef.current; setNeverAskAgain(neverAskAgainRef.current); } else activate(selectedRef.current); return; }
     selectIndex(next);
     scroll.current?.scrollChildIntoView("consent-" + next);
   });
@@ -72,23 +72,29 @@ export function TelemetryConsent({ version, done }: { version: string; done: () 
     <box width={cardWidth} height={cardHeight} border borderColor="#799be8" backgroundColor="#151e31" flexDirection="column" paddingX={compact ? 1 : 3} paddingY={1}>
       <scrollbox ref={scroll} flexGrow={1} minHeight={0} contentOptions={{ flexDirection: "column", gap: confirm ? 0 : 1 }} verticalScrollbarOptions={{ visible: false }}>
         <text fg="#9bb7ff">✦  A LITTLE HELP FOR THE MESH</text>
+        {confirm && <box height={1} flexShrink={0} />}
         <text fg={theme.text}><b>{confirm ? "Keep telemetry off?" : "Help us squash bugs. Not your conversations."}</b></text>
+        {confirm && <box height={1} flexShrink={0} />}
         <text fg={theme.muted} wrapMode="word">{confirm
           ? "We respect that you may prefer not to share telemetry. You can re-enable it anytime in Settings > Diagnostics."
           : "A few anonymous counters help us spot connection hiccups and learn what people actually use. Less guessing for us, a smoother MeshTalk for everyone."}</text>
         {!confirm && <text fg="#a9bde1" wrapMode="word">Optional and off until you choose. No chat content, filenames, identities or stored IPs in telemetry.</text>}
         {!confirm && <text fg={theme.accent}>Extended gives us the most useful debugging clues. Thank you!</text>}
-        {choices.map((choice, index) => choice.value === "toggle" ? <box key={choice.value} id={"consent-" + index} width="100%" height={2} flexShrink={0} alignItems="center" justifyContent="center" onMouseMove={() => selectIndex(index)} onMouseDown={event => { event.stopPropagation(); if (event.button === 0) { neverAskAgainRef.current = !neverAskAgainRef.current; setNeverAskAgain(neverAskAgainRef.current); } }}>
-          <text fg={selected === index ? theme.muted : theme.subdued}><span>{selected === index ? "›  " : "    "}</span><span>{neverAskAgain ? "[✓] " : "[ ] "}</span><u>Don't ask again</u></text>
-        </box> : <box key={choice.value} id={"consent-" + index}
-          width={compact ? "100%" : confirm ? choice.value === "back" ? "82%" : "68%" : choice.value === "extended" || choice.value === "basic" ? "88%" : "78%"}
-          alignSelf="center" height={confirm ? choice.value === "back" ? 4 : choice.value === "keep" ? 3 : 2 : choice.value === "extended" ? 6 : choice.value === "basic" ? 4 : 4} flexShrink={0}
-          border borderColor={selected === index ? choice.value === "off" ? "#65738a" : "#bad0ff" : choice.value === "extended" ? "#4e9d91" : "#405273"}
-          backgroundColor={choice.value === "extended" ? "#264c59" : selected === index ? choice.value === "off" ? "#202a3b" : "#293a59" : "#1b2941"}
-          alignItems="center" justifyContent="center" flexDirection="column" paddingX={2}
-          onMouseDown={event => { event.stopPropagation(); if (event.button === 0) activate(index); }} onMouseMove={() => selectIndex(index)}>
-          <text fg={choice.value === "extended" ? "#b7f7df" : choice.value === "off" ? theme.muted : theme.text}><b>{selected === index ? "› " : "  "}{choice.label}</b></text>
-          {choice.detail && (!compact || choice.value === "back") && <text fg={choice.value === "off" ? theme.subdued : "#b4c7db"} wrapMode={choice.value === "back" ? "none" : "word"}>{choice.detail}</text>}
+        {confirm && <box height={1} flexShrink={0} />}
+        {choices.map((choice, index) => <box key={choice.value} flexDirection="column" flexShrink={0}>
+          {choice.value === "toggle" ? <box id={"consent-" + index} width="100%" height={2} flexShrink={0} alignItems="center" justifyContent="center" onMouseMove={() => selectIndex(index)} onMouseDown={event => { event.stopPropagation(); if (event.button === 0) { neverAskAgainRef.current = !neverAskAgainRef.current; setNeverAskAgain(neverAskAgainRef.current); } }}>
+            <text fg={selected === index ? theme.muted : theme.subdued}><span>{selected === index ? "›  " : "   "}{neverAskAgain ? "[✓] " : "[ ] "}</span><u>Don't ask again</u></text>
+          </box> : <box id={"consent-" + index}
+            width={compact ? "100%" : confirm ? choice.value === "back" ? "82%" : "68%" : choice.value === "extended" || choice.value === "basic" ? "88%" : "78%"}
+            alignSelf="center" height={confirm ? choice.value === "back" ? 5 : choice.value === "keep" ? 3 : 2 : choice.value === "extended" ? 6 : choice.value === "basic" ? 4 : 4} flexShrink={0}
+            border borderColor={selected === index ? choice.value === "off" ? "#65738a" : choice.value === "keep" ? "#d8954d" : "#bad0ff" : choice.value === "extended" ? "#4e9d91" : choice.value === "keep" ? "#7b5937" : "#405273"}
+            backgroundColor={choice.value === "extended" ? "#264c59" : choice.value === "keep" ? selected === index ? "#3a2d22" : "#252633" : selected === index ? choice.value === "off" ? "#202a3b" : "#293a59" : "#1b2941"}
+            alignItems="center" justifyContent="center" flexDirection="column" paddingX={2}
+            onMouseDown={event => { event.stopPropagation(); if (event.button === 0) activate(index); }} onMouseMove={() => selectIndex(index)}>
+            <text fg={choice.value === "extended" ? "#b7f7df" : choice.value === "off" ? theme.muted : choice.value === "keep" ? "#f0bd7c" : theme.text}><b>{selected === index ? "› " : "  "}{choice.label}</b></text>
+            {choice.detail && (!compact || choice.value === "back") && <text fg={choice.value === "off" ? theme.subdued : "#b4c7db"} wrapMode={choice.value === "back" ? "none" : "word"}>{choice.detail}</text>}
+          </box>}
+          {confirm && index < choices.length - 1 && <box height={1} flexShrink={0} />}
         </box>)}
         {!confirm && <text fg={theme.link} wrapMode="word">Privacy policy: {PRIVACY_URL}</text>}
         {error && <text fg={theme.danger}>{error}</text>}

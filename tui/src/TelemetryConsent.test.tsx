@@ -31,17 +31,17 @@ test("explicit never-ask confirmation persists off and never_ask_again", async (
   const directory = mkdtempSync(join(tmpdir(), "meshtalk-consent-"));
   process.env.MESHTALK_DATA_DIR = directory;
   let finished = false;
-  const setup = await testRender(<TelemetryConsent version="test" done={() => { finished = true; }} />, { width: 60, height: 24 });
+  const setup = await testRender(<TelemetryConsent version="test" done={() => { finished = true; }} />, { width: 60, height: 32 });
   try {
     await act(async () => { await setup.renderOnce(); });
-    for (let i = 0; i < 2; i++) await act(async () => { setup.mockInput.pressArrow("down"); });
+    for (let i = 0; i < 2; i++) await act(async () => { setup.mockInput.pressArrow("down"); await setup.renderOnce(); });
     await act(async () => { setup.mockInput.pressEnter(); await setup.renderOnce(); });
     expect(finished).toBe(false);
     const confirmationFrame = setup.captureCharFrame();
     expect(confirmationFrame).toContain("Keep telemetry off?");
     expect(confirmationFrame).toContain("Don't ask again");
     expect(confirmationFrame).toContain("Go back");
-    expect(confirmationFrame).toContain("re-review your privacy options");
+    expect(confirmationFrame).toContain("Re-review your privacy options");
     expect(confirmationFrame).not.toContain("Telemetryystays");
     await act(async () => { setup.mockInput.pressArrow("up"); setup.mockInput.pressArrow("up"); setup.mockInput.pressKey(" "); setup.mockInput.pressArrow("down"); setup.mockInput.pressArrow("down"); });
     await act(async () => { setup.mockInput.pressEnter(); });
