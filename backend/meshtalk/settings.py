@@ -632,3 +632,8 @@ class Settings:
             self.telemetry_prompted_versions = [value for value in data["telemetry_prompted_versions"] if isinstance(value, str)]
         if isinstance(data.get("telemetry_seen_versions"), list):
             self.telemetry_seen_versions = [value for value in data["telemetry_seen_versions"] if isinstance(value, str)]
+        # Re-open the consent prompt for installs affected by the brief
+        # default-on build, which wrote accepted/extended without a prompt marker.
+        if self.telemetry_consent == "accepted" and not self.telemetry_prompted_versions:
+            self.telemetry_consent = "pending"
+            self.telemetry_level = "off"

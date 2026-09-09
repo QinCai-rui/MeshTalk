@@ -70,7 +70,11 @@ export function hasExplicitTelemetryChoice(dataDir?: string): boolean {
   // on upgrade by design). A bare `telemetry_level` key alone does not count:
   // the backend persists its default level on unrelated saves.
   const consent = readConsent(dataDir).consent;
-  return consent === "accepted" || consent === "never_ask_again";
+  if (consent === "never_ask_again") return true;
+  // The short-lived default-on build wrote accepted/extended without a prompt
+  // marker. Treat that shape as implicit so affected installs see the dialog.
+  if (consent === "accepted" && promptedVersions(dataDir).length === 0) return false;
+  return consent === "accepted";
 }
 export function shouldPrompt(version: string, state = readConsent(), prompts = promptedVersions()): boolean { return state.consent !== "accepted" && state.consent !== "never_ask_again" && !prompts.includes(version); }
 export function markPrompted(version: string, dataDir?: string): void {
