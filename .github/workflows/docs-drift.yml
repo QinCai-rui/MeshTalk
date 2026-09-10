@@ -31,7 +31,12 @@ jobs:
           curl -fsSL https://opencode.ai/install | bash
           export PATH="$HOME/.opencode/bin:$PATH"
           git log --since="24 hours ago" --name-only --pretty=format: > /tmp/changed.txt
-          git diff HEAD~1...HEAD > /tmp/recent.diff || git show HEAD --stat > /tmp/recent.diff
+          BASE=$(git log --since="24 hours ago" --pretty=format:%H --reverse | head -n 1)
+          if [ -n "$BASE" ]; then
+            git diff "$BASE^...HEAD" > /tmp/recent.diff || git show "$BASE" --stat > /tmp/recent.diff
+          else
+            git show HEAD --stat > /tmp/recent.diff
+          fi
           opencode run --format json --agent docs-drift --model opencode/muse-spark-1.3-contributor-free "Recent changes:" "$(cat /tmp/changed.txt)" "Diff:" "$(head -c 60000 /tmp/recent.diff)" > /tmp/drift-events.jsonl
           jq -sr '[.[] | select(.type == "text") | .part.text] | last // "NO_DRIFT"' /tmp/drift-events.jsonl > /tmp/drift-report.md
           echo "drift=$(grep -qx 'NO_DRIFT' /tmp/drift-report.md && echo false || echo true)" >> "$GITHUB_OUTPUT"
@@ -75,7 +80,7 @@ jobs:
             const marker = '<!-- meshtalk-docs-drift -->';
             const report = fs.readFileSync('/tmp/drift-report.md', 'utf8').trim();
             const pr = '${{ steps.fix.outputs.pr_number }}';
-            const prLine = pr ? `Fix PR: #${pr} (review doc claims vs code before merging).` : 'Fix PR: not created (editor produced no patch) — create it manually from this report.';
+            const prLine = pr ? `Fix PR: #${pr} opened by automation — maintainer follow-up requested: review doc claims vs code before merging.` : 'No fix PR was opened — maintainer follow-up requested: create one manually from this report if needed.';
             let issueBody = `## Docs drift ${date}\n\n${report}\n\n${prLine}\n\n<sub>Nightly check.</sub>\n${marker}`;
             const issues = await github.paginate(github.rest.issues.listForRepo, { owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100 });
             let issue = issues.find(i => i.body?.includes(marker));

@@ -36,18 +36,29 @@ jobs:
             core.setOutput('mode', body.includes('rereview') ? 'rereview' : 'review');
           result-encoding: string
 
+      - name: Resolve PR head SHA
+        id: resolve
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          echo "sha=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" >> "$GITHUB_OUTPUT"
+
       - name: Checkout
         if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
+          ref: ${{ steps.resolve.outputs.sha }}
 
       - name: Run review agent
         if: steps.gate.outputs.run == 'true'
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           OPENCODE_PERMISSION: '{"bash":{"*":"deny"}}'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           REVIEW_MODE: ${{ steps.gate.outputs.mode }}
         run: |
@@ -56,7 +67,7 @@ jobs:
           BASE_SHA=$(gh pr view "$PR_NUMBER" --json baseRefOid --jq .baseRefOid)
           git diff "$BASE_SHA...HEAD" > /tmp/pr.diff
           opencode run --format json --agent review --model opencode/muse-spark-1.3-contributor-free "Mode: $REVIEW_MODE. PR: $PR_NUMBER. Diff follows." "$(cat /tmp/pr.diff)" > review-events.jsonl
-          jq -r '[.[] | select(.type=="text") | .part.text] | last // empty' review-events.jsonl > review-comment.md
+          jq -sr '[.[] | select(.type == "text") | .part.text] | last // empty' review-events.jsonl > review-comment.md
           test -s review-comment.md || echo "Review agent returned empty output." > review-comment.md
 
       - name: Post summary comment
