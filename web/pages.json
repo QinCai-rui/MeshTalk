@@ -29,8 +29,8 @@
       "description": "End-to-end encrypted messages, named group chats, direct file transfer, terminal-native TUI and CLI, Docker support and self-updates \u2014 all peer to peer.",
       "keywords": "MeshTalk features, E2EE group chat, encrypted file transfer, TUI chat, CLI messenger",
       "ogType": "website",
-      "canonical": "/features"
-    },
+      "canonical": "/features.html"
+    }
     {
       "route": "/docs",
       "aliases": ["/docs.html"],
