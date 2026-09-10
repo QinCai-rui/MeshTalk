@@ -4,7 +4,7 @@ import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type Textare
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
-import { clipTextToWidth, computeRenderTypes, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, groupRowMarginBottom, inlineFriendActions, isImageFile, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
+import { clipTextToWidth, computeRenderTypes, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveriesNeedAttention, groupDeliveryLabel, groupRowMarginBottom, inlineFriendActions, isImageFile, isSystemMessage, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
 
 type ConversationPanelProps = {
@@ -91,7 +91,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
   const [replyHighlight, setReplyHighlight] = useState<{ id: string; startedAt: number }>()
   const [replyHighlightNow, setReplyHighlightNow] = useState(0)
   const messageSyntaxStyle = useMemo(() => SyntaxStyle.fromStyles(MESSAGE_MARKDOWN_STYLES), [])
-  const renderTypes = useMemo(() => computeRenderTypes(conversationItems), [conversationItems])
+  const renderTypes = useMemo(() => computeRenderTypes(conversationItems, Boolean(selectedGroup)), [conversationItems, selectedGroup])
   const typingText = typingNames.length === 1
     ? `${clipTextToWidth(typingNames[0]!, Math.max(1, width - 18)).trimEnd()} is typing`
     : typingNames.length > 1 ? `${typingNames.length} people are typing` : undefined
@@ -231,18 +231,19 @@ export function ConversationPanel(props: ConversationPanelProps) {
               updated_at: f.completed_at ?? f.created_at,
             }))
             const fileReplyHighlightProgress = replyHighlightProgress(file.file_id)
+            const fileAttention = isLocal && !selectedGroup && file.status !== "completed" && file.status !== "sent"
             rows.push(
               <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ flexDirection: "column", marginBottom: groupRowMarginBottom(renderTypes, index), backgroundColor: fileReplyHighlightProgress !== undefined ? unreadMessageBackground(fileReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === file.file_id ? theme.selected : undefined }}>
-                {(!isCompact || (scrollFocused && selectedReplyTargetId === file.file_id)) && <text>
+                {(!isCompact || (scrollFocused && selectedReplyTargetId === file.file_id) || fileAttention) && <text>
                   <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === file.file_id ? "> " : ""}</span>
                   {!isCompact && <>
                     <span fg={theme.muted}>{formatTime(file.created_at)} </span>
                     <span fg={isLocal ? theme.accent : theme.text}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
                     <span fg={theme.muted}> shared an attachment</span>
-                    {isLocal && !selectedGroup && <span fg={fileStatusColor(file.status)}>{fileStatusLabel(file.status)}</span>}
                   </>}
+                  {(isLocal && !selectedGroup && (!isCompact || fileAttention)) && <span fg={fileStatusColor(file.status)}>{fileStatusLabel(file.status)}</span>}
                 </text>}
-                {!isCompact && isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(fileDeliveries) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
+                {(!isCompact || groupDeliveriesNeedAttention(fileDeliveries)) && isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(fileDeliveries) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
                 <text wrapMode="word"><span fg={theme.accent}>{file.filename}</span><span fg={theme.muted}> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
                 {fileUnavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
                 {!fileUnavailable && file.file_path ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage={isImageFile(file.filename)} scrollboxRef={scrollboxRef} maxWidth={Math.max(1, (scrollboxRef.current?.viewport.width ?? width - 3) - 2)} maxHeight={Math.min(16, Math.max(4, (scrollboxRef.current?.viewport.height ?? 16) - 4))} onOpen={() => openImage(file)} /> : null}
@@ -258,7 +259,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
           const blocked = Boolean(message.blocked)
           const queued = Boolean(message.queued)
           const failed = Boolean(message.failed)
-          const isSystem = Boolean(selectedGroup && message.kind && message.kind !== "message" && message.kind !== "text")
+          const isSystem = isSystemMessage(message, Boolean(selectedGroup))
           const senderName = groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === message.sender_id)?.display_name
             ?? peers.find((peer) => peer.peer_id === message.sender_id)?.display_name
             ?? "Unknown member"
@@ -286,18 +287,19 @@ export function ConversationPanel(props: ConversationPanelProps) {
             typeof message.received_at === "number" &&
             formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
           const messageReplyHighlightProgress = replyHighlightProgress(message.message_id)
+          const nonNominal = blocked || failed || queued
           rows.push(
               <box id={message.message_id} key={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: groupRowMarginBottom(renderTypes, index), backgroundColor: messageReplyHighlightProgress !== undefined ? unreadMessageBackground(messageReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === message.message_id ? theme.selected : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
-              {(!isCompact || (scrollFocused && selectedReplyTargetId === message.message_id)) && <text>
+              {(!isCompact || (scrollFocused && selectedReplyTargetId === message.message_id) || (!selectedGroup && nonNominal)) && <text>
                 <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === message.message_id ? "> " : ""}</span>
                 {!isCompact && <>
                   <span fg={theme.muted}>{formatTime(message.created_at)} </span>
                   <span fg={isSystem ? theme.warning : isLocal ? theme.accent : theme.text}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
-                   {isLocal && !isSystem && !selectedGroup && <span fg={blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
                    {showReceived && <span fg={theme.muted}> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                 </>}
+                {(isLocal && !isSystem && !selectedGroup && (!isCompact || nonNominal)) && <span fg={blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
                 </text>}
-                {!isCompact && isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
+                {(!isCompact || groupDeliveriesNeedAttention(message.deliveries)) && isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
                 {message.reply_to_message_id && <box onMouseDown={replySelectTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); clearReplyTarget(); highlightReplyTarget(replySelectTarget.id); setScrollFocused(true); scrollboxRef.current?.scrollChildIntoView(replySelectTarget.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
                 <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
             </box>

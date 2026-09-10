@@ -92,6 +92,9 @@ export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
 }
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }
 export type RenderType = "FULL_HEADER" | "COMPACT_ROW";
+// Intentional deviation from a sliding inter-message gap: the 8-minute window
+// is anchored at the FIRST message of the group (Discord's current behavior),
+// so continuous typing can never extend a group indefinitely.
 export const MESSAGE_GROUP_CEILING_SECONDS = 480;
 
 function groupingAuthor(item: ConversationItem): string {
@@ -99,17 +102,25 @@ function groupingAuthor(item: ConversationItem): string {
 }
 
 function groupingIsReply(item: ConversationItem): boolean {
-  return item.type === "message" && item.message.reply_to_message_id != null;
+  return item.type === "message" && Boolean(item.message.reply_to_message_id);
 }
 
-function groupingIsSystem(item: ConversationItem): boolean {
-  return item.type === "message" && Boolean(item.message.kind) && item.message.kind !== "message" && item.message.kind !== "text";
+export function isSystemMessage(message: { kind?: string | null }, isGroup: boolean): boolean {
+  return Boolean(isGroup && message.kind && message.kind !== "message" && message.kind !== "text");
+}
+
+function groupingIsSystem(item: ConversationItem, isGroup: boolean): boolean {
+  return item.type === "message" && isSystemMessage(item.message, isGroup);
+}
+
+export function groupDeliveriesNeedAttention(deliveries: GroupDelivery[] = []): boolean {
+  return deliveries.some((delivery) => delivery.status !== "delivered" && delivery.status !== "sent");
 }
 
 export function groupRowMarginBottom(renderTypes: readonly RenderType[], index: number): 0 | 1 {
   return renderTypes[index + 1] === "COMPACT_ROW" ? 0 : 1;
 }
-export function computeRenderTypes(items: ConversationItem[]): RenderType[] {
+export function computeRenderTypes(items: ConversationItem[], isGroup = true): RenderType[] {
   const result: RenderType[] = [];
   let currentGroupAuthorId: string | undefined;
   let currentGroupStartTimestamp = 0;
@@ -119,7 +130,7 @@ export function computeRenderTypes(items: ConversationItem[]): RenderType[] {
     const authorId = groupingAuthor(item);
     const timestamp = item.createdAt;
     const date = dayKey(timestamp);
-    const isBreakType = groupingIsReply(item) || groupingIsSystem(item);
+    const isBreakType = groupingIsReply(item) || groupingIsSystem(item, isGroup);
     const shouldStartNewGroup =
       result.length === 0 ||
       authorId !== currentGroupAuthorId ||
@@ -135,7 +146,7 @@ export function computeRenderTypes(items: ConversationItem[]): RenderType[] {
     } else {
       result.push("COMPACT_ROW");
     }
-    prevWasSystem = groupingIsSystem(item);
+    prevWasSystem = groupingIsSystem(item, isGroup);
   }
   return result;
 }
