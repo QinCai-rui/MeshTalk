@@ -67,6 +67,8 @@ import {
   shouldSuppressPastedImage,
   type PastedImageDedupRecord,
 } from "./pastedImageDedup";
+import { parsePotentialFilePaths } from "./fileSendConfirm";
+import { existsSync, statSync } from "fs";
 import {
   APP_RELEASE_VERSION,
   IS_RELEASE_BUILD,
@@ -186,6 +188,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     useState<Exclude<NotificationDelivery, "disabled"> | null>(null);
   const [blinkOn, setBlinkOn] = useState(true);
   const [flashingEnabled, setFlashingEnabled] = useState(true);
+  const [confirmFileSend, setConfirmFileSend] = useState(true);
   const [imageProtocol, setImageProtocol] = useState<ImageProtocol>("auto");
   const [controlStatus, setControlStatus] = useState<{
     connected: boolean;
@@ -416,6 +419,8 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     setNotificationTestDelivery,
     flashingEnabled,
     setFlashingEnabled,
+    confirmFileSend,
+    setConfirmFileSend,
     setImageProtocol,
     setSplashStyle: setConfiguredSplashStyle,
     controlStatus,
@@ -531,6 +536,8 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     let welcomeDurationMs: number | undefined;
     if (!advanced.error) {
       setImageProtocol(advanced.image_protocol as ImageProtocol);
+      if (typeof advanced.confirm_file_send === "boolean")
+        setConfirmFileSend(advanced.confirm_file_send as boolean);
       if (advanced.splash_style === "card" || advanced.splash_style === "boot-log" || advanced.splash_style === "off")
         setConfiguredSplashStyle(advanced.splash_style as SplashPreference);
       if (typeof advanced.splash_duration_ms === "number" && advanced.splash_duration_ms >= 0)
@@ -1326,7 +1333,40 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     );
     if (shouldSuppressPastedImage(lastPastedImage.current, next)) return;
     lastPastedImage.current = next;
-    void actions.sendImage(bytes, mimeType);
+    actions.requestImageSend(bytes, mimeType);
+  }
+
+  function maybeSendDroppedPaths(
+    raw: string,
+    source: "drop" | "clipboard" | "paste" = "drop",
+  ): boolean {
+    if (!selection) return false;
+    const candidates = parsePotentialFilePaths(raw);
+    if (!candidates.length) return false;
+    // Only intercept when at least one candidate is a real local file —
+    // otherwise the text stays a chat message.
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+    const existing = candidates.filter((candidate) => {
+      const expanded =
+        home &&
+        (candidate === "~" ||
+          candidate.startsWith("~/") ||
+          candidate.startsWith("~\\"))
+          ? home + candidate.slice(1)
+          : candidate;
+      try {
+        return statSync(expanded).isFile();
+      } catch {
+        try {
+          return existsSync(expanded);
+        } catch {
+          return false;
+        }
+      }
+    });
+    if (!existing.length) return false;
+    actions.requestFileSend(candidates, source);
+    return true;
   }
 
   usePaste((event) => {
@@ -1349,6 +1389,10 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         return;
       }
       const raw = decodePasteBytes(rawBytes).trim();
+      if (raw && maybeSendDroppedPaths(raw)) {
+        event.preventDefault();
+        return;
+      }
       if (!raw || event.metadata?.kind === "binary") {
         event.preventDefault();
         void clipboard.current
@@ -1404,9 +1448,9 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       return;
     }
     if (result.representation.mimeType === "text/plain") {
-      composerRef.current?.insertText(
-        new TextDecoder().decode(result.representation.bytes),
-      );
+      const text = new TextDecoder().decode(result.representation.bytes);
+      if (text.trim() && maybeSendDroppedPaths(text.trim(), "clipboard")) return;
+      composerRef.current?.insertText(text);
     }
   }
 
@@ -1990,6 +2034,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           controlStatus={controlStatus}
           debugInfo={debugInfo}
           flashingEnabled={flashingEnabled}
+          confirmFileSend={confirmFileSend}
           imageProtocol={imageProtocol}
           splashStyle={configuredSplashStyle}
           groups={groups}
@@ -2042,6 +2087,8 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           loadFilesDir={actions.loadFilesDir}
           setFilesDir={actions.setFilesDir}
           sendFile={actions.sendFile}
+          confirmPendingFileSend={actions.confirmPendingFileSend}
+          setConfirmFileSendEnabled={actions.setConfirmFileSendEnabled}
           downloadFile={actions.downloadFile}
           defaultDownloadPath={actions.defaultDownloadPath}
           onDeleteFile={(file) => {

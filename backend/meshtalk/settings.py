@@ -149,6 +149,7 @@ class Settings:
         self.muted_peers: dict[str, float] = {}
         self._files_dir: str | None = None
         self._image_protocol = "auto"
+        self._confirm_file_send = True
         self._splash_style = "card"
         self._splash_duration_ms = DEFAULT_SPLASH_DURATION_MS
         self._splash_phase_ms = DEFAULT_SPLASH_PHASE_MS
@@ -206,6 +207,16 @@ class Settings:
         if protocol not in {"auto", "kitty", "sixel", "blocks"}:
             raise ValueError("image_protocol must be auto, kitty, sixel, or blocks")
         self._image_protocol = protocol
+        self.save()
+
+    @property
+    def confirm_file_send(self) -> bool:
+        return self._confirm_file_send
+
+    def set_confirm_file_send(self, enabled: bool) -> None:
+        if not isinstance(enabled, bool):
+            raise ValueError("confirm_file_send must be a boolean")
+        self._confirm_file_send = enabled
         self.save()
 
     @property
@@ -514,6 +525,7 @@ class Settings:
             "muted_peers": self.muted_peers,
             "files_dir": self._files_dir,
             "image_protocol": self._image_protocol,
+            "confirm_file_send": self._confirm_file_send,
             "splash_style": self._splash_style,
             "splash_duration_ms": self._splash_duration_ms,
             "splash_phase_ms": self._splash_phase_ms,
@@ -604,6 +616,9 @@ class Settings:
         image_protocol = data.get("image_protocol", "auto")
         if isinstance(image_protocol, str) and image_protocol in {"auto", "kitty", "sixel", "blocks"}:
             self._image_protocol = image_protocol
+        confirm_file_send = data.get("confirm_file_send", True)
+        if isinstance(confirm_file_send, bool):
+            self._confirm_file_send = confirm_file_send
         splash_style = data.get("splash_style", "card")
         if isinstance(splash_style, str) and splash_style in {"card", "boot-log", "off"}:
             self._splash_style = splash_style

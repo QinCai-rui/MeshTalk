@@ -1,11 +1,11 @@
 import type { IPCClient } from "../../common/ipc-client"
 import type { Release } from "../../common/updater"
 import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, saveUpdateChannel as persistUpdateChannel, UPDATE_RESTART_EXIT_CODE, type UpdateChannel } from "../../common/updater"
-import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus, SplashPreference } from "./types"
+import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileConfirmSource, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus, SplashPreference } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
 import { join, resolve } from "path"
 import { tmpdir } from "os"
-import { existsSync, statSync } from "fs"
+import { statSync } from "fs"
 import { groupFromResponse, sortPeersByInteraction } from "./utils"
 import { runCommand as navigationRunCommand } from "./navigation"
 import { sendTestNotification } from "./notifications"
@@ -73,6 +73,8 @@ type ChatActionsDeps = {
   setNotificationTestDelivery: React.Dispatch<React.SetStateAction<Exclude<NotificationDelivery, "disabled"> | null>>
   flashingEnabled: boolean
   setFlashingEnabled: (b: boolean) => void
+  confirmFileSend: boolean
+  setConfirmFileSend: (b: boolean) => void
   setImageProtocol: (protocol: ImageProtocol) => void
   setSplashStyle: (style: SplashPreference) => void
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
@@ -106,7 +108,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
   const { mutedPeers, setMutedPeers, notificationPreferences, setNotificationPreferences } = deps
   const { notificationTestDelivery, setNotificationTestDelivery } = deps
-  const { flashingEnabled, setFlashingEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
+  const { flashingEnabled, setFlashingEnabled, confirmFileSend, setConfirmFileSend, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps
   const { statusResetRef, copyToastResetRef, dialogActionRef, dialogBusyRef, filePickerOpenRef, composerRef, selectionKey } = deps
@@ -342,6 +344,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("advanced_config")
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
+      if (typeof response.confirm_file_send === "boolean") setConfirmFileSend(response.confirm_file_send as boolean)
       showDialog({ kind: "advanced", config: response as AdvancedConfig })
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -355,6 +358,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
       setImageProtocol(response.image_protocol as ImageProtocol)
+      if (typeof response.confirm_file_send === "boolean") setConfirmFileSend(response.confirm_file_send as boolean)
       if (response.splash_style === "card" || response.splash_style === "boot-log" || response.splash_style === "off")
         setSplashStyle(response.splash_style as SplashPreference)
       if (dialog?.kind === "customisation-splash") {
@@ -677,6 +681,104 @@ export function useChatActions(deps: ChatActionsDeps) {
     finally { finishDialogAction(action) }
   }
 
+  function expandUser(filePath: string): string {
+    const trimmed = filePath.trim()
+    const home = process.env.HOME || process.env.USERPROFILE || ""
+    if (home && (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\"))) return home + trimmed.slice(1)
+    return trimmed
+  }
+
+  function validLocalFiles(paths: string[]): { valid: string[]; missing: string[] } {
+    const valid: string[] = []
+    const missing: string[] = []
+    for (const raw of paths.slice(0, 32)) {
+      const trimmed = raw.trim()
+      if (!trimmed) continue
+      try {
+        const absolutePath = resolve(expandUser(trimmed))
+        const stat = statSync(absolutePath)
+        if (stat.isFile()) {
+          if (!valid.includes(absolutePath)) valid.push(absolutePath)
+        } else {
+          missing.push(trimmed)
+        }
+      } catch {
+        missing.push(trimmed)
+      }
+    }
+    return { valid, missing }
+  }
+
+  async function setConfirmFileSendEnabled(enabled: boolean, silent = false) {
+    try {
+      const response = await ipc.send("advanced_config", { confirm_file_send: enabled })
+      if (response.error) throw new Error(response.error)
+      setConfirmFileSend(typeof response.confirm_file_send === "boolean" ? (response.confirm_file_send as boolean) : enabled)
+      if (!silent) showStatus(enabled ? "File send confirmation is on. Dropped and pasted files will ask first." : "File send confirmation is off. Dropped and pasted files send immediately.")
+    } catch (error) {
+      showStatus(`Could not save file confirmation setting: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  async function sendFilesDirect(paths: string[]) {
+    if (!selection) { showStatus("Select a peer or group before sending a file."); return }
+    let sent = 0
+    for (const filePath of paths) {
+      try {
+        if (selection.kind === "peer") {
+          const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: filePath })
+          if (response.error) throw new Error(response.error)
+        } else {
+          const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: filePath })
+          if (response.error) throw new Error(response.error)
+        }
+        sent++
+      } catch (error) {
+        showStatus(`Could not send ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+    }
+    if (sent === 1) showStatus(`File transfer started: ${paths[0] ?? "file"} -> ${selection.id.slice(0, 8)}`)
+    else if (sent > 1) showStatus(`Started ${sent} file transfers.`)
+  }
+
+  function requestFileSend(paths: string[], source: FileConfirmSource) {
+    if (!selection) { showStatus("Select a peer or group before sending a file."); return }
+    const { valid, missing } = validLocalFiles(paths)
+    if (!valid.length) {
+      showStatus(missing.length ? `No valid files found: ${missing[0]}. Check the path and try again.` : "No valid files found.")
+      return
+    }
+    if (missing.length) showStatus(`${missing.length} path${missing.length === 1 ? "" : "s"} ignored (not found): ${missing[0]}`)
+    if (!confirmFileSend) {
+      void sendFilesDirect(valid)
+      return
+    }
+    showDialog({ kind: "file-confirm", paths: valid, source })
+  }
+
+  function requestImageSend(bytes: Uint8Array, mimeType: string) {
+    if (!selection) { showStatus("Select a peer or group before pasting an image."); return }
+    if (!confirmFileSend) {
+      void sendImage(bytes, mimeType)
+      return
+    }
+    showDialog({ kind: "file-confirm", paths: [], source: "image", image: { bytes, mimeType } })
+  }
+
+  async function confirmPendingFileSend(dontAskAgain: boolean) {
+    const pending = dialog
+    if (!pending || pending.kind !== "file-confirm") return
+    if (dontAskAgain) await setConfirmFileSendEnabled(false, true)
+    closeDialog()
+    if (pending.image) {
+      await sendImage(pending.image.bytes, pending.image.mimeType)
+    } else {
+      await sendFilesDirect(pending.paths)
+    }
+    if (dontAskAgain) showStatus("File send confirmation is off. Re-enable it in Settings > Appearance.")
+  }
+
   async function sendFile(filePath: string) {
     const action = beginDialogAction()
     if (action === null) return
@@ -960,7 +1062,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     loadFriendRequests, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer,
     loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest,
     reStun, loadDebugInfo, loadFiles,
-    sendFile, sendImage, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
+    sendFile, sendFilesDirect, sendImage, requestFileSend, requestImageSend, confirmPendingFileSend, setConfirmFileSendEnabled, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
     saveDisplayName, setAccessibilityFlashing,
     testNotificationDelivery, confirmNotificationDelivery, disableNotifications, toggleNotificationEvent,
     send, runCommand,

@@ -12,6 +12,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useKeyboard } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { addablePeers, isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
+import { statSync } from "fs"
 import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 import { chatTheme as theme } from "../chatTheme"
 import { SettingsPanel, usesSettingsPanel } from "./dialogs/SettingsPanel"
@@ -30,6 +31,7 @@ type DialogPanelProps = {
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
   debugInfo: DebugInfo | null
   flashingEnabled: boolean
+  confirmFileSend: boolean
   imageProtocol: ImageProtocol
   splashStyle: SplashPreference
   groups: Group[]
@@ -87,6 +89,8 @@ type DialogPanelProps = {
   loadFilesDir: () => void
   setFilesDir: (path: string) => void
   sendFile: (filePath: string) => void
+  confirmPendingFileSend: (dontAskAgain: boolean) => void
+  setConfirmFileSendEnabled: (enabled: boolean) => void
   downloadFile: (fileId: string, destPath: string) => void
   defaultDownloadPath: (filename: string) => string
   onDeleteFile?: (file: FileTransfer) => void
@@ -105,12 +109,12 @@ type DialogPanelProps = {
 }
 
 export function DialogPanel(props: DialogPanelProps) {
-  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, friendRequests = [], dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
+  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, confirmFileSend, imageProtocol, splashStyle, groups, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, friendRequests = [], dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
   const { runCommand, showDialog, closeDialog, goBack, setDialogDraft, setDialogError, setNameDraft } = props
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
   const { mutePeer, unmutePeer, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
-  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, downloadFile, defaultDownloadPath, onDeleteFile } = props
+  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, confirmPendingFileSend, setConfirmFileSendEnabled, downloadFile, defaultDownloadPath, onDeleteFile } = props
   const { testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent } = props
   const { saveDisplayName, checkForUpdatesFromAbout, saveUpdateChannel, installUpdate, saveUpdateToken, restartUpdate } = props
 
@@ -133,7 +137,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "control-status" && <ControlStatusDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
        {dialog.kind === "advanced" && <AdvancedDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
        {dialog.kind === "advanced-image-protocol" && <ImageProtocolDialogContent dialog={dialog} dialogHeight={dialogHeight} saveAdvancedConfig={saveAdvancedConfig} />}
-       {dialog.kind === "customisation" && <CustomisationDialogContent splashStyle={splashStyle} dialogHeight={dialogHeight} showDialog={showDialog} />}
+       {dialog.kind === "customisation" && <CustomisationDialogContent splashStyle={splashStyle} confirmFileSend={confirmFileSend} dialogHeight={dialogHeight} showDialog={showDialog} setConfirmFileSendEnabled={setConfirmFileSendEnabled} />}
        {dialog.kind === "customisation-splash" && <SplashStyleDialogContent splashStyle={splashStyle} dialogHeight={dialogHeight} saveAdvancedConfig={saveAdvancedConfig} />}
       {dialog.kind === "advanced-ip-pinning" && <IpPinningDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "advanced-control" && <AdvancedControlDialogContent dialog={dialog} dialogHeight={dialogHeight} setDialogDraft={setDialogDraft} saveAdvancedConfig={saveAdvancedConfig} showDialog={showDialog} />}
@@ -164,6 +168,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "debug-endpoints" && <DebugEndpointsDialogContent debugInfo={debugInfo} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "debug-peer" && <DebugPeerDialogContent dialog={dialog} debugInfo={debugInfo} dialogHeight={dialogHeight} />}
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
+      {dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} dialogHeight={dialogHeight} peers={peers} groups={groups} selection={selection} goBack={goBack} confirmPendingFileSend={confirmPendingFileSend} />}
       {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
@@ -627,6 +632,68 @@ function DebugPeerDialogContent({ dialog, debugInfo, dialogHeight }: { dialog: E
           <text key={`${e.transport}-${e.endpoint}`}>  {e.transport} {e.endpoint}{e.active ? " *" : ""}</text>
         ))}
       </scrollbox>
+    </SettingsScreen>
+  )
+}
+
+function formatConfirmSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+}
+
+function FileConfirmDialogContent({ dialog, dialogHeight, peers, groups, selection, goBack, confirmPendingFileSend }: { dialog: Extract<Dialog, { kind: "file-confirm" }>; dialogHeight: number; peers: Peer[]; groups: Group[]; selection: { kind: "peer" | "group"; id: string } | undefined; goBack: () => void; confirmPendingFileSend: (dontAskAgain: boolean) => void }) {
+  const [dontAskAgain, setDontAskAgain] = useState(false)
+  const targetName = selection?.kind === "peer"
+    ? peers.find((p) => p.peer_id === selection.id)?.display_name ?? selection.id.slice(0, 8)
+    : groups.find((g) => g.group_id === selection?.id)?.name ?? "group"
+  const sourceTitle = dialog.source === "image" ? "Pasted image" : dialog.source === "clipboard" ? "Clipboard files — release to send" : dialog.source === "drop" ? "Dropped files — release to send" : "Files ready to send"
+  const entries = useMemo(() => {
+    if (dialog.image) {
+      const ext = dialog.image.mimeType === "image/png" ? ".png" : dialog.image.mimeType === "image/jpeg" ? ".jpg" : dialog.image.mimeType === "image/webp" ? ".webp" : ".gif"
+      return [{ path: `pasted-image${ext}`, size: dialog.image.bytes.byteLength, exists: true }]
+    }
+    return dialog.paths.map((path) => {
+      try {
+        const stat = statSync(path)
+        return { path, size: stat.isFile() ? stat.size : null, exists: stat.isFile() }
+      } catch {
+        return { path, size: null, exists: false }
+      }
+    })
+  }, [dialog])
+  const totalSize = entries.reduce((sum, entry) => sum + (entry.size ?? 0), 0)
+  const sendable = entries.filter((entry) => entry.exists).length
+  useKeyboard((key) => {
+    if (key.ctrl || key.meta || key.defaultPrevented) return
+    if (key.name === "d") {
+      key.preventDefault()
+      setDontAskAgain((current) => !current)
+    }
+  })
+  return (
+    <SettingsScreen breadcrumb={["Files", "Confirm send"]} description="Terminals deliver drag-and-drop as pasted paths, so this prompt is the release-to-send step. Nothing sends until you confirm." dialogHeight={dialogHeight}>
+      <text><b>{sourceTitle}</b><span fg={theme.muted}> → {targetName}</span></text>
+      <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
+        {entries.map((entry) => (
+          <text key={entry.path} wrapMode="word">
+            <span fg={entry.exists ? theme.text : theme.danger}>{entry.exists ? "• " : "✕ "}{entry.path.split(/[\\/]/).pop() || entry.path}</span>
+            <span fg={theme.muted}> {entry.size !== null ? formatConfirmSize(entry.size) : entry.exists ? "" : "(missing)"}</span>
+          </text>
+        ))}
+        {entries.length > 1 ? <text fg={theme.muted}>{sendable} of {entries.length} files found · {formatConfirmSize(totalSize)} total</text> : null}
+        {!sendable ? <text fg={theme.danger}>None of these paths exist. Cancel and check the file location.</text> : null}
+      </scrollbox>
+      <box onMouseDown={() => setDontAskAgain((current) => !current)} style={{ height: 1, flexShrink: 0 }}>
+        <text fg={theme.muted} wrapMode="none">[{dontAskAgain ? "x" : " "}] Do not ask again <span fg={theme.subdued}>(D toggles · stored in settings)</span></text>
+      </box>
+      <SettingsMenu dialogHeight={dialogHeight} headerRows={12} options={[
+        ...(sendable ? [{ name: entries.length > 1 ? `Send ${sendable} file${sendable === 1 ? "" : "s"}` : dialog.source === "image" ? "Send image" : "Send file", description: `Send to ${targetName}. Enter confirms.`, value: "send", tone: "accent" as const }] : []),
+        { name: "Cancel", description: "Do not send anything", value: "cancel" },
+      ]} onSelect={(option) => {
+        if (option.value === "send") void confirmPendingFileSend(dontAskAgain)
+        else goBack()
+      }} />
     </SettingsScreen>
   )
 }

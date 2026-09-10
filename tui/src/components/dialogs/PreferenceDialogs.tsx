@@ -59,13 +59,15 @@ export function AdvancedDialogContent({ dialog, dialogHeight, showDialog }: { di
   )
 }
 
-export function CustomisationDialogContent({ splashStyle, dialogHeight, showDialog }: { splashStyle: SplashPreference; dialogHeight: number; showDialog: (d: Dialog) => void }) {
+export function CustomisationDialogContent({ splashStyle, confirmFileSend, dialogHeight, showDialog, setConfirmFileSendEnabled }: { splashStyle: SplashPreference; confirmFileSend: boolean; dialogHeight: number; showDialog: (d: Dialog) => void; setConfirmFileSendEnabled: (enabled: boolean) => void }) {
   const current = splashStyle === "boot-log" ? "Boot log" : splashStyle === "card" ? "Animated card" : "Off"
-  return <SettingsScreen breadcrumb={["Customisation"]} description="Adjust MeshTalk’s startup presentation." dialogHeight={dialogHeight}>
+  return <SettingsScreen breadcrumb={["Customisation"]} description="Adjust MeshTalk’s startup presentation and file-send behaviour." dialogHeight={dialogHeight}>
     <SettingsMenu dialogHeight={dialogHeight} options={[
       { section: "Startup", name: "Splash screen", description: "Choose the presentation shown while MeshTalk starts.", value: "splash", status: current },
+      { section: "Files", name: "Confirm before sending files", description: "Ask before sending dropped, pasted, or clipboard files. Terminals deliver drag-and-drop as pasted paths.", value: "confirm-file-send", status: confirmFileSend ? "On" : "Off", tone: confirmFileSend ? "success" : "warning" },
     ]} onSelect={(option) => {
     if (option?.value === "splash") showDialog({ kind: "customisation-splash", splashStyle })
+    else if (option?.value === "confirm-file-send") void setConfirmFileSendEnabled(!confirmFileSend)
     }} />
   </SettingsScreen>
 }

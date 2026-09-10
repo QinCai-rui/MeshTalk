@@ -506,6 +506,14 @@ async def main(debug: bool = False) -> None:
                 settings.set_splash_style(splash_style)
             except ValueError as exc:
                 return {"error": str(exc)}
+        if "confirm_file_send" in req:
+            confirm_file_send = req["confirm_file_send"]
+            if not isinstance(confirm_file_send, bool):
+                return {"error": "confirm_file_send must be a boolean"}
+            try:
+                settings.set_confirm_file_send(confirm_file_send)
+            except ValueError as exc:
+                return {"error": str(exc)}
         if req.get("clear_control_pinned_ip") is True:
             settings.clear_control_pinned_ips()
             changed = True
@@ -557,6 +565,7 @@ async def main(debug: bool = False) -> None:
             "control_url": settings.control_url or None,
             "stun_server": f"{stun_host}:{stun_port}",
             "image_protocol": settings.image_protocol,
+            "confirm_file_send": settings.confirm_file_send,
             "splash_style": settings.splash_style,
             "splash_duration_ms": settings.splash_duration_ms,
             "splash_phase_ms": settings.splash_phase_ms,
