@@ -39,15 +39,16 @@ async function close(setup: Awaited<ReturnType<typeof testRender>>) {
   await act(async () => setup.renderer.destroy())
 }
 
-test("grouped follow-up shows content only with no repeated timestamp", async () => {
+test("grouped follow-up keeps its timestamp but does not repeat the name", async () => {
   const props = burstProps(120)
   const time = formatTime(1788580800)
   const setup = await testRender(<ConversationPanel {...props} />, { width: 120, height: 30 })
   try {
     const frame = await settle(setup, "second burst message")
     expect(frame).toContain("Alex Morgan")
-    expect(frame.match(new RegExp(time.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))?.length ?? 0).toBe(1)
-    // Title bar + first message header; a repeated header on the follow-up would make it 3.
+    // Each row keeps an accurate muted timestamp (no per-line names).
+    expect(frame.match(new RegExp(time.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))?.length ?? 0).toBe(2)
+    // Title bar + first message header; a repeated name on the follow-up would make it 3.
     expect(frame.match(/Alex Morgan/g)?.length ?? 0).toBe(2)
   } finally { await close(setup) }
 })
