@@ -67,6 +67,8 @@ import {
   shouldSuppressPastedImage,
   type PastedImageDedupRecord,
 } from "./pastedImageDedup";
+import { fileConfirmDialogHeight, fileConfirmDialogWidth, hasImageConfirmationPreview, parsePotentialFilePaths } from "./fileSendConfirm";
+import { existsSync, statSync } from "fs";
 import {
   APP_RELEASE_VERSION,
   IS_RELEASE_BUILD,
@@ -1326,7 +1328,40 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     );
     if (shouldSuppressPastedImage(lastPastedImage.current, next)) return;
     lastPastedImage.current = next;
-    void actions.sendImage(bytes, mimeType);
+    actions.requestImageSend(bytes, mimeType);
+  }
+
+  function maybeSendDroppedPaths(
+    raw: string,
+    source: "drop" | "clipboard" | "paste" = "drop",
+  ): boolean {
+    if (!selection) return false;
+    const candidates = parsePotentialFilePaths(raw);
+    if (!candidates.length) return false;
+    // Only intercept when at least one candidate is a real local file —
+    // otherwise the text stays a chat message.
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+    const existing = candidates.filter((candidate) => {
+      const expanded =
+        home &&
+        (candidate === "~" ||
+          candidate.startsWith("~/") ||
+          candidate.startsWith("~\\"))
+          ? home + candidate.slice(1)
+          : candidate;
+      try {
+        return statSync(expanded).isFile();
+      } catch {
+        try {
+          return existsSync(expanded);
+        } catch {
+          return false;
+        }
+      }
+    });
+    if (!existing.length) return false;
+    actions.requestFileSend(candidates, source);
+    return true;
   }
 
   usePaste((event) => {
@@ -1349,6 +1384,10 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         return;
       }
       const raw = decodePasteBytes(rawBytes).trim();
+      if (raw && maybeSendDroppedPaths(raw)) {
+        event.preventDefault();
+        return;
+      }
       if (!raw || event.metadata?.kind === "binary") {
         event.preventDefault();
         void clipboard.current
@@ -1404,9 +1443,9 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       return;
     }
     if (result.representation.mimeType === "text/plain") {
-      composerRef.current?.insertText(
-        new TextDecoder().decode(result.representation.bytes),
-      );
+      const text = new TextDecoder().decode(result.representation.bytes);
+      if (text.trim() && maybeSendDroppedPaths(text.trim(), "clipboard")) return;
+      composerRef.current?.insertText(text);
     }
   }
 
@@ -1805,11 +1844,14 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const limitColor = composerLimitColor(draftLength);
   const dialogWidth = Math.min(100, Math.max(1, width - 6));
   const dialogHeight =
-    (dialog?.kind === "image-view" || dialog?.kind === "file-list")
+    dialog?.kind === "file-confirm"
+      ? fileConfirmDialogHeight(height, hasImageConfirmationPreview(dialog.paths, Boolean(dialog.image)))
+      : (dialog?.kind === "image-view" || dialog?.kind === "file-list")
       ? Math.max(1, height - 2)
       : Math.min(32, Math.max(1, height - 4));
   function dialogWidthFor(kind: Dialog["kind"]): number {
     if (kind === "image-view" || kind === "file-list") return Math.max(1, width - 2);
+    if (kind === "file-confirm") return fileConfirmDialogWidth(width);
     if (kind === "files-dir" || kind === "file-download") return Math.min(118, Math.max(1, width - 6));
     if (kind === "group-detail")
       return Math.min(78, Math.max(1, width - 2));
@@ -2042,6 +2084,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           loadFilesDir={actions.loadFilesDir}
           setFilesDir={actions.setFilesDir}
           sendFile={actions.sendFile}
+          confirmPendingFileSend={actions.confirmPendingFileSend}
           downloadFile={actions.downloadFile}
           defaultDownloadPath={actions.defaultDownloadPath}
           onDeleteFile={(file) => {

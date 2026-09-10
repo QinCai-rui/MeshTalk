@@ -152,9 +152,24 @@ async function cachedThumbnail(filePath: string): Promise<NativeImage | undefine
   }
 }
 
-async function loadImage(filePath: string, fullSize: boolean) {
-  if (!fullSize) return cachedThumbnail(filePath)
-  if (!existsSync(filePath)) return undefined
+async function loadImage(filePath: string | undefined, bytes: Uint8Array | undefined, fullSize: boolean) {
+  if (bytes) {
+    const source = NativeImage.decode(bytes)
+    try {
+      const resized = fullSize
+        ? source.retain()
+        : Math.max(source.width, source.height) > THUMBNAIL_MAX_SIDE
+          ? source.resize(source.width >= source.height ? { width: THUMBNAIL_MAX_SIDE } : { height: THUMBNAIL_MAX_SIDE })
+          : source.retain()
+      const image = opaqueImage(resized)
+      resized.dispose()
+      return image
+    } finally {
+      source.dispose()
+    }
+  }
+  if (!fullSize) return filePath ? cachedThumbnail(filePath) : undefined
+  if (!filePath || !existsSync(filePath)) return undefined
   const header = new Uint8Array(await Bun.file(filePath).slice(0, 16).arrayBuffer())
   if (!detectImageFormat(header)) return undefined
   const source = await NativeImage.load(filePath)
@@ -166,7 +181,9 @@ async function loadImage(filePath: string, fullSize: boolean) {
 }
 
 type ImageAttachmentProps = {
-  filePath: string
+  id?: string
+  filePath?: string
+  bytes?: Uint8Array
   filename: string
   protocol: ImageProtocol
   expectedImage?: boolean
@@ -178,7 +195,7 @@ type ImageAttachmentProps = {
   onOpen?: () => void
 }
 
-export function ImageAttachment({ filePath, filename, protocol, expectedImage = false, fullSize = false, lazy = true, scrollboxRef, maxWidth, maxHeight, onOpen }: ImageAttachmentProps) {
+export function ImageAttachment({ id, filePath, bytes, filename, protocol, expectedImage = false, fullSize = false, lazy = true, scrollboxRef, maxWidth, maxHeight, onOpen }: ImageAttachmentProps) {
   const containerRef = useRef<BoxRenderable>(null)
   const viewportCheckRef = useRef<(deferUnload?: boolean) => void>(() => {})
   const nearViewportRef = useRef(!lazy)
@@ -198,7 +215,7 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
     setIntrinsicSize(undefined)
     setReservedSize(undefined)
     setLoadFailed(false)
-  }, [filePath, fullSize, lazy, protocol])
+  }, [bytes, filePath, fullSize, lazy, protocol])
 
   nearViewportRef.current = nearViewport
   viewportCheckRef.current = (deferUnload = true) => {
@@ -253,11 +270,11 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
     if (!nearViewport) return
     let cancelled = false
     setLoadFailed(false)
-    void loadImage(filePath, fullSize).then((loaded) => {
-      // Full-size loads return a new handle owned by this component. A
-      // thumbnail comes from the shared cache and must not be disposed here.
+    void loadImage(filePath, bytes, fullSize).then((loaded) => {
+      // Full-size and in-memory loads return a new handle owned by this
+      // component. A file-backed thumbnail comes from the shared cache.
       if (cancelled) {
-        if (fullSize) disposeImage(loaded)
+        if (fullSize || bytes) disposeImage(loaded)
         return
       }
       if (loaded) {
@@ -267,7 +284,7 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
         }
         setIntrinsicSize({ width: loaded.width, height: loaded.height })
         setReservedSize(fittedImageSize(loaded.width, loaded.height, maxWidth, maxHeight))
-        setImage(fullSize ? loaded : retainImage(loaded))
+        setImage(fullSize || bytes ? loaded : retainImage(loaded))
         return
       }
       setLoadFailed(true)
@@ -278,7 +295,7 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
     return () => {
       cancelled = true
     }
-  }, [filePath, fullSize, nearViewport, protocol])
+  }, [bytes, filePath, fullSize, nearViewport, protocol])
 
   // Keep the placeholder geometry correct when the terminal is resized while
   // this image is unloaded. The native source may be gone, so retain only its
@@ -313,7 +330,7 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
         : undefined
     : undefined
   const placeholderTop = layoutSize ? Math.max(0, Math.floor((layoutSize.height - 1) / 2)) : 0
-  return <box ref={containerRef} onSizeChange={notifyImageViewportChanged} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={{ flexDirection: "column", width: layoutSize?.width, height: layoutSize?.height, minHeight: layoutSize ? undefined : 1 }}>
+  return <box id={id} ref={containerRef} onSizeChange={notifyImageViewportChanged} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={{ flexDirection: "column", width: layoutSize?.width, height: layoutSize?.height, minHeight: layoutSize ? undefined : 1 }}>
     {/* Keep the renderable identity and reserved geometry stable while its
         native source is released. This avoids a Kitty placement being
         destroyed and recreated when an adjacent row crosses the viewport. */}

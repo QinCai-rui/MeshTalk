@@ -66,6 +66,7 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
     closeDialog()
   } else if (dialog.kind === "image-view") {
     if (dialog.returnTo === "files") showDialog({ kind: "file-list", files: fileTransfers })
+    else if (dialog.returnTo === "file-confirm" && dialog.returnDialog) showDialog(dialog.returnDialog)
     else closeDialog()
   } else if (dialog.kind === "delivery-details") {
     closeDialog()

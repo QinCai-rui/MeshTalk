@@ -62,6 +62,11 @@ test("memoizes the full-screen viewer until its display inputs change", () => {
   expect(imageViewerPropsEqual(props, { ...props, imageProtocol: "kitty" })).toBe(false)
 })
 
+test("treats different in-memory images as different full-screen viewers", () => {
+  const props = { bytes: new Uint8Array([1]), filename: "pasted-image.png", dialogWidth: 28, dialogHeight: 10, imageProtocol: "blocks" as const }
+  expect(imageViewerPropsEqual(props, { ...props, bytes: new Uint8Array([2]) })).toBe(false)
+})
+
 test("Escape navigation closes the full-screen image preview", () => {
   let closed = 0
   goBack({ dialog: { kind: "image-view", filePath: "/definitely/missing/image.png", filename: "image.png" }, selection: undefined, fileTransfers: [], closeDialog: () => { closed += 1 }, showDialog: () => {}, loadAdvancedConfig: async () => {}, loadRooms: async () => {}, loadFriendRequests: async () => {}, loadBlockedPeers: async () => {} })
