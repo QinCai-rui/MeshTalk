@@ -9,13 +9,15 @@ on:
 jobs:
   opencode:
     if: |
-      contains(github.event.comment.body, '/oc review') ||
-      contains(github.event.comment.body, '/oc rereview') ||
-      contains(github.event.comment.body, '/opencode review') ||
-      contains(github.event.comment.body, '/opencode rereview') ||
-      contains(github.event.comment.body, '/oc ') ||
-      startsWith(github.event.comment.body, '/oc') ||
-      contains(github.event.comment.body, '/opencode')
+      !contains(github.event.comment.body, '/oc review') &&
+      !contains(github.event.comment.body, '/oc rereview') &&
+      !contains(github.event.comment.body, '/opencode review') &&
+      !contains(github.event.comment.body, '/opencode rereview') &&
+      (
+        contains(github.event.comment.body, '/oc ') ||
+        startsWith(github.event.comment.body, '/oc') ||
+        contains(github.event.comment.body, '/opencode')
+      )
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -34,4 +36,3 @@ jobs:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         with:
           model: opencode/muse-spark-1.3-contributor-free
-
