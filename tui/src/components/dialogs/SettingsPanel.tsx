@@ -34,7 +34,7 @@ export function settingsCategory(kind: Dialog["kind"]) {
 }
 
 export function usesSettingsPanel(dialog: Dialog) {
-  return !["file-send", "file-list", "image-view", "delivery-details", "group-detail"].includes(dialog.kind)
+  return !["file-send", "file-confirm", "file-list", "image-view", "delivery-details", "group-detail"].includes(dialog.kind)
 }
 
 export function SettingsPanel({ dialog, width, height, busy, error, runCommand, goBack, children }: {

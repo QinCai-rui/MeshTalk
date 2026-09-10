@@ -76,12 +76,7 @@ function looksLikePath(value: string): boolean {
   return false
 }
 
-/**
- * Parse pasted/dropped text into candidate local file paths.
- * Terminals deliver drag-and-drop as bracketed-paste of quoted paths,
- * so "release to send" hover state is unavailable — callers validate
- * existence and route matches to a confirmation dialog instead.
- */
+/** Parse dropped/pasted text into candidate file paths. */
 export function parsePotentialFilePaths(text: string): string[] {
   if (!text || text.length > 32_768) return []
   const candidates: string[] = []

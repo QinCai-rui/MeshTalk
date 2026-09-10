@@ -73,8 +73,6 @@ type ChatActionsDeps = {
   setNotificationTestDelivery: React.Dispatch<React.SetStateAction<Exclude<NotificationDelivery, "disabled"> | null>>
   flashingEnabled: boolean
   setFlashingEnabled: (b: boolean) => void
-  confirmFileSend: boolean
-  setConfirmFileSend: (b: boolean) => void
   setImageProtocol: (protocol: ImageProtocol) => void
   setSplashStyle: (style: SplashPreference) => void
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
@@ -108,7 +106,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
   const { mutedPeers, setMutedPeers, notificationPreferences, setNotificationPreferences } = deps
   const { notificationTestDelivery, setNotificationTestDelivery } = deps
-  const { flashingEnabled, setFlashingEnabled, confirmFileSend, setConfirmFileSend, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
+  const { flashingEnabled, setFlashingEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps
   const { statusResetRef, copyToastResetRef, dialogActionRef, dialogBusyRef, filePickerOpenRef, composerRef, selectionKey } = deps
@@ -344,7 +342,6 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("advanced_config")
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      if (typeof response.confirm_file_send === "boolean") setConfirmFileSend(response.confirm_file_send as boolean)
       showDialog({ kind: "advanced", config: response as AdvancedConfig })
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -358,7 +355,6 @@ export function useChatActions(deps: ChatActionsDeps) {
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
       setImageProtocol(response.image_protocol as ImageProtocol)
-      if (typeof response.confirm_file_send === "boolean") setConfirmFileSend(response.confirm_file_send as boolean)
       if (response.splash_style === "card" || response.splash_style === "boot-log" || response.splash_style === "off")
         setSplashStyle(response.splash_style as SplashPreference)
       if (dialog?.kind === "customisation-splash") {
@@ -709,17 +705,6 @@ export function useChatActions(deps: ChatActionsDeps) {
     return { valid, missing }
   }
 
-  async function setConfirmFileSendEnabled(enabled: boolean, silent = false) {
-    try {
-      const response = await ipc.send("advanced_config", { confirm_file_send: enabled })
-      if (response.error) throw new Error(response.error)
-      setConfirmFileSend(typeof response.confirm_file_send === "boolean" ? (response.confirm_file_send as boolean) : enabled)
-      if (!silent) showStatus(enabled ? "File send confirmation is on. Dropped and pasted files will ask first." : "File send confirmation is off. Dropped and pasted files send immediately.")
-    } catch (error) {
-      showStatus(`Could not save file confirmation setting: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-
   async function sendFilesDirect(paths: string[]) {
     if (!selection) { showStatus("Select a peer or group before sending a file."); return }
     let sent = 0
@@ -743,40 +728,29 @@ export function useChatActions(deps: ChatActionsDeps) {
   }
 
   function requestFileSend(paths: string[], source: FileConfirmSource) {
-    if (!selection) { showStatus("Select a peer or group before sending a file."); return }
+    if (!selection) { showStatus("Select a peer or group first."); return }
     const { valid, missing } = validLocalFiles(paths)
     if (!valid.length) {
-      showStatus(missing.length ? `No valid files found: ${missing[0]}. Check the path and try again.` : "No valid files found.")
-      return
-    }
-    if (missing.length) showStatus(`${missing.length} path${missing.length === 1 ? "" : "s"} ignored (not found): ${missing[0]}`)
-    if (!confirmFileSend) {
-      void sendFilesDirect(valid)
+      showStatus(missing.length ? `Not found: ${missing[0]}` : "No files found.")
       return
     }
     showDialog({ kind: "file-confirm", paths: valid, source })
   }
 
   function requestImageSend(bytes: Uint8Array, mimeType: string) {
-    if (!selection) { showStatus("Select a peer or group before pasting an image."); return }
-    if (!confirmFileSend) {
-      void sendImage(bytes, mimeType)
-      return
-    }
+    if (!selection) { showStatus("Select a peer or group first."); return }
     showDialog({ kind: "file-confirm", paths: [], source: "image", image: { bytes, mimeType } })
   }
 
-  async function confirmPendingFileSend(dontAskAgain: boolean) {
+  async function confirmPendingFileSend() {
     const pending = dialog
     if (!pending || pending.kind !== "file-confirm") return
-    if (dontAskAgain) await setConfirmFileSendEnabled(false, true)
     closeDialog()
     if (pending.image) {
       await sendImage(pending.image.bytes, pending.image.mimeType)
     } else {
       await sendFilesDirect(pending.paths)
     }
-    if (dontAskAgain) showStatus("File send confirmation is off. Re-enable it in Settings > Appearance.")
   }
 
   async function sendFile(filePath: string) {
@@ -1062,7 +1036,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     loadFriendRequests, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer,
     loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest,
     reStun, loadDebugInfo, loadFiles,
-    sendFile, sendFilesDirect, sendImage, requestFileSend, requestImageSend, confirmPendingFileSend, setConfirmFileSendEnabled, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
+    sendFile, sendFilesDirect, sendImage, requestFileSend, requestImageSend, confirmPendingFileSend, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
     saveDisplayName, setAccessibilityFlashing,
     testNotificationDelivery, confirmNotificationDelivery, disableNotifications, toggleNotificationEvent,
     send, runCommand,

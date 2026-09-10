@@ -188,7 +188,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     useState<Exclude<NotificationDelivery, "disabled"> | null>(null);
   const [blinkOn, setBlinkOn] = useState(true);
   const [flashingEnabled, setFlashingEnabled] = useState(true);
-  const [confirmFileSend, setConfirmFileSend] = useState(true);
   const [imageProtocol, setImageProtocol] = useState<ImageProtocol>("auto");
   const [controlStatus, setControlStatus] = useState<{
     connected: boolean;
@@ -419,8 +418,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     setNotificationTestDelivery,
     flashingEnabled,
     setFlashingEnabled,
-    confirmFileSend,
-    setConfirmFileSend,
     setImageProtocol,
     setSplashStyle: setConfiguredSplashStyle,
     controlStatus,
@@ -536,8 +533,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     let welcomeDurationMs: number | undefined;
     if (!advanced.error) {
       setImageProtocol(advanced.image_protocol as ImageProtocol);
-      if (typeof advanced.confirm_file_send === "boolean")
-        setConfirmFileSend(advanced.confirm_file_send as boolean);
       if (advanced.splash_style === "card" || advanced.splash_style === "boot-log" || advanced.splash_style === "off")
         setConfiguredSplashStyle(advanced.splash_style as SplashPreference);
       if (typeof advanced.splash_duration_ms === "number" && advanced.splash_duration_ms >= 0)
@@ -2034,7 +2029,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           controlStatus={controlStatus}
           debugInfo={debugInfo}
           flashingEnabled={flashingEnabled}
-          confirmFileSend={confirmFileSend}
           imageProtocol={imageProtocol}
           splashStyle={configuredSplashStyle}
           groups={groups}
@@ -2088,7 +2082,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           setFilesDir={actions.setFilesDir}
           sendFile={actions.sendFile}
           confirmPendingFileSend={actions.confirmPendingFileSend}
-          setConfirmFileSendEnabled={actions.setConfirmFileSendEnabled}
           downloadFile={actions.downloadFile}
           defaultDownloadPath={actions.defaultDownloadPath}
           onDeleteFile={(file) => {
