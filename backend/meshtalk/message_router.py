@@ -22,10 +22,12 @@ from .peer_manager import PeerConnection, PeerManager
 from .protocol import (
     CAP_BLOCK_REPORTS,
     CAP_DELIVERY_RECEIPTS,
+    CAP_MESSAGE_EDITS,
     CAP_MESSAGE_REPLIES,
     CAP_TEXT_CHAT,
     MAX_PACKET_SIZE,
     MessageBlockedPayload,
+    MessageEditPayload,
     MessagePayload,
     Packet,
     PacketType,
@@ -39,10 +41,11 @@ MAX_MESSAGE_CONTENT_SIZE = 30 * 1024
 
 
 class MessageRouter:
-    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None, friend_manager: FriendManager | None = None, group_router: GroupRouter | None = None, analytics: "Analytics | None" = None) -> None:
+    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None, friend_manager: FriendManager | None = None, group_router: GroupRouter | None = None, on_edited: Callable[[dict], Awaitable[None]] | None = None, analytics: "Analytics | None" = None) -> None:
         self.identity, self.peer_manager, self.db = identity, peer_manager, db
         self.on_received = on_received
         self.on_delivered = on_delivered
+        self.on_edited = on_edited
         self.friend_manager = friend_manager or FriendManager(identity, peer_manager, db)
         self.group_router = group_router
         self.analytics = analytics
@@ -85,11 +88,57 @@ class MessageRouter:
         await self.db.add_to_outqueue(recipient_id, PacketType.MESSAGE.value, encoded_message, message.message_id)
         return message.message_id, True
 
+    async def send_edit(self, recipient_id: str, message_id: str, new_content: str) -> float:
+        """Send an E2EE edit for a previously sent message. No time limit; sender-only."""
+        if not new_content.strip():
+            raise ValueError("content required")
+        plaintext = new_content.encode()
+        if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:
+            raise ValueError("Message exceeds 30 KiB limit")
+        existing = await self.db.get_message(message_id)
+        if not existing:
+            raise ValueError("Message not found")
+        if existing.get("sender_id") != self.identity.peer_id:
+            raise ValueError("Only your own messages can be edited")
+        if existing.get("recipient_id") != recipient_id:
+            raise ValueError("Recipient does not match conversation")
+        if await self.db.is_peer_blocked(recipient_id):
+            raise ValueError("Peer is blocked")
+        peer = self.peer_manager.get_connected_peer(recipient_id)
+        if peer is not None and not peer.supports(CAP_MESSAGE_EDITS):
+            raise ValueError("Peer does not support message edits")
+        if peer is None and not await self.db.peer_supports(recipient_id, CAP_MESSAGE_EDITS):
+            raise ValueError("Peer does not support message edits")
+        key = peer.encryption_public_key if peer is not None else None
+        if key is None:
+            stored = await self.db.get_peer(recipient_id)
+            if stored and stored.get("public_key"):
+                key = stored["public_key"]
+        if key is None:
+            raise ValueError("No known public key for recipient")
+        now = time.time()
+        payload = MessageEditPayload(message_id, self.identity.peer_id, recipient_id, now, b"")
+        payload.encrypted_content = encrypt_for_recipient(key, plaintext, payload.associated_data())
+        payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+        encoded = payload.encode()
+        if len(encoded) > MAX_PACKET_SIZE:
+            raise ValueError("Encrypted edit exceeds packet limit")
+        await self.db.update_message_content(message_id, new_content, now)
+        updated = await self.db.get_message(message_id)
+        edited_at = float((updated or {}).get("edited_at") or now)
+        if peer is not None:
+            await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE_EDIT, encoded))
+        else:
+            await self.db.add_to_outqueue(recipient_id, PacketType.MESSAGE_EDIT.value, encoded, message_id)
+        return edited_at
+
     async def handle_packet(self, peer: PeerConnection, packet: Packet) -> None:
         if self.group_router and await self.group_router.handle_packet(peer, packet):
             return
         if packet.type == PacketType.MESSAGE:
             await self._handle_message(peer, packet)
+        elif packet.type == PacketType.MESSAGE_EDIT:
+            await self._handle_edit(peer, packet)
         elif packet.type == PacketType.MESSAGE_ACK:
             message_id = packet.payload.decode("ascii")
             await self.db.mark_message_delivered(message_id)
@@ -138,6 +187,35 @@ class MessageRouter:
         logger.info("Received encrypted message %s from %s", message.message_id, peer.peer_id)
         if self.on_received:
             await self.on_received({"message_id": message.message_id, "sender_id": message.sender_id, "content": content, "created_at": message.created_at, "reply_to_message_id": message.reply_to_message_id})
+
+    async def _handle_edit(self, peer: PeerConnection, packet: Packet) -> None:
+        payload = MessageEditPayload.decode(packet.payload)
+        if payload.recipient_id != self.identity.peer_id or payload.sender_id != peer.peer_id or peer.signing_public_key is None:
+            raise ValueError("Edit routing mismatch")
+        if not peer.supports(CAP_MESSAGE_EDITS):
+            raise ValueError("Peer sent edit without negotiating support")
+        if not await self.friend_manager.is_friend(payload.sender_id):
+            return
+        try:
+            Ed25519PublicKey.from_public_bytes(peer.signing_public_key).verify(payload.signature, payload.signed_bytes())
+            plaintext = decrypt_as_recipient(self.identity.encryption_private_key, payload.encrypted_content, payload.associated_data())
+            content = plaintext.decode("utf-8")
+        except (InvalidSignature, UnicodeDecodeError) as exc:
+            raise ValueError("Invalid edit payload") from exc
+        if len(content.encode()) > MAX_MESSAGE_CONTENT_SIZE:
+            raise ValueError("Edit too large")
+        existing = await self.db.get_message(payload.message_id)
+        if existing is None:
+            return
+        if existing.get("sender_id") != payload.sender_id:
+            return
+        if payload.created_at <= float(existing.get("edited_at") or 0):
+            return
+        await self.db.mark_message_seen(payload.message_id)
+        await self.db.update_message_content(payload.message_id, content, payload.created_at)
+        updated = await self.db.get_message(payload.message_id)
+        if self.on_edited:
+            await self.on_edited({"message_id": payload.message_id, "sender_id": payload.sender_id, "content": content, "edited_at": (updated or {}).get("edited_at")})
 
     async def _send_delivery_receipt(self, peer: PeerConnection, message_id: str) -> None:
         # Only acknowledge delivery when both peers negotiated the capability.

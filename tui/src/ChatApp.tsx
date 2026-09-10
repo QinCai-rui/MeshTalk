@@ -28,6 +28,7 @@ import type {
   Conversation,
   ConversationItem,
   Dialog,
+  EditingTarget,
   FileTransfer,
   FriendRequest,
   Group,
@@ -158,6 +159,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [selectedReplyTarget, setSelectedReplyTarget] = useState<ReplyTarget>();
   const [replyTo, setReplyTo] = useState<ReplyTarget>();
+  const [editingTarget, setEditingTarget] = useState<EditingTarget>();
   const [deleteConfirmation, setDeleteConfirmation] = useState<ReplyTarget>();
   const [unreadMessages, setUnreadMessages] = useState<
     Record<string, UnreadMessageState>
@@ -658,6 +660,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   useEffect(() => {
     setSelectedReplyTarget(undefined);
     setReplyTo(undefined);
+    setEditingTarget(undefined);
     setDeleteConfirmation(undefined);
   }, [selectionKey]);
 
@@ -979,6 +982,19 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
             current.map((message) =>
               message.message_id === messageId
                 ? { ...message, queued: 0 }
+                : message,
+            ),
+          );
+          return;
+        }
+        if (event.event === "message_edited" || event.event === "group_message_edited") {
+          const messageId = event.message_id as string;
+          const content = event.content as string;
+          const editedAt = (event.edited_at as number) ?? Date.now() / 1000;
+          setMessages((current) =>
+            current.map((message) =>
+              message.message_id === messageId
+                ? { ...message, content: content ?? message.content, edited_at: editedAt }
                 : message,
             ),
           );
@@ -1482,6 +1498,9 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
             setReplyTo((current) =>
               current?.id === message.id ? undefined : current,
             );
+            setEditingTarget((current) =>
+              current?.id === message.id ? undefined : current,
+            );
             setDeleteConfirmation(undefined);
             actions.showStatus("Message deleted locally.");
           })
@@ -1613,6 +1632,30 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     if (scrollFocused && key.name === "d" && selectedReplyTarget) {
       key.preventDefault();
       setDeleteConfirmation(selectedReplyTarget);
+      return;
+    }
+    if (scrollFocused && key.name === "e" && selectedReplyTarget && !key.ctrl && !key.meta) {
+      const target = conversationItems.find(
+        (item): item is Extract<ConversationItem, { type: "message" }> =>
+          item.type === "message" && item.message.message_id === selectedReplyTarget.id,
+      )?.message;
+      if (!target || selectedReplyTarget.kind !== "message") { actions.showStatus("Only text messages can be edited."); return; }
+      if (target.sender_id !== identity?.peer_id) { actions.showStatus("Only your own messages can be edited."); return; }
+      key.preventDefault();
+      setEditingTarget({ id: target.message_id, senderId: target.sender_id, label: target.content, groupId: target.group_id });
+      setReplyTo(undefined);
+      if (composerRef.current) {
+        composerRef.current.selectAll();
+        composerRef.current.deleteSelection();
+        composerRef.current.insertText(target.content);
+      }
+      setScrollFocused(false);
+      actions.showStatus("Editing message — Enter saves, Esc cancels.");
+      return;
+    }
+    if (key.name === "escape" && editingTarget) {
+      setEditingTarget(undefined);
+      actions.showStatus("Edit cancelled.");
       return;
     }
     if (key.name === "escape" && replyTo) {
@@ -1973,8 +2016,24 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         }}
         clearReplyTarget={() => setSelectedReplyTarget(undefined)}
         onComposerChange={handleComposerChange}
+        editingTarget={editingTarget}
         send={() => {
           stopOutgoingTyping();
+          if (editingTarget) {
+            const content = composerRef.current?.plainText.trim() ?? "";
+            if (!content) { actions.showStatus("Edited message is empty."); return; }
+            const target = editingTarget;
+            void ipc.send("edit_message", { message_id: target.id, group_id: target.groupId, content }).then((response) => {
+              if (response.error) { actions.showStatus(`Edit error: ${response.error}`); return; }
+              setMessages((current) => current.map((m) => m.message_id === target.id ? { ...m, content, edited_at: (response.edited_at as number) ?? Date.now() / 1000 } : m));
+              setEditingTarget(undefined);
+              setReplyTo(undefined);
+              setSelectedReplyTarget(undefined);
+              if (composerRef.current) { composerRef.current.selectAll(); composerRef.current.deleteSelection(); }
+              actions.showStatus("Message edited.");
+            }).catch((e) => actions.showStatus(`Edit error: ${e instanceof Error ? e.message : String(e)}`));
+            return;
+          }
           void actions.send(replyTo?.id).then((sent) => {
             if (sent) setReplyTo(undefined);
           });

@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS messages (
     failed INTEGER NOT NULL DEFAULT 0,
     read_at REAL,
     received_at REAL,
-    reply_to_message_id TEXT
+    reply_to_message_id TEXT,
+    edited_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS outgoing_queue (
@@ -117,7 +118,8 @@ CREATE TABLE IF NOT EXISTS group_messages (
     created_at REAL NOT NULL,
     received_at REAL,
     kind TEXT NOT NULL DEFAULT 'message',
-    reply_to_message_id TEXT
+    reply_to_message_id TEXT,
+    edited_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS group_deliveries (
@@ -191,6 +193,8 @@ class Database:
             await self._db.execute("ALTER TABLE messages ADD COLUMN received_at REAL")
         if "reply_to_message_id" not in message_columns:
             await self._db.execute("ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT")
+        if "edited_at" not in message_columns:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN edited_at REAL")
         if "expires_at" in message_columns:
             try:
                 await self._db.execute("ALTER TABLE messages DROP COLUMN expires_at")
@@ -233,6 +237,8 @@ class Database:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN content BLOB")
             if gm_columns and "reply_to_message_id" not in gm_columns:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN reply_to_message_id TEXT")
+            if gm_columns and "edited_at" not in gm_columns:
+                await self._db.execute("ALTER TABLE group_messages ADD COLUMN edited_at REAL")
         except Exception:
             pass
         # Ensure group_deliveries exists (older DBs may lack it entirely - SCHEMA already handled)
@@ -404,9 +410,9 @@ class Database:
     ) -> list[dict]:
         """Return the latest direct messages with one peer in chronological order."""
         async with self._db.execute(
-            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at, reply_to_message_id
+            """SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at, reply_to_message_id, edited_at
                FROM (
-                     SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at, reply_to_message_id
+                     SELECT message_id, sender_id, recipient_id, content, created_at, delivered, blocked, queued, failed, received_at, reply_to_message_id, edited_at
                    FROM messages
                    WHERE (sender_id = ? AND recipient_id = ?)
                       OR (sender_id = ? AND recipient_id = ?)
@@ -448,6 +454,32 @@ class Database:
             ),
         )
         await self._db.commit()
+
+    async def get_message(self, message_id: str) -> dict | None:
+        """Retrieve a specific direct message by message ID."""
+        async with self._db.execute(
+            "SELECT * FROM messages WHERE message_id = ?", (message_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            message = dict(row)
+            if message.get("content") is not None:
+                try:
+                    message["content"] = self._decrypt_content(message["content"]) or ""
+                except Exception:
+                    pass
+            return message
+
+    async def update_message_content(self, message_id: str, content: str, edited_at: float) -> bool:
+        """Overwrite direct message content for an edit. edited_at is the sender's
+        edit timestamp (pass-through) so staleness checks stay in one clock domain."""
+        cursor = await self._db.execute(
+            "UPDATE messages SET content = ?, edited_at = ? WHERE message_id = ?",
+            (self._encrypt_content(content), edited_at, message_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
 
     async def mark_conversation_read(self, local_peer_id: str, remote_peer_id: str) -> None:
         """Mark all messages from a specific peer as read."""
@@ -715,7 +747,7 @@ class Database:
     async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
         """Retrieve recent group messages with delivery status."""
         async with self._db.execute(
-            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id
+            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id, edited_at
                FROM (SELECT rowid AS sequence, * FROM group_messages WHERE group_id = ? ORDER BY rowid DESC LIMIT ?)
                ORDER BY sequence ASC""",
             (group_id, limit),
@@ -733,6 +765,16 @@ class Database:
         ) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    async def update_group_message_content(self, message_id: str, content: str, edited_at: float) -> bool:
+        """Overwrite group message content for an edit. edited_at is the sender's
+        edit timestamp (pass-through) so staleness checks stay in one clock domain."""
+        cursor = await self._db.execute(
+            "UPDATE group_messages SET content = ?, edited_at = ? WHERE message_id = ?",
+            (self._encrypt_content(content), edited_at, message_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
 
     async def mark_group_read(self, group_id: str) -> None:
         """Mark all messages in a group as read."""

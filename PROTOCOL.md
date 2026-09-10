@@ -837,6 +837,8 @@ after key confirmation, all application packets use encrypted TCP records.
 | FILE_CHUNK | 0x12 | File Chunk | E2EE encrypted file data chunk with per-chunk signature. |
 | FILE_ACK | 0x13 | File Ack | Delivery acknowledgement with optional `missing_ranges` for retransmission. |
 | TYPING | 0x14 | Typing | Signed, pairwise-encrypted transient typing state. |
+| MESSAGE_EDIT | 0x15 | Message edit | E2EE new content for a prior message_id. Sender-only, no time limit. |
+| GROUP_MESSAGE_EDIT | 0x16 | Group edit | Per-recipient E2EE edit fan-out. Same rules as MESSAGE_EDIT. |
 
 UDP transport-level frame types (udp_transport.py): HELLO=1, DATA=2, ACK=3,
 PING=4, PONG=5, READY=6, GOODBYE=7 (distinct from the application types above;
@@ -896,6 +898,7 @@ over IPC.
 |--------|--------|---------|
 | send | recipient_id, content, reply_to_message_id? | message_id |
 | delete_message | message_id, group_id?, file? | Removes the local message or attachment history and any local attachment file. Never transmitted to peers. |
+| edit_message | message_id, group_id?, content, recipient_id? | Edits own message (no time limit); E2EE to peer(s), emits `message_edited` / `group_message_edited`. |
 | peers | - | List of peers with presence, unread counts, friend/blocked flags, network info. |
 | remove_peer | peer_id | Removed (only if not connected). |
 | friend_send | peer_id, note? | request_id |
