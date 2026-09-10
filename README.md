@@ -14,6 +14,8 @@
 
 Peer-to-peer encrypted messaging over a LAN or direct NAT-traversed UDP links.
 
+Optional release analytics is disabled until explicitly enabled as extended or basic; switch levels or turn it off in Settings » Diagnostics. See [Analytics](docs/ANALYTICS.md) and the [privacy policy](PRIVACY.md).
+
 MeshTalk keeps the original offline LAN path: UDP broadcast discovers peers and
 TCP carries authenticated messages. Private rooms add remote discovery through
  an opaque control service and public STUN. MeshTalk Relay provides a bounded,
@@ -44,16 +46,30 @@ The quick installer downloads the latest release for your platform and places
 the binaries in `~/.local/bin` (or `%LOCALAPPDATA%\MeshTalk` on Windows):
 
 ```bash
-curl -fsSL https://go.qincai.xyz/getmeshtalk | bash
+bash <(curl -fssL https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.sh)
 ```
 
 Pass `--non-interactive` to skip prompts and accept all defaults:
 
 ```bash
-curl -fsSL https://go.qincai.xyz/getmeshtalk | bash -s -- --non-interactive --yes
+bash <(curl -fssL https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.sh) --non-interactive --yes
 ```
 
 Other options: `--version TAG`, `--install-dir DIR`, `--prerelease`, `--uninstall`, `--dry-run`. Run with `--help` for the full list.
+
+On Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.ps1 | iex
+```
+
+Pass `-Simple` to accept defaults; `-NonInteractive` to skip prompts:
+
+```powershell
+irm https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.ps1 | iex - -NonInteractive -Simple
+```
+
+Other options: `-Version TAG`, `-InstallDir DIR`, `-Prerelease`, `-Uninstall`, `-DryRun`, `-Method auto|gh|webrequest`. Run with `-Help` for the full list.
 
 ### Manual Install
 
@@ -83,6 +99,11 @@ To update a different existing MeshTalk installation, use its directory:
 ```
 
 The target directory must contain the complete MeshTalk release binaries.
+
+In-app updates verify the GitHub SHA-256 digest, stage the replacement files,
+then replace the flat launcher and backend installation. On macOS and Linux,
+the restarted launcher replaces itself in-place so it remains attached to the
+same terminal session.
 
 Updates use `QinCai-rui/MeshTalk` by default. To use releases from another
 GitHub repository, configure its user and repository name:
@@ -357,6 +378,9 @@ older glibc than the build system.
   key derived from the room secret. The secret never reaches the control server.
 - Remote UDP links use signed ephemeral X25519 key exchange. Transport fragments,
   acknowledgements, and keepalives are authenticated; transport data is encrypted.
+- LAN TCP links use signed ephemeral X25519 session keys and AES-GCM records;
+  packet types, routing metadata, and application payloads are encrypted after
+  handshake confirmation.
 - Message content and file chunks have a separate end-to-end encrypted envelope and
   are never sent through the control service.
 - The control service can observe connection IPs, timing, opaque room IDs, and
@@ -384,7 +408,7 @@ both IPv4 and IPv6.
 
 ## Features
 
-- Offline LAN discovery and authenticated TCP peer connections
+- Offline LAN discovery and authenticated, encrypted TCP peer connections
 - Encrypted multi-peer room rendezvous through a configurable control service
 - Named room-backed group chats with pairwise per-recipient E2EE and offline queueing
 - Cross-platform file transfer with image preview and download

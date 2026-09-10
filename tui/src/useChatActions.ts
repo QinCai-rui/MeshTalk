@@ -86,6 +86,7 @@ type ChatActionsDeps = {
   setDialogDraft: (s: string) => void
   setDialogError: (s: string) => void
   setDialogBusy: (b: boolean) => void
+  setFriendRequests?: React.Dispatch<React.SetStateAction<FriendRequest[]>>
 
   statusResetRef: { current: ReturnType<typeof setTimeout> | undefined }
   copyToastResetRef: { current: ReturnType<typeof setTimeout> | undefined }
@@ -109,11 +110,26 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps
   const { statusResetRef, copyToastResetRef, dialogActionRef, dialogBusyRef, filePickerOpenRef, composerRef, selectionKey } = deps
+  const setFriendRequests = deps.setFriendRequests
 
-  function showStatus(message: string) {
+  function showStatus(message: string, durationMs = 2_000) {
     if (statusResetRef.current) clearTimeout(statusResetRef.current)
     setStatus(message)
-    statusResetRef.current = setTimeout(() => setStatus(DEFAULT_STATUS), 2_000)
+    statusResetRef.current = setTimeout(() => setStatus(DEFAULT_STATUS), durationMs)
+  }
+
+  const FRIEND_STATUS_MS = 5_000
+
+  async function refreshFriendRequestsSilent() {
+    try {
+      const response = await ipc.send("friend_requests")
+      if (!response.error && setFriendRequests) setFriendRequests(response.requests as FriendRequest[])
+    } catch {}
+  }
+
+  function openFriendsInbox() {
+    void refreshFriendRequestsSilent()
+    showDialog({ kind: "friends" })
   }
 
   function showCopyToast() {
@@ -511,8 +527,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("friend_send", { peer_id: peerId, note })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus("Friend request sent. You can chat once they accept.")
+      showStatus("Friend request sent. You can chat once they accept.", FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -525,8 +542,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("friend_respond", { request_id: request.request_id, accept })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus(accept ? `You and ${request.sender_name} are now friends.` : `Declined ${request.sender_name}'s friend request.`)
+      showStatus(accept ? `You and ${request.sender_name} are now friends.` : `Declined ${request.sender_name}'s friend request. You can add them again later.`, FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -539,8 +557,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("friend_cancel", { request_id: requestId })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus("Friend request cancelled.")
+      showStatus("Friend request cancelled. You can send a new one from the conversation.", FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -554,8 +573,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
       const peer = peers.find((p) => p.peer_id === peerId)
-      showStatus(`Removed ${peer?.display_name ?? peerId} as a friend.`)
+      showStatus(`Removed ${peer?.display_name ?? peerId} as a friend.`, FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -580,8 +600,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("block_peer", { peer_id: peerId })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus(`Blocked ${displayName}. Their friend requests are now ignored.`)
+      showStatus(`Blocked ${displayName}. Their friend requests are now ignored.`, FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -594,8 +615,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("unblock_peer", { peer_id: peerId })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus(`Unblocked ${displayName}. They can send friend requests again.`)
+      showStatus(`Unblocked ${displayName}. They can send friend requests again.`, FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       finishDialogAction(action)
       void loadBlockedPeers()
     } catch (error) { failDialogAction(action, error) }
@@ -608,8 +630,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("block_peer", { peer_id: request.sender_id })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus(`Blocked ${request.sender_name}. Their friend requests are now ignored.`)
+      showStatus(`Blocked ${request.sender_name}. Their friend requests are now ignored.`, FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -864,20 +887,6 @@ export function useChatActions(deps: ChatActionsDeps) {
     finally { finishDialogAction(action) }
   }
 
-  async function removeSelectedPeer() {
-    const peer = peers.find((item) => item.peer_id === selectedPeerId)
-    if (!peer) return
-    if (peer.is_online) { showStatus("Disconnect from this peer before removing it."); return }
-    try {
-      const response = await ipc.send("remove_peer", { peer_id: peer.peer_id })
-      if (response.error) throw new Error(response.error)
-      const remaining = peers.filter((item) => item.peer_id !== peer.peer_id)
-      setPeers(remaining)
-      setSelection(remaining[0] ? { kind: "peer", id: remaining[0].peer_id } : groups[0] ? { kind: "group", id: groups[0].group_id } : undefined)
-      showStatus(`Removed ${peer.display_name} from the peer list.`)
-    } catch (error) { if (!backendDisconnectedRef.current) setStatus(`Remove error: ${error instanceof Error ? error.message : String(error)}`) }
-  }
-
   async function send(replyToMessageId?: string): Promise<boolean> {
     const composer = composerRef.current
     const content = composer?.plainText.trim() ?? ""
@@ -924,12 +933,13 @@ export function useChatActions(deps: ChatActionsDeps) {
       showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft,
       setRenameDialog: () => showDialog({ kind: "rename" }),
        loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms,
+       openFriendsInbox,
     })
   }
 
   return {
     showStatus, showCopyToast,
-    refreshPeers, refreshGroups, refreshGroupMembers, refreshFiles,
+    refreshPeers, refreshGroups, refreshGroupMembers, refreshFiles, refreshFriendRequestsSilent, openFriendsInbox,
     closeDialog, showDialog, goBack,
     installUpdate, saveUpdateToken, restartUpdate, checkForUpdatesFromAbout,
     loadControlStatus, configureControl, dismissControlSetup,
@@ -943,6 +953,6 @@ export function useChatActions(deps: ChatActionsDeps) {
     sendFile, sendImage, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
     saveDisplayName, setAccessibilityFlashing,
     testNotificationDelivery, confirmNotificationDelivery, disableNotifications, toggleNotificationEvent,
-    removeSelectedPeer, send, runCommand,
+    send, runCommand,
   }
 }

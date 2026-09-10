@@ -20,7 +20,7 @@ MeshTalk is a peer-to-peer encrypted messenger. Chat never traverses any
 central server. There are two independent data paths between two peers:
 
 1. LAN path - offline, zero-infrastructure. UDP broadcast discovers peers; an
-   authenticated TCP connection carries traffic.
+   authenticated and transport-encrypted TCP connection carries traffic.
 2. Remote path - when peers are not on the same LAN, an *opaque* control
    service relays only encrypted "endpoint cards" for discovery, and STUN is
    used to learn public NAT mappings. The peers then punch a direct, encrypted
@@ -132,37 +132,87 @@ Fresh state lives in ~/.meshtalk:
   opens the connection (_should_initiate => self.peer_id < remote_peer_id).
   Because discovery IDs are anonymous, both sides may dial; once authenticated,
   only the lower-ID direction is retained to deduplicate.
-- Framing (shared with the UDP-carried application protocol):
+- The first handshake frames use the application packet framing below. Once the
+  handshake is confirmed, application packets are carried only in encrypted TCP
+  records. The application packet framing is not used as the outer record frame.
+
+- Encrypted record framing:
 
   ```
-  [ 4-byte big-endian length ][ 1-byte type ][ payload ]
-  HEADER = "!IB"   # length: uint32 BE, type: uint8
-  MAX_PACKET_SIZE = 64 KiB
+  [ 4-byte big-endian ciphertext length ]
+  [ 8-byte big-endian sequence number ]
+  [ AES-GCM ciphertext || 16-byte authentication tag ]
+  RECORD_HEADER = "!IQ"
   ```
+
+  The encrypted plaintext is the existing application packet:
+  `[4-byte payload length][1-byte type][payload]`. The record ciphertext length
+  is the plaintext length plus the 16-byte AES-GCM tag and is bounded before
+  reading. The maximum plaintext is `HEADER_SIZE + MAX_PACKET_SIZE`; the
+  maximum record ciphertext is that value plus the tag (`65557` bytes with the
+  current constants). The record header is
+  authenticated as associated data together with the domain
+  `meshtalk-tcp-record-v1`.
+
+  Each direction starts at sequence number zero and accepts exactly the next
+  sequence number. A direction-specific 4-byte nonce prefix is concatenated
+  with the 8-byte sequence number to form the 12-byte AES-GCM nonce. Sequence
+  exhaustion, replay, gaps, reordering, truncation, invalid authentication,
+  and oversized records close the TCP connection before an application handler
+  is invoked. The outer length and sequence are visible; packet types and
+  packet payloads are not.
 
 ### 4.3 LAN TCP Handshake
 
-Authenticates identity with signed HandshakePayloads (no transport encryption
-on the link - see caveat below).
+Authenticates identity with signed HandshakePayloads and establishes a fresh
+forward-secret transport session.
 
 ```
 Outbound (initiator)                        Inbound (responder)
 --------------------------------           --------------------------------
-HANDSHAKE      (nonce=rand32, challenge="") --> 
-                              <-- HANDSHAKE_ACK (nonce=rand32, challenge=initiator.nonce)
-HANDSHAKE_CONFIRM (challenge=ack.nonce)    --> 
+HANDSHAKE      (nonce=rand32, ephemeral X25519 public key) -->
+                              <-- HANDSHAKE_ACK (nonce=rand32, ephemeral key,
+                                  challenge=initiator.nonce)
+encrypted HANDSHAKE_CONFIRM ------------------------------>
+                              <-- encrypted HANDSHAKE_CONFIRM
 ```
 
 - Each HandshakePayload carries: peer_id, signing_public_key (32 B),
   encryption_public_key (32 B), display_name, nonce (32 B), challenge,
-  capabilities (string list), and an Ed25519 signature over the canonical
+  capabilities (string list), `transport_version` (currently 1),
+  `session_public_key` (32 B), and an Ed25519 signature over the canonical
   (sorted, compact) JSON of every non-signature field.
 - _apply_handshake verifies:
   1. peer_id == SHA-256(signing_public_key) (binds ID to key),
   2. challenge matches the expected value from the prior step (prevents a
      reflected/relay handshake from confirming a session),
   3. the capability list is well formed,
-  4. the Ed25519 signature is valid.
+  4. the transport version and ephemeral public key are supported,
+  5. the Ed25519 signature is valid.
+- Each side derives an X25519 shared secret from its connection-only ephemeral
+  private key and the remote `session_public_key`. Let `first` and `second` be
+  the authenticated handshake payloads ordered by peer ID. The exact derivation
+  is `transcript_hash = SHA256("meshtalk-tcp-handshake-transcript-v1" ||
+  LP(authenticated(first)) || LP(authenticated(second)))`,
+  `salt = SHA256("meshtalk-tcp-kdf-salt-v1" || first.nonce || second.nonce)`,
+  and `material = HKDF-SHA256(shared_secret, salt, info=
+  "meshtalk-tcp-session-v1" || transcript_hash, length=72)`. `LP` is a
+  big-endian uint32 length prefix and `authenticated(payload)` is
+  `LP(payload.signed_bytes()) || LP(payload.signature)`.
+- The first 36 bytes of `material` are the lower-ID-to-higher-ID AES key (32 B)
+  and nonce prefix (4 B); the next 36 bytes are the reverse direction. The
+  session ID is the first 16 bytes of
+  `SHA256("meshtalk-tcp-session-id-v1" || transcript_hash || material)`. The
+  confirmation token is
+  `SHA256("meshtalk-tcp-confirm-v1" || session_id || transcript_hash)`.
+- The handshake transcript and derived session are confirmed by an encrypted
+  `HANDSHAKE_CONFIRM` record containing a transcript-bound key-possession token.
+  The record is consumed by the handshake code and never reaches an application
+  handler. A peer is not marked `CONNECTED` until both confirmation records
+  succeed.
+- `transport_version` is mandatory protocol negotiation, not an optional
+  capability. A missing or unsupported version, a legacy handshake, or any
+  failed confirmation closes the connection. There is no plaintext fallback.
 - Timeouts: HANDSHAKE_TIMEOUT = 10 s, MAX_PENDING_HANDSHAKES = 64,
   MAX_CONNECTED_PEERS = 256.
 
@@ -170,29 +220,31 @@ HANDSHAKE_CONFIRM (challenge=ack.nonce)    -->
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
-`file_transfer`, `typing_indicators`, `message_replies`). The agreed capability set is the **intersection** of both
-peers' advertised sets, and higher-level code gates behaviour on it:
+`file_transfer`, `typing_indicators`, `message_replies`,
+`direct_route_recovery`). The agreed capability set is the **intersection** of
+both peers' advertised sets, and higher-level code gates behaviour on it:
 `text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
 enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
 `friend_requests` enables the friend-request packet family, `group_chat` enables
 the group packet family, and `file_transfer` enables file offer/chunk/ack
 packets (section 7.6). `message_replies` enables reply references on message
-packets.
+packets. `direct_route_recovery` enables probing and promotion of an introduced
+direct UDP route while an established remote UDP session is using DERP. It does
+not gate the initial direct connection attempt or the existing LAN TCP takeover
+behavior, so older peers retain their established behavior; an older peer
+simply does not participate in DERP-to-direct UDP recovery.
 A peer that does not advertise a capability will not be sent the corresponding
 packets. Missing capability lists are rejected. Unknown remote capabilities are
 retained for diagnostics but remain disabled locally. Each side reports both
 directions of a capability gap, flashes a warning, and continues using every
 shared capability.
 
-TRANSPORT-SECURITY CAVEAT (important). On the LAN TCP path, the link itself is
-NOT encrypted by a separate transport layer. The handshake and every
-application packet are authenticated (signed by Ed25519), and message content
-is end-to-end encrypted (section 7). However, routing metadata (peer IDs,
-packet types) on the LAN TCP link is visible in cleartext to an on-link
-observer. Per TODO.md, "Transport/session encryption for every TCP connection"
-is NOT yet implemented; the remote UDP path DOES add a full
-authenticated-encryption transport (section 6). Treat the LAN path as
-authenticated-but-not-link-encrypted until that work lands.
+LAN TCP transport security. After the signed handshake and encrypted key
+confirmation, every LAN TCP application packet has an independent AES-GCM
+transport layer. On-link observers can see only the record lengths and
+sequence numbers in addition to the clear handshake metadata; application
+packet types and payloads are confidential. Message and file E2EE remains
+necessary because transport encryption protects only this connection.
 
 ## 5. Remote Path - Control, STUN, and Encrypted UDP
 
@@ -394,8 +446,14 @@ The route-selection policy is:
 1. LAN TCP when available.
 2. Direct UDP server-reflexive candidate.
 3. Embedded DERP relay candidate after direct HELLO/READY setup expires.
-4. Keep the confirmed relay for the session. Direct recovery is deferred until
-   route replacement can preserve the working session atomically.
+4. While DERP is active, periodically probe the retained direct candidate.
+5. Promote direct UDP only after the replacement session receives authenticated
+   READY confirmation. Keep the previous confirmed route for a bounded drain
+   period so in-flight packets are not interrupted.
+
+LAN TCP discovery and authentication can take over from DERP at any time. It is
+also retained as the highest-priority route when remote UDP is active. A failed
+replacement handshake leaves the current confirmed route unchanged.
 
 Relay unavailability is non-fatal. The peer remains available through any working
 LAN or direct route, and the client reports the relay failure in logs and diagnostics.
@@ -432,7 +490,7 @@ JSON hello (canonical, then Ed25519-signed):
 
 ```json
 {
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "typing_indicators", "message_replies"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "typing_indicators", "message_replies", "direct_route_recovery"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -459,10 +517,11 @@ During the handshake, peers exchange signed lists of supported capabilities.
   - `block_reports`: Report message blocking status (`MESSAGE_BLOCKED`).
   - `group_chat`: Exchange `GROUP_MESSAGE`, `GROUP_MESSAGE_ACK`, and
     `GROUP_LEAVE` packets for mutually joined named rooms.
-   - `file_transfer`: Exchange `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
-     packets for cross-platform file transfer with image preview and download.
-   - `typing_indicators`: Exchange encrypted, transient `TYPING` packets.
-   - `message_replies`: Exchange messages that reference an original message or attachment.
+  - `file_transfer`: Exchange `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
+    packets for cross-platform file transfer with image preview and download.
+  - `typing_indicators`: Exchange encrypted, transient `TYPING` packets.
+  - `message_replies`: Exchange messages that reference an original message or attachment.
+  - `direct_route_recovery`: Probe and promote a direct UDP route after a DERP session is established; enabled only for the negotiated intersection.
 
 ### 6.3 Session Key Derivation
 
@@ -530,10 +589,20 @@ is the active transport and remote UDP is a fallback
 session is connected). The backend reports all known endpoints and marks the
 active one via IPC (get_network_info).
 
+When DERP is active and a direct candidate is retained, the transport probes the
+direct endpoint no more often than `DIRECT_PROBE_INTERVAL`. The confirmed DERP
+session remains active while this probe performs its independent HELLO/READY
+exchange. Once the direct session is confirmed, it is atomically promoted and
+the relay session enters a bounded drain period for in-flight packets. A failed
+or expired probe is discarded without firing a peer disconnect event. LAN TCP
+follows the same priority rule at the peer-manager layer: a confirmed LAN
+session supersedes remote routes, and remote UDP or DERP remains available as
+fallback if that TCP session closes.
+
 ## 7. End-to-End Message Envelope (backend/meshtalk/encryption.py, protocol.py)
 
-Message content is encrypted independently of the transport, so it is
-confidential even on the (currently un-link-encrypted) LAN TCP path.
+Message content is encrypted independently of the transport, so it remains
+confidential if a transport session is terminated or a message is relayed.
 
 ### 7.1 Encryption (encrypt_for_recipient)
 
@@ -742,19 +811,21 @@ Group file transfers use the same protocol but with `group_id` set in all packet
 
 ## 8. Application Packet Types
 
-TCP and UDP carry the same Packet type byte (backend/meshtalk/protocol.py):
+TCP and UDP carry the same application Packet types (backend/meshtalk/protocol.py).
+TCP handshake packets use the clear bootstrap framing described in section 4.3;
+after key confirmation, all application packets use encrypted TCP records.
 
 | Type | Hex | Name | Purpose |
 |------|-----|------|---------|
 | HANDSHAKE | 0x01 | Handshake | LAN TCP identity exchange (initiator to responder). |
-| HANDSHAKE_ACK | 0x02 | Handshake ACK | Responder acknowledges + returns nonce. |
+| HANDSHAKE_ACK | 0x02 | Handshake ACK | Clear bootstrap response with nonce and ephemeral key. |
 | MESSAGE | 0x03 | Message | E2EE message envelope. |
 | MESSAGE_ACK | 0x04 | Message ACK | Acknowledges a message_id. |
 | PING | 0x05 | Ping | Liveness probe. |
 | PONG | 0x06 | Pong | Ping reply. |
 | GOODBYE | 0x07 | Goodbye | Graceful disconnect. |
 | PROFILE | 0x08 | Profile | Signed display-name / TUI-active update. |
-| HANDSHAKE_CONFIRM | 0x09 | Handshake Confirm | Initiator proves challenge. |
+| HANDSHAKE_CONFIRM | 0x09 | Handshake Confirm | Encrypted TCP key-possession confirmation. |
 | FRIEND_REQUEST | 0x0A | Friend Request | Signed request to become friends. |
 | FRIEND_REQUEST_RESPONSE | 0x0B | Friend Response | Signed accept/decline. |
 | MESSAGE_BLOCKED | 0x0C | Message Blocked | Signed notice that a message was dropped (not a friend). |
@@ -890,9 +961,10 @@ counts, and summarizes per-member delivery states.
 
 What an adversary on the LAN / network path sees:
 - LAN UDP discovery broadcasts (anonymous discovery_id, TCP port).
-- LAN TCP bytes in cleartext EXCEPT message content (which is E2EE) and all
-  signatures. On-link observers see peer IDs and packet types on the LAN TCP
-  link (see section 4.3 caveat).
+- LAN TCP handshake metadata and encrypted record lengths/sequence numbers.
+  After key confirmation, packet types, routing metadata, and payloads are
+  protected by the TCP AES-GCM record layer. Handshake public keys, peer IDs,
+  display names, capabilities, and nonces remain visible by design.
 - Public UDP datagrams: only encrypted fragments + authenticated control frames;
   nothing about message content or routing metadata is recoverable without
   session keys.
@@ -946,13 +1018,10 @@ the current code (per TODO.md):
   Sender-side direct and group delivery on reconnect is active, but queue rows
   are only retried up to five failed flush attempts and no 500-message or
   24-hour age bound is enforced.
-- LAN TCP transport encryption. DESIGN claims "an additional independent
-  authenticated encryption layer" from the transport; only the remote UDP
-  transport implements this today. LAN TCP links are authenticated (signed) but
-  not link-encrypted (see section 4.3).
 - Transport forward secrecy persistence, OS secure-storage of private keys, full
-  input/peer validation hardening, and Noise-protocol handshake are listed as
-  outstanding in TODO.md.
+  input/peer validation hardening, and a Noise-protocol handshake remain outside
+  the current protocol. LAN TCP transport encryption uses the repository's
+  signed ephemeral X25519 session design documented in section 4.3.
 - Post-quantum KEM (e.g., ML-KEM/Kyber hybrid) is not implemented.
 
 ## 13. Constants Quick Reference
@@ -961,7 +1030,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators, message_replies | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators, message_replies, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |
@@ -978,6 +1047,7 @@ the current code (per TODO.md):
 | UDP max datagram | 1200 B | udp_transport.MAX_DATAGRAM_SIZE |
 | UDP retry / max | 0.45 s / 10 | udp_transport.RETRY_INTERVAL/MAX_RETRIES |
 | UDP session timeout | 12 s | udp_transport.SESSION_TIMEOUT |
+| Direct route probe interval | 30 s | udp_transport.DIRECT_PROBE_INTERVAL |
 | Message max content | 30 KiB | message_router.MAX_MESSAGE_CONTENT_SIZE |
 | Message expiry | 86400 s | message_router.MESSAGE_EXPIRY |
 | Display name max | 48 chars | identity.normalize_display_name |

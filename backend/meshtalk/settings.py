@@ -153,6 +153,11 @@ class Settings:
         self._splash_duration_ms = DEFAULT_SPLASH_DURATION_MS
         self._splash_phase_ms = DEFAULT_SPLASH_PHASE_MS
         self._splash_welcome_ms = DEFAULT_SPLASH_WELCOME_MS
+        self.analytics_consent = "pending"
+        self.analytics_level = "off"
+        self.analytics_seen_versions: list[str] = []
+        self.analytics_prompted_versions: list[str] = []
+        self._analytics_dirty = False
         self._load()
 
     @property
@@ -442,8 +447,50 @@ class Settings:
             self._notification_events.update(events)
         self.save()
 
+    def set_analytics_level(self, level: str) -> None:
+        """Set the analytics level: extended (Tier 0 + Tier 1), basic (Tier 0 only), or off (default)."""
+        if level not in {"extended", "basic", "off"}:
+            raise ValueError("analytics level must be extended, basic, or off")
+        self.analytics_level = level
+        self.analytics_consent = "declined" if level == "off" else "accepted"
+        self._analytics_dirty = True
+        self.save()
+
+    def _merge_analytics_from_disk(self) -> None:
+        """Adopt analytics keys written directly by the launcher/TUI.
+
+        The launcher and TUI write analytics_level / consent / prompted /
+        seen versions straight to settings.json; the backend must not clobber
+        those on its next unrelated save().  Union the version lists and, when
+        this process did not just change the level itself, adopt the on-disk
+        level/consent.
+        """
+        try:
+            if not self.path.exists():
+                return
+            data = json.loads(self.path.read_text())
+        except Exception:
+            return
+        if isinstance(data.get("analytics_seen_versions"), list):
+            seen = [value for value in data["analytics_seen_versions"] if isinstance(value, str)]
+            self.analytics_seen_versions = list(dict.fromkeys([*self.analytics_seen_versions, *seen]))
+        if isinstance(data.get("analytics_prompted_versions"), list):
+            prompted = [value for value in data["analytics_prompted_versions"] if isinstance(value, str)]
+            self.analytics_prompted_versions = list(dict.fromkeys([*self.analytics_prompted_versions, *prompted]))
+        if not self._analytics_dirty:
+            if data.get("analytics_level") in {"extended", "basic", "off"}:
+                self.analytics_level = data["analytics_level"]
+            elif data.get("analytics_consent") == "accepted":
+                self.analytics_level = "extended"
+            elif data.get("analytics_consent") in {"declined", "never_ask_again"}:
+                self.analytics_level = "off"
+            if data.get("analytics_consent") in {"accepted", "declined", "never_ask_again"}:
+                self.analytics_consent = data["analytics_consent"]
+
     def save(self) -> None:
         """Save settings to disk as a JSON file."""
+        self._merge_analytics_from_disk()
+        self._analytics_dirty = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "version": 1,
@@ -471,6 +518,10 @@ class Settings:
             "splash_duration_ms": self._splash_duration_ms,
             "splash_phase_ms": self._splash_phase_ms,
             "splash_welcome_ms": self._splash_welcome_ms,
+            "analytics_consent": self.analytics_consent,
+            "analytics_level": self.analytics_level,
+            "analytics_prompted_versions": self.analytics_prompted_versions,
+            "analytics_seen_versions": self.analytics_seen_versions,
         }
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, indent=2))
@@ -482,7 +533,10 @@ class Settings:
             return
         self.path.chmod(0o600)
         data = json.loads(self.path.read_text())
-        if data.get("version") != 1:
+        # Tolerate files first created by the launcher/TUI consent writers,
+        # which only store analytics keys and no "version" yet. Only an
+        # explicit unknown version is rejected.
+        if "version" in data and data.get("version") != 1:
             raise ValueError("Unsupported settings version")
         self._control_url = data.get("control_url", "")
         control_pinned_ips = data.get("control_pinned_ips", data.get("control_pinned_ip"))
@@ -562,3 +616,27 @@ class Settings:
         splash_welcome_ms = data.get("splash_welcome_ms", DEFAULT_SPLASH_WELCOME_MS)
         if isinstance(splash_welcome_ms, (int, float)) and splash_welcome_ms >= 0:
             self._splash_welcome_ms = int(splash_welcome_ms)
+        has_analytics_level = data.get("analytics_level") in {"extended", "basic", "off"}
+        if has_analytics_level:
+            self.analytics_level = data["analytics_level"]
+        elif data.get("analytics_consent") == "accepted":
+            self.analytics_level = "extended"
+        elif data.get("analytics_consent") in {"declined", "never_ask_again"}:
+            self.analytics_level = "off"
+        else:
+            self.analytics_level = "off"
+        if data.get("analytics_consent") in {"accepted", "declined", "never_ask_again"}:
+            self.analytics_consent = data["analytics_consent"]
+        elif has_analytics_level and self.analytics_level == "off":
+            self.analytics_consent = "declined"
+        else:
+            self.analytics_consent = "pending"
+        if isinstance(data.get("analytics_prompted_versions"), list):
+            self.analytics_prompted_versions = [value for value in data["analytics_prompted_versions"] if isinstance(value, str)]
+        if isinstance(data.get("analytics_seen_versions"), list):
+            self.analytics_seen_versions = [value for value in data["analytics_seen_versions"] if isinstance(value, str)]
+        # Re-open the consent prompt for installs affected by the brief
+        # default-on build, which wrote accepted/extended without a prompt marker.
+        if self.analytics_consent == "accepted" and not self.analytics_prompted_versions:
+            self.analytics_consent = "pending"
+            self.analytics_level = "off"

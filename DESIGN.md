@@ -16,9 +16,9 @@ identity, networking, encryption, persistence, and transport selection.
 ### LAN path
 
 Every backend broadcasts its peer ID and TCP listener port on UDP port 24890.
-The lower peer ID deterministically opens an authenticated TCP connection to
-port 24891. This path remains available when the control service or internet is
-unavailable.
+The lower peer ID deterministically opens an authenticated and transport-
+encrypted TCP connection to port 24891. This path remains available when the
+control service or internet is unavailable.
 
 ### Remote path
 
@@ -40,9 +40,12 @@ members already online.
 
 LAN TCP has highest priority. For Internet peers, direct UDP has higher priority
 than DERP. Direct setup and keepalive health determine whether the relay route is
-selected. A confirmed relay remains active for the session; replacing it with a
-direct route requires an atomic handoff and is not attempted yet. The backend
-reports all known endpoints and marks the active endpoint through IPC.
+selected. A confirmed relay remains active while a direct UDP route is probed. A
+direct route is promoted only after authenticated key confirmation; the previous
+route remains available briefly so in-flight packets can drain. LAN TCP may take
+over at any time after its authenticated handshake and remains the preferred
+route. The backend reports all known endpoints and marks the active endpoint
+through IPC.
 
 ### Embedded DERP relay
 
@@ -62,6 +65,10 @@ enabled only when both peers advertise its capability. A missing or unknown
 capability disables only that feature; every shared capability continues to
 work. Both peers retain the directional difference and show a flashing limited-
 capabilities warning without changing connectivity or presence state.
+The `direct_route_recovery` capability follows the same intersection rule but
+gates only DERP-to-direct UDP recovery. It does not gate initial direct
+connection attempts or the established LAN TCP takeover path, preserving
+behavior with older peers that do not advertise it.
 
 ## Private Rooms And Named Groups
 
@@ -158,8 +165,8 @@ receive authenticated acknowledgements. Missing acknowledgements trigger
 bounded retransmission; duplicate packet IDs are acknowledged but not delivered
 again. Authenticated keepalives preserve mappings and expire dead sessions.
 
-The existing packet protocol and end-to-end message envelope run above both TCP
-and reliable UDP transports.
+The existing packet protocol and end-to-end message envelope run above both
+TCP's encrypted record layer and reliable UDP's encrypted datagrams.
 
 ## Identity And Messages
 

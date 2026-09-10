@@ -28,7 +28,7 @@ export type Message = {
 }
 export type UnreadMessageState = { conversationKey: string; receivedAt: number; visibleAt?: number }
 export type Group = { group_id: string; name: string; member_count: number; unread_count: number }
-export type GroupMember = { peer_id?: string; member_id?: string; display_name: string; is_online?: boolean; show_in_sidebar?: boolean; is_limited?: boolean }
+export type GroupMember = { peer_id?: string; member_id?: string; display_name: string; is_online?: boolean; is_limited?: boolean }
 export type Conversation = { kind: "peer" | "group"; id: string }
 export type TypingPeer = { displayName: string; createdAt: number; expiresAt: number; isTyping: boolean }
 export type FriendRequest = { request_id: string; sender_id: string; sender_name: string; recipient_id?: string; recipient_name?: string; note?: string | null; created_at: number; direction: "incoming" | "outgoing"; status?: string }
@@ -40,11 +40,11 @@ export type SplashPreference = "card" | "boot-log" | "off"
 export type AdvancedConfig = { control_url?: string | null; control_pinned_ips: string[]; stun_server: string; stun_pinned_ips: string[]; image_protocol: ImageProtocol; splash_style: SplashPreference; splash_duration_ms?: number; splash_phase_ms?: number; splash_welcome_ms?: number }
 export type DebugInfo = { public_endpoint?: [string, number] | null; stun_server: string; local_tcp_port: number; rooms: RoomStatus[]; peers: Peer[] }
 export type FileTransfer = { file_id: string; filename: string; file_size: number; sender_id: string; recipient_id: string; group_id?: string | null; direction: string; status: string; file_path?: string | null; created_at: number; completed_at?: number | null; received_chunks?: number; total_chunks?: number }
-export type ConversationItem = { type: "message"; createdAt: number; message: Message } | { type: "file"; createdAt: number; file: FileTransfer }
+export type ConversationItem = { type: "message"; createdAt: number; message: Message } | { type: "file"; createdAt: number; file: FileTransfer; allFiles: FileTransfer[] }
 export type ReplyTarget = { id: string; senderId: string; label: string; groupId?: string; kind: "message" | "file" }
 
 export type Dialog =
-  | { kind: "commands" } | { kind: "control"; firstRun?: boolean } | { kind: "control-custom"; firstRun?: boolean }
+  | { kind: "settings" } | { kind: "control"; firstRun?: boolean } | { kind: "control-custom"; firstRun?: boolean }
   | { kind: "control-status"; control: ControlStatus } | { kind: "advanced"; config: AdvancedConfig }
   | { kind: "advanced-image-protocol"; config: AdvancedConfig } | { kind: "advanced-ip-pinning"; config: AdvancedConfig } | { kind: "advanced-control"; config: AdvancedConfig } | { kind: "advanced-stun"; config: AdvancedConfig }
   | { kind: "customisation" } | { kind: "customisation-splash"; splashStyle: SplashPreference }

@@ -1,3 +1,4 @@
+import { chatLayout, chatTheme } from "./chatTheme";
 import {
   createClipboard,
   createHostClipboard,
@@ -28,6 +29,7 @@ import type {
   ConversationItem,
   Dialog,
   FileTransfer,
+  FriendRequest,
   Group,
   GroupMember,
   ImageProtocol,
@@ -38,10 +40,12 @@ import type {
   TypingPeer,
   UnreadMessageState,
 } from "./types";
+import { dialogUsesTextInput } from "./navigation";
 import {
   composerLimitColor,
   DEFAULT_STATUS,
   getComposerHeight,
+  inlineFriendActions,
   isImageFile,
   MIN_COMPOSER_HEIGHT,
   peerPresence,
@@ -51,12 +55,18 @@ import {
 import { Sidebar } from "./components/Sidebar";
 import { ConversationPanel } from "./components/ConversationPanel";
 import { DialogPanel } from "./components/DialogPanel";
+import { clearImageCache } from "./components/ImageAttachment";
 import {
   notify,
   type NotificationDelivery,
   type NotificationPreferences,
 } from "./notifications";
 import { useChatActions } from "./useChatActions";
+import {
+  createPastedImageDedupRecord,
+  shouldSuppressPastedImage,
+  type PastedImageDedupRecord,
+} from "./pastedImageDedup";
 import {
   APP_RELEASE_VERSION,
   IS_RELEASE_BUILD,
@@ -67,6 +77,7 @@ import {
   type StartupOutcome,
   type SplashStyle,
 } from "./SplashScreen";
+import { AnalyticsConsent } from "./AnalyticsConsent";
 
 declare const APP_VERSION: string;
 
@@ -120,7 +131,14 @@ type StartupResult = {
   };
 };
 
-export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } = {}) {
+export function ChatApp({ splashStyle, analyticsPrompt = false }: { splashStyle?: SplashStyle | false; analyticsPrompt?: boolean } = {}) {
+  const [consentOpen, setConsentOpen] = useState(analyticsPrompt);
+  // Mount chat (and its global keyboard/paste listeners) only after consent.
+  if (consentOpen) return <AnalyticsConsent version={APP_RELEASE_VERSION} done={() => setConsentOpen(false)} />;
+  return <ChatSession splashStyle={splashStyle} />;
+}
+
+function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const renderer = useRenderer();
   const { width, height } = useTerminalDimensions();
   const [ipc] = useState(() => new IPCClient());
@@ -147,6 +165,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const [draftLength, setDraftLength] = useState(0);
   const [composerHeight, setComposerHeight] = useState(MIN_COMPOSER_HEIGHT);
   const [isSending, setIsSending] = useState(false);
+  const lastPastedImage = useRef<PastedImageDedupRecord | undefined>(undefined);
+  const selectionKeyRef = useRef<string | undefined>(undefined);
   const [nameDraft, setNameDraft] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [scrollFocused, setScrollFocused] = useState(false);
@@ -176,6 +196,11 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     import("./types").DebugInfo | null
   >(null);
   const [fileTransfers, setFileTransfers] = useState<FileTransfer[]>([]);
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
+  const [conversationFileTransfers, setConversationFileTransfers] = useState<
+    FileTransfer[]
+  >([]);
+  const [conversationLoading, setConversationLoading] = useState(false);
   const [typingPeers, setTypingPeers] = useState<
     Record<string, Record<string, TypingPeer>>
   >({});
@@ -219,6 +244,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const selectionKey = selection
     ? `${selection.kind}:${selection.id}`
     : undefined;
+  selectionKeyRef.current = selectionKey;
 
   function rememberUnreadMessage(
     conversationKey: string,
@@ -403,6 +429,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     setDialogDraft,
     setDialogError,
     setDialogBusy,
+    setFriendRequests,
     statusResetRef: statusReset,
     copyToastResetRef: copyToastReset,
     dialogActionRef: dialogAction,
@@ -476,7 +503,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     await setPhase(StartupPhase.LoadData);
     await actions.refreshPeers();
     await actions.refreshGroups();
-    void actions.refreshFiles();
+    void actions.refreshFriendRequestsSilent().catch(() => {});
 
     const mutedResp = await ipc.send("muted_peers");
     if (!mutedResp.error)
@@ -633,6 +660,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   }, [selectionKey]);
 
   useEffect(() => {
+    if (!scrollFocused) setSelectedReplyTarget(undefined);
+  }, [scrollFocused]);
+
+  useEffect(() => {
     if (deleteConfirmationTimer.current)
       clearTimeout(deleteConfirmationTimer.current);
     if (!deleteConfirmation) {
@@ -698,6 +729,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         if (active && !backendDisconnected.current)
           setStatus(`Peer refresh error: ${String(error)}`);
       });
+      void actions.refreshFriendRequestsSilent().catch(() => {});
       void actions.refreshGroups().catch((error) => {
         if (active && !backendDisconnected.current)
           setStatus(`Group refresh error: ${String(error)}`);
@@ -706,7 +738,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         if (active && !backendDisconnected.current && selectedGroupId)
           setStatus(`Group member refresh error: ${String(error)}`);
       });
-      void actions.refreshFiles();
       void ipc
         .send("control")
         .then((control) => {
@@ -724,6 +755,31 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       clearInterval(interval);
     };
   }, [ipc, selectedGroupId]);
+
+  function refreshSelectedConversationFiles() {
+    const currentSelection = selection;
+    const currentSelectionKey = selectionKey;
+    if (!currentSelection || !currentSelectionKey) return;
+    const request =
+      currentSelection.kind === "peer"
+        ? ipc.send("files", { peer_id: currentSelection.id })
+        : ipc.send("files", { group_id: currentSelection.id });
+    void request
+      .then((response) => {
+        if (!response.error && selectionKeyRef.current === currentSelectionKey)
+          setConversationFileTransfers(response.files as FileTransfer[]);
+      })
+      .catch(() => {});
+  }
+
+  function fileEventMatchesSelection(event: IPCEvent) {
+    if (!selection) return false;
+    const groupId = event.group_id as string | null | undefined;
+    if (groupId)
+      return selection.kind === "group" && selection.id === groupId;
+    const peerId = (event.sender_id ?? event.recipient_id) as string | undefined;
+    return selection.kind === "peer" && selection.id === peerId;
+  }
 
   useEffect(() => {
     if (!flashingEnabled) return;
@@ -894,7 +950,12 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         }
         if (event.event === "delivered") {
           const messageId = event.message_id as string;
-          setDeliveredMessageIds((c) => new Set(c).add(messageId));
+          setDeliveredMessageIds((current) => {
+            const next = new Set(current);
+            next.add(messageId);
+            while (next.size > 1_024) next.delete(next.values().next().value!);
+            return next;
+          });
           setMessages((current) =>
             current.map((message) =>
               message.message_id === messageId
@@ -975,9 +1036,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           if (!dialog) setDialog({ kind: "friend-request-incoming", request });
           else
             actions.showStatus(
-              `Friend request from ${request.sender_name}. Open Commands > Friends to respond.`,
+              `Friend request from ${request.sender_name}. Open Settings > Friends to respond.`,
             );
           void actions.refreshPeers();
+          void actions.refreshFriendRequestsSilent();
           return;
         }
         if (event.event === "friend_response") {
@@ -986,14 +1048,17 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             event.accepted
               ? `${name} accepted your friend request. You can now chat.`
               : `${name} declined your friend request.`,
+            5_000,
           );
           void actions.refreshPeers();
+          void actions.refreshFriendRequestsSilent();
           return;
         }
         if (event.event === "friend_cancelled") {
           const name = (event.display_name as string) ?? "a peer";
-          actions.showStatus(`${name} cancelled their friend request.`);
+          actions.showStatus(`${name} cancelled their friend request.`, 5_000);
           void actions.refreshPeers();
+          void actions.refreshFriendRequestsSilent();
           return;
         }
         if (event.event === "peer_capability_gap") {
@@ -1016,16 +1081,11 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             renderer,
             `Incoming file ${filename} from ${sender}`,
           );
-          void ipc
-            .send("files")
-            .then((res) => {
-              if (!res.error) setFileTransfers(res.files as FileTransfer[]);
-            })
-            .catch(() => {});
+          if (fileEventMatchesSelection(event)) refreshSelectedConversationFiles();
           return;
         }
         if (event.event === "file_progress") {
-          setFileTransfers((cur) =>
+          setConversationFileTransfers((cur) =>
             cur.map((f) =>
               f.file_id === event.file_id
                 ? {
@@ -1051,7 +1111,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             renderer,
             `File received: ${filename}`,
           );
-          setFileTransfers((current) =>
+          setConversationFileTransfers((current) =>
             current.map((file) =>
               file.file_id === fileId
                 ? {
@@ -1063,12 +1123,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
                 : file,
             ),
           );
-          void ipc
-            .send("files")
-            .then((res) => {
-              if (!res.error) setFileTransfers(res.files as FileTransfer[]);
-            })
-            .catch(() => {});
+          if (fileEventMatchesSelection(event)) refreshSelectedConversationFiles();
           return;
         }
         if (
@@ -1084,12 +1139,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           else if (event.event === "file_delivered")
             actions.showStatus(`File ${name} delivered.`);
           else actions.showStatus(`File ${name} queued for offline peer.`);
-          void ipc
-            .send("files")
-            .then((res) => {
-              if (!res.error) setFileTransfers(res.files as FileTransfer[]);
-            })
-            .catch(() => {});
+          if (fileEventMatchesSelection(event)) refreshSelectedConversationFiles();
           return;
         }
         if (event.event !== "message") {
@@ -1123,9 +1173,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             `New message from ${sender}`,
           );
         updatePeerInteraction(senderId);
-        if (senderId !== selectedPeerId) {
+        const conversationKey = `peer:${senderId}`;
+        if (
+          senderId !== selectedPeerId ||
+          selectionKeyRef.current !== conversationKey
+        ) {
           rememberUnreadMessage(
-            `peer:${senderId}`,
+            conversationKey,
             event.message_id as string | undefined,
           );
           setPeers((current) =>
@@ -1153,7 +1207,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         void ipc
           .send("messages", { peer_id: senderId })
           .then((response) => {
-            if (!response.error) {
+            if (!response.error && selectionKeyRef.current === conversationKey) {
               setMessages(response.messages as Message[]);
               void actions.refreshPeers();
             }
@@ -1177,10 +1231,17 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     let cancelled = false;
     if (!selection || !selectionKey) {
       setMessages([]);
+      setConversationFileTransfers([]);
+      clearImageCache();
+      setConversationLoading(false);
       setDraftLength(0);
       setComposerHeight(MIN_COMPOSER_HEIGHT);
       return;
     }
+    setMessages([]);
+    setConversationFileTransfers([]);
+    clearImageCache();
+    setConversationLoading(true);
     const unreadCount =
       selection.kind === "peer"
         ? (peers.find((peer) => peer.peer_id === selection.id)?.unread_count ??
@@ -1226,15 +1287,27 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         const history = response.messages as Message[];
         rememberUnreadHistory(selectionKey, history, unreadCount);
         setMessages(history);
+        setConversationLoading(false);
         if (selection.kind === "peer") void actions.refreshPeers();
         else void actions.refreshGroups();
       })
       .catch((error) => {
+        if (!cancelled) setConversationLoading(false);
         if (!cancelled && !backendDisconnected.current)
           setStatus(
             `History error: ${error instanceof Error ? error.message : String(error)}`,
           );
       });
+    const filesRequest =
+      selection.kind === "peer"
+        ? ipc.send("files", { peer_id: selection.id })
+        : ipc.send("files", { group_id: selection.id });
+    filesRequest
+      .then((response) => {
+        if (!cancelled && !response.error)
+          setConversationFileTransfers(response.files as FileTransfer[]);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -1244,6 +1317,17 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     const composer = composerRef.current;
     if (composer) setComposerHeight(getComposerHeight(composer));
   }, [selectionKey, width]);
+
+  function sendPastedImage(bytes: Uint8Array, mimeType: string) {
+    const next = createPastedImageDedupRecord(
+      bytes,
+      selectionKeyRef.current,
+      performance.now(),
+    );
+    if (shouldSuppressPastedImage(lastPastedImage.current, next)) return;
+    lastPastedImage.current = next;
+    void actions.sendImage(bytes, mimeType);
+  }
 
   usePaste((event) => {
     if (dialog || editingName || isSending) return;
@@ -1261,7 +1345,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       )
         event.preventDefault();
       if (eventIsImage && imageMimeType) {
-        void actions.sendImage(rawBytes, imageMimeType);
+        sendPastedImage(rawBytes, imageMimeType);
         return;
       }
       const raw = decodePasteBytes(rawBytes).trim();
@@ -1278,7 +1362,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           })
           .then((result) => {
             if (result.status === "read")
-              void actions.sendImage(
+              sendPastedImage(
                 result.representation.bytes,
                 result.representation.mimeType,
               );
@@ -1313,7 +1397,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       return;
     }
     if (result.representation.mimeType.startsWith("image/")) {
-      await actions.sendImage(
+      sendPastedImage(
         result.representation.bytes,
         result.representation.mimeType,
       );
@@ -1327,7 +1411,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   }
 
   useKeyboard((key) => {
-    if (dialog && dialogBusyRef.current) return;
+    if (dialog && dialogBusyRef.current) { key.preventDefault(); return; }
     if (deleteConfirmation) {
       if (key.name === "escape") {
         setDeleteConfirmation(undefined);
@@ -1346,7 +1430,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           .then((response) => {
             if (response.error) throw new Error(response.error);
             if (message.kind === "file")
-              setFileTransfers((current) =>
+              setConversationFileTransfers((current) =>
                 current.filter((item) => item.file_id !== message.id),
               );
             else
@@ -1387,12 +1471,17 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       return;
     }
     if (key.ctrl && key.name === "p") {
-      if (dialog?.kind === "commands") actions.closeDialog();
-      else actions.showDialog({ kind: "commands" });
+      key.preventDefault();
+      if (dialog && (dialog.kind === "update" || dialog.kind === "update-directory" || dialog.kind === "update-token")) return;
+      if (dialog?.kind === "settings") actions.closeDialog();
+      else actions.showDialog({ kind: "settings" });
       return;
     }
     if (dialog) {
-      if (key.name === "escape") actions.goBack();
+      if (key.name === "escape" || (key.name === "backspace" && !dialogUsesTextInput(dialog))) {
+        key.preventDefault();
+        actions.goBack();
+      }
       return;
     }
     if (key.name === "escape" && editingName) {
@@ -1402,16 +1491,14 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       return;
     }
     if (key.ctrl && key.name === "n") {
+      key.preventDefault();
       setNameDraft(identity?.display_name ?? "");
       setEditingName(true);
       return;
     }
     if (key.ctrl && key.name === "u") {
+      key.preventDefault();
       void actions.openFilePicker();
-      return;
-    }
-    if (key.ctrl && key.name === "d") {
-      void actions.removeSelectedPeer();
       return;
     }
     if (
@@ -1419,6 +1506,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       !key.ctrl &&
       (key.name === "up" || key.name === "down")
     ) {
+      key.preventDefault();
       const replyTargets = conversationItems.map((item): ReplyTarget =>
         item.type === "message"
           ? {
@@ -1437,7 +1525,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             },
       );
       if (!replyTargets.length) return;
-      key.preventDefault();
       const index = selectedReplyTarget
         ? replyTargets.findIndex(
             (target) => target.id === selectedReplyTarget.id,
@@ -1493,13 +1580,21 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       setReplyTo(undefined);
       return;
     }
+    if (key.name === "escape" && scrollFocused) {
+      key.preventDefault();
+      setScrollFocused(false);
+      return;
+    }
     if (
       (key.name === "up" || key.name === "down") &&
       key.ctrl &&
-      (peers.length || groups.length)
+      (visiblePeers.length || groups.length)
     ) {
+      key.preventDefault();
+      setScrollFocused(false);
+      setEditingName(false);
       const conversations: Conversation[] = [
-        ...peers.map((peer) => ({ kind: "peer" as const, id: peer.peer_id })),
+        ...visiblePeers.map((peer) => ({ kind: "peer" as const, id: peer.peer_id })),
         ...groups.map((group) => ({
           kind: "group" as const,
           id: group.group_id,
@@ -1524,19 +1619,109 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       }
     }
     if (key.name === "pageup") {
+      key.preventDefault();
       setScrollFocused(true);
       scrollboxRef.current?.scrollBy(-1, "viewport");
     }
     if (key.name === "pagedown") {
+      key.preventDefault();
       setScrollFocused(true);
       scrollboxRef.current?.scrollBy(1, "viewport");
     }
-    if (scrollFocused && key.name === "home") scrollboxRef.current?.scrollTo(0);
-    if (scrollFocused && key.name === "end")
+    if (scrollFocused && key.name === "home") {
+      key.preventDefault();
+      scrollboxRef.current?.scrollTo(0);
+    }
+    if (scrollFocused && key.name === "end") {
+      key.preventDefault();
       scrollboxRef.current?.scrollTo(scrollboxRef.current.scrollHeight);
+    }
   });
 
   const selected = peers.find((peer) => peer.peer_id === selectedPeerId);
+  const inboxCount = friendRequests.length;
+  const visiblePeers = useMemo(() => peers.filter((peer) => !peer.is_blocked), [peers]);
+
+  useEffect(() => {
+    if (selection?.kind !== "peer") return;
+    const peer = peers.find((item) => item.peer_id === selection.id);
+    if (peer && !peer.is_blocked) return;
+    const next = visiblePeers[0];
+    setSelection(next ? { kind: "peer", id: next.peer_id } : groups[0] ? { kind: "group", id: groups[0].group_id } : undefined);
+  }, [selection, peers, visiblePeers, groups]);
+
+  function resolvePeerRequest(peerId: string, direction: "incoming" | "outgoing"): FriendRequest | undefined {
+    return friendRequests.find((request) => request.direction === direction && (request.sender_id === peerId || request.recipient_id === peerId));
+  }
+
+  function handleInlineFriendAction(action: import("./utils").InlineFriendAction) {
+    const peer = peers.find((item) => item.peer_id === selectedPeerId);
+    if (!peer || selectedGroupId) return;
+    if (action === "add") {
+      actions.showDialog({ kind: "add-friend", peerId: peer.peer_id, displayName: peer.display_name });
+      return;
+    }
+    if (action === "inbox") {
+      actions.openFriendsInbox();
+      return;
+    }
+    if (action === "block") {
+      actions.showDialog({ kind: "block-peer", peerId: peer.peer_id, displayName: peer.display_name });
+      return;
+    }
+    if (action === "unblock") {
+      void ipc.send("unblock_peer", { peer_id: peer.peer_id }).then((response) => {
+        if (response.error) {
+          if (!backendDisconnected.current) setStatus(`Unblock error: ${response.error}`);
+          return;
+        }
+        actions.showStatus(`Unblocked ${peer.display_name}. They can send friend requests again.`, 5_000);
+        void actions.refreshPeers();
+        void actions.refreshFriendRequestsSilent();
+      }).catch((error) => {
+        if (!backendDisconnected.current) setStatus(`Unblock error: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      return;
+    }
+    if (action === "cancel") {
+      const request = resolvePeerRequest(peer.peer_id, "outgoing");
+      if (!request) {
+        actions.showStatus("No pending outgoing request found. Refreshing the inbox…");
+        void actions.refreshFriendRequestsSilent();
+        void actions.refreshPeers();
+        return;
+      }
+      actions.showDialog({ kind: "cancel-friend-confirm", requestId: request.request_id, displayName: peer.display_name });
+      return;
+    }
+    if (action === "accept" || action === "decline") {
+      const request = resolvePeerRequest(peer.peer_id, "incoming");
+      if (!request) {
+        actions.showStatus("No pending incoming request found. Refreshing the inbox…");
+        void actions.refreshFriendRequestsSilent();
+        void actions.refreshPeers();
+        return;
+      }
+      void actions.respondToFriendRequest(request, action === "accept");
+    }
+  }
+
+  useKeyboard((key) => {
+    if (key.ctrl && key.name === "f") {
+      key.preventDefault();
+      actions.openFriendsInbox();
+      return;
+    }
+    const modifier = (key as unknown as { alt?: boolean }).alt || key.meta || key.ctrl;
+    if (modifier && ["1", "2", "3", "4"].includes(key.name) && !dialog && !editingName && !isSending && selected && !selectedGroup) {
+      const options = inlineFriendActions(selected);
+      const option = options[Number(key.name) - 1];
+      if (option) {
+        key.preventDefault();
+        handleInlineFriendAction(option.id);
+      }
+    }
+  });
   const selectedHasCapabilityGap = Boolean(selected?.capability_gap);
   const capabilityGapParts = selected
     ? [
@@ -1564,22 +1749,31 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       .filter(([, peers]) => Object.values(peers).some((peer) => peer.isTyping))
       .map(([conversation]) => conversation),
   );
-  const conversationFiles = useMemo(
-    () =>
-      fileTransfers
-        .filter((f) => {
-          if (f.status !== "completed" && f.status !== "sent") return false;
-          if (selection?.kind === "peer")
-            return (
-              !f.group_id &&
-              (f.sender_id === selection.id || f.recipient_id === selection.id)
-            );
-          if (selection?.kind === "group") return f.group_id === selection.id;
-          return false;
-        })
-        .sort((a, b) => a.created_at - b.created_at),
-    [fileTransfers, selection],
-  );
+  const conversationFiles = useMemo(() => {
+    const grouped = new Map<string, FileTransfer[]>();
+    for (const f of conversationFileTransfers) {
+      const key = `${f.filename}|${f.sender_id}|${f.group_id ?? ""}|${Math.round(f.created_at)}`;
+      const list = grouped.get(key);
+      if (list) list.push(f);
+      else grouped.set(key, [f]);
+    }
+    const statusPriority: Record<string, number> = {
+      completed: 0,
+      sent: 1,
+      failed: 2,
+      queued: 3,
+      receiving: 4,
+      transferring: 5,
+      unavailable: 6,
+    };
+    const best = (list: FileTransfer[]) =>
+      list.reduce((a, b) =>
+        (statusPriority[a.status] ?? 99) <= (statusPriority[b.status] ?? 99) ? a : b,
+      );
+    return [...grouped.values()]
+      .map((list) => ({ file: best(list), all: list }))
+      .sort((a, b) => a.file.created_at - b.file.created_at);
+  }, [conversationFileTransfers]);
   const conversationItems = useMemo<ConversationItem[]>(
     () =>
       [
@@ -1588,10 +1782,11 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           createdAt: message.created_at,
           message,
         })),
-        ...conversationFiles.map((file) => ({
+        ...conversationFiles.map(({ file, all }) => ({
           type: "file" as const,
           createdAt: file.created_at,
           file,
+          allFiles: all,
         })),
       ].sort(
         (a, b) =>
@@ -1605,17 +1800,18 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         (member) => member.is_limited,
       )
     : [];
-  const sidebarWidth = width < 72 ? 22 : 32;
-  const compact = width < 72;
+  const { stacked, sidebarWidth, panelWidth } = chatLayout(width);
+  const compact = panelWidth < 70;
   const limitColor = composerLimitColor(draftLength);
-  const dialogWidth = Math.min(68, Math.max(1, width - 4));
+  const dialogWidth = Math.min(100, Math.max(1, width - 6));
   const dialogHeight =
-    dialog?.kind === "image-view" || dialog?.kind === "file-list" || dialog?.kind === "files-dir" || dialog?.kind === "file-download"
+    (dialog?.kind === "image-view" || dialog?.kind === "file-list")
       ? Math.max(1, height - 2)
-      : Math.min(20, Math.max(1, height - 4));
+      : Math.min(32, Math.max(1, height - 4));
   function dialogWidthFor(kind: Dialog["kind"]): number {
-    if (kind === "image-view" || kind === "file-list" || kind === "files-dir" || kind === "file-download") return Math.max(1, width - 2);
-    if (kind === "room-detail" || kind === "group-detail")
+    if (kind === "image-view" || kind === "file-list") return Math.max(1, width - 2);
+    if (kind === "files-dir" || kind === "file-download") return Math.min(118, Math.max(1, width - 6));
+    if (kind === "group-detail")
       return Math.min(78, Math.max(1, width - 2));
     return dialogWidth;
   }
@@ -1641,16 +1837,18 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   return (
     <box
       style={{
-        flexDirection: "row",
+        flexDirection: stacked ? "column" : "row",
+        backgroundColor: chatTheme.canvas,
         width: "100%",
         height: "100%",
         minWidth: 0,
-        padding: 1,
-        gap: 1,
+        padding: 0,
+        gap: stacked ? 0 : 1,
       }}
     >
       <Sidebar
-        compact={compact}
+        appVersion={APP_RELEASE_VERSION}
+        stacked={stacked}
         dialogOpen={Boolean(dialog)}
         editingName={editingName}
         groups={groups}
@@ -1658,11 +1856,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         identity={identity}
         mutedPeers={mutedPeers}
         nameDraft={nameDraft}
-        peers={peers}
+        peers={visiblePeers}
         selectedGroupId={selectedGroupId}
         selectedPeerId={selectedPeerId}
         sidebarWidth={sidebarWidth}
         typingConversationKeys={typingConversationKeys}
+        friendRequestCount={inboxCount}
+        onOpenInbox={() => actions.openFriendsInbox()}
         openGroupDetails={(group) => void actions.loadGroupDetails(group)}
         setEditingName={setEditingName}
         setNameDraft={setNameDraft}
@@ -1673,7 +1873,9 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       <ConversationPanel
         compact={compact}
         controlStatus={controlStatus}
+        hasRooms={groups.length > 0}
         conversationItems={conversationItems}
+        conversationLoading={conversationLoading}
         deliveredMessageIds={deliveredMessageIds}
         dialogOpen={Boolean(dialog)}
         draftLength={draftLength}
@@ -1703,10 +1905,11 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         scrollFocused={scrollFocused}
         scrollboxRef={scrollboxRef}
         status={status}
-        width={width}
+        width={panelWidth}
         unreadMessageStates={unreadMessages}
         unreadNow={unreadNow}
         markUnreadMessageVisible={markUnreadMessageVisible}
+        openSettings={() => actions.showDialog({ kind: "settings" })}
         openImage={(file) => {
           if (file.file_path)
             actions.showDialog({
@@ -1726,6 +1929,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           setSelectedReplyTarget(target);
           setScrollFocused(true);
         }}
+        clearReplyTarget={() => setSelectedReplyTarget(undefined)}
         onComposerChange={handleComposerChange}
         send={() => {
           stopOutgoingTyping();
@@ -1733,6 +1937,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             if (sent) setReplyTo(undefined);
           });
         }}
+        inboxCount={inboxCount}
+        onFriendAction={handleInlineFriendAction}
       />
       {deleteConfirmation && (
         <box
@@ -1740,20 +1946,21 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             position: "absolute",
             left: Math.max(2, Math.floor(width / 2) - 24),
             top: Math.max(1, Math.floor(height / 2) - 2),
-            width: Math.min(48, Math.max(1, width - 4)),
+            width: Math.min(42, Math.max(1, width - 4)),
             border: true,
-            borderColor: "#ff7777",
-            backgroundColor: "#2d1818",
+            borderColor: chatTheme.line,
+            backgroundColor: chatTheme.surfaceRaised,
             padding: 1,
             flexDirection: "column",
           }}
         >
-          <text fg="#ff7777">
-            <b>Delete this message locally?</b>
+          <text fg={chatTheme.danger}>
+            <b>Delete this message?</b>
           </text>
-          <text fg="#bbbbbb">
-            Enter confirms. Esc cancels. This is not sent to peers.
+          <text fg={chatTheme.muted}>
+            It will be removed from this device only.
           </text>
+          <text><span fg={chatTheme.danger}>Enter delete</span><span fg={chatTheme.muted}>  /  Esc keep</span></text>
         </box>
       )}
       {copyToast && (
@@ -1763,13 +1970,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             right: 2,
             top: 1,
             border: true,
-            borderColor: "#66dd88",
-            backgroundColor: "#18251d",
+            borderColor: chatTheme.line,
+            backgroundColor: chatTheme.surfaceRaised,
             paddingLeft: 1,
             paddingRight: 1,
           }}
         >
-          <text fg="#66dd88">Copied to clipboard</text>
+          <text><span fg={chatTheme.success}>●</span><span fg={chatTheme.text}> Copied to clipboard</span></text>
         </box>
       )}
       {dialog && (
@@ -1794,6 +2001,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           selected={selected}
           selectedGroupId={selectedGroupId}
           selection={selection}
+          friendRequests={friendRequests}
           dialogWidthFor={dialogWidthFor}
           appReleaseVersion={APP_RELEASE_VERSION}
           isReleaseBuild={IS_RELEASE_BUILD}
@@ -1840,6 +2048,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             void ipc.send("delete_message", { message_id: file.file_id, group_id: file.group_id ?? undefined, file: true }).then((response: any) => {
               if (response?.error) { setStatus(`Delete failed: ${response.error}`); return }
               setFileTransfers((cur) => cur.filter((f) => f.file_id !== file.file_id))
+              setConversationFileTransfers((cur) => cur.filter((f) => f.file_id !== file.file_id))
               setDialog((prev) => prev?.kind === "file-list" ? { kind: "file-list", files: prev.files.filter((f) => f.file_id !== file.file_id) } : prev)
               setStatus(`Deleted ${file.filename} locally.`)
             }).catch((e: unknown) => setStatus(`Delete failed: ${e instanceof Error ? e.message : String(e)}`))
@@ -1854,15 +2063,6 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           saveUpdateToken={actions.saveUpdateToken}
           restartUpdate={actions.restartUpdate}
         />
-      )}
-      {!dialog && (
-        <box style={{ position: "absolute", right: 1, bottom: 0 }}>
-          <text>
-            <span fg="#66dd88">● </span>
-            <span fg="#bbbbbb">MeshTalk </span>
-            <span fg="#888888">{APP_RELEASE_VERSION}</span>
-          </text>
-        </box>
       )}
     </box>
   );

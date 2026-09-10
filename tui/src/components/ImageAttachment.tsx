@@ -2,19 +2,32 @@ import { NativeImage, type BoxRenderable, type ScrollBoxRenderable } from "@open
 import { useEffect, useRef, useState, type RefObject } from "react"
 import { existsSync, statSync } from "fs"
 import type { ImageProtocol } from "../types"
+import { chatTheme as theme } from "../chatTheme"
 
 type CachedImage = {
   modifiedAt: number
-  original: NativeImage
   thumbnail: NativeImage
+  bytes: number
 }
 
-const MAX_CACHED_IMAGES = 48
+const MAX_THUMBNAIL_CACHE_BYTES = 32 * 1024 * 1024
 const THUMBNAIL_MAX_SIDE = 640
-const MAX_LOAD_RETRIES = 2
-const LOAD_RETRY_DELAY_MS = 500
 const IMAGE_BACKGROUND = [17, 25, 35, 255] as const
+const UNLOAD_CONFIRM_DELAY_MS = 150
 const cache = new Map<string, CachedImage>()
+let cachedThumbnailBytes = 0
+const pendingThumbnailLoads = new Map<string, Promise<NativeImage | undefined>>()
+const viewportListeners = new Set<() => void>()
+let viewportNotificationQueued = false
+
+export function notifyImageViewportChanged() {
+  if (viewportNotificationQueued) return
+  viewportNotificationQueued = true
+  queueMicrotask(() => {
+    viewportNotificationQueued = false
+    for (const listener of [...viewportListeners]) listener()
+  })
+}
 
 export function detectImageFormat(bytes: Uint8Array): "png" | "jpeg" | "webp" | "gif" | undefined {
   if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "png"
@@ -69,39 +82,87 @@ function opaqueImage(image: NativeImage): NativeImage {
   }
 }
 
-async function cachedImage(filePath: string): Promise<CachedImage | undefined> {
+function disposeImage(image: NativeImage | undefined) {
+  if (!image || isImageDisposed(image)) return
+  try { image.dispose() } catch {}
+}
+
+function removeCachedImage(filePath: string) {
+  const cached = cache.get(filePath)
+  if (!cached) return
+  cache.delete(filePath)
+  cachedThumbnailBytes -= cached.bytes
+  disposeImage(cached.thumbnail)
+}
+
+export function clearImageCache() {
+  pendingThumbnailLoads.clear()
+  for (const filePath of [...cache.keys()]) removeCachedImage(filePath)
+}
+
+async function loadCachedThumbnail(filePath: string): Promise<NativeImage | undefined> {
   if (!existsSync(filePath)) return undefined
   const modifiedAt = statSync(filePath).mtimeMs
   const existing = cache.get(filePath)
   if (existing?.modifiedAt === modifiedAt) {
     cache.delete(filePath)
     cache.set(filePath, existing)
-    return existing
+    return existing.thumbnail
   }
-  if (existing) {
-    existing.original.dispose()
-    existing.thumbnail.dispose()
-    cache.delete(filePath)
-  }
+  if (existing) removeCachedImage(filePath)
   const header = new Uint8Array(await Bun.file(filePath).slice(0, 16).arrayBuffer())
   if (!detectImageFormat(header)) return undefined
   const source = await NativeImage.load(filePath)
-  const maxSide = Math.max(source.width, source.height)
-  const original = opaqueImage(source)
-  const thumbnail = maxSide > THUMBNAIL_MAX_SIDE
+  const resized = Math.max(source.width, source.height) > THUMBNAIL_MAX_SIDE
     ? source.resize(source.width >= source.height ? { width: THUMBNAIL_MAX_SIDE } : { height: THUMBNAIL_MAX_SIDE })
     : source.retain()
+  const thumbnail = opaqueImage(resized)
+  resized.dispose()
   source.dispose()
-  const loaded = { modifiedAt, original, thumbnail }
+  const loaded = { modifiedAt, thumbnail, bytes: thumbnail.width * thumbnail.height * 4 }
+  // Several attachment rows can reference the same file. If they raced while
+  // decoding, keep only the newest cached handle and release the duplicate.
+  const latest = cache.get(filePath)
+  if (latest) {
+    if (latest.modifiedAt === modifiedAt) {
+      disposeImage(loaded.thumbnail)
+      return latest.thumbnail
+    }
+    removeCachedImage(filePath)
+  }
   cache.set(filePath, loaded)
-  while (cache.size > MAX_CACHED_IMAGES) {
+  cachedThumbnailBytes += loaded.bytes
+  while (cachedThumbnailBytes > MAX_THUMBNAIL_CACHE_BYTES) {
     const oldest = cache.entries().next().value as [string, CachedImage] | undefined
     if (!oldest) break
-    cache.delete(oldest[0])
-    oldest[1].original.dispose()
-    oldest[1].thumbnail.dispose()
+    removeCachedImage(oldest[0])
   }
-  return loaded
+  return cache.get(filePath)?.thumbnail
+}
+
+async function cachedThumbnail(filePath: string): Promise<NativeImage | undefined> {
+  const pending = pendingThumbnailLoads.get(filePath)
+  if (pending) return pending
+  const load = loadCachedThumbnail(filePath)
+  pendingThumbnailLoads.set(filePath, load)
+  try {
+    return await load
+  } finally {
+    if (pendingThumbnailLoads.get(filePath) === load) pendingThumbnailLoads.delete(filePath)
+  }
+}
+
+async function loadImage(filePath: string, fullSize: boolean) {
+  if (!fullSize) return cachedThumbnail(filePath)
+  if (!existsSync(filePath)) return undefined
+  const header = new Uint8Array(await Bun.file(filePath).slice(0, 16).arrayBuffer())
+  if (!detectImageFormat(header)) return undefined
+  const source = await NativeImage.load(filePath)
+  try {
+    return opaqueImage(source)
+  } finally {
+    source.dispose()
+  }
 }
 
 type ImageAttachmentProps = {
@@ -119,85 +180,117 @@ type ImageAttachmentProps = {
 
 export function ImageAttachment({ filePath, filename, protocol, expectedImage = false, fullSize = false, lazy = true, scrollboxRef, maxWidth, maxHeight, onOpen }: ImageAttachmentProps) {
   const containerRef = useRef<BoxRenderable>(null)
+  const viewportCheckRef = useRef<(deferUnload?: boolean) => void>(() => {})
+  const nearViewportRef = useRef(!lazy)
+  const unloadTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [nearViewport, setNearViewport] = useState(!lazy)
-  const [fullyVisible, setFullyVisible] = useState(!scrollboxRef)
   const [image, setImage] = useState<NativeImage>()
+  const [intrinsicSize, setIntrinsicSize] = useState<{ width: number; height: number }>()
+  const [reservedSize, setReservedSize] = useState<{ width: number; height: number }>()
   const [loadFailed, setLoadFailed] = useState(false)
-  const [loadAttempt, setLoadAttempt] = useState(0)
 
   useEffect(() => {
+    if (unloadTimerRef.current) clearTimeout(unloadTimerRef.current)
+    unloadTimerRef.current = undefined
+    nearViewportRef.current = !lazy
     setNearViewport(!lazy)
-    setFullyVisible(!scrollboxRef)
     setImage(undefined)
+    setIntrinsicSize(undefined)
+    setReservedSize(undefined)
     setLoadFailed(false)
-    setLoadAttempt(0)
-  }, [filePath, fullSize, lazy])
+  }, [filePath, fullSize, lazy, protocol])
+
+  nearViewportRef.current = nearViewport
+  viewportCheckRef.current = (deferUnload = true) => {
+    const node = containerRef.current
+    const viewport = scrollboxRef?.current?.viewport
+    if (!node || !viewport || node.height < 1) return
+    // The visible viewport plus one quarter above and below is 1.5 viewports.
+    // Load at 1.5 viewports, but keep a loaded image until it is a little
+    // farther away. This prevents boundary flicker while dragging quickly.
+    const margin = Math.ceil(viewport.height * (nearViewport ? 0.5 : 0.25))
+    const nearby = !lazy || (node.screenY + node.height > viewport.screenY - margin && node.screenY < viewport.screenY + viewport.height + margin)
+    if (nearby) {
+      if (unloadTimerRef.current) clearTimeout(unloadTimerRef.current)
+      unloadTimerRef.current = undefined
+      nearViewportRef.current = true
+      setNearViewport((current) => current === true ? current : true)
+      return
+    }
+    if (!nearViewportRef.current) return
+    if (deferUnload) {
+      if (unloadTimerRef.current) return
+      unloadTimerRef.current = setTimeout(() => {
+        unloadTimerRef.current = undefined
+        viewportCheckRef.current(false)
+      }, UNLOAD_CONFIRM_DELAY_MS)
+      return
+    }
+    nearViewportRef.current = false
+    setNearViewport((current) => current === false ? current : false)
+  }
 
   useEffect(() => {
-    if (!lazy || nearViewport) return
-    const checkViewport = () => {
-      const node = containerRef.current
-      const viewport = scrollboxRef?.current?.viewport
-      if (!node || !viewport || node.height < 1) return
-      const margin = viewport.height
-      if (node.screenY + node.height > viewport.screenY - margin && node.screenY < viewport.screenY + viewport.height + margin) setNearViewport(true)
+    const listener = () => viewportCheckRef.current()
+    viewportListeners.add(listener)
+    listener()
+    return () => {
+      viewportListeners.delete(listener)
     }
-    checkViewport()
-    const interval = setInterval(checkViewport, 100)
-    return () => clearInterval(interval)
-  }, [lazy, nearViewport, scrollboxRef])
+  }, [])
 
   useEffect(() => {
-    if (!scrollboxRef) return
-    const updateVisibility = () => {
-      const node = containerRef.current
-      const viewport = scrollboxRef.current?.viewport
-      if (!node || !viewport || node.height < 1) return
-      const next = isFullyWithinViewport(node, viewport)
-      setFullyVisible((current) => current === next ? current : next)
+    return () => {
+      if (unloadTimerRef.current) clearTimeout(unloadTimerRef.current)
     }
-    updateVisibility()
-    const interval = setInterval(updateVisibility, 32)
-    return () => clearInterval(interval)
-  }, [image, scrollboxRef])
+  }, [])
+
+  useEffect(() => {
+    if (!nearViewport) setImage(undefined)
+  }, [nearViewport])
 
   useEffect(() => {
     if (!nearViewport) return
     let cancelled = false
-    let retryTimer: ReturnType<typeof setTimeout> | undefined
     setLoadFailed(false)
-    void cachedImage(filePath).then((loaded) => {
-      if (cancelled) return
+    void loadImage(filePath, fullSize).then((loaded) => {
+      // Full-size loads return a new handle owned by this component. A
+      // thumbnail comes from the shared cache and must not be disposed here.
+      if (cancelled) {
+        if (fullSize) disposeImage(loaded)
+        return
+      }
       if (loaded) {
-        const source = fullSize ? loaded.original : loaded.thumbnail
-        if (isImageDisposed(source)) {
+        if (isImageDisposed(loaded)) {
           setLoadFailed(true)
-          if (loadAttempt < MAX_LOAD_RETRIES) retryTimer = setTimeout(() => setLoadAttempt(loadAttempt + 1), LOAD_RETRY_DELAY_MS)
           return
         }
-        setImage(retainImage(source))
+        setIntrinsicSize({ width: loaded.width, height: loaded.height })
+        setReservedSize(fittedImageSize(loaded.width, loaded.height, maxWidth, maxHeight))
+        setImage(fullSize ? loaded : retainImage(loaded))
         return
       }
       setLoadFailed(true)
-      if (loadAttempt < MAX_LOAD_RETRIES) retryTimer = setTimeout(() => setLoadAttempt(loadAttempt + 1), LOAD_RETRY_DELAY_MS)
     }).catch(() => {
       if (cancelled) return
       setLoadFailed(true)
-      if (loadAttempt < MAX_LOAD_RETRIES) retryTimer = setTimeout(() => setLoadAttempt(loadAttempt + 1), LOAD_RETRY_DELAY_MS)
     })
     return () => {
       cancelled = true
-      if (retryTimer) clearTimeout(retryTimer)
     }
-  }, [filePath, fullSize, nearViewport, loadAttempt])
+  }, [filePath, fullSize, nearViewport, protocol])
+
+  // Keep the placeholder geometry correct when the terminal is resized while
+  // this image is unloaded. The native source may be gone, so retain only its
+  // dimensions rather than another image handle.
+  useEffect(() => {
+    if (!intrinsicSize) return
+    setReservedSize(fittedImageSize(intrinsicSize.width, intrinsicSize.height, maxWidth, maxHeight))
+  }, [intrinsicSize, maxWidth, maxHeight])
 
   useEffect(() => {
     return () => {
-      if (image) {
-        try {
-          if (!isImageDisposed(image)) image.dispose()
-        } catch {}
-      }
+      disposeImage(image)
     }
   }, [image])
 
@@ -210,11 +303,22 @@ export function ImageAttachment({ filePath, filename, protocol, expectedImage = 
       return undefined
     }
   })()
-  // Kitty and Sixel placements are terminal overlays and cannot be scroll-clipped reliably.
-  const displayProtocol = scrollboxRef && !fullyVisible && protocol !== "blocks" ? "blocks" : protocol
-  return <box ref={containerRef} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={{ flexDirection: "column", width: displayed?.width, height: displayed?.height }}>
-    {!nearViewport && expectedImage ? <text fg="#888888">{filename} (image preview loads nearby)</text> : null}
-    {nearViewport && !safeImage && expectedImage ? <text fg="#888888">{loadFailed ? `${filename} (image unavailable)` : "Loading image..."}</text> : null}
-    {safeImage && displayed ? <image source={safeImage} fit="fit" protocol={displayProtocol} style={displayed} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} /> : null}
+  const layoutSize = displayed ?? reservedSize
+  const displayProtocol = protocol
+  const placeholderText = expectedImage
+    ? !nearViewport
+      ? `${filename} (image preview loads nearby)`
+      : !safeImage
+        ? loadFailed ? `${filename} (image unavailable)` : "Loading image..."
+        : undefined
+    : undefined
+  const placeholderTop = layoutSize ? Math.max(0, Math.floor((layoutSize.height - 1) / 2)) : 0
+  return <box ref={containerRef} onSizeChange={notifyImageViewportChanged} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={{ flexDirection: "column", width: layoutSize?.width, height: layoutSize?.height, minHeight: layoutSize ? undefined : 1 }}>
+    {/* Keep the renderable identity and reserved geometry stable while its
+        native source is released. This avoids a Kitty placement being
+        destroyed and recreated when an adjacent row crosses the viewport. */}
+    {layoutSize ? <image source={safeImage} fit="fit" protocol={displayProtocol} style={layoutSize} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} /> : null}
+    {!layoutSize && placeholderText ? <text fg={theme.muted}>{placeholderText}</text> : null}
+    {layoutSize && placeholderText ? <text position="absolute" left={0} top={placeholderTop} width={layoutSize.width} fg={theme.muted}>{placeholderText}</text> : null}
   </box>
 }

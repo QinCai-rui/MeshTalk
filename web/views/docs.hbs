@@ -90,6 +90,9 @@
           <p class="text-sm text-mesh-muted mb-4">
             For peers on different networks, configure a control service. Press <code class="font-mono text-mesh-accent">Ctrl+P</code> in the TUI and select <strong class="text-white">Control server</strong>.
           </p>
+          <p class="text-sm text-mesh-muted mb-4">
+            MeshTalk prefers direct UDP and automatically falls back to MeshTalk Relay when direct setup fails. While relayed, it keeps probing for direct connectivity and switches back after the new path is authenticated, without requiring a reconnect. LAN TCP remains the highest-priority path when available.
+          </p>
           <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-5 font-mono text-sm space-y-1.5">
             <div class="text-mesh-muted"># Via CLI</div>
             <div><span class="text-mesh-accent">$</span> <span class="text-white">meshtalk control set-url wss://control.example/v1/rendezvous</span></div>

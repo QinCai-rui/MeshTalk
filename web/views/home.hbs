@@ -21,7 +21,7 @@
       </p>
 
       <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
-        <a href="/docs" class="w-full sm:w-auto px-8 py-3.5 bg-mesh-accent text-mesh-bg font-semibold rounded-xl hover:bg-cyan-300 transition-all text-center">
+        <a href="docs.html" class="w-full sm:w-auto px-8 py-3.5 bg-mesh-accent text-mesh-bg font-semibold rounded-xl hover:bg-cyan-300 transition-all text-center">
           Get Started
         </a>
         <a href="https://github.com/QinCai-rui/MeshTalk" target="_blank" rel="noopener" class="w-full sm:w-auto px-8 py-3.5 border border-mesh-border text-white font-medium rounded-xl hover:bg-white/5 transition-all text-center flex items-center justify-center gap-2">
@@ -64,7 +64,7 @@
     <div class="text-center mb-16">
       <p class="text-mesh-accent font-mono text-sm mb-3">ARCHITECTURE</p>
       <h2 class="text-3xl md:text-4xl font-bold text-white mb-4">How MeshTalk connects you</h2>
-      <p class="text-mesh-muted max-w-xl mx-auto">LAN peers connect directly. Remote peers use STUN hole punching with a DERP relay fallback — all encrypted.</p>
+      <p class="text-mesh-muted max-w-xl mx-auto">LAN peers connect directly. Remote peers use STUN hole punching with a DERP relay fallback and automatic recovery when a direct path returns — all encrypted.</p>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -73,7 +73,7 @@
           <svg class="w-5 h-5 text-mesh-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/></svg>
         </div>
         <h3 class="text-white font-semibold mb-2">LAN Discovery</h3>
-        <p class="text-mesh-muted text-sm leading-relaxed">UDP broadcast finds peers on your local network. No internet or server required. The lower peer ID opens an authenticated TCP connection.</p>
+        <p class="text-mesh-muted text-sm leading-relaxed">UDP broadcast finds peers on your local network. No internet or server required. The lower peer ID opens an authenticated, encrypted TCP connection.</p>
       </div>
 
       <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-6 hover:border-emerald-500/30 transition-colors group">
@@ -81,7 +81,7 @@
           <svg class="w-5 h-5 text-mesh-green" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"/></svg>
         </div>
         <h3 class="text-white font-semibold mb-2">NAT Traversal</h3>
-        <p class="text-mesh-muted text-sm leading-relaxed">STUN-assisted UDP hole punching for direct remote connections. When direct fails, MeshTalk Relay carries encrypted frames through the control service.</p>
+        <p class="text-mesh-muted text-sm leading-relaxed">STUN-assisted UDP hole punching for direct remote connections. When direct fails, MeshTalk Relay carries encrypted frames through the control service and automatically gives way when direct connectivity returns.</p>
       </div>
 
       <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-6 hover:border-purple-500/30 transition-colors group">
@@ -99,7 +99,7 @@
       <span class="text-mesh-accent">│</span>
   <span class="text-mesh-accent">local IPC</span>
       <span class="text-mesh-accent">│</span>
-<span class="text-white">Python backend</span> ──── <span class="text-mesh-green">LAN broadcast + TCP</span> ──── <span class="text-mesh-green">LAN peers</span>
+<span class="text-white">Python backend</span> ──── <span class="text-mesh-green">LAN broadcast + encrypted TCP</span> ──── <span class="text-mesh-green">LAN peers</span>
       <span class="text-mesh-accent">│</span>
       <span class="text-mesh-accent">├────</span> <span class="text-mesh-purple">encrypted endpoint cards</span> ──── <span class="text-mesh-purple">control service</span>
       <span class="text-mesh-accent">│</span>
@@ -213,7 +213,7 @@
 
     <p class="text-center text-xs text-mesh-muted/60 mt-8">
       Linux requires glibc 2.38+ (Ubuntu 24.04+, Debian 13+, Fedora 39+).
-      <a href="/docs" class="text-mesh-accent hover:underline">Build from source</a> for older systems.
+      <a href="docs.html" class="text-mesh-accent hover:underline">Build from source</a> for older systems.
     </p>
   </div>
 </section>
@@ -225,7 +225,7 @@
       <h2 class="text-3xl md:text-4xl font-bold text-white mb-4">Start meshing.</h2>
       <p class="text-mesh-muted mb-8 max-w-md mx-auto">Download MeshTalk, share a room invite, and talk privately. No accounts, no servers, no middlemen.</p>
       <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
-        <a href="/docs" class="px-8 py-3.5 bg-mesh-accent text-mesh-bg font-semibold rounded-xl hover:bg-cyan-300 transition-all">
+        <a href="docs.html" class="px-8 py-3.5 bg-mesh-accent text-mesh-bg font-semibold rounded-xl hover:bg-cyan-300 transition-all">
           Read the Docs
         </a>
         <a href="https://github.com/QinCai-rui/MeshTalk" target="_blank" rel="noopener" class="px-8 py-3.5 border border-mesh-border text-white font-medium rounded-xl hover:bg-white/5 transition-all">

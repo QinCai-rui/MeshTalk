@@ -22,41 +22,93 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build:
+  changes:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged && github.event.pull_request.base.ref == 'main') || github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - component: control
-            dockerfile: Dockerfile.control
-            platform: linux/amd64
-            runner: ubuntu-latest
-            slug: amd64
-          - component: control
-            dockerfile: Dockerfile.control
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
-            slug: arm64
-          - component: client
-            dockerfile: Dockerfile.client
-            platform: linux/amd64
-            runner: ubuntu-latest
-            slug: amd64
-          - component: client
-            dockerfile: Dockerfile.client
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
-            slug: arm64
+    runs-on: ubuntu-latest
+    outputs:
+      client: ${{ steps.filter.outputs.client }}
+      control: ${{ steps.filter.outputs.control }}
+      analytics: ${{ steps.filter.outputs.analytics }}
+      build_matrix: ${{ steps.set-matrix.outputs.matrix }}
+      merge_matrix: ${{ steps.set-matrix.outputs.merge_matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
+      - name: Detect changes
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            client:
+              - 'cli/**'
+              - 'tui/**'
+              - 'backend/**'
+              - 'common/**'
+              - 'docker/entrypoint-client.sh'
+              - 'Dockerfile.client'
+              - 'package.json'
+              - 'bun.lock*'
+              - '.dockerignore'
+            control:
+              - 'control/**'
+              - 'Dockerfile.control'
+              - 'package.json'
+              - 'bun.lock*'
+              - '.dockerignore'
+            analytics:
+              - 'analytics/**'
+
+      - name: Set build matrix
+        id: set-matrix
+        run: |
+          BUILD='[]'
+          MERGE='[]'
+
+          # Manual dispatch always builds everything
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"control","dockerfile":"Dockerfile.control","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"control","dockerfile":"Dockerfile.control","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
+            MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"control"}]')
+            BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"client","dockerfile":"Dockerfile.client","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"client","dockerfile":"Dockerfile.client","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
+            MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"client"}]')
+            BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
+            MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"analytics"}]')
+          else
+            if [ "${{ steps.filter.outputs.control }}" = "true" ]; then
+              BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"control","dockerfile":"Dockerfile.control","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"control","dockerfile":"Dockerfile.control","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
+              MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"control"}]')
+            fi
+
+            if [ "${{ steps.filter.outputs.client }}" = "true" ]; then
+              BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"client","dockerfile":"Dockerfile.client","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"client","dockerfile":"Dockerfile.client","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
+              MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"client"}]')
+            fi
+
+            if [ "${{ steps.filter.outputs.analytics }}" = "true" ]; then
+              BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
+              MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"analytics"}]')
+            fi
+          fi
+
+          echo "matrix={\"include\":$BUILD}" >> "$GITHUB_OUTPUT"
+          echo "merge_matrix={\"include\":$MERGE}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.build_matrix != '{"include":[]}'
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.build_matrix) }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set image name
         run: |
@@ -64,17 +116,17 @@ jobs:
           echo "IMAGE_TAG=${GITHUB_REF_NAME//\//-}-${GITHUB_SHA}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push (platform-specific tag)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -85,19 +137,15 @@ jobs:
           cache-to: type=gha,scope=${{ matrix.component }}-${{ matrix.slug }},mode=max
 
   merge:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged && github.event.pull_request.base.ref == 'main') || github.event_name == 'workflow_dispatch'
+    needs: [changes, build]
+    if: needs.changes.outputs.merge_matrix != '{"include":[]}'
     runs-on: ubuntu-latest
-    needs: build
     permissions:
       contents: read
       packages: write
-
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - component: control
-          - component: client
+      matrix: ${{ fromJSON(needs.changes.outputs.merge_matrix) }}
 
     steps:
       - name: Set image name
@@ -106,10 +154,10 @@ jobs:
           echo "IMAGE_TAG=${GITHUB_REF_NAME//\//-}-${GITHUB_SHA}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
