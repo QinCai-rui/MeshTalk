@@ -30,7 +30,7 @@
       "keywords": "MeshTalk features, E2EE group chat, encrypted file transfer, TUI chat, CLI messenger",
       "ogType": "website",
       "canonical": "/features.html"
-    }
+    },
     {
       "route": "/docs",
       "aliases": ["/docs.html"],
