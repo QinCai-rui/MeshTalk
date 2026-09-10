@@ -6,6 +6,7 @@ import type { NotificationDelivery, NotificationEvent, NotificationPreferences }
 import { join, resolve } from "path"
 import { tmpdir } from "os"
 import { statSync } from "fs"
+import { stageFilesForConfirmation } from "./fileSendConfirm"
 import { groupFromResponse, sortPeersByInteraction } from "./utils"
 import { runCommand as navigationRunCommand } from "./navigation"
 import { sendTestNotification } from "./notifications"
@@ -727,14 +728,19 @@ export function useChatActions(deps: ChatActionsDeps) {
     else if (sent > 1) showStatus(`Started ${sent} file transfers.`)
   }
 
-  function requestFileSend(paths: string[], source: FileConfirmSource) {
+  async function requestFileSend(paths: string[], source: FileConfirmSource) {
     if (!selection) { showStatus("Select a peer or group first."); return }
     const { valid, missing } = validLocalFiles(paths)
     if (!valid.length) {
       showStatus(missing.length ? `Not found: ${missing[0]}` : "No files found.")
       return
     }
-    showDialog({ kind: "file-confirm", paths: valid, source })
+    try {
+      const confirmationPaths = source === "picker" ? valid : await stageFilesForConfirmation(valid)
+      showDialog({ kind: "file-confirm", paths: confirmationPaths, source })
+    } catch (error) {
+      showStatus(`Could not prepare file: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   function requestImageSend(bytes: Uint8Array, mimeType: string) {

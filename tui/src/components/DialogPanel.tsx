@@ -13,8 +13,9 @@ import { useKeyboard } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { addablePeers, isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
 import { statSync } from "fs"
-import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
+import { detectImageFormat, ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 import { chatTheme as theme } from "../chatTheme"
+import { fileConfirmImageBounds, fileTypeLabel, formatFileSize } from "../fileSendConfirm"
 import { SettingsPanel, usesSettingsPanel } from "./dialogs/SettingsPanel"
 import { isUpdaterDialog } from "../navigation"
 import { readLevel, writeLevel, markPrompted, type AnalyticsLevel } from "../../../common/analytics"
@@ -166,11 +167,11 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "debug-endpoints" && <DebugEndpointsDialogContent debugInfo={debugInfo} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "debug-peer" && <DebugPeerDialogContent dialog={dialog} debugInfo={debugInfo} dialogHeight={dialogHeight} />}
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
-      {dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} peers={peers} groups={groups} selection={selection} closeDialog={closeDialog} confirmPendingFileSend={confirmPendingFileSend} />}
+      {dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} screenWidth={dialogWidthFor("file-list") + 2} screenHeight={dialogHeight + 4} imageProtocol={imageProtocol} peers={peers} groups={groups} selection={selection} closeDialog={closeDialog} showDialog={showDialog} confirmPendingFileSend={confirmPendingFileSend} />}
       {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
-      {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
+      {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} bytes={dialog.bytes} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} />}
   </>
   if (usesSettingsPanel(dialog)) return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center" onMouseDown={dismissOnOverlay}>
@@ -186,7 +187,8 @@ export function DialogPanel(props: DialogPanelProps) {
 }
 
 type ImageViewerDialogContentProps = {
-  filePath: string
+  filePath?: string
+  bytes?: Uint8Array
   filename: string
   dialogWidth: number
   dialogHeight: number
@@ -194,15 +196,15 @@ type ImageViewerDialogContentProps = {
 }
 
 export function imageViewerPropsEqual(previous: ImageViewerDialogContentProps, next: ImageViewerDialogContentProps): boolean {
-  return previous.filePath === next.filePath && previous.filename === next.filename && previous.dialogWidth === next.dialogWidth && previous.dialogHeight === next.dialogHeight && previous.imageProtocol === next.imageProtocol
+  return previous.filePath === next.filePath && previous.bytes === next.bytes && previous.filename === next.filename && previous.dialogWidth === next.dialogWidth && previous.dialogHeight === next.dialogHeight && previous.imageProtocol === next.imageProtocol
 }
 
-const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePath, filename, dialogWidth, dialogHeight, imageProtocol }: ImageViewerDialogContentProps) {
+const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePath, bytes, filename, dialogWidth, dialogHeight, imageProtocol }: ImageViewerDialogContentProps) {
   return (
     <>
       <text wrapMode="none"><span fg={theme.success}>{filename}</span></text>
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, alignItems: "center", justifyContent: "center" }}>
-        <ImageAttachment filePath={filePath} filename={filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} />
+        <ImageAttachment filePath={filePath} bytes={bytes} filename={filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} />
       </box>
       <text fg={theme.muted}>Esc returns.</text>
     </>
@@ -634,45 +636,60 @@ function DebugPeerDialogContent({ dialog, debugInfo, dialogHeight }: { dialog: E
   )
 }
 
-function formatConfirmSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
-}
-
-function FileConfirmDialogContent({ dialog, peers, groups, selection, closeDialog, confirmPendingFileSend }: { dialog: Extract<Dialog, { kind: "file-confirm" }>; peers: Peer[]; groups: Group[]; selection: { kind: "peer" | "group"; id: string } | undefined; closeDialog: () => void; confirmPendingFileSend: () => void }) {
+export function FileConfirmDialogContent({ dialog, dialogWidth, dialogHeight, screenWidth, screenHeight, imageProtocol, peers, groups, selection, closeDialog, showDialog, confirmPendingFileSend }: { dialog: Extract<Dialog, { kind: "file-confirm" }>; dialogWidth: number; dialogHeight: number; screenWidth: number; screenHeight: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; selection: { kind: "peer" | "group"; id: string } | undefined; closeDialog: () => void; showDialog: (dialog: Dialog) => void; confirmPendingFileSend: () => void }) {
   const targetName = selection?.kind === "peer"
     ? peers.find((p) => p.peer_id === selection.id)?.display_name ?? selection.id.slice(0, 8)
     : groups.find((g) => g.group_id === selection?.id)?.name ?? "group"
+  const imageFilename = dialog.image
+    ? `pasted-image.${detectImageFormat(dialog.image.bytes) ?? dialog.image.mimeType.split("/").pop() ?? "img"}`
+    : undefined
   const entries = useMemo(() => {
     if (dialog.image) {
-      return [{ path: "image", size: dialog.image.bytes.byteLength, exists: true }]
+      return [{ name: imageFilename ?? "pasted-image", type: fileTypeLabel(imageFilename ?? "pasted-image", dialog.image.mimeType), size: dialog.image.bytes.byteLength, exists: true }]
     }
     return dialog.paths.map((path) => {
       try {
         const stat = statSync(path)
-        return { path, size: stat.isFile() ? stat.size : null, exists: stat.isFile() }
+        const name = path.split(/[\\/]/).pop() || path
+        return { name, type: fileTypeLabel(name), size: stat.isFile() ? stat.size : null, exists: stat.isFile() }
       } catch {
-        return { path, size: null, exists: false }
+        const name = path.split(/[\\/]/).pop() || path
+        return { name, type: fileTypeLabel(name), size: null, exists: false }
       }
     })
-  }, [dialog])
+  }, [dialog, imageFilename])
+  const imagePath = !dialog.image && dialog.paths.length === 1 && entries[0]?.exists && isImageFile(entries[0].name)
+    ? dialog.paths[0]
+    : undefined
+  const previewFilename = imageFilename ?? (imagePath ? entries[0]?.name : undefined)
+  const previewSize = dialog.image?.bytes.byteLength ?? (imagePath ? entries[0]?.size : undefined)
+  const previewBounds = fileConfirmImageBounds(screenWidth, screenHeight, dialogWidth, dialogHeight)
   const sendable = entries.filter((entry) => entry.exists).length
   const title = entries.length > 1 ? `Send ${sendable} files to ${targetName}?` : dialog.image ? `Send image to ${targetName}?` : `Send file to ${targetName}?`
   return (
     <>
       <text><b>{title}</b></text>
-      <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
+      {(dialog.image || imagePath) && previewFilename ? <>
+        <box style={{ height: previewBounds.maxHeight, minHeight: previewBounds.maxHeight, flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
+          <ImageAttachment id="file-confirm-image-preview" filePath={imagePath} bytes={dialog.image?.bytes} filename={previewFilename} protocol={imageProtocol} expectedImage fullSize={false} lazy={false} maxWidth={previewBounds.maxWidth} maxHeight={previewBounds.maxHeight} onOpen={() => dialog.image
+            ? showDialog({ kind: "image-view", bytes: dialog.image.bytes, filename: previewFilename, returnTo: "file-confirm", returnDialog: dialog })
+            : showDialog({ kind: "image-view", filePath: imagePath!, filename: previewFilename, returnTo: "file-confirm", returnDialog: dialog })} />
+        </box>
+        <box style={{ height: 1, minHeight: 1, flexShrink: 0 }}>
+          <MarqueeText width={Math.max(1, dialogWidth - 4)} text={`${previewFilename} / ${fileTypeLabel(previewFilename, dialog.image?.mimeType)} / ${previewSize == null ? "size unavailable" : formatFileSize(previewSize)}`} />
+        </box>
+        <box style={{ height: 1, minHeight: 1, flexShrink: 0 }}><text fg={theme.muted}>Click preview to fullscreen · Esc returns</text></box>
+      </> : <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
         {entries.map((entry) => (
-          <text key={entry.path} wrapMode="word">
-            <span fg={entry.exists ? theme.text : theme.danger}>{entry.path.split(/[\\/]/).pop() || entry.path}</span>
-            <span fg={theme.muted}> {entry.size !== null ? formatConfirmSize(entry.size) : "(missing)"}</span>
+          <text key={entry.name} wrapMode="word">
+            <span fg={entry.exists ? theme.text : theme.danger}>{entry.name}</span>
+            <span fg={theme.muted}> / {entry.type} / {entry.size !== null ? formatFileSize(entry.size) : "missing"}</span>
           </text>
         ))}
-      </scrollbox>
+      </scrollbox>}
       <MouseSelect focused height={2} options={[
-        ...(sendable ? [{ name: "Send", value: "send", tone: "accent" as const }] : []),
-        { name: "Cancel", value: "cancel" },
+        ...(sendable ? [{ name: "Send", description: "Send the selected file", value: "send", tone: "accent" as const }] : []),
+        { name: "Cancel", description: "Close without sending", value: "cancel" },
       ]} onSelect={(_, option) => {
         if (option?.value === "send") void confirmPendingFileSend()
         else closeDialog()

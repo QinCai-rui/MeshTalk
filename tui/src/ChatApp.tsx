@@ -67,7 +67,7 @@ import {
   shouldSuppressPastedImage,
   type PastedImageDedupRecord,
 } from "./pastedImageDedup";
-import { parsePotentialFilePaths } from "./fileSendConfirm";
+import { fileConfirmDialogHeight, fileConfirmDialogWidth, hasImageConfirmationPreview, parsePotentialFilePaths } from "./fileSendConfirm";
 import { existsSync, statSync } from "fs";
 import {
   APP_RELEASE_VERSION,
@@ -1844,11 +1844,14 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const limitColor = composerLimitColor(draftLength);
   const dialogWidth = Math.min(100, Math.max(1, width - 6));
   const dialogHeight =
-    (dialog?.kind === "image-view" || dialog?.kind === "file-list")
+    dialog?.kind === "file-confirm"
+      ? fileConfirmDialogHeight(height, hasImageConfirmationPreview(dialog.paths, Boolean(dialog.image)))
+      : (dialog?.kind === "image-view" || dialog?.kind === "file-list")
       ? Math.max(1, height - 2)
       : Math.min(32, Math.max(1, height - 4));
   function dialogWidthFor(kind: Dialog["kind"]): number {
     if (kind === "image-view" || kind === "file-list") return Math.max(1, width - 2);
+    if (kind === "file-confirm") return fileConfirmDialogWidth(width);
     if (kind === "files-dir" || kind === "file-download") return Math.min(118, Math.max(1, width - 6));
     if (kind === "group-detail")
       return Math.min(78, Math.max(1, width - 2));
