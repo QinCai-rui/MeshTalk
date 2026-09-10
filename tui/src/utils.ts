@@ -106,6 +106,9 @@ function groupingIsSystem(item: ConversationItem): boolean {
   return item.type === "message" && Boolean(item.message.kind) && item.message.kind !== "message" && item.message.kind !== "text";
 }
 
+export function groupRowMarginBottom(renderTypes: readonly RenderType[], index: number): 0 | 1 {
+  return renderTypes[index + 1] === "COMPACT_ROW" ? 0 : 1;
+}
 export function computeRenderTypes(items: ConversationItem[]): RenderType[] {
   const result: RenderType[] = [];
   let currentGroupAuthorId: string | undefined;

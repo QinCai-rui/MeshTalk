@@ -4,7 +4,7 @@ import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type Textare
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
-import { clipTextToWidth, computeRenderTypes, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, inlineFriendActions, isImageFile, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
+import { clipTextToWidth, computeRenderTypes, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, groupRowMarginBottom, inlineFriendActions, isImageFile, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
 
 type ConversationPanelProps = {
@@ -232,7 +232,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
             }))
             const fileReplyHighlightProgress = replyHighlightProgress(file.file_id)
             rows.push(
-              <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ flexDirection: "column", marginBottom: isCompact ? 0 : 1, backgroundColor: fileReplyHighlightProgress !== undefined ? unreadMessageBackground(fileReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === file.file_id ? theme.selected : undefined }}>
+              <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ flexDirection: "column", marginBottom: groupRowMarginBottom(renderTypes, index), backgroundColor: fileReplyHighlightProgress !== undefined ? unreadMessageBackground(fileReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === file.file_id ? theme.selected : undefined }}>
                 {(!isCompact || (scrollFocused && selectedReplyTargetId === file.file_id)) && <text>
                   <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === file.file_id ? "> " : ""}</span>
                   {!isCompact && <>
@@ -287,7 +287,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
             formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
           const messageReplyHighlightProgress = replyHighlightProgress(message.message_id)
           rows.push(
-              <box id={message.message_id} key={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: isCompact ? 0 : 1, backgroundColor: messageReplyHighlightProgress !== undefined ? unreadMessageBackground(messageReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === message.message_id ? theme.selected : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
+              <box id={message.message_id} key={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: groupRowMarginBottom(renderTypes, index), backgroundColor: messageReplyHighlightProgress !== undefined ? unreadMessageBackground(messageReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === message.message_id ? theme.selected : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
               {(!isCompact || (scrollFocused && selectedReplyTargetId === message.message_id)) && <text>
                 <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === message.message_id ? "> " : ""}</span>
                 {!isCompact && <>

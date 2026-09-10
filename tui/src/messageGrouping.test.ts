@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { computeRenderTypes, dayKey } from "./utils";
+import { computeRenderTypes, dayKey, groupRowMarginBottom } from "./utils";
 import type { ConversationItem } from "./types";
 
 function msg(id: string, sender: string, at: number): ConversationItem {
@@ -122,4 +122,13 @@ test("file attachments group with adjacent same-sender messages", () => {
 
 test("returns an empty array for no messages", () => {
   expect(computeRenderTypes([])).toEqual([]);
+});
+
+test("group rows have no bottom gap while the group continues", () => {
+  const types = ["FULL_HEADER", "COMPACT_ROW", "COMPACT_ROW", "FULL_HEADER"] as const;
+
+  expect(groupRowMarginBottom(types, 0)).toBe(0);
+  expect(groupRowMarginBottom(types, 1)).toBe(0);
+  expect(groupRowMarginBottom(types, 2)).toBe(1);
+  expect(groupRowMarginBottom(types, 3)).toBe(1);
 });
