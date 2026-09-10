@@ -259,7 +259,14 @@ class GroupRouter:
         })
 
     async def send_edit(self, group_id: str, message_id: str, new_content: str) -> float:
-        """Send a per-recipient E2EE edit for a previously sent group message. No time limit."""
+        """Send a per-recipient E2EE edit for a previously sent group message. No time limit.
+
+        Returns edited_at regardless of fan-out reach: members without keys,
+        capability, or membership are skipped, matching send_message delivery
+        semantics (check deliveries for per-recipient outcomes where needed).
+        """
+        if not new_content.strip():
+            raise ValueError("content required")
         plaintext = new_content.encode()
         if len(plaintext) > MAX_GROUP_MESSAGE_CONTENT_SIZE:
             raise ValueError("Message exceeds 30 KiB limit")
@@ -270,17 +277,24 @@ class GroupRouter:
             raise ValueError("Only your own messages can be edited")
         members = [m for m in await self.db.get_group_members(group_id) if m["peer_id"] != self.identity.peer_id]
         now = time.time()
-        await self.db.update_group_message_content(message_id, new_content)
+        await self.db.update_group_message_content(message_id, new_content, now)
         updated = await self.db.get_group_message(message_id)
         edited_at = float((updated or {}).get("edited_at") or now)
         for member in members:
             rid = member["peer_id"]
+            # Convention matches send_message: blocked members are skipped on
+            # send; receive side drops them (direct relies on the friend check).
             if await self.db.is_peer_blocked(rid):
                 continue
             peer = self.peer_manager.get_connected_peer(rid)
             stored = await self.db.get_peer(rid)
             key = peer.encryption_public_key if peer else (stored or {}).get("public_key")
-            if not key or (peer and (not peer.supports(CAP_GROUP_CHAT) or not peer.supports(CAP_MESSAGE_EDITS))) or member.get("group_capable") == 0:
+            if (
+                not key
+                or (peer and (not peer.supports(CAP_GROUP_CHAT) or not peer.supports(CAP_MESSAGE_EDITS)))
+                or (peer is None and not await self.db.peer_supports(rid, CAP_MESSAGE_EDITS))
+                or member.get("group_capable") == 0
+            ):
                 continue
             try:
                 payload = GroupMessageEditPayload(message_id, group_id, self.identity.peer_id, rid, now, b"")
@@ -306,6 +320,8 @@ class GroupRouter:
     async def _handle_edit(self, peer: PeerConnection, payload: GroupMessageEditPayload) -> None:
         if payload.sender_id != peer.peer_id or peer.signing_public_key is None:
             raise ValueError("Group edit sender mismatch")
+        if payload.recipient_id != self.identity.peer_id:
+            raise ValueError("Group edit routing mismatch")
         if not peer.supports(CAP_MESSAGE_EDITS):
             raise ValueError("Peer sent group edit without support")
         if await self.db.is_peer_blocked(peer.peer_id):
@@ -316,13 +332,21 @@ class GroupRouter:
             content = plaintext.decode("utf-8")
         except (InvalidSignature, UnicodeDecodeError) as exc:
             raise ValueError("Invalid group edit") from exc
+        if len(content.encode()) > MAX_GROUP_MESSAGE_CONTENT_SIZE:
+            raise ValueError("Edit too large")
         existing = await self.db.get_group_message(payload.message_id)
         if not existing or existing.get("sender_id") != payload.sender_id:
+            return
+        if payload.group_id != existing.get("group_id"):
+            return
+        room = self.settings.rooms.get(payload.group_id)
+        member = await self.db.get_group_member(payload.group_id, payload.sender_id)
+        if room is None or room.group_name is None or member is None or not member["active"]:
             return
         if payload.created_at <= float(existing.get("edited_at") or 0):
             return
         await self.db.mark_message_seen(payload.message_id)
-        await self.db.update_group_message_content(payload.message_id, content)
+        await self.db.update_group_message_content(payload.message_id, content, payload.created_at)
         updated = await self.db.get_group_message(payload.message_id)
         await self._emit({"event": "group_message_edited", "message_id": payload.message_id, "group_id": payload.group_id, "sender_id": payload.sender_id, "content": content, "edited_at": (updated or {}).get("edited_at")})
 
@@ -360,7 +384,7 @@ class GroupRouter:
             return True
         if not peer.supports(CAP_GROUP_CHAT):
             return False
-        if item["packet_type"] in (PacketType.GROUP_LEAVE.value, PacketType.GROUP_MESSAGE_EDIT.value):
+        if item["packet_type"] == PacketType.GROUP_LEAVE.value:
             return True
         room = self.settings.rooms.get(item["group_id"])
         member = await self.db.get_group_member(item["group_id"], peer.peer_id)

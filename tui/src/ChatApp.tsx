@@ -660,6 +660,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   useEffect(() => {
     setSelectedReplyTarget(undefined);
     setReplyTo(undefined);
+    setEditingTarget(undefined);
     setDeleteConfirmation(undefined);
   }, [selectionKey]);
 
@@ -1642,6 +1643,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       if (target.sender_id !== identity?.peer_id) { actions.showStatus("Only your own messages can be edited."); return; }
       key.preventDefault();
       setEditingTarget({ id: target.message_id, senderId: target.sender_id, label: target.content, groupId: target.group_id });
+      setReplyTo(undefined);
       if (composerRef.current) {
         composerRef.current.selectAll();
         composerRef.current.deleteSelection();
@@ -2025,6 +2027,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
               if (response.error) { actions.showStatus(`Edit error: ${response.error}`); return; }
               setMessages((current) => current.map((m) => m.message_id === target.id ? { ...m, content, edited_at: (response.edited_at as number) ?? Date.now() / 1000 } : m));
               setEditingTarget(undefined);
+              setReplyTo(undefined);
               setSelectedReplyTarget(undefined);
               if (composerRef.current) { composerRef.current.selectAll(); composerRef.current.deleteSelection(); }
               actions.showStatus("Message edited.");

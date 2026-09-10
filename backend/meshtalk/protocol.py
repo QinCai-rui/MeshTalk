@@ -19,10 +19,10 @@ Packet types:
   FRIEND_REQUEST_CANCELLED 0x0D
   GROUP_MESSAGE          0x0E
   GROUP_MESSAGE_ACK      0x0F
-   GROUP_LEAVE            0x10
-   TYPING                 0x14
-   MESSAGE_EDIT           0x15
-   GROUP_MESSAGE_EDIT     0x16
+  GROUP_LEAVE            0x10
+  TYPING                 0x14
+  MESSAGE_EDIT           0x15
+  GROUP_MESSAGE_EDIT     0x16
 """
 
 from __future__ import annotations

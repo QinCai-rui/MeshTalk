@@ -75,16 +75,16 @@ class MessageEditDatabaseTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_update_message_content_sets_edited_at(self):
         await self._save_direct()
-        self.assertTrue(await self.db.update_message_content("m1", "corrected"))
+        self.assertTrue(await self.db.update_message_content("m1", "corrected", 2000.0))
         stored = await self.db.get_message("m1")
         self.assertEqual(stored["content"], "corrected")
-        self.assertGreater(stored["edited_at"], 0)
+        self.assertEqual(stored["edited_at"], 2000.0)
         conversation = await self.db.get_conversation("alice", "bob")
         self.assertEqual(conversation[0]["content"], "corrected")
         self.assertGreater(conversation[0]["edited_at"], 0)
 
     async def test_update_missing_message_returns_false(self):
-        self.assertFalse(await self.db.update_message_content("nope", "x"))
+        self.assertFalse(await self.db.update_message_content("nope", "x", 2000.0))
         self.assertIsNone(await self.db.get_message("nope"))
 
     async def test_update_group_message_content_sets_edited_at(self):
@@ -92,9 +92,9 @@ class MessageEditDatabaseTest(unittest.IsolatedAsyncioTestCase):
             "message_id": "g1", "group_id": "a" * 32, "sender_id": "alice",
             "content": "original", "created_at": 1000.0,
         })
-        self.assertTrue(await self.db.update_group_message_content("g1", "corrected"))
+        self.assertTrue(await self.db.update_group_message_content("g1", "corrected", 2000.0))
         stored = await self.db.get_group_message("g1")
-        self.assertGreater(stored["edited_at"], 0)
+        self.assertEqual(stored["edited_at"], 2000.0)
         history = await self.db.get_group_messages("a" * 32)
         self.assertEqual(history[0]["content"], "corrected")
         self.assertGreater(history[0]["edited_at"], 0)
@@ -194,6 +194,27 @@ class MessageEditRouterTest(unittest.IsolatedAsyncioTestCase):
             await self.router_b.send_edit(self.alice.peer_id, "m1", "hijacked")
         with self.assertRaises(ValueError):
             await self.router_a.send_edit(self.bob.peer_id, "nope", "x")
+
+    async def test_edit_rejects_mismatched_recipient(self):
+        await self._save_both()
+        carol = Identity.generate("Carol")
+        await self.db_a.upsert_peer(
+            carol.peer_id, "Carol", carol.encryption_public_key_bytes(),
+            carol.signing_public_key_bytes(), capabilities=sorted(FULL_CAPS),
+        )
+        with self.assertRaises(ValueError):
+            await self.router_a.send_edit(carol.peer_id, "m1", "cross-conversation")
+
+    async def test_edit_rejects_blocked_recipient(self):
+        await self._save_both()
+        await self.db_a.block_peer(self.bob.peer_id, "Bob")
+        with self.assertRaises(ValueError):
+            await self.router_a.send_edit(self.bob.peer_id, "m1", "to-blocked")
+
+    async def test_edit_rejects_empty_content(self):
+        await self._save_both()
+        with self.assertRaises(ValueError):
+            await self.router_a.send_edit(self.bob.peer_id, "m1", "   ")
 
     async def test_edit_rejects_peer_without_capability(self):
         await self._save_both()
@@ -299,3 +320,102 @@ class GroupMessageEditRouterTest(unittest.IsolatedAsyncioTestCase):
         await self._save_both()
         with self.assertRaises(ValueError):
             await self.router_b.send_edit(self.group_id, "g1", "hijacked")
+
+    async def test_group_edit_rejects_empty_content(self):
+        await self._save_both()
+        with self.assertRaises(ValueError):
+            await self.router_a.send_edit(self.group_id, "g1", "  ")
+
+    async def _queued_edit_types(self, recipient_id):
+        async with self.db_a._db.execute(
+            "SELECT packet_type FROM outgoing_queue WHERE message_id = ? AND recipient_id = ?",
+            ("g1", recipient_id),
+        ) as cursor:
+            return [row["packet_type"] for row in await cursor.fetchall()]
+
+    async def test_group_offline_edit_queued_with_capability(self):
+        await self._save_both()
+        self.mgr_a.peers.clear()
+        await self.db_a.upsert_peer(
+            self.bob.peer_id, "Bob", self.bob.encryption_public_key_bytes(),
+            self.bob.signing_public_key_bytes(), capabilities=sorted(FULL_CAPS),
+        )
+        await self.router_a.send_edit(self.group_id, "g1", "corrected")
+        self.assertIn(PacketType.GROUP_MESSAGE_EDIT.value, await self._queued_edit_types(self.bob.peer_id))
+
+    async def test_group_offline_edit_skipped_without_capability(self):
+        await self._save_both()
+        self.mgr_a.peers.clear()
+        no_edit_caps = sorted(set(FULL_CAPS) - {CAP_MESSAGE_EDITS})
+        await self.db_a.upsert_peer(
+            self.bob.peer_id, "Bob", self.bob.encryption_public_key_bytes(),
+            self.bob.signing_public_key_bytes(), capabilities=no_edit_caps,
+        )
+        await self.router_a.send_edit(self.group_id, "g1", "corrected")
+        self.assertNotIn(
+            PacketType.GROUP_MESSAGE_EDIT.value, await self._queued_edit_types(self.bob.peer_id))
+        stored = await self.db_a.get_group_message("g1")
+        self.assertGreater(stored["edited_at"], 0)
+
+    async def test_can_flush_gates_queued_edits(self):
+        member_peer = _Peer(self.bob)
+        edit_item = {"group_id": self.group_id, "packet_type": PacketType.GROUP_MESSAGE_EDIT.value}
+        self.assertTrue(await self.router_a.can_flush(member_peer, edit_item))
+        self.assertFalse(await self.router_a.can_flush(
+            member_peer, {"group_id": "z" * 32, "packet_type": PacketType.GROUP_MESSAGE_EDIT.value}))
+        await self.db_a._db.execute(
+            "UPDATE group_members SET active = 0 WHERE group_id = ? AND peer_id = ?",
+            (self.group_id, self.bob.peer_id))
+        await self.db_a._db.commit()
+        self.assertFalse(await self.router_a.can_flush(member_peer, edit_item))
+
+    def _craft_edit(self, sender, recipient, group_id, created_at, content: bytes):
+        payload = GroupMessageEditPayload(
+            "g1", group_id, sender.peer_id, recipient.peer_id, created_at, b"")
+        payload.encrypted_content = encrypt_for_recipient(
+            recipient.encryption_public_key_bytes(), content, payload.associated_data())
+        payload.signature = sender.signing_private_key.sign(payload.signed_bytes())
+        return Packet(PacketType.GROUP_MESSAGE_EDIT, payload.encode())
+
+    async def _drain_events(self):
+        while not self.events_b.empty():
+            self.events_b.get_nowait()
+
+    async def test_group_edit_rejects_wrong_recipient(self):
+        await self._save_both()
+        carol = Identity.generate("Carol")
+        packet = self._craft_edit(self.alice, carol, self.group_id, 2000.0, b"x")
+        with self.assertRaises(ValueError):
+            await self.router_b.handle_packet(_Peer(self.alice), packet)
+
+    async def test_group_edit_rejects_cross_group_id(self):
+        await self._save_both()
+        other = "b" * 32
+        self.rooms[other] = SimpleNamespace(id=other, group_name="Other")
+        for db, identity in ((self.db_a, self.alice), (self.db_b, self.bob)):
+            await db.upsert_group_member(other, identity.peer_id, "Me", group_capable=True)
+            await db.upsert_group_member(
+                other,
+                self.bob.peer_id if identity is self.alice else self.alice.peer_id,
+                "Peer", group_capable=True)
+        packet = self._craft_edit(self.alice, self.bob, other, 2000.0, b"cross")
+        await self.router_b.handle_packet(_Peer(self.alice), packet)
+        self.assertTrue(self.events_b.empty())
+        history = await self.db_b.get_group_messages(self.group_id)
+        self.assertEqual(history[0]["content"], "original")
+
+    async def test_group_edit_rejects_non_member(self):
+        await self._save_both()
+        carol = Identity.generate("Carol")
+        packet = self._craft_edit(carol, self.bob, self.group_id, 2000.0, b"outsider")
+        await self.router_b.handle_packet(_Peer(carol), packet)
+        self.assertTrue(self.events_b.empty())
+        history = await self.db_b.get_group_messages(self.group_id)
+        self.assertEqual(history[0]["content"], "original")
+
+    async def test_group_edit_rejects_oversize_content(self):
+        await self._save_both()
+        packet = self._craft_edit(
+            self.alice, self.bob, self.group_id, 2000.0, b"x" * (30 * 1024 + 1))
+        with self.assertRaises(ValueError):
+            await self.router_b.handle_packet(_Peer(self.alice), packet)

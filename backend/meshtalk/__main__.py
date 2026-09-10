@@ -699,8 +699,8 @@ async def main(debug: bool = False) -> None:
         content = req.get("content")
         if not isinstance(message_id, str) or not message_id:
             return {"error": "message_id required"}
-        if group_id is not None and not isinstance(group_id, str):
-            return {"error": "group_id must be a string"}
+        if group_id is not None and (not isinstance(group_id, str) or not group_id):
+            return {"error": "group_id must be a non-empty string"}
         if not isinstance(content, str) or not content.strip():
             return {"error": "content required"}
         if len(content.encode()) > 30 * 1024:

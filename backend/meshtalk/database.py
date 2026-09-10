@@ -471,11 +471,12 @@ class Database:
                     pass
             return message
 
-    async def update_message_content(self, message_id: str, content: str) -> bool:
-        """Overwrite direct message content for an edit; sets edited_at. Returns True if a row changed."""
+    async def update_message_content(self, message_id: str, content: str, edited_at: float) -> bool:
+        """Overwrite direct message content for an edit. edited_at is the sender's
+        edit timestamp (pass-through) so staleness checks stay in one clock domain."""
         cursor = await self._db.execute(
             "UPDATE messages SET content = ?, edited_at = ? WHERE message_id = ?",
-            (self._encrypt_content(content), time.time(), message_id),
+            (self._encrypt_content(content), edited_at, message_id),
         )
         await self._db.commit()
         return cursor.rowcount > 0
@@ -765,11 +766,12 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
-    async def update_group_message_content(self, message_id: str, content: str) -> bool:
-        """Overwrite group message content for an edit; sets edited_at. Returns True if a row changed."""
+    async def update_group_message_content(self, message_id: str, content: str, edited_at: float) -> bool:
+        """Overwrite group message content for an edit. edited_at is the sender's
+        edit timestamp (pass-through) so staleness checks stay in one clock domain."""
         cursor = await self._db.execute(
             "UPDATE group_messages SET content = ?, edited_at = ? WHERE message_id = ?",
-            (self._encrypt_content(content), time.time(), message_id),
+            (self._encrypt_content(content), edited_at, message_id),
         )
         await self._db.commit()
         return cursor.rowcount > 0

@@ -90,6 +90,8 @@ class MessageRouter:
 
     async def send_edit(self, recipient_id: str, message_id: str, new_content: str) -> float:
         """Send an E2EE edit for a previously sent message. No time limit; sender-only."""
+        if not new_content.strip():
+            raise ValueError("content required")
         plaintext = new_content.encode()
         if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:
             raise ValueError("Message exceeds 30 KiB limit")
@@ -98,6 +100,10 @@ class MessageRouter:
             raise ValueError("Message not found")
         if existing.get("sender_id") != self.identity.peer_id:
             raise ValueError("Only your own messages can be edited")
+        if existing.get("recipient_id") != recipient_id:
+            raise ValueError("Recipient does not match conversation")
+        if await self.db.is_peer_blocked(recipient_id):
+            raise ValueError("Peer is blocked")
         peer = self.peer_manager.get_connected_peer(recipient_id)
         if peer is not None and not peer.supports(CAP_MESSAGE_EDITS):
             raise ValueError("Peer does not support message edits")
@@ -117,7 +123,7 @@ class MessageRouter:
         encoded = payload.encode()
         if len(encoded) > MAX_PACKET_SIZE:
             raise ValueError("Encrypted edit exceeds packet limit")
-        await self.db.update_message_content(message_id, new_content)
+        await self.db.update_message_content(message_id, new_content, now)
         updated = await self.db.get_message(message_id)
         edited_at = float((updated or {}).get("edited_at") or now)
         if peer is not None:
@@ -206,7 +212,7 @@ class MessageRouter:
         if payload.created_at <= float(existing.get("edited_at") or 0):
             return
         await self.db.mark_message_seen(payload.message_id)
-        await self.db.update_message_content(payload.message_id, content)
+        await self.db.update_message_content(payload.message_id, content, payload.created_at)
         updated = await self.db.get_message(payload.message_id)
         if self.on_edited:
             await self.on_edited({"message_id": payload.message_id, "sender_id": payload.sender_id, "content": content, "edited_at": (updated or {}).get("edited_at")})
