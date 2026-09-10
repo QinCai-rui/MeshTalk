@@ -43,7 +43,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: |
-          echo "sha=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         if: steps.gate.outputs.run == 'true'
