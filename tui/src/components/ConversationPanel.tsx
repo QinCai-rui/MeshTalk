@@ -2,7 +2,7 @@ import { ChatFooter } from "./ChatFooter"
 import { TypingDots } from "./TypingDots"
 import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
-import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
+import type { ConversationItem, EditingTarget, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
 import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, inlineFriendActions, isImageFile, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
@@ -36,6 +36,7 @@ type ConversationPanelProps = {
   selectedHasCapabilityGap: boolean
   selectedReplyTargetId: string | undefined
   replyTo: ReplyTarget | undefined
+  editingTarget?: EditingTarget | undefined
   selectionKey: string | undefined
   unreadMessageStates: Record<string, UnreadMessageState>
   unreadNow: number
@@ -86,7 +87,7 @@ const MESSAGE_MARKDOWN_STYLES = {
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction } = props
+  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, editingTarget, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction } = props
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
   const [replyHighlight, setReplyHighlight] = useState<{ id: string; startedAt: number }>()
   const [replyHighlightNow, setReplyHighlightNow] = useState(0)
@@ -281,12 +282,14 @@ export function ConversationPanel(props: ConversationPanelProps) {
             typeof message.received_at === "number" &&
             formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
           const messageReplyHighlightProgress = replyHighlightProgress(message.message_id)
+          const isEdited = typeof message.edited_at === "number" && message.edited_at > 0
           rows.push(
               <box id={message.message_id} key={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: messageReplyHighlightProgress !== undefined ? unreadMessageBackground(messageReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === message.message_id ? theme.selected : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
               <text>
                 <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === message.message_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(message.created_at)} </span>
                 <span fg={isSystem ? theme.warning : isLocal ? theme.accent : theme.text}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
                  {isLocal && !isSystem && !selectedGroup && <span fg={blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
+                 {isEdited && !isSystem && <span fg={theme.muted}> (edited)</span>}
                  {showReceived && <span fg={theme.muted}> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                  </text>
                 {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
@@ -301,6 +304,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
     <box paddingLeft={2} paddingRight={1} flexShrink={0} height={1} overflow="hidden" flexDirection="row" gap={1}><text fg={theme.accent} wrapMode="none">{typingText ?? (scrollFocused ? "Reading history" : "")}</text>{typingText && <TypingDots />}</box>
     <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, backgroundColor: theme.surface }}>
       <text fg={limitColor ?? theme.accent}><b>{!scrollFocused && !editingName && hasConversation ? "> " : ""}{composerTitle}</b></text>
+      {editingTarget && <text fg={theme.warning}>Editing: {editingTarget.label.replace(/\s+/g, " ").trim().slice(0, 60)}{editingTarget.label.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""} (Enter save · Esc cancel)</text>}
       {replyTo && <text fg={theme.accent}>Replying to {replyTo.senderId === identity?.peer_id ? "You" : selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replyTo.senderId)?.display_name ?? "Unknown member" : selected?.display_name ?? "Unknown peer"}: {replyTo.label.replace(/\s+/g, " ").trim().slice(0, 60)}{replyTo.label.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""} (Esc cancels)</text>}
       <textarea key={selectionKey ?? "no-conversation"} ref={composerRef} initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""} placeholder={hasConversation ? "Write a message..." : "Select a peer or group"} focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !isSending && !dialogOpen} onMouseDown={() => setScrollFocused(false)} onContentChange={() => {
         const composer = composerRef.current

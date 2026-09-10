@@ -19,8 +19,10 @@ Packet types:
   FRIEND_REQUEST_CANCELLED 0x0D
   GROUP_MESSAGE          0x0E
   GROUP_MESSAGE_ACK      0x0F
-  GROUP_LEAVE            0x10
-  TYPING                 0x14
+   GROUP_LEAVE            0x10
+   TYPING                 0x14
+   MESSAGE_EDIT           0x15
+   GROUP_MESSAGE_EDIT     0x16
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ CAP_GROUP_CHAT = "group_chat"
 CAP_FILE_TRANSFER = "file_transfer"
 CAP_TYPING_INDICATORS = "typing_indicators"
 CAP_MESSAGE_REPLIES = "message_replies"
+CAP_MESSAGE_EDITS = "message_edits"
 CAP_DIRECT_ROUTE_RECOVERY = "direct_route_recovery"
 DEFAULT_CAPABILITIES = [
     CAP_TEXT_CHAT,
@@ -58,6 +61,7 @@ DEFAULT_CAPABILITIES = [
     CAP_FILE_TRANSFER,
     CAP_TYPING_INDICATORS,
     CAP_MESSAGE_REPLIES,
+    CAP_MESSAGE_EDITS,
     CAP_DIRECT_ROUTE_RECOVERY,
 ]
 UDP_PORT = 24890
@@ -126,6 +130,8 @@ class PacketType(enum.IntEnum):
     FILE_CHUNK = 0x12
     FILE_ACK = 0x13
     TYPING = 0x14
+    MESSAGE_EDIT = 0x15
+    GROUP_MESSAGE_EDIT = 0x16
 
 
 PACKET_CAPABILITIES = {
@@ -143,6 +149,8 @@ PACKET_CAPABILITIES = {
     PacketType.FILE_CHUNK: CAP_FILE_TRANSFER,
     PacketType.FILE_ACK: CAP_FILE_TRANSFER,
     PacketType.TYPING: CAP_TYPING_INDICATORS,
+    PacketType.MESSAGE_EDIT: CAP_MESSAGE_EDITS,
+    PacketType.GROUP_MESSAGE_EDIT: CAP_MESSAGE_EDITS,
 }
 
 
@@ -1109,4 +1117,128 @@ class FileAckPayload:
             or len(payload.signature) != 64
         ):
             raise ValueError("Invalid file ack payload")
+        return payload
+
+
+@dataclass
+class MessageEditPayload:
+    """E2EE edit of a previously sent direct message (sender-only, no time limit)."""
+
+    message_id: str
+    sender_id: str
+    recipient_id: str
+    created_at: float
+    encrypted_content: bytes
+    signature: bytes = b""
+
+    def associated_data(self) -> bytes:
+        data: dict[str, object] = {
+            "message_id": self.message_id,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+            "kind": "edit",
+        }
+        return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
+
+    def signed_bytes(self) -> bytes:
+        return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
+
+    def encode(self) -> bytes:
+        return json.dumps({
+            "message_id": self.message_id,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+            "encrypted_content": self.encrypted_content.hex(),
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> "MessageEditPayload":
+        obj = json.loads(data)
+        payload = cls(
+            message_id=obj["message_id"],
+            sender_id=obj["sender_id"],
+            recipient_id=obj["recipient_id"],
+            created_at=obj["created_at"],
+            encrypted_content=bytes.fromhex(obj["encrypted_content"]),
+            signature=bytes.fromhex(obj.get("signature", "")),
+        )
+        if (
+            not _valid_request_id(payload.message_id)
+            or not _valid_peer_id(payload.sender_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or not isinstance(payload.created_at, (int, float))
+            or isinstance(payload.created_at, bool)
+            or not math.isfinite(payload.created_at)
+            or payload.created_at <= 0
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid message edit payload")
+        return payload
+
+
+@dataclass
+class GroupMessageEditPayload:
+    """Per-recipient E2EE edit of a previously sent group message."""
+
+    message_id: str
+    group_id: str
+    sender_id: str
+    recipient_id: str
+    created_at: float
+    encrypted_content: bytes
+    signature: bytes = b""
+
+    def associated_data(self) -> bytes:
+        data: dict[str, object] = {
+            "message_id": self.message_id,
+            "group_id": self.group_id,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+            "kind": "edit",
+        }
+        return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
+
+    def signed_bytes(self) -> bytes:
+        return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
+
+    def encode(self) -> bytes:
+        return json.dumps({
+            "message_id": self.message_id,
+            "group_id": self.group_id,
+            "sender_id": self.sender_id,
+            "recipient_id": self.recipient_id,
+            "created_at": self.created_at,
+            "encrypted_content": self.encrypted_content.hex(),
+            "signature": self.signature.hex(),
+        }).encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> "GroupMessageEditPayload":
+        obj = json.loads(data)
+        payload = cls(
+            message_id=obj["message_id"],
+            group_id=obj["group_id"],
+            sender_id=obj["sender_id"],
+            recipient_id=obj["recipient_id"],
+            created_at=obj["created_at"],
+            encrypted_content=bytes.fromhex(obj["encrypted_content"]),
+            signature=bytes.fromhex(obj.get("signature", "")),
+        )
+        if (
+            not _valid_request_id(payload.message_id)
+            or not isinstance(payload.group_id, str)
+            or not re.fullmatch(r"[a-f0-9]{32}", payload.group_id)
+            or not _valid_peer_id(payload.sender_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or not isinstance(payload.created_at, (int, float))
+            or isinstance(payload.created_at, bool)
+            or not math.isfinite(payload.created_at)
+            or payload.created_at <= 0
+            or len(payload.signature) != 64
+        ):
+            raise ValueError("Invalid group message edit payload")
         return payload

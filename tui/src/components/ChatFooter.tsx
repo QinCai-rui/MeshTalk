@@ -11,8 +11,8 @@ function SettingsShortcut({ openSettings, pinned }: { openSettings: () => void; 
 export function ChatFooter({ width, scrollFocused, status, openSettings }: { width: number; scrollFocused: boolean; status: string; openSettings: () => void }) {
   const compact = width < 70
   const hint = compact
-    ? [scrollFocused ? "↑↓ select · R reply · D delete · Esc" : "Enter send · PgUp · Ctrl+↑↓ chats"]
-    : [scrollFocused ? "↑↓ select / R reply / D delete / Enter enlarge image / End latest / Esc compose" : "Enter send / PgUp history / Ctrl+↑↓ chats / Ctrl+U attach / Drop files to send"]
+    ? [scrollFocused ? "↑↓ select · R reply · E edit · D delete · Esc" : "Enter send · PgUp · Ctrl+↑↓ chats"]
+    : [scrollFocused ? "↑↓ select / R reply / E edit / D delete / Enter enlarge image / End latest / Esc compose" : "Enter send / PgUp history / Ctrl+↑↓ chats / Ctrl+U attach / Drop files to send"]
   const notification = Boolean(status && status !== DEFAULT_STATUS)
   const statusColor = /error|lost|exceeds/i.test(status) ? theme.danger : theme.muted
   // Reserve the same area for hints and transient messages. Long notifications can

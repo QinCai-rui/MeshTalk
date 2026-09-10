@@ -693,6 +693,33 @@ async def main(debug: bool = False) -> None:
                 return {"error": "message not found"}
         return {"message_id": message_id, "deleted": True}
 
+    async def handle_edit_message(req: dict) -> dict:
+        message_id = req.get("message_id")
+        group_id = req.get("group_id")
+        content = req.get("content")
+        if not isinstance(message_id, str) or not message_id:
+            return {"error": "message_id required"}
+        if group_id is not None and not isinstance(group_id, str):
+            return {"error": "group_id must be a string"}
+        if not isinstance(content, str) or not content.strip():
+            return {"error": "content required"}
+        if len(content.encode()) > 30 * 1024:
+            return {"error": "Message exceeds 30 KiB limit"}
+        try:
+            if group_id:
+                edited_at = await group_router.send_edit(group_id, message_id, content)
+            else:
+                recipient = req.get("recipient_id")
+                if not isinstance(recipient, str) or not recipient:
+                    existing = await db.get_message(message_id)
+                    if not existing:
+                        return {"error": "message not found"}
+                    recipient = existing["recipient_id"] if existing["sender_id"] == identity.peer_id else existing["sender_id"]
+                edited_at = await router.send_edit(recipient, message_id, content)
+            return {"message_id": message_id, "edited_at": edited_at}
+        except ValueError as exc:
+            return {"error": str(exc)}
+
     async def handle_group_leave(req: dict) -> dict:
         group_id = req.get("group_id")
         if not isinstance(group_id, str):
@@ -917,6 +944,7 @@ async def main(debug: bool = False) -> None:
         "group_messages": handle_group_messages,
         "group_send": handle_group_send,
         "delete_message": handle_delete_message,
+        "edit_message": handle_edit_message,
         "group_leave": handle_group_leave,
         "mute": handle_mute,
         "unmute": handle_unmute,
@@ -939,6 +967,7 @@ async def main(debug: bool = False) -> None:
     )
     router.on_received = lambda message: ipc.broadcast_event({"event": "message", **message})
     router.on_delivered = lambda message_id: ipc.broadcast_event({"event": "delivered", "message_id": message_id})
+    router.on_edited = lambda message: ipc.broadcast_event({"event": "message_edited", **message})
     group_router.on_event = ipc.broadcast_event
     typing_router.on_event = ipc.broadcast_event
     friend_manager.on_friend_request = lambda event: ipc.broadcast_event({"event": "friend_request", **event})
