@@ -25,7 +25,7 @@ app.get("/", (_req, res) => {
 
 app.get("/index.html", (_req, res) => {
   res.render("home", {
-    title: "MeshTalk — Peer-to-Peer Encrypted Messaging",
+    title: "MeshTalk: Peer-to-Peer Encrypted Messaging",
   });
 });
 
@@ -44,6 +44,12 @@ app.get("/features.html", (_req, res) => {
 app.get("/docs", (_req, res) => {
   res.render("docs", {
     title: "Documentation | MeshTalk",
+  });
+});
+
+app.get("/privacy", (_req, res) => {
+  res.render("privacy", {
+    title: "Privacy Policy | MeshTalk",
   });
 });
 
