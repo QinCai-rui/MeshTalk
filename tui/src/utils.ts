@@ -1,4 +1,4 @@
-import type { Group, GroupDelivery, Peer } from "./types"
+import type { ConversationItem, Group, GroupDelivery, Peer } from "./types"
 import type { TextareaRenderable } from "@opentui/core"
 import { chatTheme as theme, unreadMessageBackground as unreadBackground } from "./chatTheme"
 
@@ -91,6 +91,65 @@ export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
   return details.join(" · ")
 }
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }
+export type RenderType = "FULL_HEADER" | "COMPACT_ROW";
+// Intentional deviation from a sliding inter-message gap: the 8-minute window
+// is anchored at the FIRST message of the group (Discord's current behavior),
+// so continuous typing can never extend a group indefinitely.
+export const MESSAGE_GROUP_CEILING_SECONDS = 480;
+
+function groupingAuthor(item: ConversationItem): string {
+  return item.type === "message" ? item.message.sender_id : item.file.sender_id;
+}
+
+function groupingIsReply(item: ConversationItem): boolean {
+  return item.type === "message" && Boolean(item.message.reply_to_message_id);
+}
+
+export function isSystemMessage(message: { kind?: string | null }, isGroup: boolean): boolean {
+  return Boolean(isGroup && message.kind && message.kind !== "message" && message.kind !== "text");
+}
+
+function groupingIsSystem(item: ConversationItem, isGroup: boolean): boolean {
+  return item.type === "message" && isSystemMessage(item.message, isGroup);
+}
+
+export function groupDeliveriesNeedAttention(deliveries: GroupDelivery[] = []): boolean {
+  return deliveries.some((delivery) => delivery.status !== "delivered" && delivery.status !== "sent");
+}
+
+export function groupRowMarginBottom(renderTypes: readonly RenderType[], index: number): 0 | 1 {
+  return renderTypes[index + 1] === "COMPACT_ROW" ? 0 : 1;
+}
+export function computeRenderTypes(items: ConversationItem[], isGroup = true): RenderType[] {
+  const result: RenderType[] = [];
+  let currentGroupAuthorId: string | undefined;
+  let currentGroupStartTimestamp = 0;
+  let currentGroupDate = "";
+  let prevWasSystem = false;
+  for (const item of items) {
+    const authorId = groupingAuthor(item);
+    const timestamp = item.createdAt;
+    const date = dayKey(timestamp);
+    const isBreakType = groupingIsReply(item) || groupingIsSystem(item, isGroup);
+    const shouldStartNewGroup =
+      result.length === 0 ||
+      authorId !== currentGroupAuthorId ||
+      timestamp - currentGroupStartTimestamp >= MESSAGE_GROUP_CEILING_SECONDS ||
+      isBreakType ||
+      prevWasSystem ||
+      date !== currentGroupDate;
+    if (shouldStartNewGroup) {
+      result.push("FULL_HEADER");
+      currentGroupAuthorId = authorId;
+      currentGroupStartTimestamp = timestamp;
+      currentGroupDate = date;
+    } else {
+      result.push("COMPACT_ROW");
+    }
+    prevWasSystem = groupingIsSystem(item, isGroup);
+  }
+  return result;
+}
 export function isImageFile(filename: string): boolean { return ["png", "jpg", "jpeg", "gif", "webp"].includes(filename.split(".").pop()?.toLowerCase() ?? "") }
 export function toFileUrl(path: string, version?: number | null): string { let normalized = path.replace(/\\/g, "/"); if (/^[a-zA-Z]:\//.test(normalized)) normalized = "/" + normalized; const encoded = normalized.split("/").map((segment) => encodeURIComponent(segment)).join("/"); return "file://" + encoded + (version != null ? `?v=${version}` : "") }
 export function terminalWidth(text: string): number {
