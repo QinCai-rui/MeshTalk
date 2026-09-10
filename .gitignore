@@ -48,3 +48,10 @@ Thumbs.db
 
 # opencode config
 opencode.json
+
+# superpowers working docs (never commit)
+docs/superpowers/
+.superpowers/
+
+# local worktrees
+.worktrees/
