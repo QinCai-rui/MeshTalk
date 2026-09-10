@@ -144,7 +144,10 @@ class Analytics:
         if payload["os"] is None or payload["arch"] is None:
             return False
         def send() -> bool:
-            request = urllib.request.Request(ANALYTICS_URL, data=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            # Cloudflare edge may return 403 for Python-urllib's default User-Agent
+            # identify as meshtalk (version is already in the
+            # payload, and the Worker strips UA before the origin anyway).
+            request = urllib.request.Request(ANALYTICS_URL, data=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "User-Agent": f"meshtalk/{self.app_version}"}, method="POST")
             try:
                 with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response: return 200 <= response.status < 300
             except Exception: return False
