@@ -1,6 +1,7 @@
 {
   "site": {
     "name": "MeshTalk",
+    "url": "https://example.com",
     "lang": "en",
     "themeColor": "#0a0e14",
     "twitterCard": "summary",
