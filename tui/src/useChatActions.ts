@@ -1,6 +1,6 @@
 import type { IPCClient } from "../../common/ipc-client"
 import type { Release } from "../../common/updater"
-import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, UPDATE_RESTART_EXIT_CODE } from "../../common/updater"
+import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, saveUpdateChannel as persistUpdateChannel, UPDATE_RESTART_EXIT_CODE, type UpdateChannel } from "../../common/updater"
 import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus, SplashPreference } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
 import { join, resolve } from "path"
@@ -927,6 +927,16 @@ export function useChatActions(deps: ChatActionsDeps) {
     } finally { setIsSending(false) }
   }
 
+  function saveUpdateChannel(channel: UpdateChannel) {
+    try {
+      persistUpdateChannel(channel)
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : String(error))
+      return
+    }
+    void checkForUpdatesFromAbout()
+  }
+
   function runCommand(command: string) {
     navigationRunCommand(command, {
       groups, groupMembers, identity, mutedPeers, peers, selectedGroupId, selectedPeerId, selection,
@@ -941,7 +951,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     showStatus, showCopyToast,
     refreshPeers, refreshGroups, refreshGroupMembers, refreshFiles, refreshFriendRequestsSilent, openFriendsInbox,
     closeDialog, showDialog, goBack,
-    installUpdate, saveUpdateToken, restartUpdate, checkForUpdatesFromAbout,
+    installUpdate, saveUpdateToken, restartUpdate, checkForUpdatesFromAbout, saveUpdateChannel,
     loadControlStatus, configureControl, dismissControlSetup,
     loadAdvancedConfig, saveAdvancedConfig,
     loadRooms, createRoom, joinRoom, leaveRoom, loadRoomInvite,
