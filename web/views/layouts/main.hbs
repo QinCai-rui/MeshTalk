@@ -4,6 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{title}}</title>
+  <meta name="description" content="{{meta.description}}">
+  {{#if meta.keywords}}<meta name="keywords" content="{{meta.keywords}}" />{{/if}}
+  {{#if meta.robots}}<meta name="robots" content="{{meta.robots}}">{{/if}}
+  <meta name="theme-color" content="{{site.themeColor}}">
+  {{#if meta.canonical}}<link rel="canonical" href="{{meta.canonical}}" />{{/if}}
+  <meta property="og:type" content="{{meta.ogType}}">
+  <meta property="og:site_name" content="{{site.name}}">
+  <meta property="og:title" content="{{title}}">
+  <meta property="og:description" content="{{meta.description}}">
+  {{#if meta.canonical}}<meta property="og:url" content="{{meta.canonical}}">{{/if}}
+  <meta name="twitter:card" content="{{site.twitterCard}}">
+  <meta name="twitter:title" content="{{title}}">
+  <meta name="twitter:description" content="{{meta.description}}">
   <link rel="stylesheet" href="css/style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
