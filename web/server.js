@@ -1,6 +1,7 @@
 const express = require("express");
 const { engine } = require("express-handlebars");
 const path = require("path");
+const site = require("./pages.json");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,52 +18,31 @@ app.set("views", path.join(__dirname, "views"));
 
 app.use(express.static(path.join(__dirname, "public")));
 
-app.get("/", (_req, res) => {
-  res.render("home", {
-    title: "Home | MeshTalk",
-  });
-});
+function pageContext(page) {
+  return {
+    title: page.title,
+    site: site.site,
+    meta: {
+      description: page.description || site.site.defaultDescription,
+      keywords: page.keywords || site.site.defaultKeywords,
+      robots: page.robots,
+      ogType: page.ogType || "website",
+      canonical: page.canonical,
+    },
+  };
+}
 
-app.get("/index.html", (_req, res) => {
-  res.render("home", {
-    title: "MeshTalk: Peer-to-Peer Encrypted Messaging",
-  });
-});
-
-app.get("/features", (_req, res) => {
-  res.render("features", {
-    title: "Features | MeshTalk",
-  });
-});
-
-app.get("/features.html", (_req, res) => {
-  res.render("features", {
-    title: "Features — MeshTalk",
-  });
-});
-
-app.get("/docs", (_req, res) => {
-  res.render("docs", {
-    title: "Documentation | MeshTalk",
-  });
-});
-
-app.get("/privacy", (_req, res) => {
-  res.render("privacy", {
-    title: "Privacy Policy | MeshTalk",
-  });
-});
+for (const page of site.pages) {
+  const routes = [page.route, ...(page.aliases || [])];
+  for (const route of routes) {
+    app.get(route, (_req, res) => {
+      res.render(page.view, pageContext(page));
+    });
+  }
+}
 
 app.use((_req, res) => {
-  res.status(404).render("404", {
-    title: "404 | MeshTalk",
-  });
-});
-
-app.get("/docs.html", (_req, res) => {
-  res.render("docs", {
-    title: "Getting Started — MeshTalk",
-  });
+  res.status(404).render(site.notFound.view, pageContext(site.notFound));
 });
 
 app.listen(PORT, () => {

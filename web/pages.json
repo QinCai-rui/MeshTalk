@@ -1,0 +1,65 @@
+{
+  "site": {
+    "name": "MeshTalk",
+    "lang": "en",
+    "themeColor": "#0a0e14",
+    "twitterCard": "summary",
+    "defaultDescription": "MeshTalk is peer-to-peer encrypted messaging over LAN and NAT-traversed UDP links. End-to-end encrypted, no accounts, no servers storing your data.",
+    "defaultKeywords": "MeshTalk, peer-to-peer, encrypted messaging, E2EE, LAN chat, NAT traversal"
+  },
+  "pages": [
+    {
+      "route": "/",
+      "aliases": ["/index.html"],
+      "view": "home",
+      "output": "index.html",
+      "title": "MeshTalk \u2014 Peer-to-Peer Encrypted Messaging",
+      "description": "MeshTalk sends end-to-end encrypted messages directly between devices \u2014 over your LAN or across the internet. No account, no cloud inbox, no middlemen.",
+      "keywords": "MeshTalk, peer-to-peer, encrypted messaging, E2EE, LAN chat, NAT traversal",
+      "ogType": "website",
+      "canonical": "/"
+    },
+    {
+      "route": "/features",
+      "aliases": ["/features.html"],
+      "view": "features",
+      "output": "features.html",
+      "title": "Features \u2014 MeshTalk",
+      "description": "End-to-end encrypted messages, named group chats, direct file transfer, terminal-native TUI and CLI, Docker support and self-updates \u2014 all peer to peer.",
+      "keywords": "MeshTalk features, E2EE group chat, encrypted file transfer, TUI chat, CLI messenger",
+      "ogType": "website",
+      "canonical": "/features"
+    },
+    {
+      "route": "/docs",
+      "aliases": ["/docs.html"],
+      "view": "docs",
+      "output": "docs.html",
+      "title": "Getting Started \u2014 MeshTalk",
+      "description": "Install MeshTalk with one command, launch the TUI, connect on LAN, set up remote discovery, create group chats and update \u2014 step by step.",
+      "keywords": "MeshTalk install, MeshTalk docs, getting started, setup guide",
+      "ogType": "article",
+      "canonical": "/docs"
+    },
+    {
+      "route": "/privacy",
+      "aliases": ["/privacy.html"],
+      "view": "privacy",
+      "output": "privacy.html",
+      "title": "Privacy Policy \u2014 MeshTalk",
+      "description": "MeshTalk collects nothing by default. This policy covers the optional, off-by-default aggregate analytics in release builds \u2014 and nothing else.",
+      "keywords": "MeshTalk privacy, telemetry policy, analytics opt-in",
+      "ogType": "article",
+      "canonical": "/privacy"
+    }
+  ],
+  "notFound": {
+    "view": "404",
+    "output": "404.html",
+    "title": "Page Not Found \u2014 MeshTalk",
+    "description": "This page does not exist. Head back home and start meshing.",
+    "robots": "noindex, nofollow",
+    "ogType": "website",
+    "canonical": null
+  }
+}
