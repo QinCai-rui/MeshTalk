@@ -32,32 +32,52 @@ jobs:
           export PATH="$HOME/.opencode/bin:$PATH"
           git log --since="24 hours ago" --name-only --pretty=format: > /tmp/changed.txt
           git diff HEAD~1...HEAD > /tmp/recent.diff || git show HEAD --stat > /tmp/recent.diff
-          opencode run --format json --agent docs-drift --model opencode/muse-spark-1.3-contributor-free "Recent changes:" "$(cat /tmp/changed.txt)" "Diff:" "$(head -c 60000 /tmp/recent.diff)" > drift-events.jsonl
-          jq -r '[.[] | select(.type=="text") | .part.text] | last // "NO_DRIFT"' drift-events.jsonl > drift-report.md
-          echo "drift=$(grep -qx 'NO_DRIFT' drift-report.md && echo false || echo true)" >> "$GITHUB_OUTPUT"
+          opencode run --format json --agent docs-drift --model opencode/muse-spark-1.3-contributor-free "Recent changes:" "$(cat /tmp/changed.txt)" "Diff:" "$(head -c 60000 /tmp/recent.diff)" > /tmp/drift-events.jsonl
+          jq -sr '[.[] | select(.type == "text") | .part.text] | last // "NO_DRIFT"' /tmp/drift-events.jsonl > /tmp/drift-report.md
+          echo "drift=$(grep -qx 'NO_DRIFT' /tmp/drift-report.md && echo false || echo true)" >> "$GITHUB_OUTPUT"
 
-      - name: Open issue + docs-only fix PR
+      - name: Apply doc updates and open fix PR
+        id: fix
+        if: steps.detect.outputs.drift == 'true'
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_PERMISSION: '{"bash":{"*":"deny"}}'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          export PATH="$HOME/.opencode/bin:$PATH"
+          DATE=$(date -u +%F)
+          BRANCH="docs-drift/$DATE"
+          git checkout -B "$BRANCH"
+          opencode run --format json --agent docs-editor --model opencode/muse-spark-1.3-contributor-free "Drift report:" "$(cat /tmp/drift-report.md)" "Update the drifted docs files in the working tree now." > /tmp/edit-events.jsonl
+          BAD=$(git status --porcelain | awk '{print $2}' | grep -v -E '^(PROTOCOL\.md|PRIVACY\.md|DESIGN\.md|README\.md|docs/)' || true)
+          if [ -n "$BAD" ]; then echo "Non-docs files touched, aborting:"; echo "$BAD"; exit 1; fi
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            echo "Editor produced no patch."
+            exit 0
+          fi
+          git config user.name "opencode-agent[bot]"
+          git config user.email "opencode-agent[bot]@users.noreply.github.com"
+          git add PROTOCOL.md PRIVACY.md DESIGN.md README.md docs/
+          git commit -m "docs: drift sync $DATE"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "$BRANCH"
+          PR_URL=$(gh pr create --title "docs: drift sync $DATE" --body "Automated docs sync from the nightly drift check. Review doc claims vs code before merging." --head "$BRANCH" --base main 2>/dev/null || gh pr view "$BRANCH" --json url --jq .url)
+          echo "pr_number=$(echo "$PR_URL" | grep -o '[0-9]*$')" >> "$GITHUB_OUTPUT"
+
+      - name: Open/update tracking issue
         if: steps.detect.outputs.drift == 'true'
         uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
-            const { execSync } = require('child_process');
             const date = new Date().toISOString().slice(0, 10);
-            const branch = `docs-drift/${date}`;
             const marker = '<!-- meshtalk-docs-drift -->';
-            const report = fs.readFileSync('drift-report.md', 'utf8').trim();
-            execSync(`git checkout -b ${branch}`);
-            // Agent report is advisory; maintainer edits docs on the branch before merge.
-            // Guard: abort if non-docs files staged.
-            const changed = execSync('git status --porcelain').toString();
-            if (changed && !changed.split('\n').every(l => /^\s*(M|A|\?\?)\s+(PROTOCOL\.md|PRIVACY\.md|DESIGN\.md|README\.md|docs\/)/.test(l) || l.trim() === '')) {
-              core.setFailed('Non-docs files touched — aborting drift PR');
-              return;
-            }
-            let issueBody = `## Docs drift ${date}\n\n${report}\n\n<sub>Nightly check. Fix proposed in linked PR; merge after review.</sub>\n${marker}`;
+            const report = fs.readFileSync('/tmp/drift-report.md', 'utf8').trim();
+            const pr = '${{ steps.fix.outputs.pr_number }}';
+            const prLine = pr ? `Fix PR: #${pr} (review doc claims vs code before merging).` : 'Fix PR: not created (editor produced no patch) — create it manually from this report.';
+            let issueBody = `## Docs drift ${date}\n\n${report}\n\n${prLine}\n\n<sub>Nightly check.</sub>\n${marker}`;
             const issues = await github.paginate(github.rest.issues.listForRepo, { owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100 });
             let issue = issues.find(i => i.body?.includes(marker));
             if (!issue) issue = (await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title: `[docs-drift] ${date}`, body: issueBody, labels: ['docs'] })).data;
             else await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number, body: issueBody });
-            core.notice(`Drift tracked in #${issue.number}. Push branch ${branch} and open PR manually after editing docs.`);
