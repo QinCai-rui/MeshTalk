@@ -57,6 +57,21 @@ class SettingsControlSetupTest(unittest.TestCase):
 
         self.assertFalse(Settings(self.path).flashing_enabled)
 
+    def test_confirm_file_send_defaults_on_and_persists(self):
+        settings = Settings(self.path)
+        self.assertTrue(settings.confirm_file_send)
+
+        settings.set_confirm_file_send(False)
+        self.assertFalse(Settings(self.path).confirm_file_send)
+
+        with self.assertRaisesRegex(ValueError, "confirm_file_send"):
+            settings.set_confirm_file_send("no")  # type: ignore[arg-type]
+
+    def test_non_boolean_confirm_file_send_uses_default(self):
+        self.path.write_text(json.dumps({"version": 1, "confirm_file_send": "yes"}))
+
+        self.assertTrue(Settings(self.path).confirm_file_send)
+
     def test_image_protocol_persists_and_validates(self):
         settings = Settings(self.path)
         settings.set_image_protocol("sixel")

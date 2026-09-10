@@ -1,11 +1,12 @@
 import type { IPCClient } from "../../common/ipc-client"
 import type { Release } from "../../common/updater"
-import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, UPDATE_RESTART_EXIT_CODE } from "../../common/updater"
-import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus, SplashPreference } from "./types"
+import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, saveUpdateChannel as persistUpdateChannel, UPDATE_RESTART_EXIT_CODE, type UpdateChannel } from "../../common/updater"
+import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileConfirmSource, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus, SplashPreference } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
 import { join, resolve } from "path"
 import { tmpdir } from "os"
-import { existsSync, statSync } from "fs"
+import { statSync } from "fs"
+import { stageFilesForConfirmation } from "./fileSendConfirm"
 import { groupFromResponse, sortPeersByInteraction } from "./utils"
 import { runCommand as navigationRunCommand } from "./navigation"
 import { sendTestNotification } from "./notifications"
@@ -677,6 +678,87 @@ export function useChatActions(deps: ChatActionsDeps) {
     finally { finishDialogAction(action) }
   }
 
+  function expandUser(filePath: string): string {
+    const trimmed = filePath.trim()
+    const home = process.env.HOME || process.env.USERPROFILE || ""
+    if (home && (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\"))) return home + trimmed.slice(1)
+    return trimmed
+  }
+
+  function validLocalFiles(paths: string[]): { valid: string[]; missing: string[] } {
+    const valid: string[] = []
+    const missing: string[] = []
+    for (const raw of paths.slice(0, 32)) {
+      const trimmed = raw.trim()
+      if (!trimmed) continue
+      try {
+        const absolutePath = resolve(expandUser(trimmed))
+        const stat = statSync(absolutePath)
+        if (stat.isFile()) {
+          if (!valid.includes(absolutePath)) valid.push(absolutePath)
+        } else {
+          missing.push(trimmed)
+        }
+      } catch {
+        missing.push(trimmed)
+      }
+    }
+    return { valid, missing }
+  }
+
+  async function sendFilesDirect(paths: string[]) {
+    if (!selection) { showStatus("Select a peer or group before sending a file."); return }
+    let sent = 0
+    for (const filePath of paths) {
+      try {
+        if (selection.kind === "peer") {
+          const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: filePath })
+          if (response.error) throw new Error(response.error)
+        } else {
+          const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: filePath })
+          if (response.error) throw new Error(response.error)
+        }
+        sent++
+      } catch (error) {
+        showStatus(`Could not send ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+    }
+    if (sent === 1) showStatus(`File transfer started: ${paths[0] ?? "file"} -> ${selection.id.slice(0, 8)}`)
+    else if (sent > 1) showStatus(`Started ${sent} file transfers.`)
+  }
+
+  async function requestFileSend(paths: string[], source: FileConfirmSource) {
+    if (!selection) { showStatus("Select a peer or group first."); return }
+    const { valid, missing } = validLocalFiles(paths)
+    if (!valid.length) {
+      showStatus(missing.length ? `Not found: ${missing[0]}` : "No files found.")
+      return
+    }
+    try {
+      const confirmationPaths = source === "picker" ? valid : await stageFilesForConfirmation(valid)
+      showDialog({ kind: "file-confirm", paths: confirmationPaths, source })
+    } catch (error) {
+      showStatus(`Could not prepare file: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  function requestImageSend(bytes: Uint8Array, mimeType: string) {
+    if (!selection) { showStatus("Select a peer or group first."); return }
+    showDialog({ kind: "file-confirm", paths: [], source: "image", image: { bytes, mimeType } })
+  }
+
+  async function confirmPendingFileSend() {
+    const pending = dialog
+    if (!pending || pending.kind !== "file-confirm") return
+    closeDialog()
+    if (pending.image) {
+      await sendImage(pending.image.bytes, pending.image.mimeType)
+    } else {
+      await sendFilesDirect(pending.paths)
+    }
+  }
+
   async function sendFile(filePath: string) {
     const action = beginDialogAction()
     if (action === null) return
@@ -927,6 +1009,16 @@ export function useChatActions(deps: ChatActionsDeps) {
     } finally { setIsSending(false) }
   }
 
+  function saveUpdateChannel(channel: UpdateChannel) {
+    try {
+      persistUpdateChannel(channel)
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : String(error))
+      return
+    }
+    void checkForUpdatesFromAbout()
+  }
+
   function runCommand(command: string) {
     navigationRunCommand(command, {
       groups, groupMembers, identity, mutedPeers, peers, selectedGroupId, selectedPeerId, selection,
@@ -941,7 +1033,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     showStatus, showCopyToast,
     refreshPeers, refreshGroups, refreshGroupMembers, refreshFiles, refreshFriendRequestsSilent, openFriendsInbox,
     closeDialog, showDialog, goBack,
-    installUpdate, saveUpdateToken, restartUpdate, checkForUpdatesFromAbout,
+    installUpdate, saveUpdateToken, restartUpdate, checkForUpdatesFromAbout, saveUpdateChannel,
     loadControlStatus, configureControl, dismissControlSetup,
     loadAdvancedConfig, saveAdvancedConfig,
     loadRooms, createRoom, joinRoom, leaveRoom, loadRoomInvite,
@@ -950,7 +1042,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     loadFriendRequests, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer,
     loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest,
     reStun, loadDebugInfo, loadFiles,
-    sendFile, sendImage, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
+    sendFile, sendFilesDirect, sendImage, requestFileSend, requestImageSend, confirmPendingFileSend, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
     saveDisplayName, setAccessibilityFlashing,
     testNotificationDelivery, confirmNotificationDelivery, disableNotifications, toggleNotificationEvent,
     send, runCommand,

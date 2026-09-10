@@ -31,6 +31,28 @@ export type Release = {
   digest?: string
 }
 
+export type UpdateChannel = "stable" | "unstable"
+
+export function readUpdateChannel(settingsPath: string = SETTINGS_PATH): UpdateChannel {
+  try {
+    const value = JSON.parse(readFileSync(settingsPath, "utf-8")) as { update_channel?: unknown }
+    return value.update_channel === "unstable" ? "unstable" : "stable"
+  } catch {
+    return "stable"
+  }
+}
+
+export function saveUpdateChannel(channel: UpdateChannel, settingsPath: string = SETTINGS_PATH, dataDir: string = DATA_DIR): void {
+  mkdirSync(dataDir, { recursive: true })
+  let settings: Record<string, unknown> = { version: 1 }
+  try { settings = JSON.parse(readFileSync(settingsPath, "utf-8")) } catch {}
+  settings.update_channel = channel
+  const temporary = `${settingsPath}.tmp`
+  writeFileSync(temporary, JSON.stringify(settings, null, 2))
+  chmodSync(temporary, 0o600)
+  renameSync(temporary, settingsPath)
+}
+
 export type UpdateProgress = {
   current: number
   total: number
@@ -62,11 +84,28 @@ function platformAssetName(): string | null {
   return `meshtalk-${releasePlatform}-${assetArch}${suffix}.tar.gz`
 }
 
-type Version = { parts: number[]; revision: number }
+type Version = { parts: number[]; revision: number; snapshotRun: number | null }
 
 function parseVersion(value: string): Version | null {
-  const match = value.replace(/^v/, "").match(/^(\d+)\.(\d+)\.(\d+)(?:-(\d+))?$/)
-  return match ? { parts: match.slice(1, 4).map(Number), revision: Number(match[4] ?? 0) } : null
+  const match = value.replace(/^v/, "").match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/)
+  if (!match) return null
+  const parts = match.slice(1, 4).map(Number)
+  const pre = match[4]
+  const build = match[5]
+  // Legacy numeric revision (e.g. 0.7.1-1): ranks above the bare base release.
+  if (pre !== undefined && /^\d+$/.test(pre)) return { parts, revision: Number(pre), snapshotRun: null }
+  // Anything else with a pre-release segment (e.g. -SNAPSHOT) is a prerelease
+  // that ranks below the same-base stable build. Snapshot runs order by the
+  // leading number of the build metadata (+250-abcdef...).
+  if (pre !== undefined) {
+    let snapshotRun = 0
+    if (build) {
+      const run = build.match(/^(\d+)/)
+      if (run) snapshotRun = Number(run[1])
+    }
+    return { parts, revision: 0, snapshotRun }
+  }
+  return { parts, revision: 0, snapshotRun: null }
 }
 
 export function isNewerVersion(latest: string, current: string): boolean {
@@ -76,6 +115,10 @@ export function isNewerVersion(latest: string, current: string): boolean {
   for (let index = 0; index < next.parts.length; index++) {
     if (next.parts[index] !== installed.parts[index]) return next.parts[index] > installed.parts[index]
   }
+  // Same base: numeric revisions outrank stable, stable outranks snapshots.
+  const rank = (version: Version): number => version.snapshotRun !== null ? 0 : version.revision > 0 ? 2 : 1
+  if (rank(next) !== rank(installed)) return rank(next) > rank(installed)
+  if (next.snapshotRun !== null && installed.snapshotRun !== null) return next.snapshotRun > installed.snapshotRun
   return next.revision > installed.revision
 }
 
@@ -153,6 +196,26 @@ async function fetchRelease(token?: string): Promise<{ release: ReleaseResponse 
   }
 }
 
+// Newest-first release list for the unstable channel: /releases/latest never
+// includes prereleases, so unstable must enumerate and pick the newest
+// non-draft itself (prereleases included).
+async function fetchReleases(token?: string): Promise<{ releases: ReleaseResponse[]; accessDenied: boolean }> {
+  try {
+    const response = await fetch(`https://api.github.com/repos/${githubRepository()}/releases?per_page=10`, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      signal: AbortSignal.timeout(8_000),
+    })
+    if (!response.ok) return { releases: [], accessDenied: [401, 403, 404].includes(response.status) }
+    const releases = await response.json()
+    return { releases: Array.isArray(releases) ? releases as ReleaseResponse[] : [], accessDenied: false }
+  } catch {
+    return { releases: [], accessDenied: false }
+  }
+}
+
 function ghRelease(): ReleaseResponse | null {
   try {
     const result = Bun.spawnSync(["gh", "api", `repos/${githubRepository()}/releases/latest`])
@@ -163,9 +226,20 @@ function ghRelease(): ReleaseResponse | null {
   }
 }
 
-function asRelease(value: ReleaseResponse | null): Release | null {
+function ghReleases(): ReleaseResponse[] {
+  try {
+    const result = Bun.spawnSync(["gh", "api", `repos/${githubRepository()}/releases`, "--paginate"])
+    if (result.exitCode !== 0) return []
+    const releases = JSON.parse(new TextDecoder().decode(result.stdout))
+    return Array.isArray(releases) ? releases as ReleaseResponse[] : []
+  } catch {
+    return []
+  }
+}
+
+function asRelease(value: ReleaseResponse | null, allowPrerelease = false): Release | null {
   const assetName = platformAssetName()
-  if (!value || value.prerelease || value.draft || typeof value.tag_name !== "string" || !assetName) return null
+  if (!value || value.draft || (!allowPrerelease && value.prerelease) || typeof value.tag_name !== "string" || !assetName) return null
   const version = value.tag_name.replace(/^v/, "")
   if (!parseVersion(version)) return null
   const asset = value.assets?.find((candidate) => candidate.name === assetName)
@@ -179,14 +253,42 @@ function asRelease(value: ReleaseResponse | null): Release | null {
   }
 }
 
-export async function checkForUpdate(currentVersion: string): Promise<Release | null> {
-  const publicRelease = await fetchRelease()
-  let release = asRelease(publicRelease.release)
-  if (!release) release = asRelease(ghRelease())
+function newestUsable(releases: ReleaseResponse[], allowPrerelease: boolean): Release | null {
+  for (const candidate of releases) {
+    const release = asRelease(candidate, allowPrerelease)
+    if (release) return release
+  }
+  return null
+}
+
+export async function checkForUpdate(currentVersion: string, channel: UpdateChannel = readUpdateChannel()): Promise<Release | null> {
+  const allowPrerelease = channel === "unstable"
+  let release: Release | null = null
+  let accessDenied = false
+  if (allowPrerelease) {
+    const listed = await fetchReleases()
+    release = newestUsable(listed.releases, true)
+    accessDenied = listed.accessDenied
+    if (!release) release = newestUsable(ghReleases(), true)
+  } else {
+    const publicRelease = await fetchRelease()
+    release = asRelease(publicRelease.release)
+    accessDenied = publicRelease.accessDenied
+    if (!release) release = asRelease(ghRelease())
+  }
   const token = githubToken()
-  const authenticatedRelease = release || !token ? null : await fetchRelease(token)
-  if (!release && authenticatedRelease) release = asRelease(authenticatedRelease.release)
-  if (!release && (publicRelease.accessDenied || authenticatedRelease?.accessDenied)) throw new GitHubAuthenticationError()
+  if (!release && token) {
+    if (allowPrerelease) {
+      const authenticated = await fetchReleases(token)
+      release = newestUsable(authenticated.releases, true)
+      accessDenied = accessDenied || authenticated.accessDenied
+    } else {
+      const authenticatedRelease = await fetchRelease(token)
+      release = asRelease(authenticatedRelease.release)
+      accessDenied = accessDenied || authenticatedRelease.accessDenied
+    }
+  }
+  if (!release && accessDenied) throw new GitHubAuthenticationError()
   return release && isNewerVersion(release.version, currentVersion) ? release : null
 }
 
