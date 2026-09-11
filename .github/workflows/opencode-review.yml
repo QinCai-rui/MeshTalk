@@ -312,7 +312,7 @@ jobs:
             // approve ONLY when not a fallback, verdict is Looks good,
             // suggestions are empty, and no blocking/should-fix label remains.
             const isFallback = /could not produce a valid/i.test(reviewBody);
-            const verdictLooksGood = /verdict:\s*`?looks good`?/i.test(reviewBody);
+            const verdictLooksGood = /verdict:\s*[*_`]*looks good\b/i.test(reviewBody);
             const hasBoldOrBracketApprovalBlocker = /\*\*\s*(blocking|should-fix)\b|\[(blocking|should-fix)\]/i.test(reviewBody);
             let hasLineLabelApprovalBlocker = false;
             for (const line of reviewBody.split('\n')) {
