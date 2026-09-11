@@ -188,7 +188,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
           </box>
         </box>}
         {selected && <>
-          {(selected.delivery_warnings ?? []).map(kind => kind === "offline" ? <text id="offline-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Offline: messages queue until this peer reconnects.</text> : kind === "not_friend" && !hasFriendActions ? <text id="friend-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Messaging is blocked until you become friends.</text> : null)}
+{(selected.delivery_warnings ?? []).map(kind => kind === "offline" ? <text id="offline-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Offline: messages queue until this peer reconnects.</text> : kind === "not_friend" && !hasFriendActions ? <text id="friend-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Messaging is blocked until you become friends. Ctrl+P &gt; Friends &gt; Add friend.</text> : null)}
           {selectedHasCapabilityGap && <text id="capability-warning" fg={flashingWarningColor} wrapMode="word">Limited: {capabilityGapMessage}</text>}
           {hasFriendActions && <box id="friend-inline-actions" flexDirection="column">
             <text fg={theme.muted} wrapMode="word">{peerFriendStatusText(selected!)}</text>
