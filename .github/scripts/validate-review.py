@@ -13,6 +13,7 @@ SUGGESTIONS = re.compile(r"```suggestions-json\s*(.*?)\s*```", re.DOTALL)
 # Only recognize path-like citations, avoiding ordinary prose such as "HTTP: 422".
 CITATION = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+):(\d+)(?:-(\d+))?")
 SEVERITY = re.compile(r"\b(?:blocking|should-fix|nit)\b", re.IGNORECASE)
+SEVERITY_LABEL = re.compile(r"\*\*\s*(blocking|should-fix|nit)\b|\[(blocking|should-fix|nit)\]", re.IGNORECASE)
 BOLD_SEVERITY_HEADING = re.compile(
     r"^\s*\*\*(?:blocking(?:\s*/\s*should-fix)?|should-fix|nit|needs\s+discussion(?:\s*/\s*residual\s+risk)?)\s*:?\*\*\s*$",
     re.IGNORECASE,
@@ -95,28 +96,28 @@ def block_is_non_finding(block: list[str]) -> bool:
     return False
 
 
+def has_severity_label(block: str) -> bool:
+    # Only treat severity as a finding when used as an explicit label
+    # (bold/bracket label or line-leading label), not prose mentions
+    # such as "no blocking defects".
+    if SEVERITY_LABEL.search(block):
+        return True
+    for line in block.splitlines():
+        cleaned = re.sub(r"^\s*(?:#{1,6}\s*|(?:[-*]|\d+[.)])\s*|>\s*)*", "", line)
+        cleaned = re.sub(r"^[\*_`\[\(\s]+", "", cleaned)
+        if re.match(r"(?i)(blocking|should-fix|nit)\b\s*(?:[:/\-\]]|$)", cleaned):
+            return True
+    return False
+
+
 def review_blocks(review: str) -> list[list[str]]:
+    # Group by blank lines so a finding heading stays with its
+    # supporting bullets instead of fragmenting on every bullet.
     blocks: list[list[str]] = []
-    block: list[str] = []
-    for line in review.splitlines():
-        item = re.match(r"^\s*(?:[-*]|\d+[.)])\s+", line)
-        if is_heading(line) or item:
-            pure_severity_heading = len(block) == 1 and is_severity_heading(block[0])
-            if pure_severity_heading and item:
-                block.append(line)
-                continue
-            if block and not pure_severity_heading:
-                blocks.append(block)
-            block = [line]
-        elif line.strip():
-            block.append(line)
-        elif block:
-            if len(block) == 1 and is_severity_heading(block[0]):
-                continue
-            blocks.append(block)
-            block = []
-    if block:
-        blocks.append(block)
+    for section in re.split(r"\n\s*\n", review):
+        lines = [line for line in section.splitlines() if line.strip()]
+        if lines:
+            blocks.append(lines)
     return blocks
 
 
@@ -134,10 +135,23 @@ def main() -> None:
     errors: list[str] = []
 
     human_review = review.split("```suggestions-json", 1)[0]
+    inherited_severity = False
     for block_lines in review_blocks(human_review):
+        # Markdown severity headings (e.g. "### should-fix") apply to the
+        # following prose/bullets. Bold section labels (e.g. "**Blocking**")
+        # are skipped without inheriting, to avoid flagging "Tests:" prose.
+        if len(block_lines) == 1 and is_severity_heading(block_lines[0]):
+            if re.match(r"^\s{0,3}#{1,6}\s+", block_lines[0]):
+                inherited_severity = True
+            continue
+        # Other headings end the severity section.
+        if len(block_lines) == 1 and is_heading(block_lines[0]):
+            inherited_severity = False
+            continue
         block = " ".join(block_lines)
         if block_is_non_finding(block_lines):
             continue
+        requires_citation = has_severity_label(block) or inherited_severity
         citations = CITATION.findall(block)
         changed_citations = []
         invalid_citations = []
@@ -154,7 +168,7 @@ def main() -> None:
             else:
                 changed_citations.append((path, start, end))
 
-        if SEVERITY.search(block) and not changed_citations and not citations:
+        if requires_citation and not changed_citations and not citations:
             errors.append("Each severity-tagged finding must include an exact changed path:line citation.")
         # A finding's primary changed-line citation is authoritative. Supporting
         # references may point at unchanged context without invalidating the review.

@@ -139,9 +139,18 @@ jobs:
             fi
           done < "$CONTEXT_DIR/changed-paths.txt"
           set -o pipefail
+          REVIEW_SESSION=""
           run_review() {
-            opencode run --format json --agent review --model opencode/muse-spark-1.3-contributor-free "${1}Mode: $REVIEW_MODE. PR: $PR_NUMBER. Read the review context files before responding." | tee review-events.jsonl
+            if [ -n "$REVIEW_SESSION" ]; then
+              opencode run --format json --session "$REVIEW_SESSION" --agent review --model opencode/muse-spark-1.3-contributor-free "${1}Mode: $REVIEW_MODE. PR: $PR_NUMBER. Read the review context files before responding." | tee review-events.jsonl
+            else
+              opencode run --format json --agent review --model opencode/muse-spark-1.3-contributor-free "${1}Mode: $REVIEW_MODE. PR: $PR_NUMBER. Read the review context files before responding." | tee review-events.jsonl
+            fi
             jq -sr '[.[] | select(.type == "text") | .part.text] | last // empty' review-events.jsonl > review-comment.md
+            SESSION_FROM_EVENTS=$(jq -sr '[.[] | .sessionID // empty] | map(select(. != "")) | last // empty' review-events.jsonl 2>/dev/null || true)
+            if [ -n "$SESSION_FROM_EVENTS" ]; then
+              REVIEW_SESSION="$SESSION_FROM_EVENTS"
+            fi
           }
           ATTEMPT=1
           RETRY_PROMPT=""
@@ -180,10 +189,10 @@ jobs:
               break
             fi
             ATTEMPT=$((ATTEMPT + 1))
-            RETRY_PROMPT="Your previous response failed validation. The exact problems were:
+            RETRY_PROMPT="Continuing the same session. Your previous response failed validation with these exact problems:
             $(cat /tmp/review-errors.txt)
 
-            Return the complete review again. Correct every cited path:line and every suggestion. Read .review-context/pr.json and .review-context/diff-numbered.patch; end with exactly one suggestions-json block, using [] when no valid one-click suggestion exists."
+            Keep all valid findings and suggestions as-is. Fix only the failed citations and suggestions listed above, then return the complete corrected review again. Read .review-context/pr.json and .review-context/diff-numbered.patch; end with exactly one suggestions-json block, using [] when no valid one-click suggestion exists."
           done
           if [ "$VALID" != true ]; then
             echo "Automated review could not produce a valid, cited response after 3 attempts. Request another review to try again." > review-comment.md
