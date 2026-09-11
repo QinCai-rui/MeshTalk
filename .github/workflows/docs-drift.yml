@@ -32,7 +32,7 @@ jobs:
           curl -fsSL https://opencode.ai/install | bash
           export PATH="$HOME/.opencode/bin:$PATH"
           git log --since="24 hours ago" --name-only --pretty=format: > /tmp/changed.txt
-          BASE=$(git log --since="24 hours ago" --pretty=format:%H --reverse | head -n 1)
+          BASE=$(git log --since="24 hours ago" --pretty=format:%H --reverse | head -n 1 || true)
           if [ -n "$BASE" ]; then
             git diff "$BASE^...HEAD" > /tmp/recent.diff || git show "$BASE" --stat > /tmp/recent.diff
           else
@@ -70,7 +70,7 @@ jobs:
           git commit -m "docs: drift sync $DATE"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "$BRANCH"
           PR_URL=$(gh pr create --title "docs: drift sync $DATE" --body "Automated docs sync from the nightly drift check. Review doc claims vs code before merging." --head "$BRANCH" --base main 2>/dev/null || gh pr view "$BRANCH" --json url --jq .url)
-          echo "pr_number=$(echo "$PR_URL" | grep -o '[0-9]*$')" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$(echo "$PR_URL" | grep -o '[0-9]*$' || true)" >> "$GITHUB_OUTPUT"
 
       - name: Open/update tracking issue
         if: steps.detect.outputs.drift == 'true'
