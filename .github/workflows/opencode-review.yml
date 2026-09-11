@@ -138,8 +138,9 @@ jobs:
               printf 'PR-head content unavailable: %s\n' "$FILE" >> "$CONTEXT_DIR/warnings.txt"
             fi
           done < "$CONTEXT_DIR/changed-paths.txt"
+          set -o pipefail
           run_review() {
-            opencode run --format json --agent review --model opencode/muse-spark-1.3-contributor-free "${1}Mode: $REVIEW_MODE. PR: $PR_NUMBER. Read the review context files before responding." > review-events.jsonl
+            opencode run --format json --agent review --model opencode/muse-spark-1.3-contributor-free "${1}Mode: $REVIEW_MODE. PR: $PR_NUMBER. Read the review context files before responding." | tee review-events.jsonl
             jq -sr '[.[] | select(.type == "text") | .part.text] | last // empty' review-events.jsonl > review-comment.md
           }
           ATTEMPT=1
@@ -160,7 +161,7 @@ jobs:
           PYEOF
             then
               cp review-comment.md "$CONTEXT_DIR/draft.md"
-              if opencode run --format json --agent review-critic --model opencode/muse-spark-1.3-contributor-free "Read .review-context/draft.md and return concise corrections only." > review-critic-events.jsonl; then
+              if opencode run --format json --agent review-critic --model opencode/muse-spark-1.3-contributor-free "Read .review-context/draft.md and return concise corrections only." | tee review-critic-events.jsonl; then
                 jq -sr '[.[] | select(.type == "text") | .part.text] | last // empty' review-critic-events.jsonl > "$CONTEXT_DIR/critic.md"
                 run_review "A limited critic reviewed the proposed suggestions and supporting findings. Read .review-context/critic.md and incorporate only its corrections."
               fi

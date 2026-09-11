@@ -82,9 +82,10 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
+          set -o pipefail
           opencode run --format json --agent triage --model opencode/muse-spark-1.3-contributor-free \
             "The following issue was just opened or edited. Triage it and return only the comment body.\n\nTitle: $ISSUE_TITLE\n\n$ISSUE_BODY" \
-            > triage-events.jsonl
+            | tee triage-events.jsonl
           jq -sr '[.[] | select(.type == "text") | .part.text] | last // empty' \
             triage-events.jsonl > triage-comment.md
 
