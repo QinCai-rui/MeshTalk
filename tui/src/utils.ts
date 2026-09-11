@@ -40,7 +40,7 @@ export function peerFriendStatusText(peer: Peer): string {
   if (state === "outgoing") return "Friend request sent — waiting for them to accept."
   if (state === "both") return "You both sent requests — accept to become friends."
   if (state === "blocked") return "Blocked — their requests and messages are ignored."
-  return "Not friends yet — messages are blocked until they accept."
+  return "You need to be friends to message."
 }
 
 export type InlineFriendAction = "add" | "cancel" | "accept" | "decline" | "block" | "unblock" | "inbox"

@@ -351,11 +351,11 @@ test("rendezvous and capability warnings pulse softly and remain readable", asyn
     const frame = await settle(bright, "Out-of-sync with MeshTalk")
     expect(frame).toContain("Limited: This peer needs a newer client.")
     expect(frame).toContain("Offline: messages queue")
-    expect(frame).toContain("Messages blocked until your friend request")
+    expect(frame).toContain("Messaging is blocked until you become friends.")
     brightRendezvous = foregroundFor(bright, "Out-of-sync with MeshTalk")
     brightCapability = foregroundFor(bright, "Limited: This peer")
     brightOffline = foregroundFor(bright, "Offline: messages queue")
-    brightFriend = foregroundFor(bright, "Messages blocked until")
+    brightFriend = foregroundFor(bright, "Messaging is blocked until")
     expect(brightRendezvous).toBeDefined()
     expect(brightCapability).toBeDefined()
     expect(brightOffline).toBeDefined()
@@ -369,7 +369,7 @@ test("rendezvous and capability warnings pulse softly and remain readable", asyn
     expect(foregroundFor(dim, "Out-of-sync with MeshTalk")).not.toEqual(brightRendezvous)
     expect(foregroundFor(dim, "Limited: This peer")).not.toEqual(brightCapability)
     expect(foregroundFor(dim, "Offline: messages queue")).not.toEqual(brightOffline)
-    expect(foregroundFor(dim, "Messages blocked until")).not.toEqual(brightFriend)
+    expect(foregroundFor(dim, "Messaging is blocked until")).not.toEqual(brightFriend)
   } finally { await close(dim) }
 
   const staticWarning = await testRender(<ConversationPanel {...warningProps} flashingEnabled={false} blinkOn={false} />, { width: 80, height: 26 })
@@ -378,7 +378,7 @@ test("rendezvous and capability warnings pulse softly and remain readable", asyn
     expect(foregroundFor(staticWarning, "Out-of-sync with MeshTalk")).toEqual(brightRendezvous)
     expect(foregroundFor(staticWarning, "Limited: This peer")).toEqual(brightCapability)
     expect(foregroundFor(staticWarning, "Offline: messages queue")).toEqual(brightOffline)
-    expect(foregroundFor(staticWarning, "Messages blocked until")).toEqual(brightFriend)
+    expect(foregroundFor(staticWarning, "Messaging is blocked until")).toEqual(brightFriend)
   } finally { await close(staticWarning) }
 })
 
@@ -487,7 +487,7 @@ test("sidebar no-peers empty state offers friend, connection, and LAN help actio
     expect(lanHelp).toBe(1)
     const dismiss = setup.renderer.root.findDescendantById("sidebar-empty-peers-dismiss")!
     await act(async () => { await setup.mockMouse.click(dismiss.screenX + 1, dismiss.screenY) })
-    const collapsed = await settle(setup, "Show tips")
+    const collapsed = await settle(setup, "Waiting for peers")
     expect(collapsed).toContain("Waiting for peers")
   } finally { await close(setup) }
 })
@@ -513,7 +513,7 @@ test("sidebar no-groups empty state offers create and join actions", async () =>
   } finally { await close(setup) }
 })
 
-test("empty DM offers first-message and attach actions and dismiss keeps the draft", async () => {
+test("empty DM keeps optional tips hidden without losing the draft", async () => {
   const props = panelProps(80)
   props.conversationItems = []
   props.drafts = { "peer:alex": "Keep me" }
@@ -523,21 +523,28 @@ test("empty DM offers first-message and attach actions and dismiss keeps the dra
   try {
     const frame = await settle(setup, "No messages yet")
     expect(frame).toContain("No messages yet")
-    expect(frame).toContain("Write first message")
-    expect(frame).toContain("Attach file")
-    const attach = setup.renderer.root.findDescendantById("empty-conversation-dm-attach")!
+    expect(frame).toContain("Tips")
+    expect(frame).not.toContain("Write first message")
+    expect(frame).not.toContain("Attach file")
+    const tips = setup.renderer.root.findDescendantById("empty-conversation-dm-tips")!
+    await act(async () => { await setup.mockMouse.click(tips.screenX + 1, tips.screenY) })
+    const expanded = await settle(setup, "Write first message")
+    expect(expanded).toContain("Attach file")
+    expect(expanded).toContain("Hide tips")
+    const attach = setup.renderer.root.findDescendantById("empty-conversation-dm-tips-expanded-attach")!
     await act(async () => { await setup.mockMouse.click(attach.screenX + 1, attach.screenY) })
     expect(attached).toBe(1)
     expect(props.composerRef.current!.plainText).toBe("Keep me")
-    const dismiss = setup.renderer.root.findDescendantById("empty-conversation-dm-dismiss")!
+    const dismiss = setup.renderer.root.findDescendantById("empty-conversation-dm-tips-expanded-dismiss")!
     await act(async () => { await setup.mockMouse.click(dismiss.screenX + 1, dismiss.screenY) })
-    const collapsed = await settle(setup, "Show tips")
+    const collapsed = await settle(setup, "Tips")
     expect(collapsed).toContain("No messages yet")
+    expect(collapsed).not.toContain("Write first message")
     expect(props.composerRef.current!.plainText).toBe("Keep me")
   } finally { await close(setup) }
 })
 
-test("empty group offers first-message and attach actions", async () => {
+test("empty group keeps optional tips hidden until requested", async () => {
   const props = panelProps(80)
   props.selected = undefined
   props.selectedGroup = group
@@ -549,9 +556,13 @@ test("empty group offers first-message and attach actions", async () => {
   const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
   try {
     const frame = await settle(setup, "Say hello to the group")
-    expect(frame).toContain("Write first message")
-    expect(frame).toContain("Attach file")
-    const attach = setup.renderer.root.findDescendantById("empty-conversation-group-attach")!
+    expect(frame).toContain("Tips")
+    expect(frame).not.toContain("Write first message")
+    const tips = setup.renderer.root.findDescendantById("empty-conversation-group-tips")!
+    await act(async () => { await setup.mockMouse.click(tips.screenX + 1, tips.screenY) })
+    const expanded = await settle(setup, "Write first message")
+    expect(expanded).toContain("Attach file")
+    const attach = setup.renderer.root.findDescendantById("empty-conversation-group-tips-expanded-attach")!
     await act(async () => { await setup.mockMouse.click(attach.screenX + 1, attach.screenY) })
     expect(attached).toBe(1)
   } finally { await close(setup) }
@@ -598,7 +609,7 @@ test("no-selection empty state offers friend and group actions", async () => {
   } finally { await close(setup) }
 })
 
-test("stranger conversation keeps actionable friend guidance", async () => {
+test("stranger conversation shows one concise friend action row", async () => {
   const props = panelProps(80)
   props.selected = { ...peers[0]!, is_friend: false, friend_request: undefined }
   props.conversationItems = []
@@ -608,9 +619,18 @@ test("stranger conversation keeps actionable friend guidance", async () => {
   props.onAttachFile = () => { attached++ }
   const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
   try {
-    const frame = await settle(setup, "Not friends yet")
+    const frame = await settle(setup, "You need to be friends")
+    expect(frame).toContain("You need to be friends to message.")
     expect(frame).toContain("Add friend")
-    expect(frame).toContain("Write first message")
+    expect(frame).toContain("Block")
+    expect(frame).toContain("Inbox")
+    expect(frame).not.toContain("Messages blocked until your friend request")
+    expect(frame).not.toContain("Ctrl+P > Friends > Add friend")
+    expect(frame).not.toContain("Alt+1 Add friend")
+    expect(frame).not.toContain("No messages yet")
+    expect(frame).not.toContain("Write first message")
+    expect(frame).not.toContain("Attach file")
+    expect(frame).not.toContain("Hide tips")
     const action = setup.renderer.root.findDescendantById("friend-inline-add")!
     await act(async () => { await setup.mockMouse.click(action.screenX + 1, action.screenY) })
     expect(seen).toContain("add")
