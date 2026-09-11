@@ -87,6 +87,25 @@ class ValidateReviewTest(unittest.TestCase):
         self.assertEqual(self.run_validator(review), 1)
         self.assertIn("Citation", self.errors.read_text())
 
+    def test_accepts_bold_section_heading_and_supporting_context(self):
+        review = """**Blocking / should-fix**
+- **should-fix** `src/example.py:2`: Change the added return. The old implementation at `src/example.py:1` is supporting context.
+
+```suggestions-json
+[]
+```
+"""
+        self.assertEqual(self.run_validator(review), 0)
+
+    def test_ignores_non_finding_status_heading(self):
+        review = """No blocking defects.
+
+```suggestions-json
+[]
+```
+"""
+        self.assertEqual(self.run_validator(review), 0)
+
     def test_accepts_extensionless_citation(self):
         (self.root / "diff.patch").write_text(EXTENSIONLESS_DIFF)
         (self.root / "head/Dockerfile").write_text("FROM alpine\nRUN true\n")

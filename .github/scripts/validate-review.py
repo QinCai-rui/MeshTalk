@@ -13,6 +13,11 @@ SUGGESTIONS = re.compile(r"```suggestions-json\s*(.*?)\s*```", re.DOTALL)
 # Only recognize path-like citations, avoiding ordinary prose such as "HTTP: 422".
 CITATION = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+):(\d+)(?:-(\d+))?")
 SEVERITY = re.compile(r"\b(?:blocking|should-fix|nit)\b", re.IGNORECASE)
+BOLD_SEVERITY_HEADING = re.compile(
+    r"^\s*\*\*(?:blocking(?:\s*/\s*should-fix)?|should-fix|nit|needs\s+discussion(?:\s*/\s*residual\s+risk)?)\s*:?\*\*\s*$",
+    re.IGNORECASE,
+)
+NON_FINDING = re.compile(r"^(?:no\b|none\b|notes?\b.*\bnon[- ]blocking\b)", re.IGNORECASE)
 
 
 def fail(errors: list[str], errors_path: Path) -> None:
@@ -71,6 +76,50 @@ def syntax_error(path: str, source: str) -> str | None:
     return None
 
 
+def is_heading(line: str) -> bool:
+    return bool(re.match(r"^\s{0,3}#{1,6}\s+", line) or BOLD_SEVERITY_HEADING.match(line))
+
+
+def is_severity_heading(line: str) -> bool:
+    return bool(
+        re.match(r"^\s{0,3}#{1,6}\s+", line)
+        and SEVERITY.search(line)
+        or BOLD_SEVERITY_HEADING.match(line)
+    )
+
+
+def block_is_non_finding(block: list[str]) -> bool:
+    for line in block:
+        if line.strip() and not is_severity_heading(line):
+            return bool(NON_FINDING.match(line.strip()))
+    return False
+
+
+def review_blocks(review: str) -> list[list[str]]:
+    blocks: list[list[str]] = []
+    block: list[str] = []
+    for line in review.splitlines():
+        item = re.match(r"^\s*(?:[-*]|\d+[.)])\s+", line)
+        if is_heading(line) or item:
+            pure_severity_heading = len(block) == 1 and is_severity_heading(block[0])
+            if pure_severity_heading and item:
+                block.append(line)
+                continue
+            if block and not pure_severity_heading:
+                blocks.append(block)
+            block = [line]
+        elif line.strip():
+            block.append(line)
+        elif block:
+            if len(block) == 1 and is_severity_heading(block[0]):
+                continue
+            blocks.append(block)
+            block = []
+    if block:
+        blocks.append(block)
+    return blocks
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--diff", required=True, type=Path)
@@ -85,39 +134,38 @@ def main() -> None:
     errors: list[str] = []
 
     human_review = review.split("```suggestions-json", 1)[0]
-    finding: list[str] = []
-    for line in human_review.splitlines() + [""]:
-        heading = re.match(r"^\s{0,3}#{1,6}\s+", line)
-        item = re.match(r"^\s*(?:[-*]|\d+[.)])\s+", line)
-        if heading or item:
-            if finding and SEVERITY.search(" ".join(finding)) and not CITATION.search(" ".join(finding)):
-                errors.append("Each severity-tagged finding must include an exact changed path:line citation.")
-            finding = [line]
-        elif line.strip():
-            if finding:
-                finding.append(line)
-            else:
-                finding = [line]
-        elif finding:
-            # Keep a severity heading attached to prose below it.
-            if len(finding) == 1 and re.match(r"^\s{0,3}#{1,6}\s+", finding[0]) and SEVERITY.search(finding[0]):
-                continue
-            if SEVERITY.search(" ".join(finding)) and not CITATION.search(" ".join(finding)):
-                errors.append("Each severity-tagged finding must include an exact changed path:line citation.")
-            finding = []
-
-    for path, start, end in CITATION.findall(human_review):
-        end_line = int(end or start)
-        if path not in added:
-            # Avoid treating ordinary prose such as "HTTP: 422" as a citation.
-            if "/" in path or "." in path:
-                errors.append(f"Citation {path}:{start} does not name a file changed by this PR.")
+    for block_lines in review_blocks(human_review):
+        block = " ".join(block_lines)
+        if block_is_non_finding(block_lines):
             continue
-        invalid = [line for line in range(int(start), end_line + 1) if line not in added[path]]
-        if invalid:
-            errors.append(
-                f"Citation {path}:{start}{'-' + end if end else ''} is not entirely on added PR lines."
-            )
+        citations = CITATION.findall(block)
+        changed_citations = []
+        invalid_citations = []
+        for path, start, end in citations:
+            end_line = int(end or start)
+            if path not in added:
+                # Avoid treating ordinary prose such as "HTTP: 422" as a citation.
+                if "/" in path or "." in path:
+                    invalid_citations.append((path, start, end, "missing"))
+                continue
+            invalid = [line for line in range(int(start), end_line + 1) if line not in added[path]]
+            if invalid:
+                invalid_citations.append((path, start, end, "context"))
+            else:
+                changed_citations.append((path, start, end))
+
+        if SEVERITY.search(block) and not changed_citations and not citations:
+            errors.append("Each severity-tagged finding must include an exact changed path:line citation.")
+        # A finding's primary changed-line citation is authoritative. Supporting
+        # references may point at unchanged context without invalidating the review.
+        if not changed_citations:
+            for path, start, end, _reason in invalid_citations:
+                if _reason == "missing":
+                    errors.append(f"Citation {path}:{start} does not name a file changed by this PR.")
+                else:
+                    errors.append(
+                        f"Citation {path}:{start}{'-' + end if end else ''} is not entirely on added PR lines."
+                    )
 
     blocks = SUGGESTIONS.findall(review)
     if len(blocks) != 1:
