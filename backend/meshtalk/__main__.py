@@ -789,6 +789,8 @@ async def main(debug: bool = False) -> None:
             return {"error": "recipient_id required"}
         if not isinstance(file_path, str) or not file_path:
             return {"error": "file_path required"}
+        if await db.is_peer_blocked(recipient_id):
+            return {"error": "This peer is blocked; unblock them to send files"}
         try:
             file_id = await file_manager.send_file(recipient_id, file_path)
         except ValueError as exc:
@@ -797,6 +799,19 @@ async def main(debug: bool = False) -> None:
             logger.exception("file_send failed")
             return {"error": str(exc)}
         return {"file_id": file_id}
+
+    async def handle_file_retry(req: dict) -> dict:
+        file_id = req.get("file_id")
+        if not isinstance(file_id, str) or not file_id:
+            return {"error": "file_id required"}
+        try:
+            retried = await file_manager.retry_file(file_id)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            logger.exception("file_retry failed")
+            return {"error": str(exc)}
+        return {"file_id": retried}
 
     async def handle_group_file_send(req: dict) -> dict:
         group_id = req.get("group_id")
@@ -925,6 +940,7 @@ async def main(debug: bool = False) -> None:
         "debug_re_stun": handle_debug_re_stun,
         "debug_info": handle_debug_info,
         "file_send": handle_file_send,
+        "file_retry": handle_file_retry,
         "group_file_send": handle_group_file_send,
         "files": handle_files,
         "file_info": handle_file_info,

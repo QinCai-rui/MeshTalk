@@ -1131,7 +1131,9 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         if (
           event.event === "file_sent" ||
           event.event === "file_delivered" ||
-          event.event === "file_queued"
+          event.event === "file_queued" ||
+          event.event === "file_blocked" ||
+          event.event === "file_failed"
         ) {
           const name = (event.file_id as string)?.slice(0, 8) ?? "file";
           if (!event.group_id)
@@ -1140,6 +1142,12 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
             actions.showStatus(`File ${name} sent.`);
           else if (event.event === "file_delivered")
             actions.showStatus(`File ${name} delivered.`);
+          else if (event.event === "file_blocked") {
+            const blocker = (event.display_name as string) ?? "peer";
+            actions.showStatus(`File blocked: ${blocker} hasn't added you as a friend yet.`);
+            void actions.refreshPeers();
+          } else if (event.event === "file_failed")
+            actions.showStatus(`File ${name} failed. Retry from history.`);
           else actions.showStatus(`File ${name} queued for offline peer.`);
           if (fileEventMatchesSelection(event)) refreshSelectedConversationFiles();
           return;
@@ -1988,6 +1996,15 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         onFriendAction={handleInlineFriendAction}
         onOpenConnection={() => actions.showDialog({ kind: "control" })}
         onAttachFile={() => void actions.openFilePicker()}
+        onRetryFile={(fileId) => {
+          void ipc.send("file_retry", { file_id: fileId }).then((response) => {
+            if (response.error) actions.showStatus(`Retry failed: ${response.error}`);
+            else {
+              actions.showStatus("Retrying file transfer.");
+              refreshSelectedConversationFiles();
+            }
+          }).catch((error) => actions.showStatus(`Retry failed: ${error instanceof Error ? error.message : String(error)}`));
+        }}
         onAddFriend={() => actions.openFriendsInbox()}
         onCreateGroup={() => actions.showDialog({ kind: "room-create" })}
         onJoinGroup={() => actions.showDialog({ kind: "room-join" })}
