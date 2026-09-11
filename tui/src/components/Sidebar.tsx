@@ -75,10 +75,10 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
       <box id="sidebar-dm-section" style={{ flexGrow: 3, flexBasis: 0, flexShrink: 1, minHeight: 1, flexDirection: "column" }}>
         <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.accent}><b>DMs ({peers.length}) / {peers.filter(peer => peer.is_online).length} online</b></text></box>
         <scrollbox id="sidebar-dms" ref={peerListRef} onMouseDown={() => setScrollFocused(false)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", width: Math.max(1, sidebarWidth - 1) }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}>
-          {!peers.length && !peersHelpDismissed && <EmptyState id="sidebar-empty-peers" message="No peers yet. LAN discovery is on — nearby peers appear automatically." detail="LAN-only? You're good. Optionally add a friend or set up remote discovery." compact={stacked} actions={[
+          {!peers.length && !peersHelpDismissed && <EmptyState id="sidebar-empty-peers" message="No peers yet. LAN discovery is on — local peers appear automatically." detail="LAN-only? You're good. Optionally add a friend or set up remote discovery." compact={stacked} actions={[
             { id: "add", label: "Add friend", hint: "Ctrl+F", onSelect: () => { if (onAddFriend) onAddFriend(); else onOpenInbox?.() } },
             { id: "connection", label: "Connection", hint: "Ctrl+P", onSelect: () => onOpenConnection?.() },
-            ...(!stacked ? [{ id: "lan-help", label: "LAN help", onSelect: () => onOpenLanHelp?.() } as const] : []),
+            ...(!stacked ? [{ id: "lan-help", label: "Diagnostics", onSelect: () => onOpenLanHelp?.() } as const] : []),
             { id: "dismiss", label: "Hide", onSelect: () => setPeersHelpDismissed(true) },
           ]} />}
           {!peers.length && peersHelpDismissed && <box paddingLeft={1} onMouseDown={event => { if (event.button === 0) setPeersHelpDismissed(false) }}><text fg={theme.muted} wrapMode="word">Waiting for peers... <span fg={theme.accent}><u>Show tips</u></span></text></box>}
