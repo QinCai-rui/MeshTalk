@@ -89,12 +89,21 @@ jobs:
           jq -sr '[.[] | select(.type == "text") | .part.text] | last // empty' \
             triage-events.jsonl > triage-comment.md
 
+      - name: Mint triage app token
+        id: app-token
+        if: steps.check.outputs.result == 'true' && steps.needed.outputs.result == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.REVIEW_APP_ID }}
+          private-key: ${{ secrets.REVIEW_APP_KEY }}
+
       - name: Create or update triage comment
         if: steps.check.outputs.result == 'true' && steps.needed.outputs.result == 'true'
         uses: actions/github-script@v9
         env:
           COMMENT_FILE: triage-comment.md
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const fs = require('node:fs');
             const marker = '<!-- meshtalk-issue-triage -->';
