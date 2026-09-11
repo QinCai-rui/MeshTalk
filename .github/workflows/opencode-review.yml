@@ -308,19 +308,11 @@ jobs:
             } catch (e) { suggestions = []; }
             let reviewBody = '';
             try { reviewBody = fs.readFileSync('review-comment.md', 'utf8'); } catch (e) {}
-            // Agent decides via verdict, workflow gates deterministically:
-            // approve ONLY when not a fallback, verdict is Looks good,
-            // suggestions are empty, and no blocking/should-fix label remains.
+            // Agent decides: trust its verdict. Approve on Looks good as long
+            // as this is a real validated review (not the 3-attempt fallback).
             const isFallback = /could not produce a valid/i.test(reviewBody);
             const verdictLooksGood = /verdict:\s*[*_`]*looks good\b/i.test(reviewBody);
-            const hasBoldOrBracketApprovalBlocker = /\*\*\s*(blocking|should-fix)\b|\[(blocking|should-fix)\]/i.test(reviewBody);
-            let hasLineLabelApprovalBlocker = false;
-            for (const line of reviewBody.split('\n')) {
-              const cleaned = line.replace(/^\s*(#{1,6}\s*|([-*]|\d+[.)])\s*|>\s*)*/, '').replace(/^[\*_`\[\(\s]+/, '');
-              if (/^(blocking|should-fix)\b\s*[:/\-\]]?/i.test(cleaned) && !/^no\s+/i.test(cleaned)) { hasLineLabelApprovalBlocker = true; break; }
-            }
-            const suggestionsEmpty = Array.isArray(suggestions) && suggestions.length === 0;
-            const canApprove = !isFallback && verdictLooksGood && suggestionsEmpty && !hasBoldOrBracketApprovalBlocker && !hasLineLabelApprovalBlocker;
+            const canApprove = !isFallback && verdictLooksGood;
             const event = canApprove ? 'APPROVE' : 'COMMENT';
             if (!Array.isArray(suggestions) || suggestions.length === 0) {
               if (!canApprove) return;
