@@ -55,6 +55,14 @@ jobs:
           # Agents come from the trusted default branch, never the untrusted PR.
           ref: ${{ github.event.repository.default_branch }}
 
+      - name: Mint review app token
+        id: app-token
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.REVIEW_APP_ID }}
+          private-key: ${{ secrets.REVIEW_APP_KEY }}
+
       - name: Run review agent
         if: steps.gate.outputs.run == 'true'
         env:
@@ -263,6 +271,11 @@ jobs:
           if not __import__('pathlib').Path('suggestions.json').exists():
               json.dump([], open('suggestions.json', 'w'))
           clean = re.sub(r'\n?```suggestions-json\s*.*?\s*```\n?', '\n', text, flags=re.S).strip()
+          # The model sometimes wraps the whole review in a fenced block
+          # (``` or ```md). Unwrap it so the comment renders as markdown.
+          fence = re.search(r'```(?:md)?\s*\n(.*?)\n?\s*```', clean, flags=re.S)
+          if fence and 'Verdict:' in fence.group(1):
+              clean = fence.group(1).strip()
           if not clean:
               clean = 'Automated review completed — see inline suggestions on the diff.'
           try:
@@ -282,6 +295,7 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         uses: actions/github-script@v9
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const fs = require('fs');
             const marker = '<!-- meshtalk-review -->';
@@ -322,6 +336,7 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         uses: actions/github-script@v9
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const fs = require('fs');
             let suggestions = [];
@@ -399,16 +414,28 @@ jobs:
               if (end === s.line) comments.push({ path: s.path, line: s.line, side: 'RIGHT', body });
               else comments.push({ path: s.path, line: end, side: 'RIGHT', start_line: s.line, start_side: 'RIGHT', body });
             }
+            // GitHub does not let the Actions token approve PRs (422). Try the
+            // requested event, then fall back to COMMENT so the run stays green.
+            async function postReview(args) {
+              try {
+                await github.rest.pulls.createReview(args);
+              } catch (e) {
+                if (args.event === 'APPROVE' && e.status === 422) {
+                  core.warning('APPROVE rejected for GitHub Actions; posting as COMMENT instead.');
+                  await github.rest.pulls.createReview({ ...args, event: 'COMMENT' });
+                } else { throw e; }
+              }
+            }
             if (comments.length === 0) {
               if (!canApprove) return;
-              await github.rest.pulls.createReview({
+              await postReview({
                 owner: context.repo.owner, repo: context.repo.repo, pull_number: pr,
                 commit_id, event: 'APPROVE',
                 body: 'Automated review approved — no blocking or should-fix issues found. Human merge decision still required.',
               });
               return;
             }
-            await github.rest.pulls.createReview({
+            await postReview({
               owner: context.repo.owner, repo: context.repo.repo, pull_number: pr,
               commit_id, event,
               body: canApprove

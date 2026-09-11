@@ -52,6 +52,7 @@ Readability rules:
 - Lead with concrete defects and risks, ordered by severity (Blocking, then Should-fix, then Nit, then Discussion).
 - One finding per top-level bullet. The bold title line always carries the exact changed `path:line` in backticks; never use placeholder line numbers. Put Impact and Trigger as indented two-space sub-bullets.
 - Backticks for all paths, code, and commands. Short sentences; no filler.
+- Return the review as plain markdown. Never wrap the whole message in a fenced code block and never repeat the template content.
 - The publisher adds an aggregate `Prompt for all review comments with AI agents` block (shown only when one-click suggestions exist) and a prompt block to each inline suggestion; do not add duplicate prompt blocks yourself.
 - Distinguish blocking, should-fix, and nit consistently; do not repeat implementation observations as findings unless they require action.
 - Empty severity sections contain exactly a plain `None.` paragraph (no bullet).
