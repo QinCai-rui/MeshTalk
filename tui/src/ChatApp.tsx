@@ -1905,6 +1905,11 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         typingConversationKeys={typingConversationKeys}
         friendRequestCount={inboxCount}
         onOpenInbox={() => actions.openFriendsInbox()}
+        onAddFriend={() => actions.openFriendsInbox()}
+        onOpenConnection={() => actions.showDialog({ kind: "control" })}
+        onOpenLanHelp={() => actions.runCommand("debug")}
+        onCreateGroup={() => actions.showDialog({ kind: "room-create" })}
+        onJoinGroup={() => actions.showDialog({ kind: "room-join" })}
         openGroupDetails={(group) => void actions.loadGroupDetails(group)}
         setEditingName={setEditingName}
         setNameDraft={setNameDraft}
@@ -1981,6 +1986,11 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         }}
         inboxCount={inboxCount}
         onFriendAction={handleInlineFriendAction}
+        onOpenConnection={() => actions.showDialog({ kind: "control" })}
+        onAttachFile={() => void actions.openFilePicker()}
+        onAddFriend={() => actions.openFriendsInbox()}
+        onCreateGroup={() => actions.showDialog({ kind: "room-create" })}
+        onJoinGroup={() => actions.showDialog({ kind: "room-join" })}
       />
       {deleteConfirmation && (
         <box

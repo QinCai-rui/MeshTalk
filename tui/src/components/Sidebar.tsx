@@ -1,5 +1,6 @@
 import { TypingDots } from "./TypingDots"
-import { useEffect, useRef } from "react"
+import { EmptyState } from "./EmptyState"
+import { useEffect, useRef, useState } from "react"
 import { useRenderer } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { chatTheme as theme, presenceIndicator } from "../chatTheme"
@@ -31,12 +32,19 @@ type SidebarProps = {
   saveDisplayName: () => void
   friendRequestCount?: number
   onOpenInbox?: () => void
+  onAddFriend?: () => void
+  onOpenConnection?: () => void
+  onOpenLanHelp?: () => void
+  onCreateGroup?: () => void
+  onJoinGroup?: () => void
 }
 
-export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName, friendRequestCount = 0, onOpenInbox }: SidebarProps) {
+export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, groups, groupMembers, identity, mutedPeers, nameDraft, peers, selectedGroupId, selectedPeerId, sidebarWidth, typingConversationKeys, openGroupDetails, setEditingName, setNameDraft, setSelection, setScrollFocused, saveDisplayName, friendRequestCount = 0, onOpenInbox, onAddFriend, onOpenConnection, onOpenLanHelp, onCreateGroup, onJoinGroup }: SidebarProps) {
   const renderer = useRenderer()
   const peerListRef = useRef<ScrollBoxRenderable>(null)
   const groupListRef = useRef<ScrollBoxRenderable>(null)
+  const [peersHelpDismissed, setPeersHelpDismissed] = useState(false)
+  const [groupsHelpDismissed, setGroupsHelpDismissed] = useState(false)
   useEffect(() => {
     const id = selectedPeerId ? `nav-peer-${selectedPeerId}` : selectedGroupId ? `nav-group-${selectedGroupId}` : undefined
     if (!id) return
@@ -67,7 +75,13 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
       <box id="sidebar-dm-section" style={{ flexGrow: 3, flexBasis: 0, flexShrink: 1, minHeight: 1, flexDirection: "column" }}>
         <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.accent}><b>DMs ({peers.length}) / {peers.filter(peer => peer.is_online).length} online</b></text></box>
         <scrollbox id="sidebar-dms" ref={peerListRef} onMouseDown={() => setScrollFocused(false)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", width: Math.max(1, sidebarWidth - 1) }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}>
-          {!peers.length && <text fg={theme.muted}> Waiting for peers...</text>}
+          {!peers.length && !peersHelpDismissed && <EmptyState id="sidebar-empty-peers" message="No peers yet. LAN discovery is on — nearby peers appear automatically." detail="LAN-only? You're good. Optionally add a friend or set up remote discovery." compact={stacked} actions={[
+            { id: "add", label: "Add friend", hint: "Ctrl+F", onSelect: () => { if (onAddFriend) onAddFriend(); else onOpenInbox?.() } },
+            { id: "connection", label: "Connection", hint: "Ctrl+P", onSelect: () => onOpenConnection?.() },
+            ...(!stacked ? [{ id: "lan-help", label: "LAN help", onSelect: () => onOpenLanHelp?.() } as const] : []),
+            { id: "dismiss", label: "Hide", onSelect: () => setPeersHelpDismissed(true) },
+          ]} />}
+          {!peers.length && peersHelpDismissed && <box paddingLeft={1} onMouseDown={event => { if (event.button === 0) setPeersHelpDismissed(false) }}><text fg={theme.muted} wrapMode="word">Waiting for peers... <span fg={theme.accent}><u>Show tips</u></span></text></box>}
           {peers.map(peer => {
         const selected = peer.peer_id === selectedPeerId
         const presence = peerPresence(peer)
@@ -93,7 +107,12 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, editingName, 
       <box id="sidebar-group-section" style={{ flexGrow: 2, flexBasis: 0, flexShrink: 1, minHeight: 1, flexDirection: "column" }}>
         <box paddingLeft={1} paddingRight={1} flexShrink={0}><text fg={theme.accent}><b>Groups ({groups.length})</b></text></box>
         <scrollbox id="sidebar-groups" ref={groupListRef} onMouseDown={() => setScrollFocused(false)} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", width: Math.max(1, sidebarWidth - 1) }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}>
-          {!groups.length && <text fg={theme.muted}> No groups joined</text>}
+          {!groups.length && !groupsHelpDismissed && <EmptyState id="sidebar-empty-groups" message="No groups yet." compact={stacked} actions={[
+            { id: "create", label: "Create group", onSelect: () => onCreateGroup?.() },
+            { id: "join", label: "Join with invite", onSelect: () => onJoinGroup?.() },
+            { id: "dismiss", label: "Hide", onSelect: () => setGroupsHelpDismissed(true) },
+          ]} />}
+          {!groups.length && groupsHelpDismissed && <box paddingLeft={1} onMouseDown={event => { if (event.button === 0) setGroupsHelpDismissed(false) }}><text fg={theme.muted} wrapMode="word">No groups joined <span fg={theme.accent}><u>Show tips</u></span></text></box>}
           {groups.map(group => {
         const selected = group.group_id === selectedGroupId
         const members = groupMembers[group.group_id]

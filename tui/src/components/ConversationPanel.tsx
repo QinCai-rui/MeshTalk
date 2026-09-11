@@ -1,4 +1,5 @@
 import { ChatFooter } from "./ChatFooter"
+import { EmptyState } from "./EmptyState"
 import { TypingDots } from "./TypingDots"
 import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
@@ -58,6 +59,11 @@ type ConversationPanelProps = {
   send: () => void
   inboxCount?: number
   onFriendAction?: (action: InlineFriendAction) => void
+  onOpenConnection?: () => void
+  onAttachFile?: () => void
+  onAddFriend?: () => void
+  onCreateGroup?: () => void
+  onJoinGroup?: () => void
 }
 
 const MESSAGE_MARKDOWN_STYLES = {
@@ -86,7 +92,10 @@ const MESSAGE_MARKDOWN_STYLES = {
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction } = props
+  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction, onOpenConnection, onAttachFile, onAddFriend, onCreateGroup, onJoinGroup } = props
+  const [dismissedEmpty, setDismissedEmpty] = useState<Record<string, boolean>>({})
+  const openConnection = onOpenConnection ?? openSettings
+  const dismissKey = selectionKey ?? "no-selection"
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
   const [replyHighlight, setReplyHighlight] = useState<{ id: string; startedAt: number }>()
   const [replyHighlightNow, setReplyHighlightNow] = useState(0)
@@ -166,8 +175,15 @@ export function ConversationPanel(props: ConversationPanelProps) {
       <text fg={theme.muted} wrapMode="word">{selectedGroup ? `Group / ${selectedGroup.member_count} members` : selected ? `${peerState}${selected.is_online ? ` / ${compact && selected.active_transport === "remote_derp" ? "Relay" : transportName(selected.active_transport)}` : ""}${!compact && selected.active_endpoint && selected.active_transport !== "remote_derp" ? ` / ${selected.active_endpoint}` : ""}${selected.is_friend ? " / Friend" : ""}${selected.peer_id in mutedPeers ? " / Muted" : ""}${selectedHasCapabilityGap ? " / Limited" : ""}${selected.friend_request === "incoming" ? " / Request received" : selected.friend_request === "outgoing" ? " / Request sent" : selected.friend_request === "both" ? " / Requests exchanged" : ""}` : "Choose a peer or group to get started"}</text>
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
-      <box paddingLeft={2} paddingRight={1} flexShrink={0}>
-        {hasRooms && !controlStatus.connected && <text id="rendezvous-warning" fg={flashingWarningColor} wrapMode="word">{controlStatus.control_url ? `Out-of-sync with MeshTalk rendezvous server. Peer connectivity may degrade over time; reconnecting (${controlStatus.reconnect_attempts}).` : "Remote discovery is not configured. Open Ctrl+P > Connection to connect these rooms."}</text>}
+      <box paddingLeft={2} paddingRight={1} flexShrink={0} flexDirection="column">
+        {hasRooms && !controlStatus.connected && <box flexDirection="column" flexShrink={0}>
+          <text id="rendezvous-warning" fg={flashingWarningColor} wrapMode="word">{controlStatus.control_url ? `Out-of-sync with MeshTalk rendezvous server. Peer connectivity may degrade over time; reconnecting (${controlStatus.reconnect_attempts}). LAN-only chats keep working.` : "Remote discovery is not configured. LAN-only? You're good — remote discovery is optional. Open Ctrl+P > Connection to connect these rooms."}</text>
+          <box id="rendezvous-actions" flexDirection="row" gap={2}>
+            <box id="rendezvous-action-open" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openConnection() } }}><text fg={theme.accent} wrapMode="none"><u>Ctrl+P Open connection</u></text></box>
+            {!dismissedEmpty["rendezvous"] && <box id="rendezvous-action-dismiss" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setDismissedEmpty(current => ({ ...current, rendezvous: true })) } }}><text fg={theme.accent} wrapMode="none"><u>Dismiss</u></text></box>}
+            {dismissedEmpty["rendezvous"] && <box id="rendezvous-action-show" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setDismissedEmpty(current => ({ ...current, rendezvous: false })) } }}><text fg={theme.accent} wrapMode="none"><u>Show</u></text></box>}
+          </box>
+        </box>}
         {selected && <>
           {(selected.delivery_warnings ?? []).map(kind => kind === "offline" ? <text id="offline-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Offline: messages queue until this peer reconnects.</text> : kind === "not_friend" ? <text id="friend-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Messages blocked until your friend request is accepted. Ctrl+P &gt; Friends &gt; Add friend.</text> : null)}
           {selectedHasCapabilityGap && <text id="capability-warning" fg={flashingWarningColor} wrapMode="word">Limited: {capabilityGapMessage}</text>}
@@ -181,10 +197,26 @@ export function ConversationPanel(props: ConversationPanelProps) {
         {selectedGroup && limitedGroupMembers.length > 0 && <text id="group-capability-warning" fg={flashingWarningColor} wrapMode="word">Limited features: {limitedGroupMembers.map(member => member.display_name).join(", ")}. Shared features remain available.</text>}
       </box>
       <scrollbox ref={scrollboxRef} focused={scrollFocused && !dialogOpen} onMouseDown={() => setScrollFocused(true)} onMouseScroll={() => notifyImageViewportChanged()} onKeyDown={(key) => { if (["up", "down", "pageup", "pagedown", "home", "end"].includes(key.name)) queueMicrotask(() => notifyImageViewportChanged()) }} onSizeChange={() => notifyImageViewportChanged()} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, paddingLeft: 2, paddingRight: 1 }} contentOptions={{ flexDirection: "column" }} stickyScroll stickyStart="bottom" verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
-        {!selected && !selectedGroup ? <box marginTop={2} gap={1}><text fg={theme.text}><b>A little closer, wherever you are.</b></text><text fg={theme.muted}>Ctrl+Up/Down selects a conversation. Ctrl+P opens settings to find peers, join a group, or share files.</text></box> : null}
+        {!selected && !selectedGroup && !dismissedEmpty["no-selection"] ? <box marginTop={1} flexDirection="column"><text fg={theme.text}><b>A little closer, wherever you are.</b></text><EmptyState id="empty-no-selection" message="No conversation selected. Pick a chat with Ctrl+Up/Down, or start something new." compact={compact || width < 70} actions={[
+            { id: "add", label: "Add friend", hint: "Ctrl+F", onSelect: () => { if (onAddFriend) onAddFriend(); else openSettings() } },
+            { id: "create", label: "Create group", onSelect: () => { if (onCreateGroup) onCreateGroup(); else openSettings() } },
+            { id: "join", label: "Join with invite", onSelect: () => { if (onJoinGroup) onJoinGroup(); else openSettings() } },
+            { id: "dismiss", label: "Hide tips", onSelect: () => setDismissedEmpty(current => ({ ...current, "no-selection": true })) },
+          ]} /></box> : null}
+        {!selected && !selectedGroup && dismissedEmpty["no-selection"] ? <box marginTop={1} id="empty-no-selection-dismissed" onMouseDown={event => { if (event.button === 0) setDismissedEmpty(current => ({ ...current, "no-selection": false })) }}><text fg={theme.muted} wrapMode="word">Choose a peer or group to get started. <span fg={theme.accent}><u>Show tips</u></span></text></box> : null}
         {conversationLoading ? <box style={{ alignItems: "center", marginTop: 2 }}><text fg={theme.warning}>Loading Messages</text></box> : null}
-        {selected && !conversationLoading && !conversationItems.length ? <text fg={theme.muted}>No messages yet. Say hello.</text> : null}
-        {selectedGroup && !conversationLoading && !conversationItems.length ? <text fg={theme.muted}>No messages yet. Say hello to the group.</text> : null}
+        {selected && !conversationLoading && !conversationItems.length && !dismissedEmpty[dismissKey] ? <EmptyState id="empty-conversation-dm" message="No messages yet. Say hello — your draft stays here until you send." compact={compact || width < 70} actions={[
+            { id: "write", label: "Write first message", hint: "Enter", onSelect: () => setScrollFocused(false) },
+            { id: "attach", label: "Attach file", hint: "Ctrl+U", onSelect: () => onAttachFile?.() },
+            { id: "dismiss", label: "Hide tips", onSelect: () => setDismissedEmpty(current => ({ ...current, [dismissKey]: true })) },
+          ].filter(action => action.id !== "attach" || onAttachFile !== undefined)} /> : null}
+        {selected && !conversationLoading && !conversationItems.length && dismissedEmpty[dismissKey] ? <box id="empty-conversation-dm-dismissed" onMouseDown={event => { if (event.button === 0) setDismissedEmpty(current => ({ ...current, [dismissKey]: false })) }}><text fg={theme.muted} wrapMode="word">No messages yet. Say hello. <span fg={theme.accent}><u>Show tips</u></span></text></box> : null}
+        {selectedGroup && !conversationLoading && !conversationItems.length && !dismissedEmpty[dismissKey] ? <EmptyState id="empty-conversation-group" message="No messages yet. Say hello to the group — your draft stays here until you send." compact={compact || width < 70} actions={[
+            { id: "write", label: "Write first message", hint: "Enter", onSelect: () => setScrollFocused(false) },
+            { id: "attach", label: "Attach file", hint: "Ctrl+U", onSelect: () => onAttachFile?.() },
+            { id: "dismiss", label: "Hide tips", onSelect: () => setDismissedEmpty(current => ({ ...current, [dismissKey]: true })) },
+          ].filter(action => action.id !== "attach" || onAttachFile !== undefined)} /> : null}
+        {selectedGroup && !conversationLoading && !conversationItems.length && dismissedEmpty[dismissKey] ? <box id="empty-conversation-group-dismissed" onMouseDown={event => { if (event.button === 0) setDismissedEmpty(current => ({ ...current, [dismissKey]: false })) }}><text fg={theme.muted} wrapMode="word">No messages yet. Say hello to the group. <span fg={theme.accent}><u>Show tips</u></span></text></box> : null}
         {conversationItems.map((item, index) => {
           const rows: ReactNode[] = []
           const prev = conversationItems[index - 1]
