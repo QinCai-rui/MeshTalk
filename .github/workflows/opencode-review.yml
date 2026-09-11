@@ -246,8 +246,26 @@ jobs:
             let suggestions = [];
             try {
               suggestions = JSON.parse(fs.readFileSync('suggestions.json', 'utf8'));
-            } catch (e) { return; }
-            if (!Array.isArray(suggestions) || suggestions.length === 0) return;
+            } catch (e) { suggestions = []; }
+            let reviewBody = '';
+            try { reviewBody = fs.readFileSync('review-comment.md', 'utf8'); } catch (e) {}
+            // Agent decides via verdict, workflow gates deterministically:
+            // approve ONLY when not a fallback, verdict is Looks good,
+            // suggestions are empty, and no blocking/should-fix label remains.
+            const isFallback = /could not produce a valid/i.test(reviewBody);
+            const verdictLooksGood = /verdict:\s*`?looks good`?/i.test(reviewBody);
+            const hasBoldOrBracketApprovalBlocker = /\*\*\s*(blocking|should-fix)\b|\[(blocking|should-fix)\]/i.test(reviewBody);
+            let hasLineLabelApprovalBlocker = false;
+            for (const line of reviewBody.split('\n')) {
+              const cleaned = line.replace(/^\s*(#{1,6}\s*|([-*]|\d+[.)])\s*|>\s*)*/, '').replace(/^[\*_`\[\(\s]+/, '');
+              if (/^(blocking|should-fix)\b\s*[:/\-\]]?/i.test(cleaned) && !/^no\s+/i.test(cleaned)) { hasLineLabelApprovalBlocker = true; break; }
+            }
+            const suggestionsEmpty = Array.isArray(suggestions) && suggestions.length === 0;
+            const canApprove = !isFallback && verdictLooksGood && suggestionsEmpty && !hasBoldOrBracketApprovalBlocker && !hasLineLabelApprovalBlocker;
+            const event = canApprove ? 'APPROVE' : 'COMMENT';
+            if (!Array.isArray(suggestions) || suggestions.length === 0) {
+              if (!canApprove) return;
+            }
             const pr = (context.payload.issue && context.payload.issue.number) ||
               (context.payload.pull_request && context.payload.pull_request.number);
             if (!pr) { core.warning('Cannot determine PR number; skipping suggestions.'); return; }
@@ -308,10 +326,20 @@ jobs:
               if (end === s.line) comments.push({ path: s.path, line: s.line, side: 'RIGHT', body });
               else comments.push({ path: s.path, line: end, side: 'RIGHT', start_line: s.line, start_side: 'RIGHT', body });
             }
-            if (comments.length === 0) return;
+            if (comments.length === 0) {
+              if (!canApprove) return;
+              await github.rest.pulls.createReview({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: pr,
+                commit_id, event: 'APPROVE',
+                body: 'Automated review approved — no blocking or should-fix issues found. Human merge decision still required.',
+              });
+              return;
+            }
             await github.rest.pulls.createReview({
               owner: context.repo.owner, repo: context.repo.repo, pull_number: pr,
-              commit_id, event: 'COMMENT',
-              body: `Automated review: ${comments.length} suggestion${comments.length === 1 ? '' : 's'} below — apply individually or batch them from the Files changed tab.`,
+              commit_id, event,
+              body: canApprove
+                ? 'Automated review approved — no blocking or should-fix issues found. Human merge decision still required.'
+                : `Automated review: ${comments.length} suggestion${comments.length === 1 ? '' : 's'} below — apply individually or batch them from the Files changed tab.`,
               comments,
             });
