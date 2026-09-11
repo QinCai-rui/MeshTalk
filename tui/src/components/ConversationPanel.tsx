@@ -94,6 +94,7 @@ const MESSAGE_MARKDOWN_STYLES = {
 export function ConversationPanel(props: ConversationPanelProps) {
   const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction, onOpenConnection, onAttachFile, onAddFriend, onCreateGroup, onJoinGroup } = props
   const [dismissedEmpty, setDismissedEmpty] = useState<Record<string, boolean>>({})
+  const [showConversationTips, setShowConversationTips] = useState<Record<string, boolean>>({})
   const openConnection = onOpenConnection ?? openSettings
   const dismissKey = selectionKey ?? "no-selection"
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
@@ -106,6 +107,8 @@ export function ConversationPanel(props: ConversationPanelProps) {
   const composerTitle = !selected && !selectedGroup ? "Message" : selectedGroup || selected?.is_online ? "Message" : "Message / queued until online"
   const byteCount = `${draftLength.toLocaleString()} / ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`
   const hasConversation = Boolean(selected || selectedGroup)
+  const friendState = selected ? peerFriendState(selected) : undefined
+  const hasFriendActions = Boolean(selected && !selectedGroup && friendState !== "friend" && onFriendAction)
   const peerState = selected ? peerPresence(selected) === "active" ? "Online" : peerPresence(selected) === "away" ? "Away" : "Offline" : ""
   // Keep warning text readable during the accessibility pulse. The prior UI faded
   // it almost away; the calmer shell shifts between two amber tones instead.
@@ -185,12 +188,12 @@ export function ConversationPanel(props: ConversationPanelProps) {
           </box>
         </box>}
         {selected && <>
-          {(selected.delivery_warnings ?? []).map(kind => kind === "offline" ? <text id="offline-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Offline: messages queue until this peer reconnects.</text> : kind === "not_friend" ? <text id="friend-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Messages blocked until your friend request is accepted. Ctrl+P &gt; Friends &gt; Add friend.</text> : null)}
+          {(selected.delivery_warnings ?? []).map(kind => kind === "offline" ? <text id="offline-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Offline: messages queue until this peer reconnects.</text> : kind === "not_friend" && !hasFriendActions ? <text id="friend-warning" key={kind} fg={flashingWarningColor} wrapMode="word">Messaging is blocked until you become friends.</text> : null)}
           {selectedHasCapabilityGap && <text id="capability-warning" fg={flashingWarningColor} wrapMode="word">Limited: {capabilityGapMessage}</text>}
-          {!selectedGroup && peerFriendState(selected) !== "friend" && onFriendAction && <box id="friend-inline-actions" flexDirection="column">
-            <text fg={theme.muted} wrapMode="word">{peerFriendStatusText(selected)}{inboxCount > 0 ? ` ${inboxCount} request${inboxCount === 1 ? "" : "s"} pending in the inbox.` : ""}</text>
+          {hasFriendActions && <box id="friend-inline-actions" flexDirection="column">
+            <text fg={theme.muted} wrapMode="word">{peerFriendStatusText(selected!)}</text>
             <box flexDirection="row" gap={2}>
-              {inlineFriendActions(selected).map(action => <box key={action.id} id={`friend-inline-${action.id}`} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); onFriendAction(action.id) } }}><text fg={theme.accent}><u>{action.hint} {action.label}</u></text></box>)}
+              {inlineFriendActions(selected!).map((action, index) => <box key={action.id} id={`friend-inline-${action.id}`} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); onFriendAction!(action.id) } }}><text fg={index === 0 ? theme.accent : theme.muted}><u>{action.label}</u></text></box>)}
             </box>
           </box>}
         </>}
@@ -205,18 +208,24 @@ export function ConversationPanel(props: ConversationPanelProps) {
           ]} /></box> : null}
         {!selected && !selectedGroup && dismissedEmpty["no-selection"] ? <box marginTop={1} id="empty-no-selection-dismissed" onMouseDown={event => { if (event.button === 0) setDismissedEmpty(current => ({ ...current, "no-selection": false })) }}><text fg={theme.muted} wrapMode="word">Choose a peer or group to get started. <span fg={theme.accent}><u>Show tips</u></span></text></box> : null}
         {conversationLoading ? <box style={{ alignItems: "center", marginTop: 2 }}><text fg={theme.warning}>Loading Messages</text></box> : null}
-        {selected && !conversationLoading && !conversationItems.length && !dismissedEmpty[dismissKey] ? <EmptyState id="empty-conversation-dm" message="No messages yet. Say hello — your draft stays here until you send." compact={compact || width < 70} actions={[
+        {selected && friendState === "friend" && !conversationLoading && !conversationItems.length && !showConversationTips[dismissKey] ? <box id="empty-conversation-dm" style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1 }}>
+          <text fg={theme.muted} wrapMode="word">No messages yet. Say hello.</text>
+          <box id="empty-conversation-dm-tips" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setShowConversationTips(current => ({ ...current, [dismissKey]: true })) } }}><text fg={theme.accent}><u>Tips</u></text></box>
+        </box> : null}
+        {selected && friendState === "friend" && !conversationLoading && !conversationItems.length && showConversationTips[dismissKey] ? <EmptyState id="empty-conversation-dm-tips-expanded" message="No messages yet. Say hello." compact={compact || width < 70} actions={[
             { id: "write", label: "Write first message", hint: "Enter", onSelect: () => setScrollFocused(false) },
             { id: "attach", label: "Attach file", hint: "Ctrl+U", onSelect: () => onAttachFile?.() },
-            { id: "dismiss", label: "Hide tips", onSelect: () => setDismissedEmpty(current => ({ ...current, [dismissKey]: true })) },
+            { id: "dismiss", label: "Hide tips", onSelect: () => setShowConversationTips(current => ({ ...current, [dismissKey]: false })) },
           ].filter(action => action.id !== "attach" || onAttachFile !== undefined)} /> : null}
-        {selected && !conversationLoading && !conversationItems.length && dismissedEmpty[dismissKey] ? <box id="empty-conversation-dm-dismissed" onMouseDown={event => { if (event.button === 0) setDismissedEmpty(current => ({ ...current, [dismissKey]: false })) }}><text fg={theme.muted} wrapMode="word">No messages yet. Say hello. <span fg={theme.accent}><u>Show tips</u></span></text></box> : null}
-        {selectedGroup && !conversationLoading && !conversationItems.length && !dismissedEmpty[dismissKey] ? <EmptyState id="empty-conversation-group" message="No messages yet. Say hello to the group — your draft stays here until you send." compact={compact || width < 70} actions={[
+        {selectedGroup && !conversationLoading && !conversationItems.length && !showConversationTips[dismissKey] ? <box id="empty-conversation-group" style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1 }}>
+          <text fg={theme.muted} wrapMode="word">No messages yet. Say hello to the group.</text>
+          <box id="empty-conversation-group-tips" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setShowConversationTips(current => ({ ...current, [dismissKey]: true })) } }}><text fg={theme.accent}><u>Tips</u></text></box>
+        </box> : null}
+        {selectedGroup && !conversationLoading && !conversationItems.length && showConversationTips[dismissKey] ? <EmptyState id="empty-conversation-group-tips-expanded" message="No messages yet. Say hello to the group." compact={compact || width < 70} actions={[
             { id: "write", label: "Write first message", hint: "Enter", onSelect: () => setScrollFocused(false) },
             { id: "attach", label: "Attach file", hint: "Ctrl+U", onSelect: () => onAttachFile?.() },
-            { id: "dismiss", label: "Hide tips", onSelect: () => setDismissedEmpty(current => ({ ...current, [dismissKey]: true })) },
+            { id: "dismiss", label: "Hide tips", onSelect: () => setShowConversationTips(current => ({ ...current, [dismissKey]: false })) },
           ].filter(action => action.id !== "attach" || onAttachFile !== undefined)} /> : null}
-        {selectedGroup && !conversationLoading && !conversationItems.length && dismissedEmpty[dismissKey] ? <box id="empty-conversation-group-dismissed" onMouseDown={event => { if (event.button === 0) setDismissedEmpty(current => ({ ...current, [dismissKey]: false })) }}><text fg={theme.muted} wrapMode="word">No messages yet. Say hello to the group. <span fg={theme.accent}><u>Show tips</u></span></text></box> : null}
         {conversationItems.map((item, index) => {
           const rows: ReactNode[] = []
           const prev = conversationItems[index - 1]
