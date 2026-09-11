@@ -11,7 +11,7 @@ from pathlib import Path
 
 SUGGESTIONS = re.compile(r"```suggestions-json\s*(.*?)\s*```", re.DOTALL)
 # Only recognize path-like citations, avoiding ordinary prose such as "HTTP: 422".
-CITATION = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+\.[A-Za-z0-9]+):(\d+)(?:-(\d+))?")
+CITATION = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+):(\d+)(?:-(\d+))?")
 SEVERITY = re.compile(r"\b(?:blocking|should-fix|nit)\b", re.IGNORECASE)
 
 
@@ -85,23 +85,33 @@ def main() -> None:
     errors: list[str] = []
 
     human_review = review.split("```suggestions-json", 1)[0]
-    finding = []
+    finding: list[str] = []
     for line in human_review.splitlines() + [""]:
-        if re.match(r"^\s*[-*]\s+", line):
+        heading = re.match(r"^\s{0,3}#{1,6}\s+", line)
+        item = re.match(r"^\s*(?:[-*]|\d+[.)])\s+", line)
+        if heading or item:
             if finding and SEVERITY.search(" ".join(finding)) and not CITATION.search(" ".join(finding)):
                 errors.append("Each severity-tagged finding must include an exact changed path:line citation.")
             finding = [line]
-        elif finding and line.strip():
-            finding.append(line)
+        elif line.strip():
+            if finding:
+                finding.append(line)
+            else:
+                finding = [line]
         elif finding:
+            # Keep a severity heading attached to prose below it.
+            if len(finding) == 1 and re.match(r"^\s{0,3}#{1,6}\s+", finding[0]) and SEVERITY.search(finding[0]):
+                continue
             if SEVERITY.search(" ".join(finding)) and not CITATION.search(" ".join(finding)):
                 errors.append("Each severity-tagged finding must include an exact changed path:line citation.")
             finding = []
 
-    for path, start, end in CITATION.findall(review):
+    for path, start, end in CITATION.findall(human_review):
         end_line = int(end or start)
         if path not in added:
-            errors.append(f"Citation {path}:{start} does not name a file changed by this PR.")
+            # Avoid treating ordinary prose such as "HTTP: 422" as a citation.
+            if "/" in path or "." in path:
+                errors.append(f"Citation {path}:{start} does not name a file changed by this PR.")
             continue
         invalid = [line for line in range(int(start), end_line + 1) if line not in added[path]]
         if invalid:
@@ -163,7 +173,7 @@ def main() -> None:
             continue
         replacement_lines = replacement.splitlines(keepends=True)
         if replacement_lines and not replacement_lines[-1].endswith(("\n", "\r")):
-            replacement_lines[-1] += "\n" if source_lines[line - 1].endswith("\n") else ""
+            replacement_lines[-1] += "\n" if source_lines[end_line - 1].endswith("\n") else ""
         patched = source_lines[:line - 1] + replacement_lines + source_lines[end_line:]
         syntax = syntax_error(path, "".join(patched))
         if syntax:

@@ -25,6 +25,7 @@ Priority order:
 Write for a human maintainer reading quickly on GitHub:
 - Lead with concrete defects and risks, ordered by severity.
 - Each finding must state the impact, explain the trigger condition, and cite exact changed `path:line`. Never use placeholder line numbers.
+- The publisher adds a CodeRabbit-style aggregate `Prompt for all review comments with AI agents` block to the summary and a prompt block to each inline suggestion; do not add duplicate prompt blocks yourself.
 - Use grouped headings only when they improve scanability.
 - Distinguish blocking, should-fix, and nit consistently.
 - Do not repeat implementation observations as findings unless they require action.
@@ -33,10 +34,11 @@ Write for a human maintainer reading quickly on GitHub:
 
 End with a ```suggestions-json fenced block containing a JSON array, max 10 items, using `[]` when no one-click fix qualifies. Each item must be:
 ```json
-{"path": "repo-relative/file.ts", "line": 42, "end_line": 44, "comment": "Fix null check", "suggestion": "if (val != null) { return val; }"}
+{"path": "repo-relative/file.ts", "line": 42, "end_line": 44, "comment": "Fix null check", "agent_prompt": "Verify this finding against current code, apply the minimal valid fix, and validate it.", "suggestion": "if (val != null) { return val; }"}
 ```
 - `path` must be in the PR diff
 - `line` must be a 1-based new-file line on an added diff line
 - `end_line` is optional and must be >= line for multi-line replacements
 - `suggestion` must be the exact replacement code, with no fences
+- `agent_prompt` is optional; when present, it must be a concise verification-and-fix prompt for another coding agent
 - Only include suggestions you are confident apply cleanly; keep hunks tight
