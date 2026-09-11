@@ -37,6 +37,7 @@ from .encryption import decrypt_as_recipient, encrypt_for_recipient
 from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
 from .protocol import (
+    CAP_BLOCK_REPORTS,
     CAP_FILE_TRANSFER,
     MAX_FILE_CHUNK_SIZE,
     MAX_FILE_SIZE,
@@ -319,10 +320,14 @@ class FileTransferManager:
             self._emit({"event": "file_sent", "file_id": file_id, "recipient_id": recipient_id, "filename": Path(path).name, "group_id": group_id})
         except OSError as exc:
             await self.db.update_file_transfer(file_id, status="failed")
+            self._emit({"event": "file_failed", "file_id": file_id, "recipient_id": recipient_id, "group_id": group_id})
             raise ValueError(f"Failed to read file: {exc}") from exc
 
     async def flush_for_peer(self, peer_id: str) -> int:
         """Send queued outgoing file chunks to a connected peer."""
+        # Do not flush to locally blocked peers (parity with group send).
+        if await self.db.is_peer_blocked(peer_id):
+            return 0
         # Flush queued file transfers for this peer - re-read file and resend
         transfers = [t for t in await self.db.get_file_transfers(peer_id) if t["status"] == "queued" and t["direction"] == "outbound"]
         flushed = 0
@@ -333,6 +338,7 @@ class FileTransferManager:
             path = Path(t["file_path"]) if t["file_path"] else None
             if not path or not path.exists():
                 await self.db.update_file_transfer(t["file_id"], status="failed")
+                self._emit({"event": "file_failed", "file_id": t["file_id"], "recipient_id": peer_id, "group_id": t["group_id"]})
                 continue
             encryption_key = peer.encryption_public_key
             if not encryption_key:
@@ -365,6 +371,69 @@ class FileTransferManager:
                 if item["message_id"] == t["file_id"] and item["packet_type"] == PacketType.FILE_CHUNK.value:
                     await self.db.remove_from_outqueue(item["id"])
         return flushed
+
+    async def retry_file(self, file_id: str) -> str:
+        """Retry a failed/blocked/queued outbound transfer reusing the sent snapshot.
+
+        This is why the retry button exists: the immutable copy under
+        files/sent/<file_id>/ outlives the source file, so the user can
+        retry after the peer accepts the friend request without re-picking.
+        """
+        transfer = await self.db.get_file_transfer(file_id)
+        if not transfer:
+            raise ValueError("Unknown file_id")
+        if transfer["direction"] != "outbound":
+            raise ValueError("Only outbound transfers can be retried")
+        if transfer["status"] not in ("failed", "blocked", "queued", "sent", "unavailable"):
+            raise ValueError(f"Transfer cannot be retried (status={transfer['status']})")
+        recipient_id = transfer["recipient_id"]
+        if await self.db.is_peer_blocked(recipient_id):
+            raise ValueError("This peer is blocked; unblock them to retry")
+        path = Path(transfer["file_path"]) if transfer["file_path"] else None
+        if not path or not path.exists() or not path.is_file():
+            await self.db.update_file_transfer(file_id, status="failed")
+            raise ValueError("Source file not found; it may have been moved or deleted")
+        # Clear stale queued packets for this file so retry does not duplicate.
+        try:
+            pending = await self.db.get_pending_outgoing(recipient_id)
+            for item in pending:
+                if item["message_id"] == file_id:
+                    await self.db.remove_from_outqueue(item["id"])
+        except Exception:
+            pass
+        offer = FileOfferPayload(
+            file_id=transfer["file_id"], filename=transfer["filename"], file_size=transfer["file_size"],
+            chunk_size=transfer["chunk_size"], total_chunks=transfer["total_chunks"],
+            sender_id=transfer["sender_id"], recipient_id=recipient_id,
+            group_id=transfer["group_id"], created_at=transfer["created_at"],
+        )
+        offer.signature = self.identity.signing_private_key.sign(offer.signed_bytes())
+        peer = self.peer_manager.get_connected_peer(recipient_id)
+        if peer:
+            if not peer.supports(CAP_FILE_TRANSFER):
+                await self.db.update_file_transfer(file_id, status="failed")
+                raise ValueError("Peer does not support file transfer")
+            encryption_key = peer.encryption_public_key
+            if not encryption_key:
+                raise ValueError("No known public key for recipient")
+            await self.db.update_file_transfer(file_id, status="transferring")
+            try:
+                await self.peer_manager.send_packet(peer, Packet(PacketType.FILE_OFFER, offer.encode()))
+            except Exception:
+                await self.db.add_to_outqueue(recipient_id, PacketType.FILE_OFFER.value, offer.encode(), message_id=file_id, group_id=transfer["group_id"])
+                await self.db.update_file_transfer(file_id, status="queued")
+                self._emit({"event": "file_queued", "file_id": file_id, "recipient_id": recipient_id, "filename": transfer["filename"], "group_id": transfer["group_id"]})
+                return file_id
+            await self._send_chunks(path, file_id, recipient_id, transfer["group_id"], transfer["chunk_size"], transfer["total_chunks"], encryption_key, peer)
+            return file_id
+        stored = await self.db.get_peer(recipient_id)
+        if not stored or not stored.get("public_key"):
+            await self.db.update_file_transfer(file_id, status="failed")
+            raise ValueError("No known public key for recipient; connect once before sending offline")
+        await self.db.add_to_outqueue(recipient_id, PacketType.FILE_OFFER.value, offer.encode(), message_id=file_id, group_id=transfer["group_id"])
+        await self.db.update_file_transfer(file_id, status="queued")
+        self._emit({"event": "file_queued", "file_id": file_id, "recipient_id": recipient_id, "filename": transfer["filename"], "group_id": transfer["group_id"]})
+        return file_id
 
     async def resume_for_peer(self, peer_id: str) -> None:
         """Resume interrupted inbound file transfers when peer reconnects."""
@@ -449,11 +518,21 @@ class FileTransferManager:
             member = await self.db.get_group_member(offer.group_id, peer.peer_id)
             if not room or room.group_name is None or not member or not member["active"]:
                 logger.info("Blocked file %s from unauthorized group peer %s", offer.file_id, peer.peer_id)
+                await self._send_blocked_ack(peer, offer.file_id)
+                return
+            if await self.db.is_peer_blocked(peer.peer_id):
+                logger.info("Blocked file %s from blocked peer %s", offer.file_id, peer.peer_id)
+                await self._send_blocked_ack(peer, offer.file_id)
                 return
         else:
+            if await self.db.is_peer_blocked(peer.peer_id):
+                logger.info("Blocked file %s from blocked peer %s", offer.file_id, peer.peer_id)
+                await self._send_blocked_ack(peer, offer.file_id)
+                return
             is_friend = await self.db.is_friend(peer.peer_id)
             if not is_friend:
                 logger.info("Blocked file %s from non-friend %s", offer.file_id, peer.peer_id)
+                await self._send_blocked_ack(peer, offer.file_id)
                 return
         await self.db.mark_message_seen(offer.file_id)
         # Create inbound transfer record and prepare file
@@ -520,6 +599,19 @@ class FileTransferManager:
             return
         if transfer["status"] == "completed":
             await self._send_completion_ack(peer, chunk.file_id)
+            return
+        if transfer["status"] == "blocked":
+            await self._send_blocked_ack(peer, chunk.file_id)
+            return
+        # Re-check friendship / membership per chunk (TOCTOU parity with messages).
+        if transfer["group_id"]:
+            room = self.settings.rooms.get(transfer["group_id"]) if self.settings else None
+            member = await self.db.get_group_member(transfer["group_id"], peer.peer_id)
+            if not room or room.group_name is None or not member or not member["active"] or await self.db.is_peer_blocked(peer.peer_id):
+                await self._send_blocked_ack(peer, chunk.file_id)
+                return
+        elif await self.db.is_peer_blocked(peer.peer_id) or not await self.db.is_friend(peer.peer_id):
+            await self._send_blocked_ack(peer, chunk.file_id)
             return
         await self._store_chunk(peer, chunk, transfer)
 
@@ -591,6 +683,17 @@ class FileTransferManager:
         except OSError:
             pass
 
+    async def _send_blocked_ack(self, peer: PeerConnection, file_id: str) -> None:
+        # Parity with MESSAGE_BLOCKED: only report when both sides negotiated it.
+        if not peer.supports(CAP_BLOCK_REPORTS):
+            return
+        ack = FileAckPayload(file_id=file_id, recipient_id=self.identity.peer_id, status="blocked")
+        ack.signature = self.identity.signing_private_key.sign(ack.signed_bytes())
+        try:
+            await self.peer_manager.send_packet(peer, Packet(PacketType.FILE_ACK, ack.encode()))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to send blocked ack for %s to %s: %s", file_id, peer.peer_id, exc)
+
     async def _send_completion_ack(self, peer: PeerConnection, file_id: str) -> None:
         ack = FileAckPayload(file_id=file_id, recipient_id=self.identity.peer_id, status="completed")
         ack.signature = self.identity.signing_private_key.sign(ack.signed_bytes())
@@ -634,6 +737,18 @@ class FileTransferManager:
             await self.db.update_file_transfer(ack.file_id, status="completed", completed_at=time.time())
             self._emit({"event": "file_delivered", "file_id": ack.file_id, "recipient_id": peer.peer_id, "group_id": transfer["group_id"]})
             logger.info("File %s delivered to %s", ack.file_id, peer.peer_id)
+        elif ack.status == "blocked":
+            await self.db.update_file_transfer(ack.file_id, status="blocked")
+            # Remove any queued chunks for this transfer - they will never deliver.
+            try:
+                pending = await self.db.get_pending_outgoing(peer.peer_id)
+                for item in pending:
+                    if item["message_id"] == ack.file_id:
+                        await self.db.remove_from_outqueue(item["id"])
+            except Exception:
+                pass
+            self._emit({"event": "file_blocked", "file_id": ack.file_id, "recipient_id": peer.peer_id, "display_name": peer.display_name, "group_id": transfer["group_id"]})
+            logger.info("File %s blocked by %s", ack.file_id, peer.peer_id)
         elif ack.status == "missing":
             if any(end >= transfer["total_chunks"] for _, end in ack.missing_ranges):
                 raise ValueError("Invalid missing file chunk range")
@@ -643,6 +758,7 @@ class FileTransferManager:
         path = Path(transfer["file_path"]) if transfer["file_path"] else None
         if not path or not path.is_file() or not peer.encryption_public_key:
             await self.db.update_file_transfer(transfer["file_id"], status="failed")
+            self._emit({"event": "file_failed", "file_id": transfer["file_id"], "recipient_id": peer.peer_id, "group_id": transfer["group_id"]})
             return
         try:
             with open(path, "rb") as file:

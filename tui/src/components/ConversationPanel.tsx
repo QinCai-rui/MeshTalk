@@ -57,6 +57,7 @@ type ConversationPanelProps = {
   clearReplyTarget: () => void
   onComposerChange: (content: string) => void
   send: () => void
+  onRetryFile?: (fileId: string) => void
   inboxCount?: number
   onFriendAction?: (action: InlineFriendAction) => void
   onOpenConnection?: () => void
@@ -92,7 +93,7 @@ const MESSAGE_MARKDOWN_STYLES = {
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction, onOpenConnection, onAttachFile, onAddFriend, onCreateGroup, onJoinGroup } = props
+  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction, onOpenConnection, onAttachFile, onAddFriend, onCreateGroup, onJoinGroup, onRetryFile } = props
   const [dismissedEmpty, setDismissedEmpty] = useState<Record<string, boolean>>({})
   const openConnection = onOpenConnection ?? openSettings
   const dismissKey = selectionKey ?? "no-selection"
@@ -238,7 +239,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
             const fileStatusColor = (s: string) => {
               if (s === "completed" || s === "sent") return theme.muted
               if (s === "queued") return theme.warning
-              if (s === "failed" || s === "unavailable") return theme.danger
+              if (s === "failed" || s === "unavailable" || s === "blocked") return theme.danger
               if (s === "receiving" || s === "transferring") return theme.muted
               return theme.muted
             }
@@ -247,11 +248,13 @@ export function ConversationPanel(props: ConversationPanelProps) {
               if (s === "sent") return " sent"
               if (s === "queued") return " stored and queued"
               if (s === "failed") return " failed"
+              if (s === "blocked") return " blocked"
               if (s === "unavailable") return " unavailable"
               if (s === "receiving") return " receiving"
               if (s === "transferring") return " sending"
               return ""
             }
+            const canRetryFile = isLocal && (file.status === "failed" || file.status === "blocked" || file.status === "unavailable")
             const fileDeliveries = allFiles.map((f) => ({
               recipient_id: f.recipient_id,
               display_name: groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === f.recipient_id)?.display_name
@@ -268,7 +271,9 @@ export function ConversationPanel(props: ConversationPanelProps) {
                   <span fg={isLocal ? theme.accent : theme.text}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
                   <span fg={theme.muted}> shared an attachment</span>
                   {isLocal && !selectedGroup && <span fg={fileStatusColor(file.status)}>{fileStatusLabel(file.status)}</span>}
+                  {canRetryFile && onRetryFile && <span fg={theme.text}> · </span>}
                 </text>
+                {canRetryFile && onRetryFile && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box>}
                 {isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(fileDeliveries) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
                 <text wrapMode="word"><span fg={theme.accent}>{file.filename}</span><span fg={theme.muted}> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
                 {fileUnavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}

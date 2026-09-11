@@ -1104,7 +1104,7 @@ class FileAckPayload:
         if (
             not _valid_request_id(payload.file_id)
             or not _valid_peer_id(payload.recipient_id)
-            or payload.status not in ("completed", "ack", "missing")
+            or payload.status not in ("completed", "ack", "missing", "blocked")
             or (payload.status == "missing") != bool(payload.missing_ranges)
             or len(payload.signature) != 64
         ):
