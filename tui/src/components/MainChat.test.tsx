@@ -459,6 +459,164 @@ test("history selection and unread visibility retain their message IDs", async (
   } finally { await close(setup) }
 })
 
+test("sidebar no-peers empty state offers friend, connection, and LAN help actions", async () => {
+  const props = sidebarProps(120)
+  props.peers = []
+  props.groups = []
+  let added = 0
+  let connection = 0
+  let lanHelp = 0
+  props.onAddFriend = () => { added++ }
+  props.onOpenConnection = () => { connection++ }
+  props.onOpenLanHelp = () => { lanHelp++ }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "No peers yet")
+    expect(frame).toContain("No peers yet")
+    expect(frame.replace(/\s+/g, " ")).toContain("LAN-only? You're good")
+    expect(frame).toContain("Add friend")
+    expect(frame).toContain("Connection")
+    const add = setup.renderer.root.findDescendantById("sidebar-empty-peers-add")!
+    await act(async () => { await setup.mockMouse.click(add.screenX + 1, add.screenY) })
+    expect(added).toBe(1)
+    const conn = setup.renderer.root.findDescendantById("sidebar-empty-peers-connection")!
+    await act(async () => { await setup.mockMouse.click(conn.screenX + 1, conn.screenY) })
+    expect(connection).toBe(1)
+    const help = setup.renderer.root.findDescendantById("sidebar-empty-peers-lan-help")!
+    await act(async () => { await setup.mockMouse.click(help.screenX + 1, help.screenY) })
+    expect(lanHelp).toBe(1)
+    const dismiss = setup.renderer.root.findDescendantById("sidebar-empty-peers-dismiss")!
+    await act(async () => { await setup.mockMouse.click(dismiss.screenX + 1, dismiss.screenY) })
+    const collapsed = await settle(setup, "Show tips")
+    expect(collapsed).toContain("Waiting for peers")
+  } finally { await close(setup) }
+})
+
+test("sidebar no-groups empty state offers create and join actions", async () => {
+  const props = sidebarProps(120)
+  props.groups = []
+  let created = 0
+  let joined = 0
+  props.onCreateGroup = () => { created++ }
+  props.onJoinGroup = () => { joined++ }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "No groups yet")
+    expect(frame).toContain("Create group")
+    expect(frame).toContain("Join with invite")
+    const create = setup.renderer.root.findDescendantById("sidebar-empty-groups-create")!
+    await act(async () => { await setup.mockMouse.click(create.screenX + 1, create.screenY) })
+    expect(created).toBe(1)
+    const join = setup.renderer.root.findDescendantById("sidebar-empty-groups-join")!
+    await act(async () => { await setup.mockMouse.click(join.screenX + 1, join.screenY) })
+    expect(joined).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("empty DM offers first-message and attach actions and dismiss keeps the draft", async () => {
+  const props = panelProps(80)
+  props.conversationItems = []
+  props.drafts = { "peer:alex": "Keep me" }
+  let attached = 0
+  props.onAttachFile = () => { attached++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "No messages yet")
+    expect(frame).toContain("No messages yet")
+    expect(frame).toContain("Write first message")
+    expect(frame).toContain("Attach file")
+    const attach = setup.renderer.root.findDescendantById("empty-conversation-dm-attach")!
+    await act(async () => { await setup.mockMouse.click(attach.screenX + 1, attach.screenY) })
+    expect(attached).toBe(1)
+    expect(props.composerRef.current!.plainText).toBe("Keep me")
+    const dismiss = setup.renderer.root.findDescendantById("empty-conversation-dm-dismiss")!
+    await act(async () => { await setup.mockMouse.click(dismiss.screenX + 1, dismiss.screenY) })
+    const collapsed = await settle(setup, "Show tips")
+    expect(collapsed).toContain("No messages yet")
+    expect(props.composerRef.current!.plainText).toBe("Keep me")
+  } finally { await close(setup) }
+})
+
+test("empty group offers first-message and attach actions", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.conversationItems = []
+  props.selectionKey = "group:team"
+  let attached = 0
+  props.onAttachFile = () => { attached++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "Say hello to the group")
+    expect(frame).toContain("Write first message")
+    expect(frame).toContain("Attach file")
+    const attach = setup.renderer.root.findDescendantById("empty-conversation-group-attach")!
+    await act(async () => { await setup.mockMouse.click(attach.screenX + 1, attach.screenY) })
+    expect(attached).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("remote discovery warning offers a connection action and LAN reassurance", async () => {
+  const props = panelProps(80)
+  props.hasRooms = true
+  props.controlStatus = { connected: false, reconnect_attempts: 1 }
+  let opened = 0
+  props.onOpenConnection = () => { opened++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "Remote discovery is not configured")
+    expect(frame.replace(/\s+/g, " ")).toContain("LAN-only? You're good")
+    expect(frame).toContain("Open connection")
+    const action = setup.renderer.root.findDescendantById("rendezvous-action-open")!
+    await act(async () => { await setup.mockMouse.click(action.screenX + 1, action.screenY) })
+    expect(opened).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("no-selection empty state offers friend and group actions", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = undefined
+  props.selectionKey = undefined
+  props.conversationItems = []
+  let added = 0
+  let created = 0
+  props.onAddFriend = () => { added++ }
+  props.onCreateGroup = () => { created++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "No conversation selected")
+    expect(frame).toContain("Add friend")
+    expect(frame).toContain("Create group")
+    const add = setup.renderer.root.findDescendantById("empty-no-selection-add")!
+    await act(async () => { await setup.mockMouse.click(add.screenX + 1, add.screenY) })
+    expect(added).toBe(1)
+    const create = setup.renderer.root.findDescendantById("empty-no-selection-create")!
+    await act(async () => { await setup.mockMouse.click(create.screenX + 1, create.screenY) })
+    expect(created).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("stranger conversation keeps actionable friend guidance", async () => {
+  const props = panelProps(80)
+  props.selected = { ...peers[0]!, is_friend: false, friend_request: undefined }
+  props.conversationItems = []
+  const seen: string[] = []
+  props.onFriendAction = action => { seen.push(action) }
+  let attached = 0
+  props.onAttachFile = () => { attached++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "Not friends yet")
+    expect(frame).toContain("Add friend")
+    expect(frame).toContain("Write first message")
+    const action = setup.renderer.root.findDescendantById("friend-inline-add")!
+    await act(async () => { await setup.mockMouse.click(action.screenX + 1, action.screenY) })
+    expect(seen).toContain("add")
+  } finally { await close(setup) }
+})
+
 for (const width of [80, 48, 32]) {
   test(`status keeps the settings shortcut without moving the composer at ${width} columns`, async () => {
     const props = panelProps(chatLayout(width).panelWidth)
