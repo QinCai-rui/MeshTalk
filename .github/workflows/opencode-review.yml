@@ -138,6 +138,64 @@ jobs:
               printf 'PR-head content unavailable: %s\n' "$FILE" >> "$CONTEXT_DIR/warnings.txt"
             fi
           done < "$CONTEXT_DIR/changed-paths.txt"
+          # Rereview context (best-effort, never fails the review): prior
+          # automated reviews plus the exact range diff since the last one.
+          HEAD_SHA="${{ steps.resolve.outputs.head_sha }}"
+          PRIOR_SHA=""
+          printf '[]\n' > "$CONTEXT_DIR/range-commits.json"
+          : > "$CONTEXT_DIR/range.diff"
+          if [ "$REVIEW_MODE" = "rereview" ]; then
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" --jq '[.[] | select(.body | contains("<!-- meshtalk-review -->")) | {created_at: .created_at, body: .body}]' > /tmp/prior-reviews.json 2>/dev/null || printf '[]\n' > /tmp/prior-reviews.json
+            PRIOR_SHA=$(jq -r '[.[].body | capture("Reviewed head: (?<sha>[0-9a-f]{40})")? | .sha // empty] | last // empty' /tmp/prior-reviews.json 2>/dev/null || true)
+            python3 - <<'PYEOF' || true
+          import json
+          try:
+              prior = json.load(open('/tmp/prior-reviews.json'))
+          except (OSError, ValueError):
+              prior = []
+          lines = [f'Prior automated reviews: {len(prior)} found.']
+          for item in prior[-3:]:
+              body = item.get('body', '')
+              if len(body) > 4000:
+                  body = body[:4000] + '\n\n…[truncated]…'
+              lines += ['', f'--- Prior review at {item.get("created_at", "?")} ---', '', body]
+          open('.review-context/prior-reviews.md', 'w').write('\n'.join(lines) + '\n')
+          PYEOF
+            if [ -n "$PRIOR_SHA" ] && [ "$PRIOR_SHA" != "$HEAD_SHA" ]; then
+              if gh api "repos/${GITHUB_REPOSITORY}/compare/${PRIOR_SHA}...${HEAD_SHA}" > /tmp/range-compare.json 2>/dev/null; then
+                python3 - <<'PYEOF' || true
+          import json
+          try:
+              compare = json.load(open('/tmp/range-compare.json'))
+          except (OSError, ValueError):
+              compare = {}
+          files = compare.get('files', []) or []
+          parts = []
+          total = 0
+          for entry in files:
+              patch = entry.get('patch') or ''
+              chunk = f"diff --git a/{entry.get('filename', '?')} b/{entry.get('filename', '?')}\n{patch}\n"
+              if total + len(chunk) > 40000:
+                  parts.append('…[range diff truncated]…\n')
+                  break
+              parts.append(chunk)
+              total += len(chunk)
+          open('.review-context/range.diff', 'w').write(''.join(parts) if parts else 'Range diff empty.\n')
+          commits = [{'sha': (c.get('sha') or '')[:12], 'message': ((c.get('commit') or {}).get('message') or '').splitlines()[0:1]} for c in (compare.get('commits', []) or [])[:20]]
+          json.dump(commits, open('.review-context/range-commits.json', 'w'))
+          PYEOF
+              else
+                printf 'Range diff unavailable: compare API failed for prior head.\n' > "$CONTEXT_DIR/range.diff"
+              fi
+            elif [ -n "$PRIOR_SHA" ]; then
+              printf 'No new commits since the prior review (same head %s).\n' "$HEAD_SHA" > "$CONTEXT_DIR/range.diff"
+            else
+              printf 'Prior reviewed head unknown (earlier comments predate head tracking); treat the full PR diff as new.\n' > "$CONTEXT_DIR/range.diff"
+            fi
+          else
+            printf 'First review (mode=review): no prior automated review on this PR.\n' > "$CONTEXT_DIR/prior-reviews.md"
+            printf 'Not applicable (mode=review): review the full PR diff.\n' > "$CONTEXT_DIR/range.diff"
+          fi
           set -o pipefail
           REVIEW_SESSION=""
           run_review() {
@@ -232,7 +290,8 @@ jobs:
               const n = JSON.parse(fs.readFileSync('suggestions.json', 'utf8')).length;
               if (n) extra = `\n\n<sub>${n} inline suggestion${n === 1 ? '' : 's'} posted on the diff — apply from the Files changed tab (Commit suggestion or Add suggestion to batch).</sub>`;
             } catch (e) {}
-            body += `${extra}\n\n<sub>Requested via \`${context.payload.comment.body.split('\n')[0].slice(0,80)}\`.</sub>\n${marker}`;
+            const headSha = '${{ steps.resolve.outputs.head_sha }}';
+            body += `${extra}\n\n<sub>Requested via \`${context.payload.comment.body.split('\n')[0].slice(0,80)}\`.</sub>\n<sub>Reviewed head: ${headSha}.</sub>\n${marker}`;
             body += `\n\n<details>\n<summary>🤖 Prompt for all review comments with AI agents</summary>\n\n\`\`\`\n${allCommentsPrompt}\n\`\`\`\n\n</details>`;
             const pr = context.issue.number;
             await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pr, body });
