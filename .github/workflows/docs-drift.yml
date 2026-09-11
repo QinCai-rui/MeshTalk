@@ -64,8 +64,8 @@ jobs:
             echo "Editor produced no patch."
             exit 0
           fi
-          git config user.name "opencode-agent[bot]"
-          git config user.email "opencode-agent[bot]@users.noreply.github.com"
+          git config user.name "meshdoctor[bot]"
+          git config user.email "meshdoctor[bot]@users.noreply.github.com"
           git add PROTOCOL.md PRIVACY.md DESIGN.md README.md docs/ web/views/
           git commit -m "docs: drift sync $DATE"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "$BRANCH"
