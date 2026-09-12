@@ -3,8 +3,8 @@ import { EmptyState } from "./EmptyState"
 import { TypingDots } from "./TypingDots"
 import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useTimeline } from "@opentui/react"
-import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
-import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
+import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
 import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, inlineFriendActions, isImageFile, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
@@ -108,6 +108,131 @@ function HighlightOverlay({ id }: { id: string }) {
   )
 }
 
+type ConversationRowHandlers = {
+  selectReplyTarget: (target: ReplyTarget) => void
+  clearReplyTarget: () => void
+  highlightReplyTarget: (id: string) => void
+  setScrollFocused: (focused: boolean) => void
+  scrollboxRef: RefObject<ScrollBoxRenderable | null>
+  openDeliveryDetails: (deliveries: GroupDelivery[]) => void
+  openImage: (file: FileTransfer) => void
+  onRetryFile?: (fileId: string) => void
+}
+
+type ConversationRowHandlersRef = { current: ConversationRowHandlers }
+type MessageRefs = { current: Record<string, BoxRenderable | null> }
+
+function replyTargetForItem(item: ConversationItem): ReplyTarget {
+  return item.type === "message"
+    ? { id: item.message.message_id, senderId: item.message.sender_id, label: item.message.content, groupId: item.message.group_id, kind: "message" }
+    : { id: item.file.file_id, senderId: item.file.sender_id, label: `Attachment: ${item.file.filename}`, groupId: item.file.group_id ?? undefined, kind: "file" }
+}
+
+function fileStatusColor(status: string) {
+  if (status === "completed" || status === "sent") return theme.muted
+  if (status === "queued") return theme.warning
+  if (status === "failed" || status === "unavailable" || status === "blocked") return theme.danger
+  return theme.muted
+}
+
+function fileStatusLabel(status: string) {
+  if (status === "completed") return " delivered"
+  if (status === "sent") return " sent"
+  if (status === "queued") return " stored and queued"
+  if (status === "failed") return " failed"
+  if (status === "blocked") return " blocked"
+  if (status === "unavailable") return " unavailable"
+  if (status === "receiving") return " receiving"
+  if (status === "transferring") return " sending"
+  return ""
+}
+
+type FileRowProps = {
+  file: FileTransfer
+  fileDeliveries: GroupDelivery[]
+  fileUnavailable: boolean
+  isLocal: boolean
+  senderName: string | undefined
+  selectedGroup: boolean
+  selectedPeerName: string | undefined
+  selectedReplyTargetId: string | undefined
+  scrollFocused: boolean
+  fileReplyHighlighted: boolean
+  canRetryFile: boolean
+  retryEnabled: boolean
+  imageProtocol: ImageProtocol
+  width: number
+  messageRefs: MessageRefs
+  handlers: ConversationRowHandlersRef
+}
+
+const ConversationFileRow = memo(function ConversationFileRow({ file, fileDeliveries, fileUnavailable, isLocal, senderName, selectedGroup, selectedPeerName, selectedReplyTargetId, scrollFocused, fileReplyHighlighted, canRetryFile, retryEnabled, imageProtocol, width, messageRefs, handlers }: FileRowProps) {
+  const selectedRow = scrollFocused && selectedReplyTargetId === file.file_id
+  return (
+    <box id={file.file_id} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "file", createdAt: file.created_at, file, allFiles: [file] }))} style={{ position: "relative", flexDirection: "column", marginBottom: 1, backgroundColor: selectedRow && !fileReplyHighlighted ? theme.selected : undefined }}>
+      {fileReplyHighlighted && <HighlightOverlay id={`reply-highlight-${file.file_id}`} />}
+      <box style={{ position: "relative", zIndex: 1, flexDirection: "column" }}>
+        <text>
+          <span fg={selectedRow ? theme.accent : theme.muted}>{selectedRow ? "> " : ""}</span><span fg={theme.muted}>{formatTime(file.created_at)} </span>
+          <span fg={isLocal ? theme.accent : theme.text}>{isLocal ? "You" : selectedGroup ? senderName : selectedPeerName}</span>
+          <span fg={theme.muted}> shared an attachment</span>
+          {isLocal && !selectedGroup && <span fg={fileStatusColor(file.status)}>{fileStatusLabel(file.status)}</span>}
+          {canRetryFile && retryEnabled && <span fg={theme.text}> · </span>}
+        </text>
+        {canRetryFile && retryEnabled && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box>}
+        {isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
+        <text wrapMode="word"><span fg={theme.accent}>{file.filename}</span><span fg={theme.muted}> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
+        {fileUnavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
+        {!fileUnavailable && file.file_path ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage={isImageFile(file.filename)} scrollboxRef={handlers.current.scrollboxRef} maxWidth={Math.max(1, (handlers.current.scrollboxRef.current?.viewport.width ?? width - 3) - 2)} maxHeight={Math.min(16, Math.max(4, (handlers.current.scrollboxRef.current?.viewport.height ?? 16) - 4))} onOpen={() => handlers.current.openImage(file)} /> : null}
+      </box>
+    </box>
+  )
+})
+
+type MessageRowProps = {
+  message: Message
+  isLocal: boolean
+  isSystem: boolean
+  senderName: string
+  renderedContent: string
+  replyTarget: ConversationItem | undefined
+  replySender: string | undefined
+  replyContent: string | undefined
+  replySnippet: string | undefined
+  selectedRow: boolean
+  unreadHighlighted: boolean
+  replyHighlighted: boolean
+  delivered: boolean
+  blocked: boolean
+  queued: boolean
+  failed: boolean
+  showReceived: boolean
+  messageSyntaxStyle: SyntaxStyle
+  messageRefs: MessageRefs
+  handlers: ConversationRowHandlersRef
+}
+
+const ConversationMessageRow = memo(function ConversationMessageRow({ message, isLocal, isSystem, senderName, renderedContent, replyTarget, replySender, replyContent, replySnippet, selectedRow, unreadHighlighted, replyHighlighted, delivered, blocked, queued, failed, showReceived, messageSyntaxStyle, messageRefs, handlers }: MessageRowProps) {
+  const markdown = useMemo(() => <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />, [messageSyntaxStyle, renderedContent])
+  return (
+    <box id={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "message", createdAt: message.created_at, message }))} style={{ position: "relative", width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: selectedRow && !replyHighlighted ? theme.selected : undefined }}>
+      {replyHighlighted && <HighlightOverlay id={`reply-highlight-${message.message_id}`} />}
+      {unreadHighlighted && <HighlightOverlay id={`unread-highlight-${message.message_id}`} />}
+      <box style={{ position: "relative", zIndex: 1, width: "100%", flexDirection: "column" }}>
+        <text>
+          <span fg={selectedRow ? theme.accent : theme.muted}>{selectedRow ? "> " : ""}</span><span fg={theme.muted}>{formatTime(message.created_at)} </span>
+          <span fg={isSystem ? theme.warning : isLocal ? theme.accent : theme.text}>{isSystem ? "System" : isLocal ? "You" : senderName}</span>
+          {isLocal && !isSystem && <span fg={blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
+          {showReceived && <span fg={theme.muted}> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
+        </text>
+        {isLocal && !isSystem && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
+        {message.reply_to_message_id && <box onMouseDown={replyTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); const target = replyTargetForItem(replyTarget); handlers.current.clearReplyTarget(); handlers.current.highlightReplyTarget(target.id); handlers.current.setScrollFocused(true); handlers.current.scrollboxRef.current?.scrollChildIntoView(target.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
+        {markdown}
+      </box>
+    </box>
+  )
+})
+
 const MESSAGE_MARKDOWN_STYLES = {
   default: { fg: theme.markdown.default },
   "markup.heading.1": { fg: theme.markdown.heading, bold: true },
@@ -140,8 +265,10 @@ export function ConversationPanel(props: ConversationPanelProps) {
   const openConnection = onOpenConnection ?? openSettings
   const dismissKey = selectionKey ?? "no-selection"
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
+  const visibleUnreadCheck = useRef<() => void>(() => {})
   const [replyHighlight, setReplyHighlight] = useState<{ id: string; startedAt: number }>()
   const messageSyntaxStyle = useMemo(() => SyntaxStyle.fromStyles(MESSAGE_MARKDOWN_STYLES), [])
+  const rowHandlers = useRef<ConversationRowHandlers>(null!)
   const typingText = typingNames.length === 1
     ? `${clipTextToWidth(typingNames[0]!, Math.max(1, width - 18)).trimEnd()} is typing`
     : typingNames.length > 1 ? `${typingNames.length} people are typing` : undefined
@@ -169,8 +296,22 @@ export function ConversationPanel(props: ConversationPanelProps) {
     setReplyHighlight({ id, startedAt })
   }
 
+  rowHandlers.current = {
+    selectReplyTarget,
+    clearReplyTarget,
+    highlightReplyTarget,
+    setScrollFocused,
+    scrollboxRef,
+    openDeliveryDetails,
+    openImage,
+    onRetryFile,
+  }
+
   useEffect(() => {
-    if (!selectionKey || !Object.entries(unreadMessageStates).some(([, message]) => message.conversationKey === selectionKey && message.visibleAt === undefined)) return
+    if (!selectionKey || !Object.entries(unreadMessageStates).some(([, message]) => message.conversationKey === selectionKey && message.visibleAt === undefined)) {
+      visibleUnreadCheck.current = () => {}
+      return
+    }
     const markVisibleMessages = () => {
       const scrollbox = scrollboxRef.current
       if (!scrollbox) return
@@ -185,15 +326,19 @@ export function ConversationPanel(props: ConversationPanelProps) {
         if (rowBottom > viewportTop && rowTop < viewportBottom) markUnreadMessageVisible(messageId)
       }
     }
+    visibleUnreadCheck.current = markVisibleMessages
     markVisibleMessages()
-    // Re-check after rows mount, then use the lower steady-state cadence.
+    // Rows mount after this effect; one retry handles the initial layout without
+    // keeping a polling timer alive for the rest of the conversation.
     const initialCheck = setTimeout(markVisibleMessages, 100)
-    const interval = setInterval(markVisibleMessages, 250)
+    const scrollbar = scrollboxRef.current?.verticalScrollBar
+    scrollbar?.on("change", markVisibleMessages)
     return () => {
       clearTimeout(initialCheck)
-      clearInterval(interval)
+      scrollbar?.off("change", markVisibleMessages)
+      if (visibleUnreadCheck.current === markVisibleMessages) visibleUnreadCheck.current = () => {}
     }
-  }, [selectionKey, unreadMessageStates])
+  }, [selectionKey, unreadMessageStates, scrollboxRef])
 
   useEffect(() => {
     if (!selectedReplyTargetId) return
@@ -203,12 +348,43 @@ export function ConversationPanel(props: ConversationPanelProps) {
   useEffect(() => {
     const scrollbar = scrollboxRef.current?.verticalScrollBar
     if (!scrollbar) return
-    const refreshImageViewport = () => notifyImageViewportChanged()
+    const refreshImageViewport = () => {
+      notifyImageViewportChanged()
+      visibleUnreadCheck.current()
+    }
     scrollbar.on("change", refreshImageViewport)
     return () => {
       scrollbar.off("change", refreshImageViewport)
     }
   }, [scrollboxRef])
+
+  const conversationItemById = useMemo(() => {
+    const items = new Map<string, ConversationItem>()
+    for (const item of conversationItems) items.set(item.type === "message" ? item.message.message_id : item.file.file_id, item)
+    return items
+  }, [conversationItems])
+  const groupMemberNames = useMemo(() => {
+    const names = new Map<string, string>()
+    for (const member of groupMembers[selectedGroupId ?? ""] ?? []) {
+      const id = member.peer_id ?? member.member_id
+      if (id) names.set(id, member.display_name)
+    }
+    return names
+  }, [groupMembers, selectedGroupId])
+  const peerNames = useMemo(() => new Map(peers.map((peer) => [peer.peer_id, peer.display_name])), [peers])
+  const fileDeliveriesById = useMemo(() => {
+    const deliveries = new Map<string, GroupDelivery[]>()
+    for (const item of conversationItems) {
+      if (item.type !== "file") continue
+      deliveries.set(item.file.file_id, item.allFiles.map((file) => ({
+        recipient_id: file.recipient_id,
+        display_name: groupMemberNames.get(file.recipient_id) ?? peerNames.get(file.recipient_id) ?? file.recipient_id.slice(0, 8),
+        status: file.status === "completed" ? "delivered" : file.status === "failed" ? "unavailable" : file.status === "transferring" || file.status === "receiving" ? "pending" : file.status,
+        updated_at: file.completed_at ?? file.created_at,
+      })))
+    }
+    return deliveries
+  }, [conversationItems, groupMemberNames, peerNames])
 
   return <box style={{ width, flexBasis: 0, flexGrow: 1, flexShrink: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: theme.canvas }}>
     <box style={{ flexShrink: 0, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, backgroundColor: theme.surface }}>
@@ -237,7 +413,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
         </>}
         {selectedGroup && limitedGroupMembers.length > 0 && <text id="group-capability-warning" fg={flashingWarningColor} wrapMode="word">Limited features: {limitedGroupMembers.map(member => member.display_name).join(", ")}. Shared features remain available.</text>}
       </box>
-      <scrollbox ref={scrollboxRef} focused={scrollFocused && !dialogOpen} onMouseDown={() => setScrollFocused(true)} onMouseScroll={() => notifyImageViewportChanged()} onKeyDown={(key) => { if (["up", "down", "pageup", "pagedown", "home", "end"].includes(key.name)) queueMicrotask(() => notifyImageViewportChanged()) }} onSizeChange={() => notifyImageViewportChanged()} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, paddingLeft: 2, paddingRight: 1 }} contentOptions={{ flexDirection: "column" }} stickyScroll stickyStart="bottom" verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
+       <scrollbox ref={scrollboxRef} focused={scrollFocused && !dialogOpen} viewportCulling={true} onMouseDown={() => setScrollFocused(true)} onMouseScroll={() => { notifyImageViewportChanged(); queueMicrotask(() => visibleUnreadCheck.current()) }} onKeyDown={(key) => { if (["up", "down", "pageup", "pagedown", "home", "end"].includes(key.name)) queueMicrotask(() => { notifyImageViewportChanged(); visibleUnreadCheck.current() }) }} onSizeChange={() => { notifyImageViewportChanged(); queueMicrotask(() => visibleUnreadCheck.current()) }} style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, paddingLeft: 2, paddingRight: 1 }} contentOptions={{ flexDirection: "column" }} stickyScroll stickyStart="bottom" verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
         {!selected && !selectedGroup && !dismissedEmpty["no-selection"] ? <box marginTop={1} flexDirection="column"><text fg={theme.text}><b>A little closer, wherever you are.</b></text><EmptyState id="empty-no-selection" message="No conversation selected. Pick a chat with Ctrl+Up/Down, or start something new." compact={compact || width < 70} actions={[
             { id: "add", label: "Add friend", hint: "Ctrl+F", onSelect: () => { if (onAddFriend) onAddFriend(); else openSettings() } },
             { id: "create", label: "Create group", onSelect: () => { if (onCreateGroup) onCreateGroup(); else openSettings() } },
@@ -267,68 +443,37 @@ export function ConversationPanel(props: ConversationPanelProps) {
           ].filter(action => action.id !== "attach" || onAttachFile !== undefined)} /> : null}
         {conversationItems.map((item, index) => {
           const rows: ReactNode[] = []
-          const prev = conversationItems[index - 1]
-          if (!prev || dayKey(prev.createdAt) !== dayKey(item.createdAt)) {
+          const previous = conversationItems[index - 1]
+          if (!previous || dayKey(previous.createdAt) !== dayKey(item.createdAt)) {
             rows.push(
               <box key={`sep-${dayKey(item.createdAt)}`} style={{ alignItems: "center", marginTop: 1, marginBottom: 1 }}>
                 <text fg={theme.muted}>{formatDateSeparator(item.createdAt)}</text>
-              </box>
+              </box>,
             )
           }
-            if (item.type === "file") {
-              const file = item.file
-              const allFiles = item.allFiles
-              const fileUnavailable = isLocalFileMissing(file.file_path) && file.status !== "queued" && file.status !== "transferring" && file.status !== "receiving"
+          if (item.type === "file") {
+            const file = item.file
             const isLocal = file.sender_id === identity?.peer_id
-            const senderName = peers.find((peer) => peer.peer_id === file.sender_id)?.display_name
-              ?? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === file.sender_id)?.display_name
-              ?? "Unknown member"
-            const fileStatusColor = (s: string) => {
-              if (s === "completed" || s === "sent") return theme.muted
-              if (s === "queued") return theme.warning
-              if (s === "failed" || s === "unavailable" || s === "blocked") return theme.danger
-              if (s === "receiving" || s === "transferring") return theme.muted
-              return theme.muted
-            }
-            const fileStatusLabel = (s: string) => {
-              if (s === "completed") return " delivered"
-              if (s === "sent") return " sent"
-              if (s === "queued") return " stored and queued"
-              if (s === "failed") return " failed"
-              if (s === "blocked") return " blocked"
-              if (s === "unavailable") return " unavailable"
-              if (s === "receiving") return " receiving"
-              if (s === "transferring") return " sending"
-              return ""
-            }
-            const canRetryFile = isLocal && (file.status === "failed" || file.status === "blocked" || file.status === "unavailable")
-            const fileDeliveries = allFiles.map((f) => ({
-              recipient_id: f.recipient_id,
-              display_name: groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === f.recipient_id)?.display_name
-                ?? peers.find((peer) => peer.peer_id === f.recipient_id)?.display_name
-                ?? f.recipient_id.slice(0, 8),
-              status: f.status === "completed" ? "delivered" : f.status === "failed" ? "unavailable" : f.status === "transferring" || f.status === "receiving" ? "pending" : f.status,
-              updated_at: f.completed_at ?? f.created_at,
-            }))
-            const fileReplyHighlighted = replyHighlight?.id === file.file_id
             rows.push(
-              <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ position: "relative", flexDirection: "column", marginBottom: 1, backgroundColor: scrollFocused && selectedReplyTargetId === file.file_id && !fileReplyHighlighted ? theme.selected : undefined }}>
-                 {fileReplyHighlighted && <HighlightOverlay id={`reply-highlight-${file.file_id}`} key={`reply-${replyHighlight!.startedAt}`} />}
-                <box style={{ position: "relative", zIndex: 1, flexDirection: "column" }}>
-                 <text>
-                  <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === file.file_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(file.created_at)} </span>
-                  <span fg={isLocal ? theme.accent : theme.text}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
-                  <span fg={theme.muted}> shared an attachment</span>
-                  {isLocal && !selectedGroup && <span fg={fileStatusColor(file.status)}>{fileStatusLabel(file.status)}</span>}
-                  {canRetryFile && onRetryFile && <span fg={theme.text}> · </span>}
-                </text>
-                {canRetryFile && onRetryFile && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box>}
-                {isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(fileDeliveries) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
-                <text wrapMode="word"><span fg={theme.accent}>{file.filename}</span><span fg={theme.muted}> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
-                 {fileUnavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
-                 {!fileUnavailable && file.file_path ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage={isImageFile(file.filename)} scrollboxRef={scrollboxRef} maxWidth={Math.max(1, (scrollboxRef.current?.viewport.width ?? width - 3) - 2)} maxHeight={Math.min(16, Math.max(4, (scrollboxRef.current?.viewport.height ?? 16) - 4))} onOpen={() => openImage(file)} /> : null}
-                </box>
-               </box>
+              <ConversationFileRow
+                key={`file-${file.file_id}`}
+                file={file}
+                fileDeliveries={fileDeliveriesById.get(file.file_id) ?? []}
+                fileUnavailable={isLocalFileMissing(file.file_path) && file.status !== "queued" && file.status !== "transferring" && file.status !== "receiving"}
+                isLocal={isLocal}
+                senderName={selectedGroup ? groupMemberNames.get(file.sender_id) ?? "Unknown member" : undefined}
+                selectedGroup={Boolean(selectedGroup)}
+                selectedPeerName={selected?.display_name}
+                selectedReplyTargetId={selectedReplyTargetId}
+                scrollFocused={scrollFocused}
+                fileReplyHighlighted={replyHighlight?.id === file.file_id}
+                canRetryFile={isLocal && (file.status === "failed" || file.status === "blocked" || file.status === "unavailable")}
+                retryEnabled={onRetryFile !== undefined}
+                imageProtocol={imageProtocol}
+                width={width}
+                messageRefs={messageRefs}
+                handlers={rowHandlers}
+              />,
             )
             return rows
           }
@@ -338,14 +483,14 @@ export function ConversationPanel(props: ConversationPanelProps) {
           const replyHighlighted = replyHighlight?.id === message.message_id
           const selectedRow = scrollFocused && selectedReplyTargetId === message.message_id
           const unreadHighlighted = unread?.visibleAt !== undefined && !replyHighlighted && !selectedRow
-          const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
-          const blocked = Boolean(message.blocked)
-          const queued = Boolean(message.queued)
-          const failed = Boolean(message.failed)
           const isSystem = Boolean(selectedGroup && message.kind && message.kind !== "message" && message.kind !== "text")
-          const senderName = groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === message.sender_id)?.display_name
-            ?? peers.find((peer) => peer.peer_id === message.sender_id)?.display_name
-            ?? "Unknown member"
+          const senderName = selectedGroup ? groupMemberNames.get(message.sender_id) ?? "Unknown member" : selected?.display_name ?? "Unknown member"
+          const replyTarget = message.reply_to_message_id ? conversationItemById.get(message.reply_to_message_id) : undefined
+          const replySenderId = replyTarget?.type === "message" ? replyTarget.message.sender_id : replyTarget?.file.sender_id
+          const replySender = replySenderId === identity?.peer_id ? "You"
+            : replySenderId ? (selectedGroup ? groupMemberNames.get(replySenderId) : selected?.display_name) ?? "Unknown member" : undefined
+          const replyContent = replyTarget?.type === "message" ? replyTarget.message.content : replyTarget ? `Attachment: ${replyTarget.file.filename}` : undefined
+          const replySnippet = replyContent?.replace(/\s+/g, " ").trim().slice(0, 60)
           const renderedContent = isSystem
             ? message.kind === "join"
               ? `${isLocal ? "You" : senderName} joined the group`
@@ -353,38 +498,30 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 ? `${isLocal ? "You" : senderName} left the group`
                 : message.content
             : message.content
-          const replyTarget = message.reply_to_message_id
-            ? conversationItems.find((candidate) => candidate.type === "message" ? candidate.message.message_id === message.reply_to_message_id : candidate.file.file_id === message.reply_to_message_id)
-            : undefined
-          const replySenderId = replyTarget?.type === "message" ? replyTarget.message.sender_id : replyTarget?.file.sender_id
-          const replySender = replySenderId === identity?.peer_id ? "You"
-            : replySenderId ? (selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replySenderId)?.display_name : selected?.display_name) ?? "Unknown member" : undefined
-          const replyContent = replyTarget?.type === "message" ? replyTarget.message.content : replyTarget ? `Attachment: ${replyTarget.file.filename}` : undefined
-          const replySnippet = replyContent?.replace(/\s+/g, " ").trim().slice(0, 60)
-          const replySelectTarget: ReplyTarget | undefined = replyTarget
-            ? replyTarget.type === "message"
-              ? { id: replyTarget.message.message_id, senderId: replyTarget.message.sender_id, label: replyTarget.message.content, groupId: replyTarget.message.group_id, kind: "message" }
-              : { id: replyTarget.file.file_id, senderId: replyTarget.file.sender_id, label: `Attachment: ${replyTarget.file.filename}`, groupId: replyTarget.file.group_id ?? undefined, kind: "file" }
-            : undefined
-          const showReceived =
-            typeof message.received_at === "number" &&
-            formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
           rows.push(
-              <box id={message.message_id} key={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ position: "relative", width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: selectedRow && !replyHighlighted ? theme.selected : undefined }}>
-               {replyHighlighted && <HighlightOverlay id={`reply-highlight-${message.message_id}`} key={`reply-${replyHighlight!.startedAt}`} />}
-               {unreadHighlighted && <HighlightOverlay id={`unread-highlight-${message.message_id}`} key={`unread-${message.message_id}`} />}
-              <box style={{ position: "relative", zIndex: 1, width: "100%", flexDirection: "column" }}>
-               <text>
-                <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === message.message_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(message.created_at)} </span>
-                <span fg={isSystem ? theme.warning : isLocal ? theme.accent : theme.text}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
-                 {isLocal && !isSystem && !selectedGroup && <span fg={blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
-                 {showReceived && <span fg={theme.muted}> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
-                 </text>
-                {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
-                 {message.reply_to_message_id && <box onMouseDown={replySelectTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); clearReplyTarget(); highlightReplyTarget(replySelectTarget.id); setScrollFocused(true); scrollboxRef.current?.scrollChildIntoView(replySelectTarget.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
-                 <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
-              </box>
-             </box>
+            <ConversationMessageRow
+              key={message.message_id}
+              message={message}
+              isLocal={isLocal}
+              isSystem={isSystem}
+              senderName={senderName}
+              renderedContent={renderedContent}
+              replyTarget={replyTarget}
+              replySender={replySender}
+              replyContent={replyContent}
+              replySnippet={replySnippet}
+              selectedRow={selectedRow}
+              unreadHighlighted={unreadHighlighted}
+              replyHighlighted={replyHighlighted}
+              delivered={Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)}
+              blocked={Boolean(message.blocked)}
+              queued={Boolean(message.queued)}
+              failed={Boolean(message.failed)}
+              showReceived={typeof message.received_at === "number" && formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)}
+              messageSyntaxStyle={messageSyntaxStyle}
+              messageRefs={messageRefs}
+              handlers={rowHandlers}
+            />,
           )
           return rows
         })}
