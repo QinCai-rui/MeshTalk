@@ -276,7 +276,6 @@ export function ConversationPanel(props: ConversationPanelProps) {
               : message.content
           const mentioned =
             Boolean(selectedGroup) &&
-            !isLocal &&
             identity !== undefined &&
             resolveMentions(message.mentions, message.content).includes(identity.peer_id)
           const replyTarget = message.reply_to_message_id
