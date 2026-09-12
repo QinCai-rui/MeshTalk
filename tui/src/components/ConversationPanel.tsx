@@ -461,7 +461,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 fileDeliveries={fileDeliveriesById.get(file.file_id) ?? []}
                 fileUnavailable={isLocalFileMissing(file.file_path) && file.status !== "queued" && file.status !== "transferring" && file.status !== "receiving"}
                 isLocal={isLocal}
-                senderName={selectedGroup ? groupMemberNames.get(file.sender_id) ?? "Unknown member" : undefined}
+senderName={selectedGroup ? groupMemberNames.get(file.sender_id) ?? peerNames.get(file.sender_id) ?? "Unknown member" : undefined}
                 selectedGroup={Boolean(selectedGroup)}
                 selectedPeerName={selected?.display_name}
                 selectedReplyTargetId={selectedReplyTargetId}
@@ -484,11 +484,11 @@ export function ConversationPanel(props: ConversationPanelProps) {
           const selectedRow = scrollFocused && selectedReplyTargetId === message.message_id
           const unreadHighlighted = unread?.visibleAt !== undefined && !replyHighlighted && !selectedRow
           const isSystem = Boolean(selectedGroup && message.kind && message.kind !== "message" && message.kind !== "text")
-          const senderName = selectedGroup ? groupMemberNames.get(message.sender_id) ?? "Unknown member" : selected?.display_name ?? "Unknown member"
+const senderName = selectedGroup ? groupMemberNames.get(message.sender_id) ?? peerNames.get(message.sender_id) ?? "Unknown member" : selected?.display_name ?? "Unknown member"
           const replyTarget = message.reply_to_message_id ? conversationItemById.get(message.reply_to_message_id) : undefined
           const replySenderId = replyTarget?.type === "message" ? replyTarget.message.sender_id : replyTarget?.file.sender_id
-          const replySender = replySenderId === identity?.peer_id ? "You"
-            : replySenderId ? (selectedGroup ? groupMemberNames.get(replySenderId) : selected?.display_name) ?? "Unknown member" : undefined
+const replySender = replySenderId === identity?.peer_id ? "You"
+            : replySenderId ? (selectedGroup ? groupMemberNames.get(replySenderId) ?? peerNames.get(replySenderId) : selected?.display_name) ?? "Unknown member" : undefined
           const replyContent = replyTarget?.type === "message" ? replyTarget.message.content : replyTarget ? `Attachment: ${replyTarget.file.filename}` : undefined
           const replySnippet = replyContent?.replace(/\s+/g, " ").trim().slice(0, 60)
           const renderedContent = isSystem
