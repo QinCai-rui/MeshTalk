@@ -8,7 +8,28 @@ function SettingsShortcut({ openSettings, pinned }: { openSettings: () => void; 
   return <text id="settings-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openSettings() }}><span>Ctrl+P </span><u>settings</u></text>
 }
 
-export function ChatFooter({ width, scrollFocused, status, openSettings }: { width: number; scrollFocused: boolean; status: string; openSettings: () => void }) {
+function HelpShortcut({ openHelp, pinned }: { openHelp: () => void; pinned?: boolean }) {
+  if (pinned) {
+    return <text id="help-shortcut" fg={theme.accent} style={{ flexShrink: 0 }} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+/ </span><u>help</u></text>
+  }
+  return <text id="help-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+/ </span><u>help</u></text>
+}
+
+function ShortcutCluster({ openSettings, onOpenHelp, pinned }: { openSettings: () => void; onOpenHelp?: () => void; pinned?: boolean }) {
+  if (!onOpenHelp) return <SettingsShortcut openSettings={openSettings} pinned={pinned} />
+  if (pinned) {
+    return <box flexDirection="row" gap={2} flexShrink={0}>
+      <HelpShortcut openHelp={onOpenHelp} pinned />
+      <SettingsShortcut openSettings={openSettings} pinned />
+    </box>
+  }
+  return <box flexDirection="row" gap={2}>
+    <HelpShortcut openHelp={onOpenHelp} />
+    <SettingsShortcut openSettings={openSettings} />
+  </box>
+}
+
+export function ChatFooter({ width, scrollFocused, status, openSettings, onOpenHelp }: { width: number; scrollFocused: boolean; status: string; openSettings: () => void; onOpenHelp?: () => void }) {
   const compact = width < 70
   const hint = compact
     ? [scrollFocused ? "↑↓ select · R reply · D delete · Esc" : "Enter send · PgUp · Ctrl+↑↓ chats"]
@@ -24,25 +45,25 @@ export function ChatFooter({ width, scrollFocused, status, openSettings }: { wid
         <scrollbox id="chat-status" key={status} flexGrow={1} minHeight={0} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ visible: false, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
           <text fg={statusColor} wrapMode="word">{status}</text>
         </scrollbox>
-        <SettingsShortcut openSettings={openSettings} />
+        <ShortcutCluster openSettings={openSettings} onOpenHelp={onOpenHelp} />
       </box>
     } else {
       footerBody = <box style={{ width: "100%", height: 2, flexDirection: "row", alignItems: "stretch", gap: 1 }}>
         <scrollbox id="chat-status" key={status} style={{ flexGrow: 1, flexShrink: 1, minWidth: 0 }} minHeight={0} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ visible: false, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
           <text fg={statusColor} wrapMode="word">{status}</text>
         </scrollbox>
-        <SettingsShortcut openSettings={openSettings} pinned />
+        <ShortcutCluster openSettings={openSettings} onOpenHelp={onOpenHelp} pinned />
       </box>
     }
   } else if (compact) {
     footerBody = <box style={{ width: "100%", flexDirection: "column", alignItems: "flex-start" }}>
       <text id="chat-hint" fg={theme.muted} wrapMode="word">{hint[0]}</text>
-      <SettingsShortcut openSettings={openSettings} />
+      <ShortcutCluster openSettings={openSettings} onOpenHelp={onOpenHelp} />
     </box>
   } else {
     footerBody = <box style={{ width: "100%", flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 1 }}>
       <text fg={theme.muted} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{hint[0]}</text>
-      <SettingsShortcut openSettings={openSettings} pinned />
+      <ShortcutCluster openSettings={openSettings} onOpenHelp={onOpenHelp} pinned />
     </box>
   }
   return <box height={width < 38 ? 5 : 3} flexShrink={0} paddingLeft={1} paddingRight={1} paddingTop={1}>
