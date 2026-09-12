@@ -58,7 +58,7 @@ jobs:
       - name: Mint review app token
         id: app-token
         if: steps.gate.outputs.run == 'true'
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.REVIEW_APP_ID }}
           private-key: ${{ secrets.REVIEW_APP_KEY }}
