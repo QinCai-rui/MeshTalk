@@ -7,6 +7,7 @@ import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember,
 import { chatTheme as theme } from "../chatTheme"
 import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, inlineFriendActions, isImageFile, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
+import { updateBoundedEntry } from "../stateRetention"
 
 type ConversationPanelProps = {
   compact: boolean
@@ -68,6 +69,8 @@ type ConversationPanelProps = {
   onOpenHelp?: () => void
 }
 
+const MAX_CONVERSATION_TIP_ENTRIES = 200
+
 const MESSAGE_MARKDOWN_STYLES = {
   default: { fg: theme.markdown.default },
   "markup.heading.1": { fg: theme.markdown.heading, bold: true },
@@ -121,7 +124,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
 
   useEffect(() => {
     if (!replyHighlight) return
-    const interval = setInterval(() => setReplyHighlightNow(Date.now()), 100)
+    const interval = setInterval(() => setReplyHighlightNow(Date.now()), 250)
     const timeout = setTimeout(() => setReplyHighlight(undefined), UNREAD_MESSAGE_FADE_MS)
     return () => {
       clearInterval(interval)
@@ -155,8 +158,13 @@ export function ConversationPanel(props: ConversationPanelProps) {
       }
     }
     markVisibleMessages()
-    const interval = setInterval(markVisibleMessages, 100)
-    return () => clearInterval(interval)
+    // Re-check after rows mount, then use the lower steady-state cadence.
+    const initialCheck = setTimeout(markVisibleMessages, 100)
+    const interval = setInterval(markVisibleMessages, 250)
+    return () => {
+      clearTimeout(initialCheck)
+      clearInterval(interval)
+    }
   }, [selectionKey, unreadMessageStates])
 
   useEffect(() => {
@@ -185,8 +193,8 @@ export function ConversationPanel(props: ConversationPanelProps) {
           <text id="rendezvous-warning" fg={flashingWarningColor} wrapMode="word">{controlStatus.control_url ? `Out-of-sync with MeshTalk rendezvous server. Peer connectivity may degrade over time; reconnecting (${controlStatus.reconnect_attempts}). LAN-only chats keep working.` : "Remote discovery is not configured. LAN-only? You're good — remote discovery is optional. Open Ctrl+P > Connection to connect these rooms."}</text>
           <box id="rendezvous-actions" flexDirection="row" gap={2}>
             <box id="rendezvous-action-open" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); openConnection() } }}><text fg={theme.accent} wrapMode="none"><u>Ctrl+P Open connection</u></text></box>
-            {!dismissedEmpty["rendezvous"] && <box id="rendezvous-action-dismiss" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setDismissedEmpty(current => ({ ...current, rendezvous: true })) } }}><text fg={theme.accent} wrapMode="none"><u>Dismiss</u></text></box>}
-            {dismissedEmpty["rendezvous"] && <box id="rendezvous-action-show" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setDismissedEmpty(current => ({ ...current, rendezvous: false })) } }}><text fg={theme.accent} wrapMode="none"><u>Show</u></text></box>}
+            {!dismissedEmpty["rendezvous"] && <box id="rendezvous-action-dismiss" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setDismissedEmpty(current => updateBoundedEntry(current, "rendezvous", true, MAX_CONVERSATION_TIP_ENTRIES)) } }}><text fg={theme.accent} wrapMode="none"><u>Dismiss</u></text></box>}
+            {dismissedEmpty["rendezvous"] && <box id="rendezvous-action-show" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setDismissedEmpty(current => updateBoundedEntry(current, "rendezvous", false, MAX_CONVERSATION_TIP_ENTRIES)) } }}><text fg={theme.accent} wrapMode="none"><u>Show</u></text></box>}
           </box>
         </box>}
         {selected && <>
@@ -207,27 +215,27 @@ export function ConversationPanel(props: ConversationPanelProps) {
             { id: "create", label: "Create group", onSelect: () => { if (onCreateGroup) onCreateGroup(); else openSettings() } },
             { id: "join", label: "Join with invite", onSelect: () => { if (onJoinGroup) onJoinGroup(); else openSettings() } },
             ...(onOpenHelp ? [{ id: "help", label: "Keyboard shortcuts", hint: "Ctrl+/", onSelect: () => onOpenHelp() } as const] : []),
-            { id: "dismiss", label: "Hide tips", onSelect: () => setDismissedEmpty(current => ({ ...current, "no-selection": true })) },
+            { id: "dismiss", label: "Hide tips", onSelect: () => setDismissedEmpty(current => updateBoundedEntry(current, "no-selection", true, MAX_CONVERSATION_TIP_ENTRIES)) },
           ]} /></box> : null}
-        {!selected && !selectedGroup && dismissedEmpty["no-selection"] ? <box marginTop={1} id="empty-no-selection-dismissed" onMouseDown={event => { if (event.button === 0) setDismissedEmpty(current => ({ ...current, "no-selection": false })) }}><text fg={theme.muted} wrapMode="word">Choose a peer or group to get started. <span fg={theme.accent}><u>Show tips</u></span></text></box> : null}
+        {!selected && !selectedGroup && dismissedEmpty["no-selection"] ? <box marginTop={1} id="empty-no-selection-dismissed" onMouseDown={event => { if (event.button === 0) setDismissedEmpty(current => updateBoundedEntry(current, "no-selection", false, MAX_CONVERSATION_TIP_ENTRIES)) }}><text fg={theme.muted} wrapMode="word">Choose a peer or group to get started. <span fg={theme.accent}><u>Show tips</u></span></text></box> : null}
         {conversationLoading ? <box style={{ alignItems: "center", marginTop: 2 }}><text fg={theme.warning}>Loading Messages</text></box> : null}
         {selected && friendState === "friend" && !conversationLoading && !conversationItems.length && !showConversationTips[dismissKey] ? <box id="empty-conversation-dm" style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1 }}>
           <text fg={theme.muted} wrapMode="word">No messages yet. Say hello.</text>
-          <box id="empty-conversation-dm-tips" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setShowConversationTips(current => ({ ...current, [dismissKey]: true })) } }}><text fg={theme.accent}><u>Tips</u></text></box>
+          <box id="empty-conversation-dm-tips" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setShowConversationTips(current => updateBoundedEntry(current, dismissKey, true, MAX_CONVERSATION_TIP_ENTRIES)) } }}><text fg={theme.accent}><u>Tips</u></text></box>
         </box> : null}
         {selected && friendState === "friend" && !conversationLoading && !conversationItems.length && showConversationTips[dismissKey] ? <EmptyState id="empty-conversation-dm-tips-expanded" message="No messages yet. Say hello." compact={compact || width < 70} actions={[
             { id: "write", label: "Write first message", hint: "Enter", onSelect: () => setScrollFocused(false) },
             { id: "attach", label: "Attach file", hint: "Ctrl+U", onSelect: () => onAttachFile?.() },
-            { id: "dismiss", label: "Hide tips", onSelect: () => setShowConversationTips(current => ({ ...current, [dismissKey]: false })) },
+            { id: "dismiss", label: "Hide tips", onSelect: () => setShowConversationTips(current => updateBoundedEntry(current, dismissKey, false, MAX_CONVERSATION_TIP_ENTRIES)) },
           ].filter(action => action.id !== "attach" || onAttachFile !== undefined)} /> : null}
         {selectedGroup && !conversationLoading && !conversationItems.length && !showConversationTips[dismissKey] ? <box id="empty-conversation-group" style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1 }}>
           <text fg={theme.muted} wrapMode="word">No messages yet. Say hello to the group.</text>
-          <box id="empty-conversation-group-tips" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setShowConversationTips(current => ({ ...current, [dismissKey]: true })) } }}><text fg={theme.accent}><u>Tips</u></text></box>
+          <box id="empty-conversation-group-tips" onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); setShowConversationTips(current => updateBoundedEntry(current, dismissKey, true, MAX_CONVERSATION_TIP_ENTRIES)) } }}><text fg={theme.accent}><u>Tips</u></text></box>
         </box> : null}
         {selectedGroup && !conversationLoading && !conversationItems.length && showConversationTips[dismissKey] ? <EmptyState id="empty-conversation-group-tips-expanded" message="No messages yet. Say hello to the group." compact={compact || width < 70} actions={[
             { id: "write", label: "Write first message", hint: "Enter", onSelect: () => setScrollFocused(false) },
             { id: "attach", label: "Attach file", hint: "Ctrl+U", onSelect: () => onAttachFile?.() },
-            { id: "dismiss", label: "Hide tips", onSelect: () => setShowConversationTips(current => ({ ...current, [dismissKey]: false })) },
+            { id: "dismiss", label: "Hide tips", onSelect: () => setShowConversationTips(current => updateBoundedEntry(current, dismissKey, false, MAX_CONVERSATION_TIP_ENTRIES)) },
           ].filter(action => action.id !== "attach" || onAttachFile !== undefined)} /> : null}
         {conversationItems.map((item, index) => {
           const rows: ReactNode[] = []

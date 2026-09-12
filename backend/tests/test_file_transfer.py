@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from meshtalk.database import Database
 from meshtalk.encryption import encrypt_for_recipient
-from meshtalk.file_transfer import FileTransferManager
+from meshtalk.file_transfer import MAX_PROGRESS_EVENTS, FileTransferManager
 from meshtalk.identity import Identity
 from meshtalk.protocol import (
     CAP_FILE_TRANSFER,
@@ -339,3 +339,15 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(sender_manager.sent, [])
         await sender_db.close()
+
+    async def test_progress_updates_are_coalesced_for_large_transfers(self):
+        with patch("meshtalk.file_transfer.time.monotonic", return_value=1.0):
+            emitted = [
+                index
+                for index in range(1, 1_001)
+                if self.receiver._should_emit_progress(self.file_id, index, 1_000)
+            ]
+
+        self.assertEqual(emitted[0], 1)
+        self.assertEqual(emitted[-1], 1_000)
+        self.assertLessEqual(len(emitted), MAX_PROGRESS_EVENTS + 1)
