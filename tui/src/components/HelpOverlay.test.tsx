@@ -88,12 +88,12 @@ test("help overlay renders the visible groups with a close affordance", async ()
   try {
     const frame = await settle(setup);
     expect(frame).toContain("Keyboard shortcuts");
-    for (const title of ["Navigation", "Composing", "History"]) {
+    for (const title of ["Navigation", "Composing"]) {
       expect(frame).toContain(title);
     }
-    expect(frame).toContain("Relevant now: Composing");
-    expect(frame).toContain("Enter — Send message");
-    expect(frame).toContain("Esc / Ctrl+/ closes");
+    expect(frame).toContain("NOW  Composing");
+    expect(frame.replace(/\s+/g, " ")).toContain("Enter Send message");
+    expect(frame).toContain("Esc / Ctrl+/ close");
     expect(setup.renderer.root.findDescendantById("help-overlay")).toBeDefined();
     expect(setup.renderer.root.findDescendantById("help-close")).toBeDefined();
     expect(setup.renderer.root.findDescendantById("help-content")).toBeDefined();
@@ -111,7 +111,7 @@ test("help overlay highlights the relevant focus section", async () => {
   try {
     const frame = await settle(setup);
     expect(frame).toContain("Reading history");
-    expect(frame.replace(/\s+/g, " ")).toContain("History — relevant now");
+    expect(frame.replace(/\s+/g, " ")).toContain("History CURRENT");
   } finally {
     await close(setup);
   }

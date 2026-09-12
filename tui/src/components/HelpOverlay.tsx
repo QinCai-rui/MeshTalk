@@ -45,6 +45,14 @@ export type HelpSection = {
   shortcuts: HelpShortcut[];
 };
 
+function sectionColor(id: string): string {
+  if (id === "navigation" || id === "files") return theme.link;
+  if (id === "history" || id === "settings") return theme.warning;
+  if (id === "conversations") return theme.success;
+  if (id === "accessibility") return theme.muted;
+  return theme.accent;
+}
+
 export const HELP_SECTIONS: HelpSection[] = [
   {
     id: "navigation",
@@ -147,6 +155,11 @@ export function HelpOverlay({
 }) {
   const overlayWidth = Math.max(20, Math.min(78, Math.max(1, width - 2)));
   const overlayHeight = Math.max(10, Math.min(30, Math.max(1, height - 2)));
+  const compact = overlayWidth < 46;
+  const keyColumnWidth = Math.max(14, Math.min(24, Math.floor(overlayWidth * 0.35)));
+  const orderedSections = [...HELP_SECTIONS].sort(
+    (left, right) => Number(right.focus.includes(focus)) - Number(left.focus.includes(focus)),
+  );
 
   useKeyboard((key) => {
     if (isHelpHotkey(key) || key.name === "escape" || key.name === "?") {
@@ -176,53 +189,71 @@ export function HelpOverlay({
         border
         borderColor={theme.line}
         backgroundColor={theme.surfaceRaised}
-        padding={1}
+        paddingX={1}
+        paddingY={0}
         flexDirection="column"
-        gap={0}
         overflow="hidden"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <box flexDirection="row" flexShrink={0} justifyContent="space-between" gap={1}>
-          <text fg={theme.accent} wrapMode="none">
-            <b>Keyboard shortcuts</b>
+        <box flexDirection="row" flexShrink={0} justifyContent="space-between" gap={1} paddingTop={1}>
+          <text fg={theme.text} wrapMode="none">
+            <span fg={theme.accent}>◆ </span><b>Keyboard shortcuts</b>
           </text>
           <box id="help-close" onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onClose(); } }}>
-            <text fg={theme.muted} wrapMode="none">
+            <text fg={theme.link} wrapMode="none">
               <u>Close [Esc]</u>
             </text>
           </box>
         </box>
-        <text fg={theme.muted} wrapMode="word" flexShrink={0}>
-          Relevant now: {helpFocusLabel(focus)}. Showing all groups.
-        </text>
+        <box flexDirection="row" flexShrink={0} backgroundColor={theme.selected} paddingLeft={1} paddingRight={1}>
+          <text fg={theme.success} wrapMode="none"><b>NOW</b></text>
+          <text fg={theme.text} wrapMode="word">  {helpFocusLabel(focus)}</text>
+          {!compact ? <text fg={theme.muted} wrapMode="none">  · shortcuts by task</text> : null}
+        </box>
         <scrollbox
           id="help-content"
           focused
           style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
-          contentOptions={{ flexDirection: "column", gap: 1 }}
+          contentOptions={{ flexDirection: "column", gap: 1, paddingTop: 1, paddingBottom: 1 }}
           verticalScrollbarOptions={{
             trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surfaceRaised },
           }}
         >
-          {HELP_SECTIONS.map((section) => {
+          {orderedSections.map((section) => {
             const relevant = section.focus.includes(focus);
+            const color = sectionColor(section.id);
             return (
-              <box key={section.id} id={`help-section-${section.id}`} flexDirection="column" flexShrink={0}>
-                <text fg={relevant ? theme.accent : theme.text} wrapMode="word">
-                  <b>{relevant ? `● ${section.title} — relevant now` : section.title}</b>
-                </text>
-                {section.shortcuts.map((shortcut) => (
-                  <text key={`${section.id}-${shortcut.keys}`} fg={theme.muted} wrapMode="word">
-                    <span fg={theme.accent}>{shortcut.keys}</span>
-                    <span fg={theme.muted}> — {shortcut.description}</span>
+              <box
+                key={section.id}
+                id={`help-section-${section.id}`}
+                flexDirection="column"
+                flexShrink={0}
+                border
+                borderColor={relevant ? color : theme.line}
+                backgroundColor={relevant ? theme.surface : theme.surfaceRaised}
+                paddingX={1}
+                paddingY={0}
+              >
+                <box flexDirection="row" gap={1}>
+                  <text fg={color} wrapMode="none"><b>{relevant ? "●" : "◆"}</b></text>
+                  <text fg={relevant ? color : theme.text} wrapMode="word">
+                    <b>{section.title}</b>{relevant ? <span fg={theme.success}>  CURRENT</span> : null}
                   </text>
+                </box>
+                {section.shortcuts.map((shortcut) => (
+                  <box key={`${section.id}-${shortcut.keys}`} flexDirection={compact ? "column" : "row"} gap={compact ? 0 : 1}>
+                    <box width={compact ? "100%" : keyColumnWidth} flexShrink={0} backgroundColor={theme.selected} paddingLeft={1} paddingRight={1}>
+                      <text fg={color} wrapMode="word"><b>{shortcut.keys}</b></text>
+                    </box>
+                    <text fg={theme.text} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{shortcut.description}</text>
+                  </box>
                 ))}
               </box>
             );
           })}
         </scrollbox>
-        <text fg={theme.muted} wrapMode="word" flexShrink={0}>
-          Esc / Ctrl+/ closes · PgUp/PgDn scrolls · Click outside closes
+        <text fg={theme.muted} wrapMode="word" flexShrink={0} paddingBottom={1}>
+          <span fg={theme.link}>Esc / Ctrl+/</span> close  ·  <span fg={theme.warning}>PgUp/PgDn</span> scroll  ·  click outside closes
         </text>
       </box>
     </box>
