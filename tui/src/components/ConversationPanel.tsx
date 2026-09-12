@@ -317,8 +317,9 @@ export function ConversationPanel(props: ConversationPanelProps) {
       </scrollbox>
     </box>
     <box paddingLeft={2} paddingRight={1} flexShrink={0} height={1} overflow="hidden" flexDirection="row" gap={1}><text fg={theme.accent} wrapMode="none">{typingText ?? (scrollFocused ? "Reading history" : "")}</text>{typingText && <TypingDots />}</box>
-    {mentionOpen && mentionCandidates.length > 0 && (
-      <box id="mention-popup" style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, flexDirection: "column", backgroundColor: theme.surface }}>
+    <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, backgroundColor: theme.surface }}>
+      {mentionOpen && mentionCandidates.length > 0 && (
+      <box id="mention-popup" position="absolute" bottom="100%" left={1} right={1} zIndex={10} border borderColor={theme.line} backgroundColor={theme.surface} paddingX={1} flexDirection="column">
         <text fg={theme.muted}>Mention a member (Tab/Enter picks, Esc cancels)</text>
         {mentionCandidates.map((candidate, index) => (
           <box
@@ -333,8 +334,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
           </box>
         ))}
       </box>
-    )}
-    <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, backgroundColor: theme.surface }}>
+      )}
       <text fg={limitColor ?? theme.accent}><b>{!scrollFocused && !editingName && hasConversation ? "> " : ""}{composerTitle}</b></text>
       {replyTo && <text fg={theme.accent}>Replying to {replyTo.senderId === identity?.peer_id ? "You" : selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replyTo.senderId)?.display_name ?? "Unknown member" : selected?.display_name ?? "Unknown peer"}: {(selectedGroup && replyTo.kind === "message" ? renderMentionedContent(replyTo.label, resolveMentionName) : replyTo.label).replace(/\s+/g, " ").trim().slice(0, 60)}{replyTo.label.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""} (Esc cancels)</text>}
       <textarea key={selectionKey ?? "no-conversation"} ref={composerRef} initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""} placeholder={hasConversation ? "Write a message..." : "Select a peer or group"} focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !isSending && !dialogOpen} onMouseDown={() => setScrollFocused(false)} onContentChange={() => {
