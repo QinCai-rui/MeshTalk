@@ -18,6 +18,39 @@ app.set("views", path.join(__dirname, "views"));
 
 app.use(express.static(path.join(__dirname, "public")));
 
+const CONTROL_DEFAULT = "https://meshtalk-control.qincai.xyz";
+
+function isHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+app.get("/api/health", async (req, res) => {
+  const raw = (req.query.url || CONTROL_DEFAULT).trim();
+  if (!isHttpUrl(raw)) {
+    return res.status(400).json({ error: "Invalid server URL" });
+  }
+  const target = raw.replace(/\/+$/, "");
+  try {
+    const upstream = await fetch(target + "/health", { signal: AbortSignal.timeout(10000) });
+    const body = await upstream.json();
+    res.status(upstream.status).json({
+      ...body,
+      endpoint: target + "/health",
+      cors: {
+        allowOrigin: upstream.headers.get("access-control-allow-origin"),
+        vary: upstream.headers.get("vary"),
+      },
+    });
+  } catch (err) {
+    res.status(502).json({ error: String(err?.message ?? err), endpoint: target + "/health" });
+  }
+});
+
 function pageContext(page) {
   return {
     title: page.title,

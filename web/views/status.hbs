@@ -1,0 +1,171 @@
+<section class="pt-28 pb-24">
+  <div class="max-w-4xl mx-auto px-6">
+    <div class="max-w-2xl mb-12">
+      <p class="text-mesh-accent font-mono text-sm mb-3">STATUS</p>
+      <h1 class="text-4xl md:text-5xl font-bold text-white mb-4">Control Server Status</h1>
+      <p class="text-lg text-mesh-muted">
+        The control server coordinates remote peer discovery. It exchanges encrypted endpoint cards
+        between MeshTalk clients and embeds a DERP relay for fallback connectivity. It never sees
+        your messages or room secrets.
+      </p>
+    </div>
+
+    <!-- Health check cards -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-16">
+      <!-- Server-side check -->
+      <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div id="server-dot" class="w-3 h-3 rounded-full bg-mesh-muted"></div>
+          <h2 class="text-white font-semibold">Server-Side Check</h2>
+        </div>
+        <p id="server-status" class="text-sm text-mesh-muted mb-4">Checking&hellip;</p>
+        <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+          <dt class="text-mesh-muted">Status</dt>
+          <dd id="server-field-status" class="text-white font-mono">&mdash;</dd>
+          <dt class="text-mesh-muted">Rooms</dt>
+          <dd id="server-field-rooms" class="text-white font-mono">&mdash;</dd>
+          <dt class="text-mesh-muted">Connections</dt>
+          <dd id="server-field-connections" class="text-white font-mono">&mdash;</dd>
+          <dt class="text-mesh-muted">Endpoint</dt>
+          <dd id="server-field-endpoint" class="text-white font-mono text-xs break-all">&mdash;</dd>
+        </dl>
+        <p id="server-error" class="text-red-400 text-xs mt-3 hidden"></p>
+        <p class="text-mesh-muted/50 text-xs mt-4">Requested through this website: works even when the control server blocks cross-origin requests.</p>
+      </div>
+
+      <!-- Client-side check -->
+      <div class="rounded-xl border border-mesh-border bg-mesh-card/50 p-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div id="client-dot" class="w-3 h-3 rounded-full bg-mesh-muted"></div>
+          <h2 class="text-white font-semibold">Client-Side Check</h2>
+        </div>
+        <p id="client-status" class="text-sm text-mesh-muted mb-4">Checking&hellip;</p>
+        <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+          <dt class="text-mesh-muted">Status</dt>
+          <dd id="client-field-status" class="text-white font-mono">&mdash;</dd>
+          <dt class="text-muted">Rooms</dt>
+          <dd id="client-field-rooms" class="text-white font-mono">&mdash;</dd>
+          <dt class="text-mesh-muted">Connections</dt>
+          <dd id="client-field-connections" class="text-white font-mono">&mdash;</dd>
+          <dt class="text-mesh-muted">Endpoint</dt>
+          <dd id="client-field-endpoint" class="text-white font-mono text-xs break-all">&mdash;</dd>
+        </dl>
+        <p id="client-error" class="text-red-400 text-xs mt-3 hidden"></p>
+        <p id="client-verdict" class="text-xs mt-3 hidden"></p>
+        <p class="text-mesh-muted/50 text-xs mt-4">Directly from your browser: fetches the control server's <code>/health</code> route.</p>
+      </div>
+    </div>
+
+    <!-- What the control server does -->
+    <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-8">
+      <h2 class="text-xl font-bold text-white mb-4">What does the control server do?</h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm text-mesh-muted leading-relaxed">
+        <div>
+          <h3 class="text-white font-semibold mb-2">Peer Discovery</h3>
+          <p>When two MeshTalk clients are on different networks, they need a rendezvous point to exchange connection details. The control server facilitates this by holding encrypted endpoint cards &mdash; it never sees the plaintext contents.</p>
+        </div>
+        <div>
+          <h3 class="text-white font-semibold mb-2">DERP Relay</h3>
+          <p>When direct UDP hole-punching fails (symmetric NATs, firewalls), the control server relays already-encrypted MeshTalk datagrams over its WebSocket connection. The server cannot decrypt this traffic.</p>
+        </div>
+        <div>
+          <h3 class="text-white font-semibold mb-2">Room Coordination</h3>
+          <p>Named group chats use the control server to discover members. Only opaque room IDs and HMAC-derived capabilities are stored &mdash; room secrets never leave your device.</p>
+        </div>
+        <div>
+          <h3 class="text-white font-semibold mb-2">No Message Storage</h3>
+          <p>All chat messages travel peer-to-peer. The control server is a signaling and relay layer only &mdash; it has no access to message content, file transfers, or encryption keys.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  (async () => {
+    const SERVER_PROXY = "/api/health";
+    const CLIENT_DIRECT = "https://meshtalk-control.qincai.xyz/health";
+
+    function setDot(id, state) {
+      const el = document.getElementById(id);
+      el.className = "w-3 h-3 rounded-full " + (
+        state === "ok" ? "bg-mesh-green" :
+        state === "error" ? "bg-red-400" :
+        state === "loading" ? "bg-yellow-400 animate-pulse" :
+        "bg-mesh-muted"
+      );
+    }
+
+    function fill(prefix, data) {
+      document.getElementById(prefix + "-field-status").textContent = data.status ?? "—";
+      document.getElementById(prefix + "-field-rooms").textContent = data.rooms ?? "—";
+      document.getElementById(prefix + "-field-connections").textContent = data.connections ?? "—";
+      document.getElementById(prefix + "-field-endpoint").textContent = data.endpoint ?? "—";
+    }
+
+    function showError(prefix, msg) {
+      const el = document.getElementById(prefix + "-error");
+      el.textContent = msg;
+      el.classList.remove("hidden");
+    }
+
+    function showVerdict(msg, ok) {
+      const el = document.getElementById("client-verdict");
+      el.textContent = msg;
+      el.classList.remove("hidden");
+      el.classList.add(ok ? "text-mesh-green" : "text-yellow-400");
+    }
+
+    function corsAllowsThisOrigin(allowOrigin) {
+      if (!allowOrigin) return false;
+      return allowOrigin === "*" || allowOrigin === window.location.origin;
+    }
+
+    // Server-side proxy check
+    let serverOnline = false;
+    let allowOrigin = null;
+    setDot("server-dot", "loading");
+    try {
+      const res = await fetch(SERVER_PROXY + "?url=" + encodeURIComponent(CLIENT_DIRECT.replace("/health", "")), { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+      serverOnline = true;
+      allowOrigin = data.cors?.allowOrigin ?? null;
+      setDot("server-dot", "ok");
+      document.getElementById("server-status").textContent = "Online";
+      document.getElementById("server-status").classList.replace("text-mesh-muted", "text-mesh-green");
+      fill("server", data);
+    } catch (err) {
+      setDot("server-dot", "error");
+      document.getElementById("server-status").textContent = "Offline / unreachable";
+      document.getElementById("server-status").classList.replace("text-mesh-muted", "text-red-400");
+      showError("server", String(err?.message ?? err));
+    }
+
+    // Client-side direct check
+    setDot("client-dot", "loading");
+    try {
+      const res = await fetch(CLIENT_DIRECT, { cache: "no-store", mode: "cors" });
+      const data = await res.json();
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      setDot("client-dot", "ok");
+      document.getElementById("client-status").textContent = "Online";
+      document.getElementById("client-status").classList.replace("text-mesh-muted", "text-mesh-green");
+      fill("client", { ...data, endpoint: CLIENT_DIRECT });
+    } catch (err) {
+      setDot("client-dot", "error");
+      document.getElementById("client-status").textContent = "Offline / unreachable";
+      document.getElementById("client-status").classList.replace("text-mesh-muted", "text-red-400");
+      showError("client", String(err?.message ?? err));
+      if (serverOnline) {
+        if (corsAllowsThisOrigin(allowOrigin)) {
+          showVerdict("The control server is online and allows browser requests from this site, so this failure likely means your network blocks the control server.", false);
+        } else {
+          showVerdict(`The control server is online, but it does not allow cross-origin requests from this site. This failure is likely a CORS block.`, false);
+        }
+      } else {
+        showVerdict("The server-side check failed too, so the control server is likely down.", false);
+      }
+    }
+  })();
+</script>
