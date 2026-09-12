@@ -65,6 +65,7 @@ type ConversationPanelProps = {
   onAddFriend?: () => void
   onCreateGroup?: () => void
   onJoinGroup?: () => void
+  onOpenHelp?: () => void
 }
 
 const MESSAGE_MARKDOWN_STYLES = {
@@ -93,7 +94,7 @@ const MESSAGE_MARKDOWN_STYLES = {
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction, onOpenConnection, onAttachFile, onAddFriend, onCreateGroup, onJoinGroup, onRetryFile } = props
+  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction, onOpenConnection, onAttachFile, onAddFriend,   onCreateGroup, onJoinGroup, onRetryFile, onOpenHelp } = props
   const [dismissedEmpty, setDismissedEmpty] = useState<Record<string, boolean>>({})
   const [showConversationTips, setShowConversationTips] = useState<Record<string, boolean>>({})
   const openConnection = onOpenConnection ?? openSettings
@@ -205,6 +206,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
             { id: "add", label: "Add friend", hint: "Ctrl+F", onSelect: () => { if (onAddFriend) onAddFriend(); else openSettings() } },
             { id: "create", label: "Create group", onSelect: () => { if (onCreateGroup) onCreateGroup(); else openSettings() } },
             { id: "join", label: "Join with invite", onSelect: () => { if (onJoinGroup) onJoinGroup(); else openSettings() } },
+            ...(onOpenHelp ? [{ id: "help", label: "Keyboard shortcuts", hint: "Ctrl+/", onSelect: () => onOpenHelp() } as const] : []),
             { id: "dismiss", label: "Hide tips", onSelect: () => setDismissedEmpty(current => ({ ...current, "no-selection": true })) },
           ]} /></box> : null}
         {!selected && !selectedGroup && dismissedEmpty["no-selection"] ? <box marginTop={1} id="empty-no-selection-dismissed" onMouseDown={event => { if (event.button === 0) setDismissedEmpty(current => ({ ...current, "no-selection": false })) }}><text fg={theme.muted} wrapMode="word">Choose a peer or group to get started. <span fg={theme.accent}><u>Show tips</u></span></text></box> : null}
@@ -357,6 +359,6 @@ export function ConversationPanel(props: ConversationPanelProps) {
       }} onSubmit={() => void send()} keyBindings={[{ name: "return", action: "submit" }, { name: "return", meta: true, action: "newline" }]} height={composerHeight} wrapMode="word" overflow="hidden" scrollMargin={1} textColor={theme.text} backgroundColor={theme.surface} focusedBackgroundColor={theme.surface} focusedTextColor={theme.text} selectionBg={theme.selected} />
       <text fg={limitColor ?? theme.muted}>{isSending ? "Sending... / " : ""}{byteCount}{draftLength > MAX_MESSAGE_BYTES ? " / Too long" : ""}</text>
     </box>
-    <ChatFooter width={width} scrollFocused={scrollFocused} status={status} openSettings={openSettings} />
+    <ChatFooter width={width} status={status} openSettings={openSettings} onOpenHelp={onOpenHelp} />
   </box>
 }

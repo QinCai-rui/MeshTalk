@@ -81,7 +81,7 @@ for (const width of [120, 80, 64, 48, 32]) {
       expect(frame).toContain("Write a message...")
       expect(frame).toContain("30,720 bytes")
       expect(frame).toContain("Ctrl+P settings")
-      expect(frame.replace(/\s+/g, " ")).toContain("Ctrl+↑↓ chats")
+      expect(frame).not.toContain("Ctrl+↑↓ chats")
       const commandsShortcut = setup.renderer.root.findDescendantById("settings-shortcut")!
       expect(commandsShortcut).toBeDefined()
       if (!props.compact) expect(commandsShortcut.screenX).toBeGreaterThan(props.composerRef.current!.screenX)
@@ -667,7 +667,7 @@ for (const width of [80, 48, 32]) {
       expect(frame.replace(/\s+/g, " ")).toContain("End of status.")
       await act(async () => { changeStatus(DEFAULT_STATUS) })
       frame = await settle(setup)
-      expect(frame).toContain("Enter send")
+      expect(frame).not.toContain("Enter send")
       expect(frame).toContain("Ctrl+P settings")
       expect(props.composerRef.current!.screenY).toBe(y)
     } finally { await close(setup) }

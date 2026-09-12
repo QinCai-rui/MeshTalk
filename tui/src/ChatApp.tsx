@@ -55,6 +55,7 @@ import {
 import { Sidebar } from "./components/Sidebar";
 import { ConversationPanel } from "./components/ConversationPanel";
 import { DialogPanel } from "./components/DialogPanel";
+import { HelpOverlay, helpFocusFor, isHelpHotkey } from "./components/HelpOverlay";
 import { clearImageCache } from "./components/ImageAttachment";
 import {
   notify,
@@ -207,6 +208,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     Record<string, Record<string, TypingPeer>>
   >({});
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [dialogDraft, setDialogDraft] = useState("");
   const [dialogError, setDialogError] = useState("");
   const [dialogBusy, setDialogBusy] = useState(false);
@@ -1373,7 +1375,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   }
 
   usePaste((event) => {
-    if (dialog || editingName || isSending) return;
+    if (helpOpen || dialog || editingName || isSending) return;
     try {
       const rawBytes = event.bytes;
       const eventMimeType = event.metadata?.mimeType?.toLowerCase();
@@ -1458,6 +1460,27 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   }
 
   useKeyboard((key) => {
+    if (isHelpHotkey(key)) {
+      key.preventDefault();
+      setHelpOpen((open) => !open);
+      return;
+    }
+    if (key.name === "?" && !key.ctrl && !key.meta && !(key as unknown as { super?: boolean }).super) {
+      const composerFocused = Boolean(selection) && !dialog && !editingName && !scrollFocused && !isSending;
+      const textInputDialog = dialog ? dialogUsesTextInput(dialog) : false;
+      if (helpOpen || (!composerFocused && !textInputDialog)) {
+        key.preventDefault();
+        setHelpOpen((open) => !open);
+        return;
+      }
+    }
+    if (helpOpen) {
+      if (key.name === "escape") {
+        key.preventDefault();
+        setHelpOpen(false);
+      }
+      return;
+    }
     if (dialog && dialogBusyRef.current) { key.preventDefault(); return; }
     if (deleteConfirmation) {
       if (key.name === "escape") {
@@ -1754,6 +1777,10 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   }
 
   useKeyboard((key) => {
+    // The help toggle is owned by the primary keyboard handler above, which
+    // runs first and already preventDefaults. Toggling here too would flip
+    // the state twice per keypress (open cancels itself). Only guard.
+    if (isHelpHotkey(key) || helpOpen) return;
     if (key.ctrl && key.name === "f") {
       key.preventDefault();
       actions.openFriendsInbox();
@@ -1857,14 +1884,15 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       : (dialog?.kind === "image-view" || dialog?.kind === "file-list")
       ? Math.max(1, height - 2)
       : Math.min(32, Math.max(1, height - 4));
-  function dialogWidthFor(kind: Dialog["kind"]): number {
-    if (kind === "image-view" || kind === "file-list") return Math.max(1, width - 2);
+  function dialogWidthFor(kind: Dialog["kind"]): number {    if (kind === "image-view" || kind === "file-list") return Math.max(1, width - 2);
     if (kind === "file-confirm") return fileConfirmDialogWidth(width);
     if (kind === "files-dir" || kind === "file-download") return Math.min(118, Math.max(1, width - 6));
     if (kind === "group-detail")
       return Math.min(78, Math.max(1, width - 2));
     return dialogWidth;
   }
+
+  const helpFocus = helpFocusFor({ dialogOpen: Boolean(dialog), editingName, scrollFocused });
 
   if (!appReady)
     return (
@@ -1899,7 +1927,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       <Sidebar
         appVersion={APP_RELEASE_VERSION}
         stacked={stacked}
-        dialogOpen={Boolean(dialog)}
+        dialogOpen={Boolean(dialog) || helpOpen}
         editingName={editingName}
         groups={groups}
         groupMembers={groupMembers}
@@ -1932,7 +1960,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         conversationItems={conversationItems}
         conversationLoading={conversationLoading}
         deliveredMessageIds={deliveredMessageIds}
-        dialogOpen={Boolean(dialog)}
+        dialogOpen={Boolean(dialog) || helpOpen}
         draftLength={draftLength}
         drafts={drafts}
         flashingEnabled={flashingEnabled}
@@ -2008,6 +2036,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         onAddFriend={() => actions.openFriendsInbox()}
         onCreateGroup={() => actions.showDialog({ kind: "room-create" })}
         onJoinGroup={() => actions.showDialog({ kind: "room-join" })}
+        onOpenHelp={() => setHelpOpen(true)}
       />
       {deleteConfirmation && (
         <box
@@ -2133,6 +2162,14 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           installUpdate={actions.installUpdate}
           saveUpdateToken={actions.saveUpdateToken}
           restartUpdate={actions.restartUpdate}
+        />
+      )}
+      {helpOpen && (
+        <HelpOverlay
+          width={width}
+          height={height}
+          focus={helpFocus}
+          onClose={() => setHelpOpen(false)}
         />
       )}
     </box>
