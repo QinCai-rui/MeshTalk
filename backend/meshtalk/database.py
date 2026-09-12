@@ -8,10 +8,27 @@ from __future__ import annotations
 import time
 import os
 import json
+import re
 from pathlib import Path
 
 import aiosqlite
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+MENTION_TOKEN_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
+
+
+def extract_mentions(content: str) -> list[str]:
+    """Extract unique mentioned peer IDs (`<@user_id>` tokens) in order."""
+    if not isinstance(content, str) or not content:
+        return []
+    seen: set[str] = set()
+    mentions: list[str] = []
+    for match in MENTION_TOKEN_RE.finditer(content):
+        peer_id = match.group(1)
+        if peer_id not in seen:
+            seen.add(peer_id)
+            mentions.append(peer_id)
+    return mentions
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS peers (
@@ -727,6 +744,7 @@ class Database:
             messages = [dict(row) async for row in cursor]
         for message in messages:
             message["content"] = self._decrypt_content(message["content"]) or ""
+            message["mentions"] = extract_mentions(message["content"])
             message["deliveries"] = await self.get_group_deliveries(message["message_id"])
         return messages
 

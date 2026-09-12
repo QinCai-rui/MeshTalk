@@ -242,6 +242,30 @@ test("stored mention tokens render as display names with a yellow highlight", as
   } finally { await close(setup) }
 })
 
+test("mention highlight follows the server payload over raw content", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "me", display_name: "Taylor" }] }
+  props.conversationItems = [
+    { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "payload says hi", mentions: ["me"], created_at: 1788580800 } },
+    { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "alex", content: "hi <@me> but payload disagrees", mentions: [], created_at: 1788580860 } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    await settle(setup, "payload says hi")
+    const spans = setup.captureSpans().lines.flatMap((line) => line.spans)
+    const bgOf = (text: string) =>
+      (spans.find((span) => span.text.includes(text))?.bg as unknown as { toInts?: () => number[] })?.toInts?.()
+    // Payload mention highlights even without a token in content...
+    expect(bgOf("payload says hi")).toEqual([77, 63, 30, 255])
+    // ...and an empty payload suppresses the highlight despite the token.
+    expect(bgOf("payload disagrees")).toBeUndefined()
+  } finally { await close(setup) }
+})
+
 test("sidebar highlights groups with unread mentions", async () => {
   const props = sidebarProps(120)
   props.groups = [{ ...group, unread_count: 1 }]

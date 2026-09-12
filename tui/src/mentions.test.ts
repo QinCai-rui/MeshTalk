@@ -6,6 +6,7 @@ import {
   mentionsPeer,
   parseMentions,
   renderMentionedContent,
+  resolveMentions,
 } from "./mentions"
 
 test("parseMentions extracts unique IDs in order", () => {
@@ -58,6 +59,14 @@ test("filterMentionCandidates matches names case-insensitively", () => {
       "",
     ),
   ).toHaveLength(6)
+})
+
+test("resolveMentions prefers the server payload with content fallback", () => {
+  expect(resolveMentions(["abc", "abc", "def"], "hi <@abc>")).toEqual(["abc", "def"])
+  expect(resolveMentions(undefined, "hi <@abc>")).toEqual(["abc"])
+  expect(resolveMentions("not-an-array", "hi <@abc>")).toEqual(["abc"])
+  expect(resolveMentions([123], "hi <@abc>")).toEqual(["abc"])
+  expect(resolveMentions([], "plain")).toEqual([])
 })
 
 test("applyMentionCompletion replaces @query with a token", () => {

@@ -962,7 +962,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       }
       setMessages((c) => [...c, {
         message_id: response.message_id as string, sender_id: identity.peer_id,
-        ...(selection.kind === "peer" ? { recipient_id: selection.id } : { group_id: selection.id, deliveries: response.deliveries as GroupDelivery[] }),
+        ...(selection.kind === "peer" ? { recipient_id: selection.id } : { group_id: selection.id, deliveries: response.deliveries as GroupDelivery[], mentions: response.mentions as string[] | undefined }),
         content, created_at: Date.now() / 1000, delivered: 0, queued: queued ? 1 : 0, reply_to_message_id: replyToMessageId,
       }])
       if (composer && composer === composerRef.current) { composer.selectAll(); composer.deleteSelection() }

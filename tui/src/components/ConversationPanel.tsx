@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } 
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
 import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
-import { mentionsPeer, renderMentionedContent, type MentionCandidate } from "../mentions"
+import { renderMentionedContent, resolveMentions, type MentionCandidate } from "../mentions"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
 
 type ConversationPanelProps = {
@@ -278,14 +278,17 @@ export function ConversationPanel(props: ConversationPanelProps) {
             Boolean(selectedGroup) &&
             !isLocal &&
             identity !== undefined &&
-            mentionsPeer(message.content, identity.peer_id)
+            resolveMentions(message.mentions, message.content).includes(identity.peer_id)
           const replyTarget = message.reply_to_message_id
             ? conversationItems.find((candidate) => candidate.type === "message" ? candidate.message.message_id === message.reply_to_message_id : candidate.file.file_id === message.reply_to_message_id)
             : undefined
           const replySenderId = replyTarget?.type === "message" ? replyTarget.message.sender_id : replyTarget?.file.sender_id
           const replySender = replySenderId === identity?.peer_id ? "You"
             : replySenderId ? (selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replySenderId)?.display_name : selected?.display_name) ?? "Unknown member" : undefined
-          const replyContent = replyTarget?.type === "message" ? replyTarget.message.content : replyTarget ? `Attachment: ${replyTarget.file.filename}` : undefined
+          const replyContentRaw = replyTarget?.type === "message" ? replyTarget.message.content : replyTarget ? `Attachment: ${replyTarget.file.filename}` : undefined
+          const replyContent = replyContentRaw !== undefined && selectedGroup && replyTarget?.type === "message"
+            ? renderMentionedContent(replyContentRaw, resolveMentionName)
+            : replyContentRaw
           const replySnippet = replyContent?.replace(/\s+/g, " ").trim().slice(0, 60)
           const replySelectTarget: ReplyTarget | undefined = replyTarget
             ? replyTarget.type === "message"
@@ -333,7 +336,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
     )}
     <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, backgroundColor: theme.surface }}>
       <text fg={limitColor ?? theme.accent}><b>{!scrollFocused && !editingName && hasConversation ? "> " : ""}{composerTitle}</b></text>
-      {replyTo && <text fg={theme.accent}>Replying to {replyTo.senderId === identity?.peer_id ? "You" : selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replyTo.senderId)?.display_name ?? "Unknown member" : selected?.display_name ?? "Unknown peer"}: {replyTo.label.replace(/\s+/g, " ").trim().slice(0, 60)}{replyTo.label.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""} (Esc cancels)</text>}
+      {replyTo && <text fg={theme.accent}>Replying to {replyTo.senderId === identity?.peer_id ? "You" : selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replyTo.senderId)?.display_name ?? "Unknown member" : selected?.display_name ?? "Unknown peer"}: {(selectedGroup && replyTo.kind === "message" ? renderMentionedContent(replyTo.label, resolveMentionName) : replyTo.label).replace(/\s+/g, " ").trim().slice(0, 60)}{replyTo.label.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""} (Esc cancels)</text>}
       <textarea key={selectionKey ?? "no-conversation"} ref={composerRef} initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""} placeholder={hasConversation ? "Write a message..." : "Select a peer or group"} focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !isSending && !dialogOpen} onMouseDown={() => setScrollFocused(false)} onContentChange={() => {
         const composer = composerRef.current
         const content = composer?.plainText ?? ""

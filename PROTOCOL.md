@@ -862,10 +862,13 @@ authenticated peer's signing key; mismatched sender_id/responder_id is rejected.
 - Mute: mute(peer_id, timeout) silences notifications for timeout seconds (0 =
   permanent). Stored in settings.json.
 - Mentions: group message content may carry `<@user_id>` tokens (inserted by
-  the sender's `@` member picker). Content stays opaque to the backend;
-  receivers detect their own ID in tokens to highlight the message, badge the
-  group, and raise a mention notification (bypasses group mutes, still gated
-  by Do Not Disturb). Clients render tokens as `@Display Name`.
+  the sender's `@` member picker). The backend extracts the mentioned IDs and
+  includes them as `mentions` in the `group_message` event, in `group_messages`
+  history entries, and in the `group_send` response, so clients determine
+  "mentioned me" from the payload (falling back to token parsing against older
+  backends). Receivers highlight the message, badge the group, and raise a
+  mention notification (bypasses group mutes, still gated by Do Not Disturb).
+  Clients render tokens as `@Display Name`.
 - Profiles (PROFILE): {peer_id, display_name, tui_active, signature, dnd,
   dnd_signature}. Broadcast to every active peer on name change
   (broadcast_profile_update); tui_active reflects whether any TUI client is
@@ -932,8 +935,8 @@ over IPC.
 | rooms | - | Room membership counts. |
 | groups | - | Named groups with cached active-member and unread counts. |
 | group_members | group_id | Cached active roster with online state. |
-| group_messages | group_id | Last 200 local messages/system events and per-recipient deliveries; marks read. |
-| group_send | group_id, content, reply_to_message_id? | message_id and per-recipient `sent`, `delivered`, `queued`, or `unavailable` status. |
+| group_messages | group_id | Last 200 local messages/system events, per-message `mentions`, and per-recipient deliveries; marks read. |
+| group_send | group_id, content, reply_to_message_id? | message_id, per-recipient `sent`, `delivered`, `queued`, or `unavailable` status, and `mentions`. |
 | group_leave | group_id | Sends/queues signed leave events, removes local room/group state, returns group_id. |
 | file_send | recipient_id, file_path | file_id — send a file to a direct peer. |
 | group_file_send | group_id, file_path | Per-recipient results — send a file to all active group members. |
@@ -962,7 +965,8 @@ group and affected message/member; `group_sent` reports an offline queued copy
 being flushed, and `group_delivered` reports its recipient ACK.
 `typing` contains `sender_id`, `display_name`, `group_id` (or null),
 `is_typing`, and `created_at`; clients must order updates by `created_at` and
-expire active state locally if no refresh or stop arrives.
+expire active state locally if no refresh or stop arrives. `group_message`
+carries `mentions` (mentioned peer IDs extracted from `<@user_id>` tokens).
 
 The CLI exposes `room create <name>`, `room join`, `groups` / `group list`, and
 `group members|messages|send|leave`. `watch` prints incoming group messages and

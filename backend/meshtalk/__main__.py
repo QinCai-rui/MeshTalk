@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .identity import Identity
-from .database import Database
+from .database import Database, extract_mentions
 from .discovery import DiscoveryService
 from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
@@ -647,7 +647,7 @@ async def main(debug: bool = False) -> None:
         ):
             return {"error": "reply_to_message_id must be a non-empty string up to 128 characters"}
         message_id, deliveries = await group_router.send_message(group_id, content.encode(), reply_to_message_id)
-        return {"message_id": message_id, "deliveries": deliveries}
+        return {"message_id": message_id, "deliveries": deliveries, "mentions": extract_mentions(content)}
 
     async def handle_delete_message(req: dict) -> dict:
         message_id = req.get("message_id")

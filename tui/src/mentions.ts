@@ -28,6 +28,16 @@ export function mentionsPeer(content: string, peerId: string): boolean {
 }
 
 /**
+ * Resolve the mentioned peer IDs for a message from the server payload,
+ * falling back to parsing the content (older backends omit the payload).
+ */
+export function resolveMentions(payload: unknown, content: string): string[] {
+  if (Array.isArray(payload) && payload.every((id): id is string => typeof id === "string"))
+    return [...new Set(payload)]
+  return parseMentions(content)
+}
+
+/**
  * Render stored `<@user_id>` tokens as `@Display Name` for display.
  * Unknown IDs fall back to `@unknown` so raw tokens never leak into the UI.
  */

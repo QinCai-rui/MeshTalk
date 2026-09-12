@@ -69,7 +69,7 @@ import {
   applyMentionCompletion,
   filterMentionCandidates,
   mentionQueryAt,
-  mentionsPeer,
+  resolveMentions,
   type MentionCandidate,
 } from "./mentions";
 import {
@@ -886,7 +886,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             senderId !== undefined &&
             senderId !== identity?.peer_id &&
             identity !== undefined &&
-            mentionsPeer(event.content as string, identity.peer_id);
+            resolveMentions(event.mentions, event.content as string).includes(identity.peer_id);
           if (event.event === "group_message" && mentionedMe)
             // Mention notifications bypass per-group mutes; only DND blocks them.
             void notify(

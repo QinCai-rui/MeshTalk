@@ -9,7 +9,7 @@ from typing import Awaitable, Callable
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .database import Database
+from .database import Database, extract_mentions
 from .encryption import decrypt_as_recipient, encrypt_for_recipient
 from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
@@ -224,6 +224,7 @@ class GroupRouter:
                     "event": "group_message", "message_id": message.message_id,
                     "group_id": message.group_id, "sender_id": message.sender_id,
                     "content": content, "created_at": message.created_at, "reply_to_message_id": message.reply_to_message_id,
+                    "mentions": extract_mentions(content),
                 })
         acknowledgement = GroupAckPayload(message.message_id, message.group_id, self.identity.peer_id)
         acknowledgement.signature = self.identity.signing_private_key.sign(acknowledgement.signed_bytes())
