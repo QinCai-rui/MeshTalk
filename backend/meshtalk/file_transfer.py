@@ -59,6 +59,7 @@ EARLY_CHUNK_TTL = 30
 PROGRESS_EVENT_INTERVAL = 0.25
 MAX_PROGRESS_EVENTS = 100
 FILE_PROGRESS_COMMIT_CHUNKS = 32
+FILE_PROGRESS_COMMIT_INTERVAL = 1.0
 MAX_PROGRESS_TRACKERS = 256
 
 
@@ -119,6 +120,7 @@ class FileTransferManager:
         self._packet_locks: dict[str, asyncio.Lock] = {}
         self._early_chunks: dict[str, tuple[float, list[tuple[PeerConnection, FileChunkPayload]]]] = {}
         self._last_progress_events: dict[str, tuple[float, int]] = {}
+        self._pending_progress_commits: dict[str, asyncio.Task[None]] = {}
 
     @property
     def files_base(self) -> Path:
@@ -194,6 +196,28 @@ class FileTransferManager:
                 self._last_progress_events.pop(next(iter(self._last_progress_events)))
             return True
         return False
+
+    def _schedule_progress_commit(self, file_id: str) -> None:
+        if file_id not in self._pending_progress_commits:
+            self._pending_progress_commits[file_id] = asyncio.create_task(
+                self._flush_progress_commit(file_id)
+            )
+
+    async def _flush_progress_commit(self, file_id: str) -> None:
+        try:
+            await asyncio.sleep(FILE_PROGRESS_COMMIT_INTERVAL)
+            await self.db.commit()
+        except Exception:
+            logger.exception("Failed to flush file progress for %s", file_id)
+        finally:
+            if self._pending_progress_commits.get(file_id) is asyncio.current_task():
+                self._pending_progress_commits.pop(file_id, None)
+
+    async def _commit_file_progress(self, file_id: str) -> None:
+        pending = self._pending_progress_commits.pop(file_id, None)
+        if pending and pending is not asyncio.current_task():
+            pending.cancel()
+        await self.db.commit()
 
     async def send_file(self, recipient_id: str, file_path_str: str, group_id: str | None = None) -> str:
         """Send a file to a peer, chunking and encrypting it for transmission."""
@@ -698,12 +722,17 @@ class FileTransferManager:
             received_count % FILE_PROGRESS_COMMIT_CHUNKS == 0
             or received_count == transfer["total_chunks"]
         ):
-            await self.db.commit()
+            await self._commit_file_progress(chunk.file_id)
+        else:
+            self._schedule_progress_commit(chunk.file_id)
         if self._should_emit_progress(chunk.file_id, received_count, chunk.total_chunks):
             self._emit({"event": "file_progress", "file_id": chunk.file_id, "chunk_index": chunk.chunk_index, "total_chunks": chunk.total_chunks, "direction": "inbound", "received": received_count, "group_id": transfer["group_id"]})
         # Check completion
         if received_count == transfer["total_chunks"]:
             self._last_progress_events.pop(chunk.file_id, None)
+            pending = self._pending_progress_commits.pop(chunk.file_id, None)
+            if pending:
+                pending.cancel()
             await self._complete_inbound_transfer(peer, transfer)
 
     async def _complete_inbound_transfer(self, peer: PeerConnection, transfer: dict) -> None:

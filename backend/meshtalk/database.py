@@ -269,10 +269,23 @@ class Database:
 
     async def close(self) -> None:
         """Close the database connection."""
-        if self._db:
-            await self._db.commit()
-            await self._db.close()
-            self._db = None
+        db = self._db
+        if db:
+            try:
+                await db.commit()
+            except BaseException:
+                # Cleanup must not hide the commit failure that triggered shutdown.
+                try:
+                    await db.close()
+                except Exception:
+                    pass
+                self._db = None
+                raise
+            else:
+                try:
+                    await db.close()
+                finally:
+                    self._db = None
 
     async def get_peer(self, peer_id: str) -> dict | None:
         """Retrieve peer information by peer ID."""

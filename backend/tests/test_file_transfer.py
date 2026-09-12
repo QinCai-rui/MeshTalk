@@ -4,11 +4,14 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from meshtalk.database import Database
 from meshtalk.encryption import encrypt_for_recipient
-from meshtalk.file_transfer import MAX_PROGRESS_EVENTS, FileTransferManager
+from meshtalk.file_transfer import (
+    MAX_PROGRESS_EVENTS,
+    FileTransferManager,
+)
 from meshtalk.identity import Identity
 from meshtalk.protocol import (
     CAP_FILE_TRANSFER,
@@ -351,3 +354,28 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emitted[0], 1)
         self.assertEqual(emitted[-1], 1_000)
         self.assertLessEqual(len(emitted), MAX_PROGRESS_EVENTS + 1)
+
+    async def test_partial_progress_is_flushed_after_a_bounded_delay(self):
+        commit = AsyncMock()
+        self.receiver.db.commit = commit
+
+        with patch("meshtalk.file_transfer.FILE_PROGRESS_COMMIT_INTERVAL", 0.01):
+            self.receiver._schedule_progress_commit(self.file_id)
+            await asyncio.sleep(0.02)
+
+        commit.assert_awaited_once()
+
+
+class DatabaseCloseTest(unittest.IsolatedAsyncioTestCase):
+    async def test_close_releases_connection_after_commit_failure(self):
+        db = Database(Path("unused.db"))
+        connection = type("Connection", (), {})()
+        connection.commit = AsyncMock(side_effect=OSError("commit failed"))
+        connection.close = AsyncMock()
+        db._db = connection
+
+        with self.assertRaisesRegex(OSError, "commit failed"):
+            await db.close()
+
+        connection.close.assert_awaited_once()
+        self.assertIsNone(db._db)

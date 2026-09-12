@@ -477,6 +477,34 @@ test("unread highlights animate through an OpenTUI overlay", async () => {
   } finally { await close(setup) }
 })
 
+test("delivery details are shown for group messages, not direct messages", async () => {
+  const directProps = panelProps(80)
+  const directMessage = directProps.conversationItems[1]!
+  if (directMessage.type !== "message") throw new Error("expected message")
+  directMessage.message.blocked = 1
+  const direct = await testRender(<ConversationPanel {...directProps} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(direct, "Looks good")
+    expect(frame).toContain("blocked")
+    expect(frame).not.toContain("click for details")
+  } finally { await close(direct) }
+
+  const groupProps = panelProps(80)
+  groupProps.selected = undefined
+  groupProps.selectedGroup = group
+  groupProps.selectedGroupId = group.group_id
+  groupProps.selectionKey = "group:team"
+  const groupMessage = groupProps.conversationItems[1]!
+  if (groupMessage.type !== "message") throw new Error("expected message")
+  groupMessage.message.group_id = group.group_id
+  groupMessage.message.deliveries = [{ recipient_id: "alex", display_name: "Alex Morgan", status: "delivered", updated_at: 1788580861 }]
+  const groupSetup = await testRender(<ConversationPanel {...groupProps} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(groupSetup, "Looks good")
+    expect(frame).toContain("click for details")
+  } finally { await close(groupSetup) }
+})
+
 test("sidebar no-peers empty state offers friend, connection, and LAN help actions", async () => {
   const props = sidebarProps(120)
   props.peers = []
