@@ -223,8 +223,16 @@ def main() -> None:
         if not isinstance(end_line, int) or isinstance(end_line, bool) or end_line < line:
             errors.append(f"{label} has an invalid end_line.")
             continue
-        if not isinstance(replacement, str) or not replacement.strip():
+        if replacement is not None and (
+            not isinstance(replacement, str) or not replacement.strip()
+        ):
             errors.append(f"{label} has an empty replacement.")
+            continue
+        comment = suggestion.get("comment")
+        if replacement is None and (
+            not isinstance(comment, str) or not comment.strip()
+        ):
+            errors.append(f"{label} has no finding text for its inline note.")
             continue
         if suggestion.get("category") not in CATEGORIES:
             errors.append(
@@ -233,11 +241,10 @@ def main() -> None:
                 + "."
             )
             continue
-        if suggestion.get("severity") not in SEVERITIES:
+        if suggestion.get("severity") not in {"Blocking", "Should-fix"}:
             errors.append(
-                f"{label} has an invalid severity; use one of: "
-                + ", ".join(sorted(SEVERITIES))
-                + "."
+                f"{label} has severity {suggestion.get('severity')!r}; inline items "
+                "must be Blocking or Should-fix (Nit and Discussion stay in the summary)."
             )
             continue
         if suggestion.get("effort") not in EFFORTS:
@@ -249,6 +256,10 @@ def main() -> None:
             continue
         if path not in added or any(n not in added[path] for n in range(line, end_line + 1)):
             errors.append(f"{label} targets {path}:{line}-{end_line}, outside added PR lines.")
+            continue
+        if replacement is None:
+            # Inline note: no replacement to apply, line checks above suffice.
+            valid.append(suggestion)
             continue
         head_path = args.head_dir / path
         if not head_path.is_file():

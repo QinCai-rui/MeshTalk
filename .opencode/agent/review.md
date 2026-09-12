@@ -27,20 +27,11 @@ Use exactly this structure every time, in this order, with these exact headings.
 Verdict: **Looks good** | **Needs changes** | **Needs discussion**
 
 ## Summary
-<2-4 sentences: what the PR does, whether the scope matches the linked issue, overall risk.>
-
-## Findings
-### Blocking
-- **[Blocking] `path:line`** — <one-line issue statement>
-  - Impact: <what breaks>
-  - Trigger: <how to hit it>
-(or a plain `None.` paragraph when the section is empty)
-
-### Should-fix
-(same finding format, or plain `None.`)
+<2-4 sentences: what the PR changes, whether the scope matches the linked issue, overall risk. This is a walkthrough, not a finding list: Blocking and Should-fix findings live ONLY as inline items, never here.>
 
 ### Nit
-(same finding format, or plain `None.`)
+- **[Nit] `path:line`** — <one-line issue statement>
+(or a plain `None.` paragraph when the section is empty)
 
 ### Discussion
 (same finding format but with a **[Discussion]** title label for open questions and unverified concerns that need a human decision, or plain `None.`)
@@ -49,16 +40,16 @@ Verdict: **Looks good** | **Needs changes** | **Needs discussion**
 <tests relevant to the change, e.g. `uv run pytest tests/test_file_transfer.py`, `bun test tui`, `tsc --noEmit`; name the behavior each proposed test should exercise.>
 ```
 Readability rules:
-- Lead with concrete defects and risks, ordered by severity (Blocking, then Should-fix, then Nit, then Discussion).
-- One finding per top-level bullet. The bold title line always carries the exact changed `path:line` in backticks; never use placeholder line numbers. Put Impact and Trigger as indented two-space sub-bullets.
+- The summary is a short walkthrough plus Nit and Discussion lines only. Never put Blocking or Should-fix detail here; each one becomes exactly one inline item below.
+- One finding per top-level bullet. The bold title line always carries the exact changed `path:line` in backticks; never use placeholder line numbers.
 - Backticks for all paths, code, and commands. Short sentences; no filler.
 - Return the review as plain markdown. Never wrap the whole message in a fenced code block and never repeat the template content.
-- The publisher adds an aggregate `Prompt for all review comments with AI agents` block (shown only when one-click suggestions exist) and a prompt block to each inline suggestion; do not add duplicate prompt blocks yourself.
+- The publisher adds an aggregate `Prompt for all review comments with AI agents` block (shown only when one-click suggestions exist) and a prompt block to each inline comment; do not add duplicate prompt blocks yourself.
 - Distinguish blocking, should-fix, and nit consistently; do not repeat implementation observations as findings unless they require action.
-- Empty severity sections contain exactly a plain `None.` paragraph (no bullet).
+- Empty Nit/Discussion sections contain exactly a plain `None.` paragraph (no bullet).
 - On rereview (`Mode: rereview`), focus on `.review-context/range.diff` and `.review-context/range-commits.json`: verify whether each prior finding is fixed, still valid, or superseded, and call out only new issues introduced by the range. State what changed since the prior review when it explains the updated verdict; if the range is empty, say the head is unchanged and keep the prior verdict unless re-verification surfaces something new.
 
-End with a ```suggestions-json fenced block containing a JSON array, max 10 items, using `[]` when no one-click fix qualifies. Each item must be:
+End with a ```suggestions-json fenced block containing a JSON array, max 10 items, using `[]` when nothing actionable qualifies. Emit exactly one item per Blocking or Should-fix finding: include `suggestion` when a clean one-click fix qualifies, otherwise omit `suggestion` and the item posts as an inline note carrying the finding text in `comment`. Nit and Discussion findings stay in the summary and must NOT appear here. Each item must be:
 ```json
 {"path": "repo-relative/file.ts", "line": 42, "end_line": 44, "category": "Functional Correctness", "severity": "Should-fix", "effort": "Trivial", "comment": "Fix null check", "agent_prompt": "Verify this finding against current code, apply the minimal valid fix, and validate it.", "suggestion": "if (val != null) { return val; }"}
 ```
@@ -66,8 +57,9 @@ End with a ```suggestions-json fenced block containing a JSON array, max 10 item
 - `line` must be a 1-based new-file line on an added diff line
 - `end_line` is optional and must be >= line for multi-line replacements
 - `category` must be one of: Functional Correctness, Security, Performance, Design, Testing
-- `severity` must match the finding's section: Blocking, Should-fix, Nit, Discussion
+- `severity` must be Blocking or Should-fix (Nit and Discussion stay in the summary and must NOT appear here)
 - `effort` must be one of: Trivial, Moderate, Significant
-- `suggestion` must be the exact replacement code, with no fences
+- `suggestion` is optional: when present it must be the exact replacement code, with no fences; when omitted the item posts as an inline note, so `comment` must then carry the full finding (one-line statement plus impact)
+- `comment` must be a concise finding statement naming the issue; it is always shown as the inline comment text
 - `agent_prompt` is optional; when present, it must be a concise verification-and-fix prompt for another coding agent
 - Only include suggestions you are confident apply cleanly; keep hunks tight

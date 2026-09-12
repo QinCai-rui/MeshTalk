@@ -389,13 +389,19 @@ jobs:
               owner: context.repo.owner, repo: context.repo.repo, pull_number: pr, per_page: 100,
             });
             for (const comment of priorComments) {
-              const marker = comment.body?.match(/<!-- meshtalk-suggestion:([a-f0-9]{64}) -->/);
+              const marker = comment.body?.match(/<!-- meshtalk-(?:suggestion|note):([a-f0-9]{64}) -->/);
               if (marker) seen.add(marker[1]);
             }
             for (const s of suggestions.slice(0, 10)) {
+              const hasCode = s && typeof s.suggestion === 'string' && s.suggestion.trim();
+              const actionable = s && (s.severity === 'Blocking' || s.severity === 'Should-fix');
               const okShape = s && typeof s.path === 'string' && Number.isInteger(s.line) &&
-                typeof s.suggestion === 'string' && s.suggestion.trim();
+                (hasCode || (actionable && typeof s.comment === 'string' && s.comment.trim()));
               if (!okShape) { core.warning('Skipping malformed suggestion entry.'); continue; }
+              if (!hasCode && !actionable) {
+                core.warning(`Skipping note: ${s.path}:${s.line} is not Blocking/Should-fix; it belongs in the summary.`);
+                continue;
+              }
               const added = addedByFile.get(s.path);
               if (!added || added.size === 0) { core.warning(`Skipping suggestion: ${s.path} not in PR diff.`); continue; }
               const end = Number.isInteger(s.end_line) && s.end_line >= s.line ? s.end_line : s.line;
@@ -407,10 +413,11 @@ jobs:
                 core.warning(`Skipping suggestion: ${s.path}:${s.line}-${end} outside added lines.`);
                 continue;
               }
+              const kind = hasCode ? 'suggestion' : 'note';
               const fingerprint = require('crypto').createHash('sha256')
-                .update(JSON.stringify([s.path, s.line, end, s.suggestion]))
+                .update(JSON.stringify([kind, s.path, s.line, end, hasCode ? s.suggestion : s.comment]))
                 .digest('hex');
-              if (seen.has(fingerprint)) { core.info(`Skipping duplicate suggestion: ${s.path}:${s.line}-${end}.`); continue; }
+              if (seen.has(fingerprint)) { core.info(`Skipping duplicate ${kind}: ${s.path}:${s.line}-${end}.`); continue; }
               seen.add(fingerprint);
               const specificPrompt = typeof s.agent_prompt === 'string' && s.agent_prompt.trim()
                 ? s.agent_prompt.trim().slice(0, 4000)
@@ -423,8 +430,9 @@ jobs:
               if (SEVERITY_DOT[s.severity]) headerParts.push(`${SEVERITY_DOT[s.severity]} ${s.severity}`);
               if (EFFORT_ICON[s.effort]) headerParts.push(`${EFFORT_ICON[s.effort]} ${s.effort}`);
               const header = headerParts.join(' | ');
-              const body = (header ? header + '\n\n' : '') + (s.comment || 'Suggested change:') + '\n```suggestion\n' +
-                s.suggestion.replace(/\n+$/, '') + '\n```\n\n<details>\n<summary>🤖 Prompt for AI Agents</summary>\n\n```\n' + prompt + '\n```\n\n</details>\n<!-- meshtalk-suggestion:' + fingerprint + ' -->';
+              const codeBlock = hasCode ? '\n```suggestion\n' + s.suggestion.replace(/\n+$/, '') + '\n```\n' : '\n';
+              const body = (header ? header + '\n\n' : '') + (s.comment || 'Suggested change:') + codeBlock +
+                '\n<details>\n<summary>🤖 Prompt for AI Agents</summary>\n\n```\n' + prompt + '\n```\n\n</details>\n<!-- meshtalk-' + kind + ':' + fingerprint + ' -->';
               if (end === s.line) comments.push({ path: s.path, line: s.line, side: 'RIGHT', body });
               else comments.push({ path: s.path, line: end, side: 'RIGHT', start_line: s.line, start_side: 'RIGHT', body });
             }
@@ -457,7 +465,7 @@ jobs:
               body: canApprove
                 ? 'Automated review approved — no blocking or should-fix issues found. Human merge decision still required.'
                 : (needsChanges
-                  ? `Automated review requests changes — ${comments.length} suggestion${comments.length === 1 ? '' : 's'} below — apply individually or batch them from the Files changed tab.`
-                  : `Automated review: ${comments.length} suggestion${comments.length === 1 ? '' : 's'} below — apply individually or batch them from the Files changed tab.`),
+                  ? `Actionable comments posted: ${comments.length}.\n\nAutomated review requests changes — apply individually or batch them from the Files changed tab.`
+                  : `Actionable comments posted: ${comments.length}.\n\nApply individually or batch them from the Files changed tab.`),
               comments,
             });

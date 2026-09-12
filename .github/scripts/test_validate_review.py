@@ -136,7 +136,7 @@ This finding has no location.
 No actionable findings.
 
 ```suggestions-json
-[{"path":"src/example.py","line":1,"comment":"not a human finding","category":"Design","severity":"Nit","effort":"Moderate","suggestion":"def example():"}]
+[{"path":"src/example.py","line":1,"comment":"not a human finding","category":"Design","severity":"Should-fix","effort":"Moderate","suggestion":"def example():"}]
 ```
 """
         self.assertEqual(self.run_validator(review), 1)
@@ -154,6 +154,41 @@ No actionable findings.
         self.assertEqual(self.run_validator(review), 1)
         self.assertIn("invalid category", self.errors.read_text())
 
+    def test_accepts_inline_note_without_replacement(self):
+        review = """## Findings
+- **should-fix** `src/example.py:2`: Return the intended value, no clean fix available.
+
+```suggestions-json
+[{"path":"src/example.py","line":2,"category":"Functional Correctness","severity":"Should-fix","effort":"Moderate","comment":"Return the intended value; the current line returns a constant."}]
+```
+"""
+        self.assertEqual(self.run_validator(review), 0)
+        saved = json.loads(self.suggestions.read_text())
+        self.assertEqual(len(saved), 1)
+        self.assertNotIn("suggestion", saved[0])
+
+    def test_rejects_inline_note_without_finding_text(self):
+        review = """## Findings
+- **should-fix** `src/example.py:2`: Return the intended value.
+
+```suggestions-json
+[{"path":"src/example.py","line":2,"category":"Functional Correctness","severity":"Should-fix","effort":"Moderate"}]
+```
+"""
+        self.assertEqual(self.run_validator(review), 1)
+        self.assertIn("no finding text", self.errors.read_text())
+
+    def test_rejects_nit_suggestion_item(self):
+        review = """## Findings
+- **nit** `src/example.py:2`: Trailing whitespace style nit.
+
+```suggestions-json
+[{"path":"src/example.py","line":2,"category":"Design","severity":"Nit","effort":"Trivial","comment":"Tidy this line.","suggestion":"    return 1"}]
+```
+"""
+        self.assertEqual(self.run_validator(review), 1)
+        self.assertIn("must be Blocking or Should-fix", self.errors.read_text())
+
     def test_rejects_suggestion_with_invalid_severity_or_effort(self):
         review = """## Findings
 - **should-fix** `src/example.py:2`: Return the intended value.
@@ -163,7 +198,7 @@ No actionable findings.
 ```
 """
         self.assertEqual(self.run_validator(review), 1)
-        self.assertIn("invalid severity", self.errors.read_text())
+        self.assertIn("must be Blocking or Should-fix", self.errors.read_text())
 
 
 if __name__ == "__main__":
