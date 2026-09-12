@@ -2,6 +2,7 @@ import { ChatFooter } from "./ChatFooter"
 import { EmptyState } from "./EmptyState"
 import { TypingDots } from "./TypingDots"
 import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
+import { useTimeline } from "@opentui/react"
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
@@ -40,7 +41,6 @@ type ConversationPanelProps = {
   replyTo: ReplyTarget | undefined
   selectionKey: string | undefined
   unreadMessageStates: Record<string, UnreadMessageState>
-  unreadNow: number
   markUnreadMessageVisible: (messageId: string) => void
   openSettings: () => void
   openImage: (file: FileTransfer) => void
@@ -71,6 +71,42 @@ type ConversationPanelProps = {
 
 const MAX_CONVERSATION_TIP_ENTRIES = 200
 
+function HighlightOverlay({ id }: { id: string }) {
+  const overlayRef = useRef<BoxRenderable>(null)
+  const timeline = useTimeline({
+    autoplay: false,
+    duration: UNREAD_MESSAGE_FADE_MS,
+  })
+
+  useEffect(() => {
+    const overlay = overlayRef.current
+    if (!overlay) return
+    timeline.add(overlay, {
+      opacity: 0,
+      duration: UNREAD_MESSAGE_FADE_MS,
+      ease: "inQuad",
+    })
+    timeline.play()
+    return () => {
+      timeline.pause()
+    }
+  }, [timeline])
+
+  return (
+    <box
+      id={id}
+      ref={overlayRef}
+      position="absolute"
+      left={0}
+      top={0}
+      width="100%"
+      height="100%"
+      backgroundColor={unreadMessageBackground(0)}
+      opacity={1}
+    />
+  )
+}
+
 const MESSAGE_MARKDOWN_STYLES = {
   default: { fg: theme.markdown.default },
   "markup.heading.1": { fg: theme.markdown.heading, bold: true },
@@ -97,14 +133,13 @@ const MESSAGE_MARKDOWN_STYLES = {
 } as const
 
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction, onOpenConnection, onAttachFile, onAddFriend,   onCreateGroup, onJoinGroup, onRetryFile, onOpenHelp } = props
+  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction, onOpenConnection, onAttachFile, onAddFriend,   onCreateGroup, onJoinGroup, onRetryFile, onOpenHelp } = props
   const [dismissedEmpty, setDismissedEmpty] = useState<Record<string, boolean>>({})
   const [showConversationTips, setShowConversationTips] = useState<Record<string, boolean>>({})
   const openConnection = onOpenConnection ?? openSettings
   const dismissKey = selectionKey ?? "no-selection"
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
   const [replyHighlight, setReplyHighlight] = useState<{ id: string; startedAt: number }>()
-  const [replyHighlightNow, setReplyHighlightNow] = useState(0)
   const messageSyntaxStyle = useMemo(() => SyntaxStyle.fromStyles(MESSAGE_MARKDOWN_STYLES), [])
   const typingText = typingNames.length === 1
     ? `${clipTextToWidth(typingNames[0]!, Math.max(1, width - 18)).trimEnd()} is typing`
@@ -124,22 +159,14 @@ export function ConversationPanel(props: ConversationPanelProps) {
 
   useEffect(() => {
     if (!replyHighlight) return
-    const interval = setInterval(() => setReplyHighlightNow(Date.now()), 250)
     const timeout = setTimeout(() => setReplyHighlight(undefined), UNREAD_MESSAGE_FADE_MS)
-    return () => {
-      clearInterval(interval)
-      clearTimeout(timeout)
-    }
+    return () => clearTimeout(timeout)
   }, [replyHighlight])
 
   const highlightReplyTarget = (id: string) => {
     const startedAt = Date.now()
     setReplyHighlight({ id, startedAt })
-    setReplyHighlightNow(startedAt)
   }
-  const replyHighlightProgress = (id: string) => replyHighlight?.id === id
-    ? Math.min(1, Math.max(0, (replyHighlightNow - replyHighlight.startedAt) / UNREAD_MESSAGE_FADE_MS))
-    : undefined
 
   useEffect(() => {
     if (!selectionKey || !Object.entries(unreadMessageStates).some(([, message]) => message.conversationKey === selectionKey && message.visibleAt === undefined)) return
@@ -282,10 +309,11 @@ export function ConversationPanel(props: ConversationPanelProps) {
               status: f.status === "completed" ? "delivered" : f.status === "failed" ? "unavailable" : f.status === "transferring" || f.status === "receiving" ? "pending" : f.status,
               updated_at: f.completed_at ?? f.created_at,
             }))
-            const fileReplyHighlightProgress = replyHighlightProgress(file.file_id)
+            const fileReplyHighlighted = replyHighlight?.id === file.file_id
             rows.push(
-              <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ flexDirection: "column", marginBottom: 1, backgroundColor: fileReplyHighlightProgress !== undefined ? unreadMessageBackground(fileReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === file.file_id ? theme.selected : undefined }}>
-                <text>
+              <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ position: "relative", flexDirection: "column", marginBottom: 1, backgroundColor: scrollFocused && selectedReplyTargetId === file.file_id && !fileReplyHighlighted ? theme.selected : undefined }}>
+                 {fileReplyHighlighted && <HighlightOverlay id={`reply-highlight-${file.file_id}`} key={`reply-${replyHighlight!.startedAt}`} />}
+                 <text>
                   <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === file.file_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(file.created_at)} </span>
                   <span fg={isLocal ? theme.accent : theme.text}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
                   <span fg={theme.muted}> shared an attachment</span>
@@ -304,7 +332,9 @@ export function ConversationPanel(props: ConversationPanelProps) {
           const message = item.message
           const isLocal = message.sender_id === identity?.peer_id
           const unread = !isLocal ? unreadMessageStates[message.message_id] : undefined
-          const fadeProgress = unread?.visibleAt === undefined ? 0 : Math.min(1, Math.max(0, (unreadNow - unread.visibleAt) / UNREAD_MESSAGE_FADE_MS))
+          const replyHighlighted = replyHighlight?.id === message.message_id
+          const selectedRow = scrollFocused && selectedReplyTargetId === message.message_id
+          const unreadHighlighted = unread?.visibleAt !== undefined && !replyHighlighted && !selectedRow
           const delivered = Boolean(message.delivered) || deliveredMessageIds.has(message.message_id)
           const blocked = Boolean(message.blocked)
           const queued = Boolean(message.queued)
@@ -336,10 +366,11 @@ export function ConversationPanel(props: ConversationPanelProps) {
           const showReceived =
             typeof message.received_at === "number" &&
             formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)
-          const messageReplyHighlightProgress = replyHighlightProgress(message.message_id)
           rows.push(
-              <box id={message.message_id} key={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: messageReplyHighlightProgress !== undefined ? unreadMessageBackground(messageReplyHighlightProgress) : scrollFocused && selectedReplyTargetId === message.message_id ? theme.selected : unread ? unreadMessageBackground(fadeProgress) : undefined }}>
-              <text>
+              <box id={message.message_id} key={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ position: "relative", width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: selectedRow && !replyHighlighted ? theme.selected : undefined }}>
+               {replyHighlighted && <HighlightOverlay id={`reply-highlight-${message.message_id}`} key={`reply-${replyHighlight!.startedAt}`} />}
+               {unreadHighlighted && <HighlightOverlay id={`unread-highlight-${message.message_id}`} key={`unread-${message.message_id}`} />}
+               <text>
                 <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === message.message_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(message.created_at)} </span>
                 <span fg={isSystem ? theme.warning : isLocal ? theme.accent : theme.text}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
                  {isLocal && !isSystem && !selectedGroup && <span fg={blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}

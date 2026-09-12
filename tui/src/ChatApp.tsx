@@ -172,7 +172,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const [unreadMessages, setUnreadMessages] = useState<
     Record<string, UnreadMessageState>
   >({});
-  const [unreadNow, setUnreadNow] = useState(() => Date.now());
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [draftLength, setDraftLength] = useState(0);
   const [composerHeight, setComposerHeight] = useState(MIN_COMPOSER_HEIGHT);
@@ -655,7 +654,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       return;
     const interval = setInterval(() => {
       const now = Date.now();
-      setUnreadNow(now);
       setUnreadMessages((current) => {
         let changed = false;
         const next: Record<string, UnreadMessageState> = {};
@@ -2022,7 +2020,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         status={status}
         width={panelWidth}
         unreadMessageStates={unreadMessages}
-        unreadNow={unreadNow}
         markUnreadMessageVisible={markUnreadMessageVisible}
         openSettings={() => actions.showDialog({ kind: "settings" })}
         openImage={(file) => {
