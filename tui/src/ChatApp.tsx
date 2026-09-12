@@ -1777,12 +1777,10 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   }
 
   useKeyboard((key) => {
-    if (isHelpHotkey(key)) {
-      key.preventDefault();
-      setHelpOpen((open) => !open);
-      return;
-    }
-    if (helpOpen) return;
+    // The help toggle is owned by the primary keyboard handler above, which
+    // runs first and already preventDefaults. Toggling here too would flip
+    // the state twice per keypress (open cancels itself). Only guard.
+    if (isHelpHotkey(key) || helpOpen) return;
     if (key.ctrl && key.name === "f") {
       key.preventDefault();
       actions.openFriendsInbox();
@@ -2039,7 +2037,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         onCreateGroup={() => actions.showDialog({ kind: "room-create" })}
         onJoinGroup={() => actions.showDialog({ kind: "room-join" })}
         onOpenHelp={() => setHelpOpen(true)}
-        helpOpen={helpOpen}
       />
       {deleteConfirmation && (
         <box

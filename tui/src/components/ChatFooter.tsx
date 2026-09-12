@@ -10,9 +10,9 @@ function SettingsShortcut({ openSettings, pinned }: { openSettings: () => void; 
 
 function HelpShortcut({ openHelp, pinned }: { openHelp: () => void; pinned?: boolean }) {
   if (pinned) {
-    return <text id="help-shortcut" fg={theme.accent} style={{ flexShrink: 0 }} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+Shift+/ </span><u>help</u></text>
+    return <text id="help-shortcut" fg={theme.accent} style={{ flexShrink: 0 }} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+/ </span><u>help</u></text>
   }
-  return <text id="help-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+Shift+/ </span><u>help</u></text>
+  return <text id="help-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+/ </span><u>help</u></text>
 }
 
 function ShortcutCluster({ openSettings, onOpenHelp, pinned }: { openSettings: () => void; onOpenHelp?: () => void; pinned?: boolean }) {
@@ -29,19 +29,14 @@ function ShortcutCluster({ openSettings, onOpenHelp, pinned }: { openSettings: (
   </box>
 }
 
-export function ChatFooter({ width, scrollFocused, status, openSettings, onOpenHelp, helpOpen }: { width: number; scrollFocused: boolean; status: string; openSettings: () => void; onOpenHelp?: () => void; helpOpen?: boolean }) {
+export function ChatFooter({ width, status, openSettings, onOpenHelp }: { width: number; status: string; openSettings: () => void; onOpenHelp?: () => void }) {
   const compact = width < 70
-  // While the help overlay is open the mode hints are redundant — show how to
-  // dismiss it instead. Transient status notifications still take precedence.
-  const hint = helpOpen
-    ? [compact ? "Esc closes help" : "Esc closes help · PgUp/PgDn scrolls"]
-    : compact
-    ? [scrollFocused ? "↑↓ select · R reply · D delete · Esc" : "Enter send · PgUp · Ctrl+↑↓ chats"]
-    : [scrollFocused ? "↑↓ select / R reply / D delete / Enter enlarge image / End latest / Esc compose" : "Enter send / PgUp history / Ctrl+↑↓ chats / Ctrl+U attach / Drop files to send"]
   const notification = Boolean(status && status !== DEFAULT_STATUS)
   const statusColor = /error|lost|exceeds/i.test(status) ? theme.danger : theme.muted
-  // Reserve the same area for hints and transient messages. Long notifications can
-  // scroll within it, without moving the editor or showing a transient scrollbar.
+  // The footer only shows transient status messages plus the help/settings
+  // shortcuts — shortcut discovery lives in the help overlay. Long
+  // notifications can scroll within it, without moving the editor or showing
+  // a transient scrollbar.
   let footerBody
   if (notification) {
     if (compact) {
@@ -61,12 +56,11 @@ export function ChatFooter({ width, scrollFocused, status, openSettings, onOpenH
     }
   } else if (compact) {
     footerBody = <box style={{ width: "100%", flexDirection: "column", alignItems: "flex-start" }}>
-      <text id="chat-hint" fg={theme.muted} wrapMode="word">{hint[0]}</text>
       <ShortcutCluster openSettings={openSettings} onOpenHelp={onOpenHelp} />
     </box>
   } else {
     footerBody = <box style={{ width: "100%", flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 1 }}>
-      <text fg={theme.muted} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{hint[0]}</text>
+      <box style={{ flexGrow: 1, flexShrink: 1 }} />
       <ShortcutCluster openSettings={openSettings} onOpenHelp={onOpenHelp} pinned />
     </box>
   }

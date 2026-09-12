@@ -19,12 +19,10 @@ async function close(setup: Awaited<ReturnType<typeof testRender>>) {
   await act(async () => setup.renderer.destroy());
 }
 
-test("help hotkey matches Ctrl+Shift+/ and the 0x1F fallback", () => {
-  expect(isHelpHotkey({ name: "/", ctrl: true, shift: true, sequence: "/", raw: "/" })).toBe(true);
-  expect(isHelpHotkey({ name: "?", ctrl: true, shift: true, sequence: "?", raw: "?" })).toBe(true);
-  expect(isHelpHotkey({ name: "/", ctrl: true, shift: false, sequence: "/", raw: "/" })).toBe(false);
-  expect(isHelpHotkey({ name: "/", ctrl: false, shift: true, sequence: "/", raw: "/" })).toBe(false);
-  expect(isHelpHotkey({ name: "p", ctrl: true, shift: true, sequence: "\x10", raw: "\x10" })).toBe(false);
+test("help hotkey matches Ctrl+/ and the 0x1F fallback", () => {
+  expect(isHelpHotkey({ name: "/", ctrl: true, sequence: "/", raw: "/" })).toBe(true);
+  expect(isHelpHotkey({ name: "/", ctrl: false, sequence: "/", raw: "/" })).toBe(false);
+  expect(isHelpHotkey({ name: "p", ctrl: true, sequence: "\x10", raw: "\x10" })).toBe(false);
   expect(
     isHelpHotkey({ name: "unknown", ctrl: true, sequence: "\x1f", raw: "\x1f" }),
   ).toBe(true);
@@ -70,7 +68,7 @@ test("help data covers the required shortcuts and groups", () => {
     "Ctrl+U",
     "Ctrl+P",
     "Esc",
-    "Ctrl+Shift+/",
+    "Ctrl+/",
   ]) {
     expect(corpus).toContain(required);
   }
@@ -95,7 +93,7 @@ test("help overlay renders the visible groups with a close affordance", async ()
     }
     expect(frame).toContain("Relevant now: Composing");
     expect(frame).toContain("Enter — Send message");
-    expect(frame).toContain("Esc / Ctrl+Shift+/ closes");
+    expect(frame).toContain("Esc / Ctrl+/ closes");
     expect(setup.renderer.root.findDescendantById("help-overlay")).toBeDefined();
     expect(setup.renderer.root.findDescendantById("help-close")).toBeDefined();
     expect(setup.renderer.root.findDescendantById("help-content")).toBeDefined();
@@ -130,7 +128,7 @@ for (const width of [64, 48, 32]) {
       // Narrow widths clip long titles, so assert on tokens that survive wrapping.
       expect(frame).toContain("Keyboard");
       expect(frame).toContain("Close");
-      expect(frame).toContain("Shift");
+      expect(frame).toContain("Ctrl+/");
       expect(frame).toContain("closes");
       const overlay = setup.renderer.root.findDescendantById("help-overlay")!;
       expect(overlay).toBeDefined();
@@ -145,7 +143,6 @@ test("footer exposes a clickable help shortcut without removing settings", async
   const setup = await testRender(
     <ChatFooter
       width={100}
-      scrollFocused={false}
       status={DEFAULT_STATUS}
       openSettings={noop}
       onOpenHelp={noop}
@@ -155,7 +152,7 @@ test("footer exposes a clickable help shortcut without removing settings", async
   try {
     const frame = await settle(setup);
     expect(frame).toContain("Ctrl+P settings");
-    expect(frame).toContain("Ctrl+Shift+/ help");
+    expect(frame).toContain("Ctrl+/ help");
     expect(setup.renderer.root.findDescendantById("help-shortcut")).toBeDefined();
     expect(
       setup.renderer.root.findDescendantById("settings-shortcut"),
@@ -165,28 +162,31 @@ test("footer exposes a clickable help shortcut without removing settings", async
   }
 });
 
-test("footer swaps mode hints for a dismiss hint while help is open", async () => {
+test("footer shows no mode hints — discovery lives in the help overlay", async () => {
   const setup = await testRender(
     <ChatFooter
       width={100}
-      scrollFocused
       status={DEFAULT_STATUS}
       openSettings={noop}
       onOpenHelp={noop}
-      helpOpen
     />,
     { width: 100, height: 10 },
   );
   try {
     const frame = await settle(setup);
-    expect(frame).toContain("Esc closes help");
-    expect(frame).not.toContain("R reply");
-    expect(frame).not.toContain("D delete");
-    // Shortcuts stay clickable while help is open.
+    for (const hint of [
+      "Enter send",
+      "PgUp history",
+      "Ctrl+↑↓ chats",
+      "Ctrl+U attach",
+      "Drop files",
+      "R reply",
+      "D delete",
+      "Esc compose",
+    ]) {
+      expect(frame).not.toContain(hint);
+    }
     expect(setup.renderer.root.findDescendantById("help-shortcut")).toBeDefined();
-    expect(
-      setup.renderer.root.findDescendantById("settings-shortcut"),
-    ).toBeDefined();
   } finally {
     await close(setup);
   }
@@ -196,7 +196,6 @@ test("footer without a help handler keeps the legacy layout", async () => {
   const setup = await testRender(
     <ChatFooter
       width={100}
-      scrollFocused={false}
       status={DEFAULT_STATUS}
       openSettings={noop}
     />,
