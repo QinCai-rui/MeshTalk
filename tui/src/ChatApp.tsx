@@ -81,8 +81,17 @@ import {
   type SplashStyle,
 } from "./SplashScreen";
 import { AnalyticsConsent } from "./AnalyticsConsent";
+import {
+  sameResponse,
+  updateBoundedEntry,
+  retainRecentEntries,
+} from "./stateRetention";
 
 declare const APP_VERSION: string;
+
+const MAX_DRAFT_ENTRIES = 200;
+const MAX_GROUP_MEMBER_CACHE = 32;
+const MAX_UNREAD_ENTRIES = 500;
 
 function detectImageMime(bytes: Uint8Array): string | undefined {
   if (
@@ -163,7 +172,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const [unreadMessages, setUnreadMessages] = useState<
     Record<string, UnreadMessageState>
   >({});
-  const [unreadNow, setUnreadNow] = useState(() => Date.now());
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [draftLength, setDraftLength] = useState(0);
   const [composerHeight, setComposerHeight] = useState(MIN_COMPOSER_HEIGHT);
@@ -256,11 +264,13 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     receivedAt = Date.now(),
   ) {
     if (!messageId) return;
-    setUnreadMessages((current) =>
-      current[messageId]
-        ? current
-        : { ...current, [messageId]: { conversationKey, receivedAt } },
-    );
+    setUnreadMessages((current) => {
+      if (current[messageId]) return current;
+      return retainRecentEntries(
+        { ...current, [messageId]: { conversationKey, receivedAt } },
+        MAX_UNREAD_ENTRIES,
+      );
+    });
   }
 
   function rememberUnreadHistory(
@@ -286,7 +296,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         next[message.message_id] = { conversationKey, receivedAt };
         changed = true;
       }
-      return changed ? next : current;
+      return changed ? retainRecentEntries(next, MAX_UNREAD_ENTRIES) : current;
     });
   }
 
@@ -312,6 +322,13 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         ),
       ),
     );
+  }
+
+  function updateGroupMembers(groupId: string, members: GroupMember[]) {
+    setGroupMembers((current) => {
+      if (sameResponse(current[groupId], members)) return current;
+      return updateBoundedEntry(current, groupId, members, MAX_GROUP_MEMBER_CACHE);
+    });
   }
 
   function sendTyping(conversation: Conversation, isTyping: boolean) {
@@ -343,7 +360,9 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
 
   function handleComposerChange(content: string) {
     if (selectionKey)
-      setDrafts((current) => ({ ...current, [selectionKey]: content }));
+      setDrafts((current) =>
+        updateBoundedEntry(current, selectionKey, content, MAX_DRAFT_ENTRIES),
+      );
     if (!selection || !content) {
       stopOutgoingTyping();
       return;
@@ -635,7 +654,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       return;
     const interval = setInterval(() => {
       const now = Date.now();
-      setUnreadNow(now);
       setUnreadMessages((current) => {
         let changed = false;
         const next: Record<string, UnreadMessageState> = {};
@@ -651,7 +669,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         }
         return changed ? next : current;
       });
-    }, 100);
+    }, 250);
     return () => clearInterval(interval);
   }, [unreadMessages]);
 
@@ -727,38 +745,52 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   }, [ipc, renderer]);
 
   useEffect(() => {
+    if (!appReady) return;
     let active = true;
-    const interval = setInterval(() => {
-      void actions.refreshPeers().catch((error) => {
-        if (active && !backendDisconnected.current)
-          setStatus(`Peer refresh error: ${String(error)}`);
-      });
-      void actions.refreshFriendRequestsSilent().catch(() => {});
-      void actions.refreshGroups().catch((error) => {
-        if (active && !backendDisconnected.current)
-          setStatus(`Group refresh error: ${String(error)}`);
-      });
-      void actions.refreshGroupMembers().catch((error) => {
-        if (active && !backendDisconnected.current && selectedGroupId)
-          setStatus(`Group member refresh error: ${String(error)}`);
-      });
-      void ipc
-        .send("control")
-        .then((control) => {
-          if (active && !control.error)
-            setControlStatus({
-              connected: control.connected as boolean,
-              reconnect_attempts: control.reconnect_attempts as number,
-              control_url: control.url as string | null | undefined,
-            });
-        })
-        .catch(() => {});
-    }, 3000);
+    let pollInFlight = false;
+    const poll = async () => {
+      if (!active || pollInFlight) return;
+      pollInFlight = true;
+      try {
+        await Promise.all([
+          actions.refreshPeers().catch((error) => {
+            if (active && !backendDisconnected.current)
+              setStatus(`Peer refresh error: ${String(error)}`);
+          }),
+          actions.refreshFriendRequestsSilent(),
+          actions.refreshGroups().catch((error) => {
+            if (active && !backendDisconnected.current)
+              setStatus(`Group refresh error: ${String(error)}`);
+          }),
+          actions.refreshGroupMembers().catch((error) => {
+            if (active && !backendDisconnected.current && selectedGroupId)
+              setStatus(`Group member refresh error: ${String(error)}`);
+          }),
+          ipc
+            .send("control")
+            .then((control) => {
+              if (active && !control.error)
+                setControlStatus((current) => {
+                  const next = {
+                    connected: control.connected as boolean,
+                    reconnect_attempts: control.reconnect_attempts as number,
+                    control_url: control.url as string | null | undefined,
+                  };
+                  return sameResponse(current, next) ? current : next;
+                });
+            })
+            .catch(() => {}),
+        ]);
+      } finally {
+        pollInFlight = false;
+      }
+    };
+    const interval = setInterval(() => void poll(), 3000);
     return () => {
       active = false;
       clearInterval(interval);
     };
-  }, [ipc, selectedGroupId]);
+  }, [appReady, ipc, selectedGroupId]);
 
   function refreshSelectedConversationFiles() {
     const currentSelection = selection;
@@ -770,8 +802,12 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         : ipc.send("files", { group_id: currentSelection.id });
     void request
       .then((response) => {
-        if (!response.error && selectionKeyRef.current === currentSelectionKey)
-          setConversationFileTransfers(response.files as FileTransfer[]);
+        if (!response.error && selectionKeyRef.current === currentSelectionKey) {
+          const next = response.files as FileTransfer[];
+          setConversationFileTransfers((current) =>
+            sameResponse(current, next) ? current : next,
+          );
+        }
       })
       .catch(() => {});
   }
@@ -899,10 +935,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
               .send("group_members", { group_id: groupId })
               .then((response) => {
                 if (!response.error)
-                  setGroupMembers((current) => ({
-                    ...current,
-                    [groupId]: response.members as GroupMember[],
-                  }));
+                  updateGroupMembers(groupId, response.members as GroupMember[]);
               })
               .catch(() => {});
           }
@@ -1089,17 +1122,17 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           return;
         }
         if (event.event === "file_progress") {
-          setConversationFileTransfers((cur) =>
-            cur.map((f) =>
-              f.file_id === event.file_id
-                ? {
-                    ...f,
-                    received_chunks:
-                      (event.received as number) ?? f.received_chunks,
-                  }
-                : f,
-            ),
-          );
+          setConversationFileTransfers((cur) => {
+            const received = event.received as number | undefined;
+            let changed = false;
+            const next = cur.map((file) => {
+              if (file.file_id !== event.file_id || received === undefined) return file;
+              if (file.received_chunks === received) return file;
+              changed = true;
+              return { ...file, received_chunks: received };
+            });
+            return changed ? next : cur;
+          });
           return;
         }
         if (event.event === "file_completed") {
@@ -1281,10 +1314,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         .send("group_members", { group_id: selection.id })
         .then((response) => {
           if (!cancelled && !response.error)
-            setGroupMembers((current) => ({
-              ...current,
-              [selection.id]: response.members as GroupMember[],
-            }));
+            updateGroupMembers(selection.id, response.members as GroupMember[]);
         })
         .catch(() => {});
     }
@@ -1990,7 +2020,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         status={status}
         width={panelWidth}
         unreadMessageStates={unreadMessages}
-        unreadNow={unreadNow}
         markUnreadMessageVisible={markUnreadMessageVisible}
         openSettings={() => actions.showDialog({ kind: "settings" })}
         openImage={(file) => {

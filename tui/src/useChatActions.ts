@@ -12,12 +12,15 @@ import { runCommand as navigationRunCommand } from "./navigation"
 import { sendTestNotification } from "./notifications"
 import { DEFAULT_STATUS, groupDeliveryLabel, MAX_MESSAGE_BYTES, MIN_COMPOSER_HEIGHT } from "./utils"
 import { goBack as navigateBack } from "./navigation"
+import { sameResponse, updateBoundedEntry } from "./stateRetention"
 
 declare const APP_VERSION: string
 declare const MESHTALK_RELEASE: boolean
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
 const MAX_PASTED_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_GROUP_MEMBER_CACHE = 32
+const MAX_DRAFT_ENTRIES = 200
 
 const IMAGE_EXTENSIONS: Record<string, string> = {
   "image/png": ".png",
@@ -124,7 +127,10 @@ export function useChatActions(deps: ChatActionsDeps) {
   async function refreshFriendRequestsSilent() {
     try {
       const response = await ipc.send("friend_requests")
-      if (!response.error && setFriendRequests) setFriendRequests(response.requests as FriendRequest[])
+      if (!response.error && setFriendRequests) {
+        const next = response.requests as FriendRequest[]
+        setFriendRequests((current) => sameResponse(current, next) ? current : next)
+      }
     } catch {}
   }
 
@@ -143,7 +149,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     const response = await ipc.send("peers")
     if (response.error) throw new Error(response.error)
     const next = sortPeersByInteraction(response.peers as Peer[])
-    setPeers(next)
+    setPeers((current) => sameResponse(current, next) ? current : next)
     setSelection((current) => current && (current.kind === "group" || next.some((p) => p.peer_id === current.id))
       ? current
       : next[0] ? { kind: "peer", id: next[0].peer_id } : groups[0] ? { kind: "group", id: groups[0].group_id } : undefined)
@@ -153,7 +159,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     const response = await ipc.send("groups")
     if (response.error) throw new Error(response.error)
     const next = (response.groups as Group[]).sort((a, b) => a.name.localeCompare(b.name))
-    setGroups(next)
+    setGroups((current) => sameResponse(current, next) ? current : next)
     setSelection((current) => {
       if (!current) return peers[0] ? { kind: "peer", id: peers[0].peer_id } : next[0] ? { kind: "group", id: next[0].group_id } : undefined
       if (current?.kind !== "group" || next.some((g) => g.group_id === current.id)) return current
@@ -165,13 +171,19 @@ export function useChatActions(deps: ChatActionsDeps) {
     if (!groupId) return
     const response = await ipc.send("group_members", { group_id: groupId })
     if (response.error) throw new Error(response.error)
-    setGroupMembers((current) => ({ ...current, [groupId]: response.members as GroupMember[] }))
+    const members = response.members as GroupMember[]
+    setGroupMembers((current) => sameResponse(current[groupId], members)
+      ? current
+      : updateBoundedEntry(current, groupId, members, MAX_GROUP_MEMBER_CACHE))
   }
 
   async function refreshFiles() {
     try {
       const response = await ipc.send("files")
-      if (!response.error) setFileTransfers(response.files as FileTransfer[])
+      if (!response.error) {
+        const next = response.files as FileTransfer[]
+        setFileTransfers((current) => sameResponse(current, next) ? current : next)
+      }
     } catch {}
   }
 
@@ -445,7 +457,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
       const members = response.members as GroupMember[]
-      setGroupMembers((c) => ({ ...c, [group.group_id]: members }))
+      setGroupMembers((current) => sameResponse(current[group.group_id], members)
+        ? current
+        : updateBoundedEntry(current, group.group_id, members, MAX_GROUP_MEMBER_CACHE))
       showDialog({ kind: "group-detail", group, members })
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -992,7 +1006,9 @@ export function useChatActions(deps: ChatActionsDeps) {
         content, created_at: Date.now() / 1000, delivered: 0, queued: queued ? 1 : 0, reply_to_message_id: replyToMessageId,
       }])
       if (composer && composer === composerRef.current) { composer.selectAll(); composer.deleteSelection() }
-      setDrafts((c) => ({ ...c, [selectionKey]: "" }))
+      setDrafts((current) => updateBoundedEntry(
+        current, selectionKey, "", MAX_DRAFT_ENTRIES,
+      ))
       setDraftLength(0)
       setComposerHeight(MIN_COMPOSER_HEIGHT)
       showStatus(selection.kind === "group" ? `Group message sent: ${groupDeliveryLabel(response.deliveries as GroupDelivery[])}.`

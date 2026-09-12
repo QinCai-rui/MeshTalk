@@ -43,7 +43,7 @@ function panelProps(width: number): ComponentProps<typeof ConversationPanel> {
       { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "I shared the **updated notes**. What do you think?", created_at: 1788580800 } },
       { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "me", content: "Looks good. The simpler layout makes it much easier to read.", created_at: 1788580860, delivered: 1 } },
     ],
-    deliveredMessageIds: new Set(), dialogOpen: false, draftLength: 0, drafts: {}, flashingEnabled: false, blinkOn: true, composerHeight: 3, composerRef: createRef<TextareaRenderable>(), groupMembers: {}, identity: { peer_id: "me", display_name: "Taylor" }, imageProtocol: "blocks", limitedGroupMembers: [], capabilityGapMessage: "", isSending: false, limitColor: undefined, mutedPeers: {}, peers, selected: peers[0], selectedGroup: undefined, selectedGroupId: undefined, selectedHasCapabilityGap: false, selectedReplyTargetId: undefined, replyTo: undefined, selectionKey: "peer:alex", unreadMessageStates: {}, unreadNow: 0, markUnreadMessageVisible: noop, openSettings: noop, openImage: noop, openDeliveryDetails: noop, typingNames: [], editingName: false, scrollFocused: false, scrollboxRef: createRef<ScrollBoxRenderable>(), status: DEFAULT_STATUS, setComposerHeight: noop, setDraftLength: noop, setScrollFocused: noop, selectReplyTarget: noop, clearReplyTarget: noop, onComposerChange: noop, send: noop,
+    deliveredMessageIds: new Set(), dialogOpen: false, draftLength: 0, drafts: {}, flashingEnabled: false, blinkOn: true, composerHeight: 3, composerRef: createRef<TextareaRenderable>(), groupMembers: {}, identity: { peer_id: "me", display_name: "Taylor" }, imageProtocol: "blocks", limitedGroupMembers: [], capabilityGapMessage: "", isSending: false, limitColor: undefined, mutedPeers: {}, peers, selected: peers[0], selectedGroup: undefined, selectedGroupId: undefined, selectedHasCapabilityGap: false, selectedReplyTargetId: undefined, replyTo: undefined, selectionKey: "peer:alex", unreadMessageStates: {}, markUnreadMessageVisible: noop, openSettings: noop, openImage: noop, openDeliveryDetails: noop, typingNames: [], editingName: false, scrollFocused: false, scrollboxRef: createRef<ScrollBoxRenderable>(), status: DEFAULT_STATUS, setComposerHeight: noop, setDraftLength: noop, setScrollFocused: noop, selectReplyTarget: noop, clearReplyTarget: noop, onComposerChange: noop, send: noop,
   }
 }
 // Markdown's worker initializes asynchronously, independently of the renderer scheduler.
@@ -457,6 +457,52 @@ test("history selection and unread visibility retain their message IDs", async (
     await act(async () => { await setup.mockMouse.click(row.screenX + 1, row.screenY) })
     expect(selected).toMatchObject({ id: "m1", senderId: "alex", kind: "message" })
   } finally { await close(setup) }
+})
+
+test("unread highlights animate through an OpenTUI overlay", async () => {
+  const props = panelProps(80)
+  props.unreadMessageStates = {
+    m1: {
+      conversationKey: "peer:alex",
+      receivedAt: Date.now(),
+      visibleAt: Date.now(),
+    },
+  }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    await settle(setup, "updated notes")
+    const overlay = setup.renderer.root.findDescendantById("unread-highlight-m1")!
+    expect(overlay).toBeDefined()
+    expect(overlay.opacity).toBeLessThan(1)
+  } finally { await close(setup) }
+})
+
+test("delivery details are shown for group messages, not direct messages", async () => {
+  const directProps = panelProps(80)
+  const directMessage = directProps.conversationItems[1]!
+  if (directMessage.type !== "message") throw new Error("expected message")
+  directMessage.message.blocked = 1
+  const direct = await testRender(<ConversationPanel {...directProps} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(direct, "Looks good")
+    expect(frame).toContain("blocked")
+    expect(frame).not.toContain("click for details")
+  } finally { await close(direct) }
+
+  const groupProps = panelProps(80)
+  groupProps.selected = undefined
+  groupProps.selectedGroup = group
+  groupProps.selectedGroupId = group.group_id
+  groupProps.selectionKey = "group:team"
+  const groupMessage = groupProps.conversationItems[1]!
+  if (groupMessage.type !== "message") throw new Error("expected message")
+  groupMessage.message.group_id = group.group_id
+  groupMessage.message.deliveries = [{ recipient_id: "alex", display_name: "Alex Morgan", status: "delivered", updated_at: 1788580861 }]
+  const groupSetup = await testRender(<ConversationPanel {...groupProps} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(groupSetup, "Looks good")
+    expect(frame).toContain("click for details")
+  } finally { await close(groupSetup) }
 })
 
 test("sidebar no-peers empty state offers friend, connection, and LAN help actions", async () => {
