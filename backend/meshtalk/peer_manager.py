@@ -365,6 +365,17 @@ class PeerManager:
         if peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
             logger.warning("Rejecting remote UDP peer %s: peer limit reached", peer_id)
             return
+        # Freshness guard for the relay->direct handoff race: async connected
+        # callbacks may arrive out of order. Drop callbacks whose session is no
+        # longer the current active UDP session so a stale relay object cannot
+        # overwrite the newer direct route.
+        try:
+            active_session_id = self.udp.active_session_id(peer_id)
+        except Exception:
+            active_session_id = None
+        if active_session_id is not None and active_session_id != session_id:
+            logger.debug("Ignoring stale UDP connected callback for %s", peer_id)
+            return
         old = self._udp_peers.get(peer_id)
         old_endpoint = old.endpoint if old else None
         peer = PeerConnection(peer_id, address, port, PeerState.CONNECTED, "remote_derp" if via_relay else "remote_udp")
