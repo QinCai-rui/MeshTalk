@@ -347,12 +347,19 @@ jobs:
             try { reviewBody = fs.readFileSync('review-comment.md', 'utf8'); } catch (e) {}
             // Agent decides: trust its verdict. Approve on Looks good as long
             // as this is a real validated review (not the 3-attempt fallback).
+            // Request changes whenever Blocking/Should-fix is present, with or
+            // without one-click suggestions.
             const isFallback = /could not produce a valid/i.test(reviewBody);
             const verdictLooksGood = /verdict:\s*[*_`]*looks good\b/i.test(reviewBody);
+            const verdictNeedsChanges = /verdict:\s*[*_`]*needs changes\b/i.test(reviewBody);
             const canApprove = !isFallback && verdictLooksGood;
-            const event = canApprove ? 'APPROVE' : 'COMMENT';
+            const hasBlockingSuggestion = Array.isArray(suggestions) && suggestions.some(
+              (s) => s && (s.severity === 'Blocking' || s.severity === 'Should-fix')
+            );
+            const needsChanges = !isFallback && (verdictNeedsChanges || hasBlockingSuggestion);
+            const event = canApprove ? 'APPROVE' : (needsChanges ? 'REQUEST_CHANGES' : 'COMMENT');
             if (!Array.isArray(suggestions) || suggestions.length === 0) {
-              if (!canApprove) return;
+              if (!canApprove && !needsChanges) return;
             }
             const pr = (context.payload.issue && context.payload.issue.number) ||
               (context.payload.pull_request && context.payload.pull_request.number);
@@ -434,11 +441,13 @@ jobs:
               }
             }
             if (comments.length === 0) {
-              if (!canApprove) return;
+              if (!canApprove && !needsChanges) return;
               await postReview({
                 owner: context.repo.owner, repo: context.repo.repo, pull_number: pr,
-                commit_id, event: 'APPROVE',
-                body: 'Automated review approved — no blocking or should-fix issues found. Human merge decision still required.',
+                commit_id, event,
+                body: canApprove
+                  ? 'Automated review approved — no blocking or should-fix issues found. Human merge decision still required.'
+                  : 'Automated review requests changes — no one-click suggestion qualified; see the summary comment for the blocking/should-fix findings. Human merge decision still required.',
               });
               return;
             }
@@ -447,6 +456,8 @@ jobs:
               commit_id, event,
               body: canApprove
                 ? 'Automated review approved — no blocking or should-fix issues found. Human merge decision still required.'
-                : `Automated review: ${comments.length} suggestion${comments.length === 1 ? '' : 's'} below — apply individually or batch them from the Files changed tab.`,
+                : (needsChanges
+                  ? `Automated review requests changes — ${comments.length} suggestion${comments.length === 1 ? '' : 's'} below — apply individually or batch them from the Files changed tab.`
+                  : `Automated review: ${comments.length} suggestion${comments.length === 1 ? '' : 's'} below — apply individually or batch them from the Files changed tab.`),
               comments,
             });
