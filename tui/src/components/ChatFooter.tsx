@@ -10,9 +10,9 @@ function SettingsShortcut({ openSettings, pinned }: { openSettings: () => void; 
 
 function HelpShortcut({ openHelp, pinned }: { openHelp: () => void; pinned?: boolean }) {
   if (pinned) {
-    return <text id="help-shortcut" fg={theme.accent} style={{ flexShrink: 0 }} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+/ </span><u>help</u></text>
+    return <text id="help-shortcut" fg={theme.accent} style={{ flexShrink: 0 }} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+Shift+/ </span><u>help</u></text>
   }
-  return <text id="help-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+/ </span><u>help</u></text>
+  return <text id="help-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+Shift+/ </span><u>help</u></text>
 }
 
 function ShortcutCluster({ openSettings, onOpenHelp, pinned }: { openSettings: () => void; onOpenHelp?: () => void; pinned?: boolean }) {
@@ -29,9 +29,13 @@ function ShortcutCluster({ openSettings, onOpenHelp, pinned }: { openSettings: (
   </box>
 }
 
-export function ChatFooter({ width, scrollFocused, status, openSettings, onOpenHelp }: { width: number; scrollFocused: boolean; status: string; openSettings: () => void; onOpenHelp?: () => void }) {
+export function ChatFooter({ width, scrollFocused, status, openSettings, onOpenHelp, helpOpen }: { width: number; scrollFocused: boolean; status: string; openSettings: () => void; onOpenHelp?: () => void; helpOpen?: boolean }) {
   const compact = width < 70
-  const hint = compact
+  // While the help overlay is open the mode hints are redundant — show how to
+  // dismiss it instead. Transient status notifications still take precedence.
+  const hint = helpOpen
+    ? [compact ? "Esc closes help" : "Esc closes help · PgUp/PgDn scrolls"]
+    : compact
     ? [scrollFocused ? "↑↓ select · R reply · D delete · Esc" : "Enter send · PgUp · Ctrl+↑↓ chats"]
     : [scrollFocused ? "↑↓ select / R reply / D delete / Enter enlarge image / End latest / Esc compose" : "Enter send / PgUp history / Ctrl+↑↓ chats / Ctrl+U attach / Drop files to send"]
   const notification = Boolean(status && status !== DEFAULT_STATUS)

@@ -21,19 +21,17 @@ export function helpFocusLabel(focus: HelpFocus): string {
   return "Composing";
 }
 
-/** Ctrl+/ arrives as "/" with ctrl, or as the 0x1F control character on some terminals. */
+/** Ctrl+Shift+/ arrives as "/" (or "?" on US layouts) with ctrl+shift. Legacy terminals report it as 0x1F without shift state, so accept that too. */
 export function isHelpHotkey(key: {
   name?: string;
   ctrl?: boolean;
+  shift?: boolean;
   sequence?: string;
   raw?: string;
 }): boolean {
   if (!key.ctrl) return false;
-  return (
-    key.name === "/" ||
-    key.sequence === "\x1f" ||
-    key.raw === "\x1f"
-  );
+  if (key.shift && (key.name === "/" || key.name === "?")) return true;
+  return key.sequence === "\x1f" || key.raw === "\x1f";
 }
 
 export type HelpShortcut = { keys: string; description: string };
@@ -54,7 +52,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       { keys: "Ctrl+Up / Ctrl+Down", description: "Switch chats (DMs, then groups)" },
       { keys: "Ctrl+F", description: "Open friends inbox" },
       { keys: "Ctrl+P", description: "Open settings (press again to close)" },
-      { keys: "Ctrl+/", description: "Open / close this help (? also closes)" },
+      { keys: "Ctrl+Shift+/", description: "Open / close this help (? also closes)" },
       { keys: "Esc", description: "Close dialog, leave history, cancel reply or name edit" },
       { keys: "Ctrl+C", description: "Quit MeshTalk" },
     ],
@@ -222,7 +220,7 @@ export function HelpOverlay({
           })}
         </scrollbox>
         <text fg={theme.muted} wrapMode="word" flexShrink={0}>
-          Esc / Ctrl+/ closes · PgUp/PgDn scrolls · Click outside closes
+          Esc / Ctrl+Shift+/ closes · PgUp/PgDn scrolls · Click outside closes
         </text>
       </box>
     </box>

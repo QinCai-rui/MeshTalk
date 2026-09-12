@@ -2039,6 +2039,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         onCreateGroup={() => actions.showDialog({ kind: "room-create" })}
         onJoinGroup={() => actions.showDialog({ kind: "room-join" })}
         onOpenHelp={() => setHelpOpen(true)}
+        helpOpen={helpOpen}
       />
       {deleteConfirmation && (
         <box
