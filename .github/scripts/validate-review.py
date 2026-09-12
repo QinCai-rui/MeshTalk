@@ -19,6 +19,15 @@ BOLD_SEVERITY_HEADING = re.compile(
     re.IGNORECASE,
 )
 NON_FINDING = re.compile(r"^(?:no\b|none\b|notes?\b.*\bnon[- ]blocking\b)", re.IGNORECASE)
+CATEGORIES = {
+    "Functional Correctness",
+    "Security",
+    "Performance",
+    "Design",
+    "Testing",
+}
+SEVERITIES = {"Blocking", "Should-fix", "Nit", "Discussion"}
+EFFORTS = {"Trivial", "Moderate", "Significant"}
 
 
 def fail(errors: list[str], errors_path: Path) -> None:
@@ -216,6 +225,27 @@ def main() -> None:
             continue
         if not isinstance(replacement, str) or not replacement.strip():
             errors.append(f"{label} has an empty replacement.")
+            continue
+        if suggestion.get("category") not in CATEGORIES:
+            errors.append(
+                f"{label} has an invalid category; use one of: "
+                + ", ".join(sorted(CATEGORIES))
+                + "."
+            )
+            continue
+        if suggestion.get("severity") not in SEVERITIES:
+            errors.append(
+                f"{label} has an invalid severity; use one of: "
+                + ", ".join(sorted(SEVERITIES))
+                + "."
+            )
+            continue
+        if suggestion.get("effort") not in EFFORTS:
+            errors.append(
+                f"{label} has an invalid effort; use one of: "
+                + ", ".join(sorted(EFFORTS))
+                + "."
+            )
             continue
         if path not in added or any(n not in added[path] for n in range(line, end_line + 1)):
             errors.append(f"{label} targets {path}:{line}-{end_line}, outside added PR lines.")

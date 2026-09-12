@@ -70,7 +70,7 @@ class ValidateReviewTest(unittest.TestCase):
 - **should-fix** `src/example.py:2`: Return the intended value.
 
 ```suggestions-json
-[{"path":"src/example.py","line":2,"suggestion":"    return 2"}]
+[{"path":"src/example.py","line":2,"category":"Functional Correctness","severity":"Should-fix","effort":"Moderate","suggestion":"    return 2"}]
 ```
 """
         self.assertEqual(self.run_validator(review), 0)
@@ -136,11 +136,34 @@ This finding has no location.
 No actionable findings.
 
 ```suggestions-json
-[{"path":"src/example.py","line":1,"comment":"not a human finding","suggestion":"def example():"}]
+[{"path":"src/example.py","line":1,"comment":"not a human finding","category":"Design","severity":"Nit","effort":"Moderate","suggestion":"def example():"}]
 ```
 """
         self.assertEqual(self.run_validator(review), 1)
         self.assertNotIn("Citation src/example.py:1", self.errors.read_text())
+
+
+    def test_rejects_suggestion_with_invalid_category(self):
+        review = """## Findings
+- **should-fix** `src/example.py:2`: Return the intended value.
+
+```suggestions-json
+[{"path":"src/example.py","line":2,"category":"Vibes","severity":"Should-fix","effort":"Moderate","suggestion":"    return 2"}]
+```
+"""
+        self.assertEqual(self.run_validator(review), 1)
+        self.assertIn("invalid category", self.errors.read_text())
+
+    def test_rejects_suggestion_with_invalid_severity_or_effort(self):
+        review = """## Findings
+- **should-fix** `src/example.py:2`: Return the intended value.
+
+```suggestions-json
+[{"path":"src/example.py","line":2,"category":"Testing","severity":"Critical","effort":"Eventually","suggestion":"    return 2"}]
+```
+"""
+        self.assertEqual(self.run_validator(review), 1)
+        self.assertIn("invalid severity", self.errors.read_text())
 
 
 if __name__ == "__main__":

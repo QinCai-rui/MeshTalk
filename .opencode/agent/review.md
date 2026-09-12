@@ -60,11 +60,14 @@ Readability rules:
 
 End with a ```suggestions-json fenced block containing a JSON array, max 10 items, using `[]` when no one-click fix qualifies. Each item must be:
 ```json
-{"path": "repo-relative/file.ts", "line": 42, "end_line": 44, "comment": "Fix null check", "agent_prompt": "Verify this finding against current code, apply the minimal valid fix, and validate it.", "suggestion": "if (val != null) { return val; }"}
+{"path": "repo-relative/file.ts", "line": 42, "end_line": 44, "category": "Functional Correctness", "severity": "Should-fix", "effort": "Trivial", "comment": "Fix null check", "agent_prompt": "Verify this finding against current code, apply the minimal valid fix, and validate it.", "suggestion": "if (val != null) { return val; }"}
 ```
 - `path` must be in the PR diff
 - `line` must be a 1-based new-file line on an added diff line
 - `end_line` is optional and must be >= line for multi-line replacements
+- `category` must be one of: Functional Correctness, Security, Performance, Design, Testing
+- `severity` must match the finding's section: Blocking, Should-fix, Nit, Discussion
+- `effort` must be one of: Trivial, Moderate, Significant
 - `suggestion` must be the exact replacement code, with no fences
 - `agent_prompt` is optional; when present, it must be a concise verification-and-fix prompt for another coding agent
 - Only include suggestions you are confident apply cleanly; keep hunks tight
