@@ -103,6 +103,7 @@ function HighlightOverlay({ id }: { id: string }) {
       height="100%"
       backgroundColor={unreadMessageBackground(0)}
       opacity={1}
+      style={{ zIndex: 0 }}
     />
   )
 }
@@ -313,6 +314,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
             rows.push(
               <box id={file.file_id} key={`file-${file.file_id}`} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => selectReplyTarget({ id: file.file_id, senderId: file.sender_id, label: `Attachment: ${file.filename}`, groupId: file.group_id ?? undefined, kind: "file" })} style={{ position: "relative", flexDirection: "column", marginBottom: 1, backgroundColor: scrollFocused && selectedReplyTargetId === file.file_id && !fileReplyHighlighted ? theme.selected : undefined }}>
                  {fileReplyHighlighted && <HighlightOverlay id={`reply-highlight-${file.file_id}`} key={`reply-${replyHighlight!.startedAt}`} />}
+                <box style={{ position: "relative", zIndex: 1, flexDirection: "column" }}>
                  <text>
                   <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === file.file_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(file.created_at)} </span>
                   <span fg={isLocal ? theme.accent : theme.text}>{isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
@@ -323,9 +325,10 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 {canRetryFile && onRetryFile && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box>}
                 {isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(fileDeliveries) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
                 <text wrapMode="word"><span fg={theme.accent}>{file.filename}</span><span fg={theme.muted}> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
-                {fileUnavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
-                {!fileUnavailable && file.file_path ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage={isImageFile(file.filename)} scrollboxRef={scrollboxRef} maxWidth={Math.max(1, (scrollboxRef.current?.viewport.width ?? width - 3) - 2)} maxHeight={Math.min(16, Math.max(4, (scrollboxRef.current?.viewport.height ?? 16) - 4))} onOpen={() => openImage(file)} /> : null}
-              </box>
+                 {fileUnavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
+                 {!fileUnavailable && file.file_path ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage={isImageFile(file.filename)} scrollboxRef={scrollboxRef} maxWidth={Math.max(1, (scrollboxRef.current?.viewport.width ?? width - 3) - 2)} maxHeight={Math.min(16, Math.max(4, (scrollboxRef.current?.viewport.height ?? 16) - 4))} onOpen={() => openImage(file)} /> : null}
+                </box>
+               </box>
             )
             return rows
           }
@@ -370,6 +373,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
               <box id={message.message_id} key={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => selectReplyTarget({ id: message.message_id, senderId: message.sender_id, label: message.content, groupId: message.group_id, kind: "message" })} style={{ position: "relative", width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: selectedRow && !replyHighlighted ? theme.selected : undefined }}>
                {replyHighlighted && <HighlightOverlay id={`reply-highlight-${message.message_id}`} key={`reply-${replyHighlight!.startedAt}`} />}
                {unreadHighlighted && <HighlightOverlay id={`unread-highlight-${message.message_id}`} key={`unread-${message.message_id}`} />}
+              <box style={{ position: "relative", zIndex: 1, width: "100%", flexDirection: "column" }}>
                <text>
                 <span fg={theme.accent}>{scrollFocused && selectedReplyTargetId === message.message_id ? "> " : ""}</span><span fg={theme.muted}>{formatTime(message.created_at)} </span>
                 <span fg={isSystem ? theme.warning : isLocal ? theme.accent : theme.text}>{isSystem ? "System" : isLocal ? "You" : selectedGroup ? senderName : selected?.display_name}</span>
@@ -377,9 +381,10 @@ export function ConversationPanel(props: ConversationPanelProps) {
                  {showReceived && <span fg={theme.muted}> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
                  </text>
                 {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
-                {message.reply_to_message_id && <box onMouseDown={replySelectTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); clearReplyTarget(); highlightReplyTarget(replySelectTarget.id); setScrollFocused(true); scrollboxRef.current?.scrollChildIntoView(replySelectTarget.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
-                <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
-            </box>
+                 {message.reply_to_message_id && <box onMouseDown={replySelectTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); clearReplyTarget(); highlightReplyTarget(replySelectTarget.id); setScrollFocused(true); scrollboxRef.current?.scrollChildIntoView(replySelectTarget.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
+                 <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
+              </box>
+             </box>
           )
           return rows
         })}
