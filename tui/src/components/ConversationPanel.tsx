@@ -402,6 +402,15 @@ export function ConversationPanel(props: ConversationPanelProps) {
     const deliveries = new Map<string, GroupDelivery[]>()
     for (const item of conversationItems) {
       if (item.type !== "file") continue
+      if (item.file.deliveries?.length) {
+        deliveries.set(item.file.file_id, item.file.deliveries.map((d) => ({
+          recipient_id: d.recipient_id,
+          display_name: groupMemberNames.get(d.recipient_id) ?? peerNames.get(d.recipient_id) ?? d.display_name,
+          status: d.status === "completed" ? "delivered" : d.status === "failed" ? "unavailable" : d.status === "transferring" || d.status === "receiving" ? "pending" : d.status,
+          updated_at: d.updated_at,
+        })))
+        continue
+      }
       deliveries.set(item.file.file_id, item.allFiles.map((file) => ({
         recipient_id: file.recipient_id,
         display_name: groupMemberNames.get(file.recipient_id) ?? peerNames.get(file.recipient_id) ?? file.recipient_id.slice(0, 8),

@@ -682,9 +682,18 @@ async def main(debug: bool = False) -> None:
         if is_file:
             if transfer is None:
                 return {"error": "attachment not found"}
-            if transfer["direction"] == "inbound" and transfer.get("file_path"):
+            if transfer.get("file_path"):
+                # Group sends share one snapshot across the fan-out (and legacy
+                # rows each own theirs): only unlink once nothing references it.
+                # This also covers outbound snapshots, which previously lingered.
                 try:
-                    Path(transfer["file_path"]).unlink(missing_ok=True)
+                    if await db.count_file_path_references(transfer["file_path"]) == 0:
+                        snapshot = Path(transfer["file_path"])
+                        snapshot.unlink(missing_ok=True)
+                        try:
+                            snapshot.parent.rmdir()
+                        except OSError:
+                            pass
                 except OSError:
                     logger.warning("Could not remove local attachment file %s", transfer["file_path"])
         else:
@@ -804,8 +813,11 @@ async def main(debug: bool = False) -> None:
         file_id = req.get("file_id")
         if not isinstance(file_id, str) or not file_id:
             return {"error": "file_id required"}
+        recipient_id = req.get("recipient_id")
+        if recipient_id is not None and (not isinstance(recipient_id, str) or not recipient_id):
+            return {"error": "recipient_id must be a non-empty string"}
         try:
-            retried = await file_manager.retry_file(file_id)
+            retried = await file_manager.retry_file(file_id, recipient_id)
         except ValueError as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -822,23 +834,17 @@ async def main(debug: bool = False) -> None:
             return {"error": "file_path required"}
         if group_id not in settings.rooms or settings.rooms[group_id].group_name is None:
             return {"error": "Unknown group"}
-        members = await db.get_group_members(group_id)
-        results = []
-        errors = []
-        for member in members:
-            recipient_id = member["peer_id"]
-            if recipient_id == identity.peer_id:
-                continue
-            if await db.is_peer_blocked(recipient_id):
-                continue
-            try:
-                fid = await file_manager.send_file(recipient_id, file_path, group_id=group_id)
-                results.append({"recipient_id": recipient_id, "file_id": fid})
-            except Exception as exc:
-                errors.append(f"{recipient_id[:8]}: {exc}")
-        if not results and errors:
-            return {"error": "; ".join(errors)}
-        return {"results": results, "errors": errors}
+        try:
+            file_id = await file_manager.send_group_file(group_id, file_path)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            logger.exception("group_file_send failed")
+            return {"error": str(exc)}
+        deliveries = await db.get_file_deliveries(file_id)
+        results = [{"recipient_id": d["recipient_id"], "file_id": file_id} for d in deliveries]
+        errors = [f"{d['recipient_id'][:8]}: {d['status']}" for d in deliveries if d["status"] == "unavailable"]
+        return {"file_id": file_id, "results": results, "errors": errors}
 
     async def handle_files(req: dict) -> dict:
         peer_id = req.get("peer_id")

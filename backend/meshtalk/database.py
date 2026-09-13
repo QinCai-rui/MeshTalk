@@ -150,7 +150,22 @@ CREATE TABLE IF NOT EXISTS file_received_chunks (
     chunk_index INTEGER NOT NULL,
     PRIMARY KEY (file_id, chunk_index)
 );
+
+CREATE TABLE IF NOT EXISTS file_deliveries (
+    file_id TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (file_id, recipient_id)
+);
 """
+
+# Sender rows for group file sends fan out under one shared file_id (mirroring
+# group_messages/group_deliveries), so recipient_id is empty on those rows and
+# per-member status lives in file_deliveries. Legacy fan-out rows (one row per
+# member with a real recipient_id) keep their per-row behavior wherever they
+# are still encountered.
+GROUP_FILE_SENDER_ROW_RECIPIENT = ""
 
 
 class Database:
@@ -240,6 +255,13 @@ class Database:
             gd_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_deliveries)")}
             if not gd_columns:
                 await self._db.execute("CREATE TABLE IF NOT EXISTS group_deliveries (message_id TEXT NOT NULL, recipient_id TEXT NOT NULL, status TEXT NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY (message_id, recipient_id))")
+        except Exception:
+            pass
+        # Ensure file_deliveries exists (older DBs may lack it entirely - SCHEMA already handled)
+        try:
+            fd_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(file_deliveries)")}
+            if not fd_columns:
+                await self._db.execute("CREATE TABLE IF NOT EXISTS file_deliveries (file_id TEXT NOT NULL, recipient_id TEXT NOT NULL, status TEXT NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY (file_id, recipient_id))")
         except Exception:
             pass
         await self._encrypt_existing_message_content()
@@ -595,15 +617,70 @@ class Database:
         return cursor.rowcount > 0
 
     async def delete_file_transfer_locally(self, file_id: str) -> dict | None:
-        """Remove a local attachment record, chunks, and pending sends."""
+        """Remove a local attachment record, per-recipient deliveries, chunks, and pending sends.
+
+        One call clears a whole group send: the shared sender row, every
+        file_deliveries row, and all queued packets carry the same file_id.
+        """
         transfer = await self.get_file_transfer(file_id)
         if transfer is None:
             return None
         await self._db.execute("DELETE FROM file_transfers WHERE file_id = ?", (file_id,))
+        await self._db.execute("DELETE FROM file_deliveries WHERE file_id = ?", (file_id,))
         await self._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (file_id,))
         await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (file_id,))
         await self._db.commit()
         return transfer
+
+    async def count_file_path_references(self, file_path: str) -> int:
+        """Count transfer rows still referencing a snapshot path (shared group snapshots)."""
+        async with self._db.execute(
+            "SELECT COUNT(*) AS count FROM file_transfers WHERE file_path = ?", (file_path,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row["count"]) if row else 0
+
+    async def set_file_delivery(self, file_id: str, recipient_id: str, status: str) -> None:
+        """Record or update delivery status for one recipient of a group file send."""
+        await self._db.execute(
+            """INSERT INTO file_deliveries (file_id, recipient_id, status, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(file_id, recipient_id) DO UPDATE SET
+                 status = CASE
+                   WHEN file_deliveries.status IN ('completed', 'blocked') THEN file_deliveries.status
+                   ELSE excluded.status
+                 END,
+                 updated_at = CASE
+                   WHEN file_deliveries.status IN ('completed', 'blocked') THEN file_deliveries.updated_at
+                   ELSE excluded.updated_at
+                 END""",
+            (file_id, recipient_id, status, time.time()),
+        )
+        await self._db.commit()
+
+    async def get_file_deliveries(self, file_id: str) -> list[dict]:
+        """Get delivery status for all recipients of a group file send."""
+        async with self._db.execute(
+            """SELECT d.recipient_id, COALESCE(p.display_name, gm.display_name, d.recipient_id) AS display_name,
+                      d.status, d.updated_at
+               FROM file_deliveries d
+               LEFT JOIN file_transfers t ON t.file_id = d.file_id
+               LEFT JOIN group_members gm ON gm.group_id = t.group_id AND gm.peer_id = d.recipient_id
+               LEFT JOIN peers p ON p.peer_id = d.recipient_id
+               WHERE d.file_id = ? ORDER BY display_name""",
+            (file_id,),
+        ) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def get_queued_file_deliveries_for_peer(self, peer_id: str) -> list[dict]:
+        """Get queued group-file deliveries for one peer with their sender rows."""
+        async with self._db.execute(
+            """SELECT t.*, d.status AS delivery_status
+               FROM file_deliveries d JOIN file_transfers t ON t.file_id = d.file_id
+               WHERE d.recipient_id = ? AND d.status = 'queued' AND t.direction = 'outbound'""",
+            (peer_id,),
+        ) as cursor:
+            return [dict(row) async for row in cursor]
 
     async def upsert_group(self, group_id: str, name: str) -> None:
         """Insert or update a group with its name."""
