@@ -379,8 +379,10 @@ class FileTransferManager:
         # Do not flush to locally blocked peers (parity with group send).
         if await self.db.is_peer_blocked(peer_id):
             return 0
-        # Flush queued file transfers for this peer - re-read file and resend
-        transfers = [t for t in await self.db.get_file_transfers(peer_id) if t["status"] == "queued" and t["direction"] == "outbound"]
+        # Flush queued file transfers for this peer - re-read file and resend.
+        # include_group=True: queued group fan-out rows belong to this
+        # recipient and must still flush even though DM listings exclude them.
+        transfers = [t for t in await self.db.get_file_transfers(peer_id, include_group=True) if t["status"] == "queued" and t["direction"] == "outbound"]
         flushed = 0
         for t in transfers:
             peer = self.peer_manager.get_connected_peer(peer_id)
@@ -491,7 +493,9 @@ class FileTransferManager:
         peer = self.peer_manager.get_connected_peer(peer_id)
         if not peer or not peer.supports(CAP_FILE_TRANSFER):
             return
-        transfers = await self.db.get_file_transfers(peer_id)
+        # include_group=True: inbound group files from this sender must
+        # still resume even though DM listings exclude them.
+        transfers = await self.db.get_file_transfers(peer_id, include_group=True)
         for transfer in transfers:
             if (
                 transfer["direction"] != "inbound"
@@ -852,7 +856,11 @@ class FileTransferManager:
     async def list_transfers(
         self, peer_id: str | None = None, group_id: str | None = None
     ) -> list[dict]:
-        """List file transfers, optionally for one peer or group."""
+        """List file transfers, optionally for one peer or group.
+
+        A peer-only query lists direct transfers; group transfers appear
+        only under their group_id query.
+        """
         return await self.db.get_file_transfers(peer_id=peer_id, group_id=group_id)
 
     async def get_transfer(self, file_id: str) -> dict | None:
