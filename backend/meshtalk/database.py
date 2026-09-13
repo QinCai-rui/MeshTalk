@@ -647,11 +647,11 @@ class Database:
                VALUES (?, ?, ?, ?)
                ON CONFLICT(file_id, recipient_id) DO UPDATE SET
                  status = CASE
-                   WHEN file_deliveries.status IN ('completed', 'blocked') THEN file_deliveries.status
+                    WHEN file_deliveries.status = 'completed' THEN file_deliveries.status
                    ELSE excluded.status
                  END,
                  updated_at = CASE
-                   WHEN file_deliveries.status IN ('completed', 'blocked') THEN file_deliveries.updated_at
+                    WHEN file_deliveries.status = 'completed' THEN file_deliveries.updated_at
                    ELSE excluded.updated_at
                  END""",
             (file_id, recipient_id, status, time.time()),

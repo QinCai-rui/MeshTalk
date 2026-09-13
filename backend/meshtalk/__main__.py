@@ -695,7 +695,7 @@ async def main(debug: bool = False) -> None:
                                 snapshot.parent.rmdir()
                         except OSError:
                             pass
-                except OSError:
+                except Exception:
                     logger.warning("Could not remove local attachment file %s", transfer["file_path"])
         else:
             deleted = await db.delete_message_locally(message_id, group_id)
@@ -844,8 +844,11 @@ async def main(debug: bool = False) -> None:
             return {"error": str(exc)}
         deliveries = await db.get_file_deliveries(file_id)
         results = [{"recipient_id": d["recipient_id"], "file_id": file_id} for d in deliveries if d["status"] not in ("unavailable", "failed", "blocked")]
-        errors = [f"{d['recipient_id'][:8]}: {d['status']}" for d in deliveries if d["status"] in ("unavailable", "failed", "blocked")]
-        return {"file_id": file_id, "results": results, "errors": errors}
+        errors = [f"{str(d['recipient_id'])[:8]}: {d['status']}" for d in deliveries if d["status"] in ("unavailable", "failed", "blocked")]
+        response = {"file_id": file_id, "results": results, "errors": errors}
+        if not results:
+            response["error"] = "; ".join(errors) or "No group file deliveries were created"
+        return response
 
     async def handle_files(req: dict) -> dict:
         peer_id = req.get("peer_id")
