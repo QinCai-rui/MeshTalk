@@ -229,6 +229,11 @@ jobs:
               printf 'PR-head content unavailable: %s\n' "$FILE" >> "$CONTEXT_DIR/warnings.txt"
             fi
           done < "$CONTEXT_DIR/changed-paths.txt"
+          python3 .github/scripts/review-policy.py \
+            --diff "$CONTEXT_DIR/pr.diff" \
+            --head-dir "$CONTEXT_DIR/head" \
+            --output "$CONTEXT_DIR/required-suggestions.json" \
+            --report "$CONTEXT_DIR/deterministic.md"
           if [ "$PR_EXECUTION_AUTHORIZED" = "true" ]; then
             printf 'PR-head execution authorized. The review agent must choose and run tests relevant to the changed behavior.\n' > "$CONTEXT_DIR/checks.md"
           else
@@ -293,6 +298,26 @@ jobs:
             printf 'Not applicable (mode=%s): review the full PR diff.\n' "$REVIEW_MODE" > "$CONTEXT_DIR/range.diff"
           fi
           set -o pipefail
+          mkdir -p "$CONTEXT_DIR/candidates"
+          run_candidate() {
+            local agent="$1"
+            local events="$CONTEXT_DIR/candidates/${agent}-events.jsonl"
+            local output="$CONTEXT_DIR/candidates/${agent}.md"
+            if ! env -u GH_TOKEN opencode run --format json --agent "$agent" --model opencode/muse-spark-1.3-contributor-free "Mode: $REVIEW_MODE. PR: $PR_NUMBER. Read the review context and return independent candidate findings only." | tee "$events"; then
+              printf 'Candidate pass failed.\n' > "$output"
+              return
+            fi
+            jq -sr '[.[] | select(.type == "text") | .part.text] | last // "None."' "$events" > "$output"
+          }
+          run_candidate review-security &
+          security_pid=$!
+          run_candidate review-correctness &
+          correctness_pid=$!
+          run_candidate review-workflows &
+          workflows_pid=$!
+          wait "$security_pid" || true
+          wait "$correctness_pid" || true
+          wait "$workflows_pid" || true
           REVIEW_SESSION=""
           run_review() {
             if [ -n "$REVIEW_SESSION" ]; then
@@ -334,6 +359,7 @@ jobs:
               --head-dir "$CONTEXT_DIR/head" \
               --review review-comment.md \
               --suggestions suggestions.json \
+              --required-suggestions "$CONTEXT_DIR/required-suggestions.json" \
               --errors /tmp/review-errors.txt
             then
               VALID=true
