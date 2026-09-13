@@ -66,14 +66,14 @@ def main() -> None:
         for number, text in enumerate(source.read_text().splitlines(), 1):
             if number not in lines:
                 continue
-            if re.match(r'^\s+"\*": allow\s*$', text):
+            if re.match(r"""^\s+["']\*["']: allow\s*$""", text):
                 findings.append(suggestion(
                     path,
                     number,
                     "The unrestricted `\"*\": allow` permission defeats the agent sandbox and can expose secrets or permit unsafe operations. Replace it with the smallest path or command-specific permission.",
                     "Restrict this broad agent permission to the exact paths or commands required by the agent, then validate the frontmatter YAML.",
                 ))
-            elif re.match(r'^\s+"(?:rg|grep) \*": allow\s*$', text):
+            elif re.match(r"""^\s+["'](?:rg|grep) \*["']: allow\s*$""", text):
                 findings.append(suggestion(
                     path,
                     number,
