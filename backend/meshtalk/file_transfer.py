@@ -735,6 +735,9 @@ class FileTransferManager:
                 await self.db.set_file_delivery(file_id, target, "failed")
                 errors.append(f"{target[:8]}: no known public key")
                 continue
+            if not await self.db.peer_supports(target, CAP_FILE_TRANSFER):
+                await self.db.set_file_delivery(file_id, target, "unavailable")
+                continue
             await self.db.add_to_outqueue(target, PacketType.FILE_OFFER.value, offer.encode(), message_id=file_id, group_id=transfer["group_id"])
             await self.db.set_file_delivery(file_id, target, "queued")
             self._emit({"event": "file_queued", "file_id": file_id, "recipient_id": target, "filename": transfer["filename"], "group_id": transfer["group_id"]})
@@ -1059,7 +1062,7 @@ class FileTransferManager:
             # Completed/blocked receivers repeat their ACK after reconnecting.
             # Delivery is terminal, so duplicate ACKs (including stale missing
             # requests) must not emit a second delivery event or retransmit.
-            if deliveries[peer.peer_id] in ("completed", "blocked") or transfer["status"] == "completed":
+            if deliveries.get(peer.peer_id) == ack.status or transfer["status"] == "completed":
                 return
         else:
             if transfer["recipient_id"] != peer.peer_id:

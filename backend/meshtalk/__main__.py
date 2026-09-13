@@ -691,7 +691,8 @@ async def main(debug: bool = False) -> None:
                         snapshot = Path(transfer["file_path"])
                         snapshot.unlink(missing_ok=True)
                         try:
-                            snapshot.parent.rmdir()
+                            if snapshot.parent.name == message_id:
+                                snapshot.parent.rmdir()
                         except OSError:
                             pass
                 except OSError:
@@ -842,8 +843,8 @@ async def main(debug: bool = False) -> None:
             logger.exception("group_file_send failed")
             return {"error": str(exc)}
         deliveries = await db.get_file_deliveries(file_id)
-        results = [{"recipient_id": d["recipient_id"], "file_id": file_id} for d in deliveries]
-        errors = [f"{d['recipient_id'][:8]}: {d['status']}" for d in deliveries if d["status"] == "unavailable"]
+        results = [{"recipient_id": d["recipient_id"], "file_id": file_id} for d in deliveries if d["status"] not in ("unavailable", "failed", "blocked")]
+        errors = [f"{d['recipient_id'][:8]}: {d['status']}" for d in deliveries if d["status"] in ("unavailable", "failed", "blocked")]
         return {"file_id": file_id, "results": results, "errors": errors}
 
     async def handle_files(req: dict) -> dict:
