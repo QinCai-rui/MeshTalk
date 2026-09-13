@@ -17,13 +17,7 @@ jobs:
         startsWith(github.event.comment.body, '/meshdoctor\n') ||
         startsWith(github.event.comment.body, '/opencode ') ||
         startsWith(github.event.comment.body, '/opencode\n')
-      ) &&
-      !startsWith(github.event.comment.body, '/oc review') &&
-      !startsWith(github.event.comment.body, '/oc rereview') &&
-      !startsWith(github.event.comment.body, '/meshdoctor review') &&
-      !startsWith(github.event.comment.body, '/meshdoctor rereview') &&
-      !startsWith(github.event.comment.body, '/opencode review') &&
-      !startsWith(github.event.comment.body, '/opencode rereview')
+      )
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -31,12 +25,27 @@ jobs:
       pull-requests: read
       issues: read
     steps:
+      - name: Gate generic command
+        id: command-gate
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const command = (context.payload.comment?.body || '').split(/\r?\n/, 1)[0].trim().toLowerCase();
+            const reviewCommands = new Set([
+              '/meshdoctor review',
+              '/meshdoctor full-review',
+              '/meshdoctor help',
+            ]);
+            core.setOutput('run', String(!reviewCommands.has(command)));
+
       - name: Checkout repository
+        if: steps.command-gate.outputs.run == 'true'
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Run meshdoctor
+        if: steps.command-gate.outputs.run == 'true'
         uses: anomalyco/opencode/github@latest
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
