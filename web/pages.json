@@ -43,6 +43,17 @@
       "canonical": "/docs"
     },
     {
+      "route": "/status",
+      "aliases": ["/status.html"],
+      "view": "status",
+      "output": "status.html",
+      "title": "Control Server Status \u2014 MeshTalk",
+      "description": "Live health status of the MeshTalk control server \u2014 rooms, connections, and endpoint reachability.",
+      "keywords": "MeshTalk control server, status, health check, rendezvous server",
+      "ogType": "website",
+      "canonical": "/status"
+    },
+    {
       "route": "/privacy",
       "aliases": ["/privacy.html"],
       "view": "privacy",
