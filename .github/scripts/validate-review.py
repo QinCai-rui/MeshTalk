@@ -12,8 +12,8 @@ from pathlib import Path
 SUGGESTIONS = re.compile(r"```suggestions-json\s*(.*?)\s*```", re.DOTALL)
 # Only recognize path-like citations, avoiding ordinary prose such as "HTTP: 422".
 CITATION = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+):(\d+)(?:-(\d+))?")
-SEVERITY = re.compile(r"\b(?:blocking|should-fix|nit)\b", re.IGNORECASE)
-SEVERITY_LABEL = re.compile(r"\*\*\s*(blocking|should-fix|nit)\b|\[(blocking|should-fix|nit)\]", re.IGNORECASE)
+SEVERITY = re.compile(r"\b(?:blocking|should-fix|nit|discussion)\b", re.IGNORECASE)
+SEVERITY_LABEL = re.compile(r"\*\*\s*(blocking|should-fix|nit|discussion)\b|\[(blocking|should-fix|nit|discussion)\]", re.IGNORECASE)
 BOLD_SEVERITY_HEADING = re.compile(
     r"^\s*\*\*(?:blocking(?:\s*/\s*should-fix)?|should-fix|nit|needs\s+discussion(?:\s*/\s*residual\s+risk)?)\s*:?\*\*\s*$",
     re.IGNORECASE,
@@ -117,7 +117,7 @@ def has_severity_label(block: str) -> bool:
     for line in block.splitlines():
         cleaned = re.sub(r"^\s*(?:#{1,6}\s*|(?:[-*]|\d+[.)])\s*|>\s*)*", "", line)
         cleaned = re.sub(r"^[\*_`\[\(\s]+", "", cleaned)
-        if re.match(r"(?i)(blocking|should-fix|nit)\b\s*(?:[:/\-\]]|$)", cleaned):
+        if re.match(r"(?i)(blocking|should-fix|nit|discussion)\b\s*(?:[:/\-\]]|$)", cleaned):
             return True
     return False
 
@@ -148,6 +148,19 @@ def main() -> None:
     errors: list[str] = []
 
     human_review = review.split("```suggestions-json", 1)[0]
+    required_sections = (
+        "Verdict:",
+        "## Summary",
+        "### Nit",
+        "### Discussion",
+        "## Verification",
+        "**Ran by workflow**",
+        "**Ran by reviewer**",
+        "**Suggested (not run)**",
+    )
+    for section in required_sections:
+        if section not in human_review:
+            errors.append(f"Review is missing required section or label: {section}")
     inherited_severity = False
     for block_lines in review_blocks(human_review):
         # Markdown severity headings (e.g. "### should-fix") apply to the
@@ -247,6 +260,13 @@ def main() -> None:
         ):
             errors.append(f"{label} has no finding text for its inline note.")
             continue
+        if not isinstance(comment, str) or not all(
+            marker in comment for marker in ("What:", "Why it matters:", "Fix:")
+        ):
+            errors.append(
+                f"{label} comment must contain What:, Why it matters:, and Fix:."
+            )
+            continue
         if suggestion.get("category") not in CATEGORIES:
             errors.append(
                 f"{label} has an invalid category; use one of: "
@@ -254,10 +274,10 @@ def main() -> None:
                 + "."
             )
             continue
-        if suggestion.get("severity") not in {"Blocking", "Should-fix", "Nit"}:
+        if suggestion.get("severity") not in SEVERITIES:
             errors.append(
                 f"{label} has severity {suggestion.get('severity')!r}; inline items "
-                "must be Blocking, Should-fix, or Nit (Discussion stays in the summary)."
+                "must be Blocking, Should-fix, Nit, or Discussion."
             )
             continue
         if suggestion.get("effort") not in EFFORTS:

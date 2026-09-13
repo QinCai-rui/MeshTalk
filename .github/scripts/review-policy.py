@@ -70,14 +70,14 @@ def main() -> None:
                 findings.append(suggestion(
                     path,
                     number,
-                    "The unrestricted `\"*\": allow` permission defeats the agent sandbox and can expose secrets or permit unsafe operations. Replace it with the smallest path or command-specific permission.",
+                    "What: The unrestricted `\"*\": allow` permission defeats the agent sandbox.\nWhy it matters: It can expose secrets or permit unsafe operations.\nFix: Replace it with the smallest path or command-specific permission.",
                     "Restrict this broad agent permission to the exact paths or commands required by the agent, then validate the frontmatter YAML.",
                 ))
             elif re.match(r"""^\s+["'](?:rg|grep) \*["']: allow\s*$""", text):
                 findings.append(suggestion(
                     path,
                     number,
-                    "The unrestricted search permission can read process or credential files outside the repository. Deny it or scope searches to approved review paths.",
+                    "What: The unrestricted search permission can read files outside the repository.\nWhy it matters: It can expose process or credential data.\nFix: Deny it or scope searches to approved review paths.",
                     "Replace this broad search permission with path-scoped tool permissions or deny shell search commands, then validate the frontmatter YAML.",
                 ))
 
