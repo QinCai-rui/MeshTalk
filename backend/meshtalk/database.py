@@ -967,7 +967,11 @@ class Database:
         if peer_id:
             clauses.append("(sender_id = ? OR recipient_id = ?)")
             params.extend([peer_id, peer_id])
-            if group_id is None and not include_group:
+            if not group_id and not include_group:
+                # Falsy group_id (None, or "" which IPC validation already
+                # rejects) means a DM listing: direct transfers only. Wire
+                # decode only yields None or a 32-hex id, and direct rows
+                # store NULL, so IS NULL cannot hide a real group row.
                 clauses.append("group_id IS NULL")
         if group_id:
             clauses.append("group_id = ?")
