@@ -953,14 +953,22 @@ class Database:
         await self._db.execute(f"UPDATE file_transfers SET {sets} WHERE file_id = ?", tuple(values))
         await self._db.commit()
 
-    async def get_file_transfers(self, peer_id: str | None = None, group_id: str | None = None) -> list[dict]:
-        """Retrieve file transfers filtered by peer ID or group ID."""
+    async def get_file_transfers(self, peer_id: str | None = None, group_id: str | None = None, include_group: bool = False) -> list[dict]:
+        """Retrieve file transfers filtered by peer ID or group ID.
+
+        A peer-only query returns direct transfers only (group_id IS NULL)
+        so group fan-out rows do not leak into DM history. Pass
+        include_group=True for internal per-peer delivery paths (flush/resume)
+        that must still see queued group transfers for that peer.
+        """
         query = "SELECT * FROM file_transfers"
         clauses: list[str] = []
         params: list[str] = []
         if peer_id:
             clauses.append("(sender_id = ? OR recipient_id = ?)")
             params.extend([peer_id, peer_id])
+            if group_id is None and not include_group:
+                clauses.append("group_id IS NULL")
         if group_id:
             clauses.append("group_id = ?")
             params.append(group_id)
