@@ -3,9 +3,14 @@ mode: all
 hidden: true
 model: opencode/muse-spark-1.3-contributor-free
 permission:
-  read: allow
-  glob: allow
-  grep: allow
+  read:
+    "*": deny
+    ".review-context/**": allow
+  glob:
+    "*": deny
+    ".review-context/**": allow
+  grep:
+    "*": deny
   edit: deny
   bash: deny
   task: deny

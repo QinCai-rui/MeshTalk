@@ -19,7 +19,7 @@ BOLD_SEVERITY_HEADING = re.compile(
     re.IGNORECASE,
 )
 NON_FINDING = re.compile(
-    r"^(?:no\b|none\b|notes?\b.*\bnon[- ]blocking\b|posted inline;\s*see the diff\.)",
+    r"^(?:no\b|none\b|notes?\b.*\bnon[- ]blocking\b|posted inline;\s*see the diff\.$)",
     re.IGNORECASE,
 )
 CATEGORIES = {

@@ -205,6 +205,21 @@ None.
 """
         self.assertEqual(self.run_validator(review), 0)
 
+    def test_rejects_inline_nit_placeholder_with_trailing_text(self):
+        review = """## Summary
+The change is small.
+
+### Nit
+
+Posted inline; see the diff. More text is not allowed here.
+
+```suggestions-json
+[]
+```
+"""
+        self.assertEqual(self.run_validator(review), 1)
+        self.assertIn("severity-tagged finding", self.errors.read_text())
+
     def test_rejects_suggestion_with_invalid_severity_or_effort(self):
         review = """## Findings
 - **should-fix** `src/example.py:2`: Return the intended value.
