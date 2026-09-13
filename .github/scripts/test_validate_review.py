@@ -178,7 +178,7 @@ No actionable findings.
         self.assertEqual(self.run_validator(review), 1)
         self.assertIn("no finding text", self.errors.read_text())
 
-    def test_rejects_nit_suggestion_item(self):
+    def test_accepts_nit_inline_item(self):
         review = """## Findings
 - **nit** `src/example.py:2`: Trailing whitespace style nit.
 
@@ -186,8 +186,24 @@ No actionable findings.
 [{"path":"src/example.py","line":2,"category":"Design","severity":"Nit","effort":"Trivial","comment":"Tidy this line.","suggestion":"    return 1"}]
 ```
 """
-        self.assertEqual(self.run_validator(review), 1)
-        self.assertIn("must be Blocking or Should-fix", self.errors.read_text())
+        self.assertEqual(self.run_validator(review), 0)
+        self.assertEqual(json.loads(self.suggestions.read_text())[0]["severity"], "Nit")
+
+    def test_accepts_inline_nit_summary_placeholder(self):
+        review = """## Summary
+The change is small.
+
+### Nit
+Posted inline; see the diff.
+
+### Discussion
+None.
+
+```suggestions-json
+[]
+```
+"""
+        self.assertEqual(self.run_validator(review), 0)
 
     def test_rejects_suggestion_with_invalid_severity_or_effort(self):
         review = """## Findings
@@ -198,7 +214,29 @@ No actionable findings.
 ```
 """
         self.assertEqual(self.run_validator(review), 1)
-        self.assertIn("must be Blocking or Should-fix", self.errors.read_text())
+        self.assertIn("must be Blocking, Should-fix, or Nit", self.errors.read_text())
+
+    def test_rejects_more_than_twelve_inline_items(self):
+        items = [
+            {
+                "path": "src/example.py",
+                "line": 2,
+                "category": "Design",
+                "severity": "Nit",
+                "effort": "Trivial",
+                "comment": "Tidy this line.",
+            }
+            for _ in range(13)
+        ]
+        review = """## Findings
+No actionable findings.
+
+```suggestions-json
+""" + json.dumps(items) + """
+```
+"""
+        self.assertEqual(self.run_validator(review), 1)
+        self.assertIn("at most 12 inline findings", self.errors.read_text())
 
 
 if __name__ == "__main__":

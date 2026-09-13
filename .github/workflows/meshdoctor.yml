@@ -10,6 +10,7 @@ jobs:
   meshdoctor:
     if: |
       github.event.comment.user.type != 'Bot' &&
+      !contains(github.event.comment.body, 'review') &&
       (
         startsWith(github.event.comment.body, '/oc ') ||
         startsWith(github.event.comment.body, '/oc\n') ||
@@ -19,11 +20,14 @@ jobs:
         startsWith(github.event.comment.body, '/opencode\n')
       ) &&
       !startsWith(github.event.comment.body, '/oc review') &&
-      !startsWith(github.event.comment.body, '/oc rereview') &&
       !startsWith(github.event.comment.body, '/meshdoctor review') &&
-      !startsWith(github.event.comment.body, '/meshdoctor rereview') &&
       !startsWith(github.event.comment.body, '/opencode review') &&
-      !startsWith(github.event.comment.body, '/opencode rereview')
+      !startsWith(github.event.comment.body, '/oc full-review') &&
+      !startsWith(github.event.comment.body, '/meshdoctor full-review') &&
+      !startsWith(github.event.comment.body, '/opencode full-review') &&
+      !startsWith(github.event.comment.body, '/oc help') &&
+      !startsWith(github.event.comment.body, '/meshdoctor help') &&
+      !startsWith(github.event.comment.body, '/opencode help')
     runs-on: ubuntu-latest
     permissions:
       id-token: write

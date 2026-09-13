@@ -18,7 +18,10 @@ BOLD_SEVERITY_HEADING = re.compile(
     r"^\s*\*\*(?:blocking(?:\s*/\s*should-fix)?|should-fix|nit|needs\s+discussion(?:\s*/\s*residual\s+risk)?)\s*:?\*\*\s*$",
     re.IGNORECASE,
 )
-NON_FINDING = re.compile(r"^(?:no\b|none\b|notes?\b.*\bnon[- ]blocking\b)", re.IGNORECASE)
+NON_FINDING = re.compile(
+    r"^(?:no\b|none\b|notes?\b.*\bnon[- ]blocking\b|posted inline;\s*see the diff\.)",
+    re.IGNORECASE,
+)
 CATEGORIES = {
     "Functional Correctness",
     "Security",
@@ -198,14 +201,14 @@ def main() -> None:
         suggestions = json.loads(blocks[0])
         if not isinstance(suggestions, list):
             raise ValueError("must be a JSON array")
-        if len(suggestions) > 10:
-            raise ValueError("may contain at most 10 suggestions")
+        if len(suggestions) > 12:
+            raise ValueError("may contain at most 12 inline findings")
     except (json.JSONDecodeError, ValueError) as error:
         errors.append(f"The suggestions-json block is invalid: {error}.")
         fail(errors, args.errors)
 
     valid: list[dict] = []
-    for index, suggestion in enumerate(suggestions[:10]):
+    for index, suggestion in enumerate(suggestions[:12]):
         label = f"Suggestion {index + 1}"
         if not isinstance(suggestion, dict):
             errors.append(f"{label} is not an object.")
@@ -241,10 +244,10 @@ def main() -> None:
                 + "."
             )
             continue
-        if suggestion.get("severity") not in {"Blocking", "Should-fix"}:
+        if suggestion.get("severity") not in {"Blocking", "Should-fix", "Nit"}:
             errors.append(
                 f"{label} has severity {suggestion.get('severity')!r}; inline items "
-                "must be Blocking or Should-fix (Nit and Discussion stay in the summary)."
+                "must be Blocking, Should-fix, or Nit (Discussion stays in the summary)."
             )
             continue
         if suggestion.get("effort") not in EFFORTS:
