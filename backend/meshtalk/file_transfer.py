@@ -336,6 +336,12 @@ class FileTransferManager:
         room = self.settings.rooms.get(group_id)
         if room is None or room.group_name is None:
             raise ValueError("Unknown group")
+        members = [
+            member for member in await self.db.get_group_members(group_id)
+            if member["peer_id"] != self.identity.peer_id
+        ]
+        if not members:
+            raise ValueError("Group has no other active members")
         # Snapshot once here so the whole fan-out shares one copy on disk.
         raw = file_path_str.strip().strip('"').strip("'")
         p = Path(raw).expanduser()
@@ -381,11 +387,8 @@ class FileTransferManager:
             "created_at": created_at,
             "received_chunks": 0,
         })
-        members = await self.db.get_group_members(group_id)
         for member in members:
             recipient_id = member["peer_id"]
-            if recipient_id == self.identity.peer_id:
-                continue
             if await self.db.is_peer_blocked(recipient_id):
                 await self.db.set_file_delivery(file_id, recipient_id, "unavailable")
                 continue
@@ -449,6 +452,8 @@ class FileTransferManager:
             await self.db.update_file_transfer(file_id, status="blocked")
         elif statuses & {"completed", "sent", "transferring"}:
             await self.db.update_file_transfer(file_id, status="sent")
+        elif "failed" in statuses:
+            await self.db.update_file_transfer(file_id, status="failed")
         elif "queued" in statuses:
             await self.db.update_file_transfer(file_id, status="queued")
         elif statuses <= {"unavailable"}:
@@ -1062,7 +1067,7 @@ class FileTransferManager:
             # Completed/blocked receivers repeat their ACK after reconnecting.
             # Delivery is terminal, so duplicate ACKs (including stale missing
             # requests) must not emit a second delivery event or retransmit.
-            if deliveries.get(peer.peer_id) == ack.status or transfer["status"] == "completed":
+            if deliveries.get(peer.peer_id) in ("completed", "blocked"):
                 return
         else:
             if transfer["recipient_id"] != peer.peer_id:
@@ -1132,7 +1137,11 @@ class FileTransferManager:
                         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
                         await self.peer_manager.send_packet(peer, Packet(PacketType.FILE_CHUNK, payload.encode()))
         except (OSError, ConnectionError) as exc:
-            await self.db.update_file_transfer(transfer["file_id"], status="queued")
+            if bool(transfer["group_id"]) and transfer["recipient_id"] == GROUP_FILE_SENDER_ROW_RECIPIENT:
+                await self.db.set_file_delivery(transfer["file_id"], peer.peer_id, "queued")
+                await self._refresh_group_row_status(transfer["file_id"])
+            else:
+                await self.db.update_file_transfer(transfer["file_id"], status="queued")
             logger.warning("Failed to resume file %s: %s", transfer["file_id"], exc)
 
     async def list_transfers(

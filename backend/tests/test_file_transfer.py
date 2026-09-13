@@ -600,6 +600,59 @@ class GroupFileMirrorTest(unittest.IsolatedAsyncioTestCase):
         deliveries = {d["recipient_id"]: d["status"] for d in await self.db.get_file_deliveries(file_id)}
         self.assertEqual(deliveries[self.member_a.peer_id], "sent")
 
+    async def test_retry_repairs_blocked_group_delivery(self):
+        file_id = await self.sender_transfer.send_group_file(self.group_id, str(self.source))
+        await self.db.set_file_delivery(file_id, self.member_a.peer_id, "blocked")
+
+        await self.sender_transfer.retry_file(file_id, self.member_a.peer_id)
+
+        deliveries = {d["recipient_id"]: d["status"] for d in await self.db.get_file_deliveries(file_id)}
+        self.assertEqual(deliveries[self.member_a.peer_id], "sent")
+
+    async def test_failed_group_aggregate_is_retryable(self):
+        file_id = await self.sender_transfer.send_group_file(self.group_id, str(self.source))
+        await self.db.set_file_delivery(file_id, self.member_a.peer_id, "failed")
+        await self.db.set_file_delivery(file_id, self.member_b.peer_id, "failed")
+        await self.sender_transfer._refresh_group_row_status(file_id)
+
+        self.assertEqual((await self.db.get_file_transfer(file_id))["status"], "failed")
+        self.assertEqual(await self.sender_transfer.retry_file(file_id), file_id)
+
+    async def test_missing_chunk_send_failure_updates_group_delivery(self):
+        file_id = await self.sender_transfer.send_group_file(self.group_id, str(self.source))
+        transfer = await self.db.get_file_transfer(file_id)
+        self.manager.send_packet = AsyncMock(side_effect=ConnectionError("disconnected"))
+
+        await self.sender_transfer._resend_missing_chunks(
+            FakePeer(self.member_a), transfer, [(0, 0)]
+        )
+
+        deliveries = {d["recipient_id"]: d["status"] for d in await self.db.get_file_deliveries(file_id)}
+        self.assertEqual(deliveries[self.member_a.peer_id], "queued")
+        self.assertEqual((await self.db.get_file_transfer(file_id))["status"], "queued")
+
+    async def test_group_terminal_ack_does_not_emit_again(self):
+        file_id = await self.sender_transfer.send_group_file(self.group_id, str(self.source))
+        await self.sender_transfer.handle_packet(
+            FakePeer(self.member_a), self._ack(self.member_a, file_id, "blocked"))
+        await self.sender_transfer.handle_packet(
+            FakePeer(self.member_a), self._ack(self.member_a, file_id, "completed"))
+        await asyncio.sleep(0)
+
+        deliveries = {d["recipient_id"]: d["status"] for d in await self.db.get_file_deliveries(file_id)}
+        self.assertEqual(deliveries[self.member_a.peer_id], "blocked")
+        self.assertEqual([e for e in self.events if e.get("event") == "file_delivered"], [])
+
+    async def test_self_only_group_creates_no_snapshot_or_transfer(self):
+        group_id = self.settings.create_room("Self only").id
+        await self.db.upsert_group_member(group_id, self.sender.peer_id, "Sender")
+
+        with self.assertRaisesRegex(ValueError, "no other active members"):
+            await self.sender_transfer.send_group_file(group_id, str(self.source))
+
+        self.assertEqual(await self.db.get_file_transfers(group_id=group_id), [])
+        self.assertEqual(list((self.root / "sender-files" / "sent").glob("*")), [])
+
     async def test_delete_clears_whole_group_send(self):
         file_id = await self.sender_transfer.send_group_file(self.group_id, str(self.source))
         transfer = await self.db.get_file_transfer(file_id)
