@@ -30,8 +30,8 @@ function isHttpUrl(value) {
 }
 
 app.get("/api/health", async (req, res) => {
-  const raw = (req.query.url || CONTROL_DEFAULT).trim();
-  if (!isHttpUrl(raw)) {
+  const raw = (typeof req.query.url === "string" && req.query.url.trim() !== "" ? req.query.url.trim() : CONTROL_DEFAULT);
+  if (!isHttpUrl(raw) || raw.replace(/\/+$/, "") !== CONTROL_DEFAULT) {
     return res.status(400).json({ error: "Invalid server URL" });
   }
   const target = raw.replace(/\/+$/, "");
