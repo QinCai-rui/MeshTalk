@@ -1856,7 +1856,11 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const conversationFiles = useMemo(() => {
     const grouped = new Map<string, FileTransfer[]>();
     for (const f of conversationFileTransfers) {
-      const key = `${f.filename}|${f.sender_id}|${f.group_id ?? ""}|${Math.round(f.created_at)}`;
+      // Shared group sends already arrive as one row carrying deliveries;
+      // legacy per-member rows fall back to the heuristic grouping.
+      const key = f.deliveries?.length
+        ? `id:${f.file_id}`
+        : `${f.filename}|${f.sender_id}|${f.group_id ?? ""}|${Math.round(f.created_at)}`;
       const list = grouped.get(key);
       if (list) list.push(f);
       else grouped.set(key, [f]);
