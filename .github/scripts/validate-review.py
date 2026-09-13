@@ -201,14 +201,12 @@ def main() -> None:
         suggestions = json.loads(blocks[0])
         if not isinstance(suggestions, list):
             raise ValueError("must be a JSON array")
-        if len(suggestions) > 12:
-            raise ValueError("may contain at most 12 inline findings")
     except (json.JSONDecodeError, ValueError) as error:
         errors.append(f"The suggestions-json block is invalid: {error}.")
         fail(errors, args.errors)
 
     valid: list[dict] = []
-    for index, suggestion in enumerate(suggestions[:12]):
+    for index, suggestion in enumerate(suggestions):
         label = f"Suggestion {index + 1}"
         if not isinstance(suggestion, dict):
             errors.append(f"{label} is not an object.")

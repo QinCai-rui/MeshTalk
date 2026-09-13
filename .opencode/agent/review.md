@@ -119,7 +119,7 @@ Readability rules (accessibility matters: many readers use English as a second l
 - Empty Nit/Discussion/Flow sections contain exactly a plain `None.` paragraph (no bullet).
 - On incremental `review` or `auto` runs with a prior review, focus on `.review-context/range.diff` and `.review-context/range-commits.json` as described in Review modes above.
 
-End with a ```suggestions-json fenced block containing a JSON array, max 12 items, using `[]` when nothing actionable qualifies. Emit exactly one item per Blocking, Should-fix, or Nit finding: include `suggestion` when a clean one-click fix qualifies, otherwise omit `suggestion` and the item posts as an inline note carrying the finding text in `comment`. Discussion findings stay in the summary and must NOT appear here. Each item must be:
+End with a ```suggestions-json fenced block containing one item per valid Blocking, Should-fix, or Nit finding, using `[]` when nothing actionable qualifies. Emit exactly one item per finding: include `suggestion` when a clean one-click fix qualifies, otherwise omit `suggestion` and the item posts as an inline note carrying the finding text in `comment`. Discussion findings stay in the summary and must NOT appear here. Each item must be:
 ```json
 {"path": "repo-relative/file.ts", "line": 42, "end_line": 44, "category": "Functional Correctness", "severity": "Should-fix", "effort": "Trivial", "comment": "What/Why/Fix in plain words", "agent_prompt": "Verify this finding against current code, apply the minimal valid fix, and validate it.", "suggestion": "if (val != null) { return val; }"}
 ```

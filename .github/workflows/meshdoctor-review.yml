@@ -497,7 +497,7 @@ jobs:
               const marker = comment.body?.match(/<!-- meshtalk-(?:suggestion|note):([a-f0-9]{64}) -->/);
               if (marker) seen.add(marker[1]);
             }
-            for (const s of suggestions.slice(0, 12)) {
+            for (const s of suggestions) {
               const hasCode = s && typeof s.suggestion === 'string' && s.suggestion.trim();
               const inlineSeverity = s && ['Blocking', 'Should-fix', 'Nit'].includes(s.severity);
               const okShape = s && typeof s.path === 'string' && Number.isInteger(s.line) &&

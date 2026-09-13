@@ -216,7 +216,7 @@ None.
         self.assertEqual(self.run_validator(review), 1)
         self.assertIn("must be Blocking, Should-fix, or Nit", self.errors.read_text())
 
-    def test_rejects_more_than_twelve_inline_items(self):
+    def test_accepts_more_than_twelve_inline_items(self):
         items = [
             {
                 "path": "src/example.py",
@@ -235,8 +235,8 @@ No actionable findings.
 """ + json.dumps(items) + """
 ```
 """
-        self.assertEqual(self.run_validator(review), 1)
-        self.assertIn("at most 12 inline findings", self.errors.read_text())
+        self.assertEqual(self.run_validator(review), 0)
+        self.assertEqual(len(json.loads(self.suggestions.read_text())), 13)
 
 
 if __name__ == "__main__":
