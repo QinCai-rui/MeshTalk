@@ -140,6 +140,7 @@ def main() -> None:
     parser.add_argument("--review", required=True, type=Path)
     parser.add_argument("--suggestions", required=True, type=Path)
     parser.add_argument("--errors", required=True, type=Path)
+    parser.add_argument("--required-suggestions", type=Path)
     args = parser.parse_args()
 
     added, diff_content = parse_diff(args.diff)
@@ -205,8 +206,19 @@ def main() -> None:
         errors.append(f"The suggestions-json block is invalid: {error}.")
         fail(errors, args.errors)
 
-    valid: list[dict] = []
-    for index, suggestion in enumerate(suggestions):
+    required: list[dict] = []
+    if args.required_suggestions and args.required_suggestions.exists():
+        try:
+            required = json.loads(args.required_suggestions.read_text())
+            if not isinstance(required, list):
+                raise ValueError("must be a JSON array")
+        except (json.JSONDecodeError, ValueError) as error:
+            errors.append(f"The required suggestions file is invalid: {error}.")
+            fail(errors, args.errors)
+
+    valid: list[tuple[dict, bool]] = []
+    for index, suggestion in enumerate([*suggestions, *required]):
+        is_required = index >= len(suggestions)
         label = f"Suggestion {index + 1}"
         if not isinstance(suggestion, dict):
             errors.append(f"{label} is not an object.")
@@ -260,7 +272,7 @@ def main() -> None:
             continue
         if replacement is None:
             # Inline note: no replacement to apply, line checks above suffice.
-            valid.append(suggestion)
+            valid.append((suggestion, is_required))
             continue
         head_path = args.head_dir / path
         if not head_path.is_file():
@@ -283,11 +295,21 @@ def main() -> None:
         if syntax:
             errors.append(f"{label} fails a syntax check after applying to {path}: {syntax}")
             continue
-        valid.append(suggestion)
+        valid.append((suggestion, is_required))
 
     if errors:
         fail(errors, args.errors)
-    args.suggestions.write_text(json.dumps(valid, separators=(",", ":")) + "\n")
+    deduplicated: list[dict] = []
+    seen: set[tuple[object, ...]] = set()
+    for suggestion, is_required in valid:
+        key = (
+            suggestion.get("path"), suggestion.get("line"), suggestion.get("end_line"),
+            suggestion.get("severity"), suggestion.get("comment"), suggestion.get("suggestion"),
+        )
+        if not is_required or key not in seen:
+            seen.add(key)
+            deduplicated.append(suggestion)
+    args.suggestions.write_text(json.dumps(deduplicated, separators=(",", ":")) + "\n")
 
 
 if __name__ == "__main__":

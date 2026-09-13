@@ -46,18 +46,23 @@ class ValidateReviewTest(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
-    def run_validator(self, review):
+    def run_validator(self, review, required=None):
         self.review.write_text(review)
+        arguments = [
+            "validate-review.py",
+            "--diff", str(self.root / "diff.patch"),
+            "--head-dir", str(self.root / "head"),
+            "--review", str(self.review),
+            "--suggestions", str(self.suggestions),
+            "--errors", str(self.errors),
+        ]
+        if required is not None:
+            required_path = self.root / "required.json"
+            required_path.write_text(json.dumps(required))
+            arguments.extend(["--required-suggestions", str(required_path)])
         with mock.patch(
             "sys.argv",
-            [
-                "validate-review.py",
-                "--diff", str(self.root / "diff.patch"),
-                "--head-dir", str(self.root / "head"),
-                "--review", str(self.review),
-                "--suggestions", str(self.suggestions),
-                "--errors", str(self.errors),
-            ],
+            arguments,
         ):
             try:
                 validate_review.main()
@@ -252,6 +257,25 @@ No actionable findings.
 """
         self.assertEqual(self.run_validator(review), 0)
         self.assertEqual(len(json.loads(self.suggestions.read_text())), 13)
+
+    def test_includes_required_policy_finding(self):
+        review = """## Findings
+No actionable findings.
+
+```suggestions-json
+[]
+```
+"""
+        required = [{
+            "path": "src/example.py",
+            "line": 2,
+            "category": "Security",
+            "severity": "Should-fix",
+            "effort": "Trivial",
+            "comment": "Restrict the unsafe permission.",
+        }]
+        self.assertEqual(self.run_validator(review, required), 0)
+        self.assertEqual(json.loads(self.suggestions.read_text()), required)
 
 
 if __name__ == "__main__":
