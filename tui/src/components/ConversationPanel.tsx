@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } 
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
 import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
-import { renderMentionedContent, payloadMentions, type MentionCandidate } from "../mentions"
+import { renderMentionedContent, payloadMentions, segmentMentionedContent, splitMentionBody, parseInlineMarkdown, type MentionCandidate } from "../mentions"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
 
 type ConversationPanelProps = {
@@ -77,7 +77,7 @@ const MESSAGE_MARKDOWN_STYLES = {
   "markup.italic": { italic: true },
   "markup.link.label": { fg: theme.markdown.heading, underline: true },
   "markup.link.url": { fg: theme.markdown.link, underline: true },
-  "markup.raw": { fg: theme.markdown.raw, bg: theme.mentionBg },
+  "markup.raw": { fg: theme.markdown.raw },
   "markup.list": { fg: theme.markdown.list },
   keyword: { fg: theme.markdown.keyword, bold: true },
   string: { fg: theme.markdown.raw },
@@ -282,8 +282,15 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 ? `${isLocal ? "You" : senderName} left the group`
                 : message.content
             : selectedGroup
-              ? renderMentionedContent(message.content, resolveMentionName, true)
+              ? renderMentionedContent(message.content, resolveMentionName)
               : message.content
+          // Mention pills render as native blue blocks (markdown styles are
+          // global per token, so backticks/code spans stay untouched).
+          const bodySegments = selectedGroup && !isSystem
+            ? segmentMentionedContent(message.content, resolveMentionName)
+            : null
+          const hasMentionPills = bodySegments?.some((segment) => segment.type === "mention") ?? false
+          const bodyBlocks = hasMentionPills && bodySegments ? splitMentionBody(bodySegments) : null
           const mentioned =
             Boolean(selectedGroup) &&
             identity !== undefined &&
@@ -318,7 +325,38 @@ export function ConversationPanel(props: ConversationPanelProps) {
                  </text>
                 {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
                 {message.reply_to_message_id && <box onMouseDown={replySelectTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); clearReplyTarget(); highlightReplyTarget(replySelectTarget.id); setScrollFocused(true); scrollboxRef.current?.scrollChildIntoView(replySelectTarget.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
-                <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
+                {!bodyBlocks ? (
+                  <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
+                ) : (
+                  <box flexDirection="column" style={{ width: "100%" }}>
+                    {bodyBlocks.map((block, blockIndex) => (
+                      <box key={`${message.message_id}-block-${blockIndex}`} flexDirection="column">
+                        {blockIndex > 0 ? <box height={1} /> : null}
+                        {block.kind === "plain" ? (
+                          <markdown content={block.text} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
+                        ) : (
+                          <text wrapMode="word">
+                            {block.segments.flatMap((segment, segmentIndex) =>
+                              segment.type === "mention" ? (
+                                [<span key={`${segmentIndex}-m`} fg={theme.text} bg={theme.mentionBg}>@{segment.name}</span>]
+                              ) : (
+                                parseInlineMarkdown(segment.text).map((frag, fragIndex) => {
+                                  const key = `${segmentIndex}-${fragIndex}`
+                                  if (frag.type === "code") return <span key={key} fg={theme.markdown.raw}>{frag.text}</span>
+                                  if (frag.type === "strong") return <span key={key} fg={theme.markdown.default}><b>{frag.text}</b></span>
+                                  if (frag.type === "em") return <span key={key} fg={theme.markdown.default}><i>{frag.text}</i></span>
+                                  if (frag.type === "link") return <span key={key} fg={theme.markdown.heading}><u>{frag.label}</u></span>
+                                  if (frag.type === "strike") return <span key={key} fg={theme.markdown.default}>{frag.text}</span>
+                                  return <span key={key} fg={theme.markdown.default}>{frag.text}</span>
+                                })
+                              ),
+                            )}
+                          </text>
+                        )}
+                      </box>
+                    ))}
+                  </box>
+                )}
             </box>
           )
           return rows

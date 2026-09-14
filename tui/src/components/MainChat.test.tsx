@@ -236,9 +236,12 @@ test("stored mention tokens render as display names with a yellow highlight", as
     expect(frame).not.toContain("<@me>")
     expect(frame).toContain("no mentions here")
     const spans = setup.captureSpans().lines.flatMap((line) => line.spans)
-    const mentionSpan = spans.find((span) => span.text.includes("@Taylor"))
-    expect(mentionSpan).toBeDefined()
-    expect((mentionSpan!.bg as unknown as { toInts: () => number[] })?.toInts()).toEqual([77, 63, 30, 255])
+    const bgOf = (text: string) =>
+      (spans.find((span) => span.text === text)?.bg as unknown as { toInts?: () => number[] })?.toInts?.()
+    // The pill itself carries the blue block background...
+    expect(bgOf("@Taylor")).toEqual([29, 78, 137, 255])
+    // ...while the surrounding row keeps the yellow mention highlight.
+    expect(bgOf("hi ")).toEqual([77, 63, 30, 255])
   } finally { await close(setup) }
 })
 

@@ -6,8 +6,11 @@ import {
   parseMentions,
   payloadMentions,
   renderMentionedContent,
+  segmentMentionedContent,
   spansToTokens,
+  splitMentionBody,
   updateSpansAfterEdit,
+  type MentionSegment,
 } from "./mentions"
 
 test("parseMentions extracts unique IDs in order", () => {
@@ -101,4 +104,39 @@ test("spansToTokens converts validated spans only", () => {
     "hi @Alec!",
   )
   expect(spansToTokens("plain", [])).toBe("plain")
+})
+
+test("segmentMentionedContent splits text runs and mention tokens", () => {
+  const names: Record<string, string> = { a: "Alex", b: "Bo" }
+  expect(segmentMentionedContent("hi <@a> and <@b>!", (id) => names[id])).toEqual([
+    { type: "text", text: "hi " },
+    { type: "mention", peerId: "a", name: "Alex" },
+    { type: "text", text: " and " },
+    { type: "mention", peerId: "b", name: "Bo" },
+    { type: "text", text: "!" },
+  ])
+  expect(segmentMentionedContent("plain", () => undefined)).toEqual([
+    { type: "text", text: "plain" },
+  ])
+  expect(segmentMentionedContent("<@gone>", () => undefined)).toEqual([
+    { type: "mention", peerId: "gone", name: "unknown" },
+  ])
+})
+
+test("splitMentionBody groups paragraphs and marks rich ones", () => {
+  const rich: MentionSegment = { type: "mention", peerId: "a", name: "Alex" }
+  expect(
+    splitMentionBody([
+      { type: "text", text: "hi " },
+      rich,
+      { type: "text", text: "\n\nbye" },
+    ]),
+  ).toEqual([
+    { kind: "rich", segments: [{ type: "text", text: "hi " }, rich] },
+    { kind: "plain", text: "bye" },
+  ])
+  expect(splitMentionBody([{ type: "text", text: "a\nb" }])).toEqual([
+    { kind: "plain", text: "a\nb" },
+  ])
+  expect(splitMentionBody([{ type: "text", text: "\n\n" }])).toEqual([])
 })

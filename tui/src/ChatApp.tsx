@@ -1864,11 +1864,12 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       .map((member) => {
         const id = member.peer_id ?? member.member_id;
         if (!id) return undefined;
-        return {
+        const candidate: MentionCandidate = {
           peerId: id,
           displayName: member.display_name,
           isSelf: id === identity?.peer_id,
         };
+        return candidate;
       })
       .filter((member): member is MentionCandidate => member !== undefined);
   }, [selection, selectedGroupId, groupMembers, identity]);

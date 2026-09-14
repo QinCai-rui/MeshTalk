@@ -105,20 +105,136 @@ export function payloadMentions(payload: unknown): string[] {
 /**
  * Render stored `<@user_id>` tokens as `@Display Name` for display.
  * Unknown IDs fall back to `@unknown` so raw tokens never leak into the UI.
- * With `forMarkdown`, names are wrapped in code spans so the markdown
- * renderer tints them (conceal hides the backticks); plain `<text>` contexts
- * must use the default plain form.
  */
 export function renderMentionedContent(
   content: string,
   resolveName: (peerId: string) => string | undefined,
-  forMarkdown = false,
 ): string {
   MENTION_TOKEN_RE.lastIndex = 0
-  return content.replace(MENTION_TOKEN_RE, (_, peerId: string) => {
-    const name = `@${resolveName(peerId) ?? "unknown"}`
-    return forMarkdown ? `\`${name}\`` : name
-  })
+  return content.replace(MENTION_TOKEN_RE, (_, peerId: string) => `@${resolveName(peerId) ?? "unknown"}`)
+}
+
+export type MentionSegment =
+  | { type: "text"; text: string }
+  | { type: "mention"; peerId: string; name: string }
+
+/** Split content into plain runs and mention tokens for pill rendering. */
+export function segmentMentionedContent(
+  content: string,
+  resolveName: (peerId: string) => string | undefined,
+): MentionSegment[] {
+  MENTION_TOKEN_RE.lastIndex = 0
+  const segments: MentionSegment[] = []
+  let last = 0
+  for (const match of content.matchAll(MENTION_TOKEN_RE)) {
+    const index = match.index ?? 0
+    if (index > last) segments.push({ type: "text", text: content.slice(last, index) })
+    const peerId = match[1]!
+    segments.push({ type: "mention", peerId, name: resolveName(peerId) ?? "unknown" })
+    last = index + match[0].length
+  }
+  if (last < content.length) segments.push({ type: "text", text: content.slice(last) })
+  return segments
+}
+
+export type MentionBodyBlock =
+  | { kind: "plain"; text: string }
+  | { kind: "rich"; segments: MentionSegment[] }
+
+/**
+ * Group segments into paragraphs at blank lines. Plain paragraphs render
+ * through markdown untouched; rich paragraphs render as inline text with
+ * mention pills. Single newlines stay inside their paragraph.
+ */
+export function splitMentionBody(segments: MentionSegment[]): MentionBodyBlock[] {
+  const paragraphs: MentionSegment[][] = [[]]
+  for (const segment of segments) {
+    if (segment.type === "text") {
+      const parts = segment.text.split(/\n{2,}/)
+      parts.forEach((part, index) => {
+        if (index > 0) paragraphs.push([])
+        if (part) paragraphs[paragraphs.length - 1]!.push({ type: "text", text: part })
+      })
+    } else {
+      paragraphs[paragraphs.length - 1]!.push(segment)
+    }
+  }
+  const blocks: MentionBodyBlock[] = []
+  for (const paragraph of paragraphs) {
+    if (!paragraph.length) continue
+    if (paragraph.some((segment) => segment.type === "mention")) {
+      blocks.push({ kind: "rich", segments: paragraph })
+    } else {
+      const text = paragraph
+        .filter((segment): segment is Extract<MentionSegment, { type: "text" }> => segment.type === "text")
+        .map((segment) => segment.text)
+        .join("")
+      blocks.push({ kind: "plain", text })
+    }
+  }
+  return blocks
+}
+
+export type InlineFragment =
+  | { type: "text"; text: string }
+  | { type: "code"; text: string }
+  | { type: "strong"; text: string }
+  | { type: "em"; text: string }
+  | { type: "link"; label: string; url: string }
+  | { type: "strike"; text: string }
+
+/**
+ * Minimal inline markdown parser for rich mention paragraphs.
+ * Handles code, links, strong, emphasis, and strikethrough; everything
+ * else stays as plain text. Code spans are excluded from inner parsing.
+ */
+export function parseInlineMarkdown(text: string): InlineFragment[] {
+  const fragments: InlineFragment[] = []
+  let pos = 0
+  const patterns: Array<{ re: RegExp; type: InlineFragment["type"] }> = [
+    { re: /`([^`]+)`/g, type: "code" },
+    { re: /\[([^\]]+)\]\(([^)]+)\)/g, type: "link" },
+    { re: /\*\*([^*]+?)\*\*/g, type: "strong" },
+    { re: /__([^_]+?)__/g, type: "strong" },
+    { re: /~~([^~]+?)~~/g, type: "strike" },
+    { re: /\*([^*]+?)\*/g, type: "em" },
+    { re: /_([^_]+?)_/g, type: "em" },
+  ]
+  while (pos < text.length) {
+    let best: RegExpExecArray | null = null
+    let bestType: InlineFragment["type"] | null = null
+    let bestRe: RegExp | null = null
+    for (const { re, type } of patterns) {
+      re.lastIndex = pos
+      const m = re.exec(text)
+      if (m && (best === null || m.index < best.index || (m.index === best.index && m[0].length > best[0].length))) {
+        best = m
+        bestType = type
+        bestRe = re
+      }
+    }
+    if (!best || bestType === null || bestRe === null) {
+      fragments.push({ type: "text", text: text.slice(pos) })
+      break
+    }
+    if (best.index > pos) {
+      fragments.push({ type: "text", text: text.slice(pos, best.index) })
+    }
+    const raw = best[0]
+    if (bestType === "code") {
+      fragments.push({ type: "code", text: best[1]! })
+    } else if (bestType === "link") {
+      fragments.push({ type: "link", label: best[1]!, url: best[2]! })
+    } else if (bestType === "strong") {
+      fragments.push({ type: "strong", text: best[1]! })
+    } else if (bestType === "em") {
+      fragments.push({ type: "em", text: best[1]! })
+    } else if (bestType === "strike") {
+      fragments.push({ type: "strike", text: best[1]! })
+    }
+    pos = best.index + raw.length
+  }
+  return fragments
 }
 
 export type MentionQuery = { start: number; query: string }
