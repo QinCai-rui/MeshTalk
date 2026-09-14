@@ -18,6 +18,7 @@ export const chatTheme = {
   successSurface: "#1a3320",
   caution: "#ff9f43",
   mention: "#4d3f1e",
+  mentionBg: "#1d4e89",
   presence: {
     active: "#66dd88",
     away: "#f0c674",

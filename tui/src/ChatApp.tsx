@@ -4,6 +4,7 @@ import {
   createHostClipboard,
   createRendererClipboardAdapter,
   decodePasteBytes,
+  SyntaxStyle,
   type BoxRenderable,
   type ScrollBoxRenderable,
   type TextareaRenderable,
@@ -187,6 +188,24 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   // that convert back to `<@peer_id>` tokens on send.
   const [mentionSpans, setMentionSpans] = useState<Record<string, MentionSpan[]>>({});
   const prevComposerText = useRef<Record<string, string>>({});
+  // Block-styled `@name` spans in the composer: blue background (same hue as
+  // the markdown code style used for mentions in history) with light text.
+  const [composerMentionStyle] = useState(() =>
+    SyntaxStyle.fromStyles({ mention: { fg: chatTheme.text, bg: chatTheme.mentionBg } }),
+  );
+
+  function applyComposerMentionHighlights(spans: MentionSpan[]) {
+    const composer = composerRef.current;
+    if (!composer) return;
+    const styleId = composerMentionStyle.getStyleId("mention");
+    composer.syntaxStyle = composerMentionStyle;
+    composer.clearAllHighlights();
+    if (styleId == null) return;
+    for (const span of spans) {
+      if (span.start < 0 || span.end <= span.start) continue;
+      composer.addHighlightByCharRange({ start: span.start, end: span.end, styleId });
+    }
+  }
   const [notificationPreferences, setNotificationPreferences] =
     useState<NotificationPreferences | null>(null);
   const [notificationTestDelivery, setNotificationTestDelivery] =
@@ -349,12 +368,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       setDrafts((current) => ({ ...current, [selectionKey]: content }));
     if (selection?.kind === "group" && selectionKey) {
       const cursor = composerRef.current?.cursorOffset ?? content.length;
-      const prev = prevComposerText.current[selectionKey] ?? content;
-      let spans = mentionSpans[selectionKey] ?? [];
-      if (prev !== content) {
-        spans = updateSpansAfterEdit(spans, prev, content);
-        setMentionSpans((current) => ({ ...current, [selectionKey]: spans }));
-      }
+      const prev = prevComposerText.current[selectionKey] ?? "";
+      // Text already synced (e.g. a late duplicate event from our own
+      // programmatic edits): spans and highlights are current, so skip —
+      // reconciling here would clobber fresh state with stale state reads.
+      if (prev === content) return;
+      const spans = updateSpansAfterEdit(mentionSpans[selectionKey] ?? [], prev, content);
+      setMentionSpans((current) => ({ ...current, [selectionKey]: spans }));
       prevComposerText.current[selectionKey] = content;
       if (!scrollFocused && !editingName) {
         // Never trigger inside a picked mention: it is an atomic symbol.
@@ -366,6 +386,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       } else if (mention) {
         setMention(null);
       }
+      applyComposerMentionHighlights(spans);
     } else if (mention) {
       setMention(null);
     }
@@ -1335,6 +1356,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     setScrollFocused(false);
     setMention(null);
     prevComposerText.current[selectionKey] = drafts[selectionKey] ?? "";
+    applyComposerMentionHighlights(mentionSpans[selectionKey] ?? []);
     setDraftLength(new TextEncoder().encode(drafts[selectionKey] ?? "").length);
     setComposerHeight(MIN_COMPOSER_HEIGHT);
     if (selection.kind === "peer") {
@@ -1890,13 +1912,20 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       end: insertAt + candidate.displayName.length + 1,
     };
     const reconciled = updateSpansAfterEdit(mentionSpans[key] ?? [], content, after);
-    setMentionSpans((current) => ({ ...current, [key]: [...reconciled, span] }));
+    const fresh = [...reconciled, span];
+    // Functional update so a rapid second pick chains onto committed state.
+    setMentionSpans((current) => ({
+      ...current,
+      [key]: [...updateSpansAfterEdit(current[key] ?? [], content, after), span],
+    }));
     prevComposerText.current[key] = after;
     setDrafts((current) => ({ ...current, [key]: after }));
     setDraftLength(new TextEncoder().encode(after).length);
     setComposerHeight(getComposerHeight(composer));
     setMention(null);
     handleComposerChange(after);
+    // handleComposerChange reads pre-update state, so apply the fresh spans here.
+    applyComposerMentionHighlights(fresh);
     // Clicking a popup row blurs the textarea via the renderer's default
     // mousedown handling (row preventDefault suppresses it, but refocus
     // anyway on the next tick in case any default handling already ran).
@@ -1931,6 +1960,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     setDraftLength(new TextEncoder().encode(after).length);
     setComposerHeight(getComposerHeight(composer));
     setMention(null);
+    applyComposerMentionHighlights(spans);
   }
   const selectedTypingNames = Object.values(
     typingPeers[selectionKey ?? ""] ?? {},

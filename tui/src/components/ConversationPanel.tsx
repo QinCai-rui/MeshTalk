@@ -77,7 +77,7 @@ const MESSAGE_MARKDOWN_STYLES = {
   "markup.italic": { italic: true },
   "markup.link.label": { fg: theme.markdown.heading, underline: true },
   "markup.link.url": { fg: theme.markdown.link, underline: true },
-  "markup.raw": { fg: theme.markdown.raw },
+  "markup.raw": { fg: theme.markdown.raw, bg: theme.mentionBg },
   "markup.list": { fg: theme.markdown.list },
   keyword: { fg: theme.markdown.keyword, bold: true },
   string: { fg: theme.markdown.raw },
@@ -282,7 +282,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 ? `${isLocal ? "You" : senderName} left the group`
                 : message.content
             : selectedGroup
-              ? renderMentionedContent(message.content, resolveMentionName)
+              ? renderMentionedContent(message.content, resolveMentionName, true)
               : message.content
           const mentioned =
             Boolean(selectedGroup) &&

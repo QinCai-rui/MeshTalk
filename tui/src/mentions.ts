@@ -105,13 +105,20 @@ export function payloadMentions(payload: unknown): string[] {
 /**
  * Render stored `<@user_id>` tokens as `@Display Name` for display.
  * Unknown IDs fall back to `@unknown` so raw tokens never leak into the UI.
+ * With `forMarkdown`, names are wrapped in code spans so the markdown
+ * renderer tints them (conceal hides the backticks); plain `<text>` contexts
+ * must use the default plain form.
  */
 export function renderMentionedContent(
   content: string,
   resolveName: (peerId: string) => string | undefined,
+  forMarkdown = false,
 ): string {
   MENTION_TOKEN_RE.lastIndex = 0
-  return content.replace(MENTION_TOKEN_RE, (_, peerId: string) => `@${resolveName(peerId) ?? "unknown"}`)
+  return content.replace(MENTION_TOKEN_RE, (_, peerId: string) => {
+    const name = `@${resolveName(peerId) ?? "unknown"}`
+    return forMarkdown ? `\`${name}\`` : name
+  })
 }
 
 export type MentionQuery = { start: number; query: string }
