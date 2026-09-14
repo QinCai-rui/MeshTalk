@@ -154,7 +154,7 @@ function fileStatusLabel(status: string) {
 type FileRowProps = {
   file: FileTransfer
   files: FileTransfer[]
-  fileDeliveries: GroupDelivery[]
+  fileDeliveriesById: Map<string, GroupDelivery[]>
   fileUnavailable: boolean
   isLocal: boolean
   senderName: string | undefined
@@ -173,9 +173,12 @@ type FileRowProps = {
   handlers: ConversationRowHandlersRef
 }
 
-const ConversationFileRow = memo(function ConversationFileRow({ file, files, fileDeliveries, fileUnavailable, isLocal, senderName, selectedGroup, selectedPeerName, selectedReplyTargetId, scrollFocused, fileReplyHighlightStartedAt, fileReplyHighlightGeneration, canRetryFile, retryEnabled, imageProtocol, imageMaxWidth, imageMaxHeight, messageRefs, handlers }: FileRowProps) {
+const ConversationFileRow = memo(function ConversationFileRow({ file, files, fileDeliveriesById, fileUnavailable, isLocal, senderName, selectedGroup, selectedPeerName, selectedReplyTargetId, scrollFocused, fileReplyHighlightStartedAt, fileReplyHighlightGeneration, canRetryFile, retryEnabled, imageProtocol, imageMaxWidth, imageMaxHeight, messageRefs, handlers }: FileRowProps) {
   const selectedRow = scrollFocused && selectedReplyTargetId === file.file_id
   const attachments = files.length ? files : [file]
+  const isBatch = attachments.length > 1
+  const fileDeliveries = fileDeliveriesById.get(file.file_id) ?? []
+  const retryableStatus = (status: string) => status === "failed" || status === "blocked" || status === "unavailable" || status === "queued" || status === "sent"
   return (
     <box id={file.file_id} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "file", createdAt: file.created_at, file, allFiles: files }))} style={{ position: "relative", flexDirection: "column", marginBottom: 1, backgroundColor: selectedRow && !fileReplyHighlightStartedAt ? theme.selected : undefined }}>
       {fileReplyHighlightStartedAt && <HighlightOverlay key={fileReplyHighlightGeneration} id={`reply-highlight-${file.file_id}`} startedAt={fileReplyHighlightStartedAt} />}
@@ -185,15 +188,19 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
           <span fg={isLocal ? theme.accent : theme.text}>{isLocal ? "You" : selectedGroup ? senderName : selectedPeerName}</span>
           <span fg={theme.muted}> shared an attachment</span>
           {isLocal && !selectedGroup && <span fg={fileStatusColor(file.status)}>{fileStatusLabel(file.status)}</span>}
-          {canRetryFile && retryEnabled && <span fg={theme.text}> · </span>}
+          {!isBatch && canRetryFile && retryEnabled && <span fg={theme.text}> · </span>}
         </text>
-        {canRetryFile && retryEnabled && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box>}
-        {isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries, file.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
+        {!isBatch && canRetryFile && retryEnabled && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box>}
+        {!isBatch && isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries, file.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
         {file.caption ? <text wrapMode="word">{file.caption}</text> : null}
         {attachments.map((attachment) => {
           const unavailable = isLocalFileMissing(attachment.file_path) && !["queued", "transferring", "receiving"].includes(attachment.status)
+          const attachmentDeliveries = fileDeliveriesById.get(attachment.file_id) ?? []
+          const attachmentRetryable = isLocal && retryableStatus(attachment.status)
           return <box key={attachment.file_id} style={{ flexDirection: "column" }}>
-            <text wrapMode="word"><span fg={theme.accent}>{attachment.filename}</span><span fg={theme.muted}> · {(attachment.file_size / 1024).toFixed(1)} KiB{attachments.length > 1 ? fileStatusLabel(attachment.status) : ""}</span></text>
+            <text wrapMode="word"><span fg={theme.accent}>{attachment.filename}</span><span fg={theme.muted}> · {(attachment.file_size / 1024).toFixed(1)} KiB{attachments.length > 1 ? fileStatusLabel(attachment.status) : ""}</span>{isBatch && attachmentRetryable && retryEnabled ? <span fg={theme.text}> · </span> : null}</text>
+            {isBatch && attachmentRetryable && retryEnabled ? <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(attachment.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box> : null}
+            {isBatch && isLocal && selectedGroup ? <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(attachmentDeliveries, attachment.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(attachmentDeliveries)} <u>(click for details)</u></text></box> : null}
             {unavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
             {!unavailable && attachment.file_path ? <ImageAttachment filePath={attachment.file_path} filename={attachment.filename} protocol={imageProtocol} expectedImage={isImageFile(attachment.filename)} scrollboxRef={handlers.current.scrollboxRef} maxWidth={imageMaxWidth} maxHeight={imageMaxHeight} onOpen={() => handlers.current.openImage(attachment)} /> : null}
           </box>
@@ -408,18 +415,29 @@ export function ConversationPanel(props: ConversationPanelProps) {
   const peerNames = useMemo(() => new Map(peers.map((peer) => [peer.peer_id, peer.display_name])), [peers])
   const fileDeliveriesById = useMemo(() => {
     const deliveries = new Map<string, GroupDelivery[]>()
+    const resolveName = (recipientId: string) => groupMemberNames.get(recipientId) ?? peerNames.get(recipientId) ?? recipientId.slice(0, 8)
     for (const item of conversationItems) {
       if (item.type !== "file") continue
       if (item.file.deliveries) {
-        deliveries.set(item.file.file_id, item.file.deliveries.map((delivery) => ({ ...delivery, display_name: delivery.display_name ?? groupMemberNames.get(delivery.recipient_id) ?? peerNames.get(delivery.recipient_id) ?? delivery.recipient_id.slice(0, 8) })))
-        continue
+        deliveries.set(item.file.file_id, item.file.deliveries.map((delivery) => ({ ...delivery, display_name: delivery.display_name ?? resolveName(delivery.recipient_id) })))
+      } else {
+        const synthesized = item.allFiles.map((file) => ({
+          recipient_id: file.recipient_id,
+          display_name: groupMemberNames.get(file.recipient_id) ?? peerNames.get(file.recipient_id) ?? file.recipient_id.slice(0, 8),
+          status: file.status === "completed" ? "delivered" : file.status === "failed" ? "unavailable" : file.status === "transferring" || file.status === "receiving" ? "pending" : file.status,
+          updated_at: file.completed_at ?? file.created_at,
+        }))
+        deliveries.set(item.file.file_id, synthesized)
+        for (const file of item.allFiles) {
+          if (file.file_id === item.file.file_id) continue
+          const entry = synthesized.find((delivery) => delivery.recipient_id === file.recipient_id)
+          if (entry) deliveries.set(file.file_id, [entry])
+        }
       }
-      deliveries.set(item.file.file_id, item.allFiles.map((file) => ({
-        recipient_id: file.recipient_id,
-        display_name: groupMemberNames.get(file.recipient_id) ?? peerNames.get(file.recipient_id) ?? file.recipient_id.slice(0, 8),
-        status: file.status === "completed" ? "delivered" : file.status === "failed" ? "unavailable" : file.status === "transferring" || file.status === "receiving" ? "pending" : file.status,
-        updated_at: file.completed_at ?? file.created_at,
-      })))
+      for (const attachment of item.allFiles) {
+        if (attachment.file_id === item.file.file_id || !attachment.deliveries) continue
+        deliveries.set(attachment.file_id, attachment.deliveries.map((delivery) => ({ ...delivery, display_name: delivery.display_name ?? resolveName(delivery.recipient_id) })))
+      }
     }
     return deliveries
   }, [conversationItems, groupMemberNames, peerNames])
@@ -497,7 +515,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
                 key={`file-${file.file_id}`}
                 file={file}
                 files={file.batch_id ? item.allFiles : [file]}
-                fileDeliveries={fileDeliveriesById.get(file.file_id) ?? []}
+                fileDeliveriesById={fileDeliveriesById}
                 fileUnavailable={isLocalFileMissing(file.file_path) && file.status !== "queued" && file.status !== "transferring" && file.status !== "receiving"}
                 isLocal={isLocal}
 senderName={selectedGroup ? groupMemberNames.get(file.sender_id) ?? peerNames.get(file.sender_id) ?? "Unknown member" : undefined}

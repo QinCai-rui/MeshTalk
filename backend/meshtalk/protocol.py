@@ -1336,12 +1336,17 @@ class FileAckV2Payload:
     def _validate(self, *, require_signature: bool) -> None:
         valid_ranges = isinstance(self.missing_ranges, list) and bool(self.missing_ranges)
         if valid_ranges:
-            valid_ranges = all(
-                isinstance(value, (list, tuple)) and len(value) == 2
-                and all(isinstance(index, int) and not isinstance(index, bool) for index in value)
-                and 0 <= value[0] <= value[1] < MAX_FILE_CHUNKS
-                for value in self.missing_ranges
-            )
+            previous_end = -1
+            for value in self.missing_ranges:
+                if (
+                    not isinstance(value, (list, tuple)) or len(value) != 2
+                    or not all(isinstance(index, int) and not isinstance(index, bool) for index in value)
+                    or not 0 <= value[0] <= value[1] < MAX_FILE_CHUNKS
+                    or value[0] <= previous_end
+                ):
+                    valid_ranges = False
+                    break
+                previous_end = value[1]
         if (
             not _valid_file_v2_common_id(self.file_id)
             or not _valid_peer_id(self.recipient_id)

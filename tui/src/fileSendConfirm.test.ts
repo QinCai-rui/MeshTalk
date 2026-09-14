@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { mkdir, readFile, rm } from "fs/promises"
-import { join } from "path"
+import { basename, join } from "path"
 import { tmpdir } from "os"
 import {
   fileConfirmDialogHeight,
@@ -74,7 +74,7 @@ test("uniquifies staged files with the same basename", async () => {
   await Bun.write(second, "two")
   try {
     const staged = await stageFilesForConfirmation([first, second])
-    expect(staged.map((path) => path.split("/").pop())).toEqual(["notes.txt", "notes-2.txt"])
+    expect(staged.map((path) => basename(path))).toEqual(["notes.txt", "notes-2.txt"])
     expect(await readFile(staged[0]!, "utf8")).toBe("one")
     expect(await readFile(staged[1]!, "utf8")).toBe("two")
   } finally { await rm(root, { recursive: true, force: true }) }

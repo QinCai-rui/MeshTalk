@@ -78,8 +78,8 @@ export async function stageFilesForConfirmation(paths: string[]): Promise<string
     const extension = dot > 0 ? name.slice(dot) : ""
     let stagedName = name
     let suffix = 2
-    while (used.has(stagedName)) stagedName = `${stem}-${suffix++}${extension}`
-    used.add(stagedName)
+    while (used.has(stagedName.toLowerCase())) stagedName = `${stem}-${suffix++}${extension}`
+    used.add(stagedName.toLowerCase())
     const destination = join(directory, stagedName || `file-${index + 1}`)
     await copyFile(source, destination)
     return destination

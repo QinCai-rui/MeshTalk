@@ -60,6 +60,13 @@ class FileProtocolV2Tests(unittest.TestCase):
             with self.subTest(status=status), self.assertRaisesRegex(ValueError, "Invalid file ack v2 payload"):
                 FileAckV2Payload(FILE_ID, "recipient", status, b"s" * 64, ranges).encode()
 
+    def test_ack_ranges_must_be_ordered_and_non_overlapping(self):
+        for ranges in ([(0, 2), (1, 3)], [(2, 3), (0, 1)], [(0, 1), (1, 2)]):
+            with self.subTest(ranges=ranges), self.assertRaisesRegex(ValueError, "Invalid file ack v2 payload"):
+                FileAckV2Payload(FILE_ID, "recipient", "missing", b"s" * 64, ranges).encode()
+        valid = FileAckV2Payload(FILE_ID, "recipient", "missing", b"s" * 64, [(0, 1), (3, 4)])
+        self.assertEqual(FileAckV2Payload.decode(valid.encode()), valid)
+
 
 class FileDatabaseV2Tests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

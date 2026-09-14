@@ -18,6 +18,7 @@ declare const APP_VERSION: string
 declare const MESHTALK_RELEASE: boolean
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
+const MAX_FILE_SIZE = 50 * 1024 * 1024
 const MAX_GROUP_MEMBER_CACHE = 32
 const MAX_DRAFT_ENTRIES = 200
 
@@ -746,6 +747,8 @@ export function useChatActions(deps: ChatActionsDeps) {
 
   function requestImageSend(bytes: Uint8Array, mimeType: string) {
     if (!selection) { showStatus("Select a peer or group first."); return }
+    if (!bytes || !bytes.byteLength) { showStatus("The pasted image is empty."); return }
+    if (bytes.byteLength > MAX_FILE_SIZE) { showStatus("Pasted image exceeds the 50 MiB limit."); return }
     showDialog({ kind: "file-confirm", paths: [], source: "image", target: selection, caption: composerRef.current?.plainText.trim() ?? "", image: { bytes, mimeType } })
   }
 
