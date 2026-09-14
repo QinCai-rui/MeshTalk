@@ -64,6 +64,22 @@ test("stages dropped files in a stable temporary directory before confirmation",
   }
 })
 
+test("uniquifies staged files with the same basename", async () => {
+  const root = join(tmpdir(), `meshtalk-drop-source-${crypto.randomUUID()}`)
+  const first = join(root, "first", "notes.txt")
+  const second = join(root, "second", "notes.txt")
+  await mkdir(join(root, "first"), { recursive: true })
+  await mkdir(join(root, "second"), { recursive: true })
+  await Bun.write(first, "one")
+  await Bun.write(second, "two")
+  try {
+    const staged = await stageFilesForConfirmation([first, second])
+    expect(staged.map((path) => path.split("/").pop())).toEqual(["notes.txt", "notes-2.txt"])
+    expect(await readFile(staged[0]!, "utf8")).toBe("one")
+    expect(await readFile(staged[1]!, "utf8")).toBe("two")
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 describe("parsePotentialFilePaths", () => {
   test("parses a single absolute path", () => {
     expect(parsePotentialFilePaths("/home/you/file.txt")).toEqual(["/home/you/file.txt"])

@@ -44,7 +44,7 @@ type ConversationPanelProps = {
   markUnreadMessageVisible: (messageId: string) => void
   openSettings: () => void
   openImage: (file: FileTransfer) => void
-  openDeliveryDetails: (deliveries: GroupDelivery[]) => void
+  openDeliveryDetails: (deliveries: GroupDelivery[], fileId?: string) => void
   typingNames: string[]
   editingName: boolean
   scrollFocused: boolean
@@ -58,7 +58,7 @@ type ConversationPanelProps = {
   clearReplyTarget: () => void
   onComposerChange: (content: string) => void
   send: () => void
-  onRetryFile?: (fileId: string) => void
+  onRetryFile?: (fileId: string, recipientId?: string) => void
   inboxCount?: number
   onFriendAction?: (action: InlineFriendAction) => void
   onOpenConnection?: () => void
@@ -118,9 +118,9 @@ type ConversationRowHandlers = {
   highlightReplyTarget: (id: string) => void
   setScrollFocused: (focused: boolean) => void
   scrollboxRef: RefObject<ScrollBoxRenderable | null>
-  openDeliveryDetails: (deliveries: GroupDelivery[]) => void
+  openDeliveryDetails: (deliveries: GroupDelivery[], fileId?: string) => void
   openImage: (file: FileTransfer) => void
-  onRetryFile?: (fileId: string) => void
+  onRetryFile?: (fileId: string, recipientId?: string) => void
 }
 
 type ConversationRowHandlersRef = { current: ConversationRowHandlers }
@@ -153,6 +153,7 @@ function fileStatusLabel(status: string) {
 
 type FileRowProps = {
   file: FileTransfer
+  files: FileTransfer[]
   fileDeliveries: GroupDelivery[]
   fileUnavailable: boolean
   isLocal: boolean
@@ -172,10 +173,11 @@ type FileRowProps = {
   handlers: ConversationRowHandlersRef
 }
 
-const ConversationFileRow = memo(function ConversationFileRow({ file, fileDeliveries, fileUnavailable, isLocal, senderName, selectedGroup, selectedPeerName, selectedReplyTargetId, scrollFocused, fileReplyHighlightStartedAt, fileReplyHighlightGeneration, canRetryFile, retryEnabled, imageProtocol, imageMaxWidth, imageMaxHeight, messageRefs, handlers }: FileRowProps) {
+const ConversationFileRow = memo(function ConversationFileRow({ file, files, fileDeliveries, fileUnavailable, isLocal, senderName, selectedGroup, selectedPeerName, selectedReplyTargetId, scrollFocused, fileReplyHighlightStartedAt, fileReplyHighlightGeneration, canRetryFile, retryEnabled, imageProtocol, imageMaxWidth, imageMaxHeight, messageRefs, handlers }: FileRowProps) {
   const selectedRow = scrollFocused && selectedReplyTargetId === file.file_id
+  const attachments = files.length ? files : [file]
   return (
-    <box id={file.file_id} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "file", createdAt: file.created_at, file, allFiles: [file] }))} style={{ position: "relative", flexDirection: "column", marginBottom: 1, backgroundColor: selectedRow && !fileReplyHighlightStartedAt ? theme.selected : undefined }}>
+    <box id={file.file_id} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "file", createdAt: file.created_at, file, allFiles: files }))} style={{ position: "relative", flexDirection: "column", marginBottom: 1, backgroundColor: selectedRow && !fileReplyHighlightStartedAt ? theme.selected : undefined }}>
       {fileReplyHighlightStartedAt && <HighlightOverlay key={fileReplyHighlightGeneration} id={`reply-highlight-${file.file_id}`} startedAt={fileReplyHighlightStartedAt} />}
       <box style={{ position: "relative", zIndex: 1, flexDirection: "column" }}>
         <text>
@@ -186,10 +188,16 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, fileDelive
           {canRetryFile && retryEnabled && <span fg={theme.text}> · </span>}
         </text>
         {canRetryFile && retryEnabled && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box>}
-        {isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
-        <text wrapMode="word"><span fg={theme.accent}>{file.filename}</span><span fg={theme.muted}> · {(file.file_size / 1024).toFixed(1)} KiB</span></text>
-        {fileUnavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
-        {!fileUnavailable && file.file_path ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage={isImageFile(file.filename)} scrollboxRef={handlers.current.scrollboxRef} maxWidth={imageMaxWidth} maxHeight={imageMaxHeight} onOpen={() => handlers.current.openImage(file)} /> : null}
+        {isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries, file.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
+        {file.caption ? <text wrapMode="word">{file.caption}</text> : null}
+        {attachments.map((attachment) => {
+          const unavailable = isLocalFileMissing(attachment.file_path) && !["queued", "transferring", "receiving"].includes(attachment.status)
+          return <box key={attachment.file_id} style={{ flexDirection: "column" }}>
+            <text wrapMode="word"><span fg={theme.accent}>{attachment.filename}</span><span fg={theme.muted}> · {(attachment.file_size / 1024).toFixed(1)} KiB{attachments.length > 1 ? fileStatusLabel(attachment.status) : ""}</span></text>
+            {unavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
+            {!unavailable && attachment.file_path ? <ImageAttachment filePath={attachment.file_path} filename={attachment.filename} protocol={imageProtocol} expectedImage={isImageFile(attachment.filename)} scrollboxRef={handlers.current.scrollboxRef} maxWidth={imageMaxWidth} maxHeight={imageMaxHeight} onOpen={() => handlers.current.openImage(attachment)} /> : null}
+          </box>
+        })}
       </box>
     </box>
   )
@@ -402,6 +410,10 @@ export function ConversationPanel(props: ConversationPanelProps) {
     const deliveries = new Map<string, GroupDelivery[]>()
     for (const item of conversationItems) {
       if (item.type !== "file") continue
+      if (item.file.deliveries) {
+        deliveries.set(item.file.file_id, item.file.deliveries.map((delivery) => ({ ...delivery, display_name: delivery.display_name ?? groupMemberNames.get(delivery.recipient_id) ?? peerNames.get(delivery.recipient_id) ?? delivery.recipient_id.slice(0, 8) })))
+        continue
+      }
       deliveries.set(item.file.file_id, item.allFiles.map((file) => ({
         recipient_id: file.recipient_id,
         display_name: groupMemberNames.get(file.recipient_id) ?? peerNames.get(file.recipient_id) ?? file.recipient_id.slice(0, 8),
@@ -484,6 +496,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
               <ConversationFileRow
                 key={`file-${file.file_id}`}
                 file={file}
+                files={file.batch_id ? item.allFiles : [file]}
                 fileDeliveries={fileDeliveriesById.get(file.file_id) ?? []}
                 fileUnavailable={isLocalFileMissing(file.file_path) && file.status !== "queued" && file.status !== "transferring" && file.status !== "receiving"}
                 isLocal={isLocal}
@@ -494,7 +507,7 @@ senderName={selectedGroup ? groupMemberNames.get(file.sender_id) ?? peerNames.ge
                 scrollFocused={scrollFocused}
                 fileReplyHighlightStartedAt={replyHighlight?.id === file.file_id ? replyHighlight.startedAt : undefined}
                 fileReplyHighlightGeneration={replyHighlight?.id === file.file_id ? replyHighlight.generation : undefined}
-                canRetryFile={isLocal && (file.status === "failed" || file.status === "blocked" || file.status === "unavailable")}
+                canRetryFile={isLocal && (file.status === "failed" || file.status === "blocked" || file.status === "unavailable" || file.status === "queued" || file.status === "sent")}
                 retryEnabled={onRetryFile !== undefined}
                 imageProtocol={imageProtocol}
                 imageMaxWidth={Math.max(1, imageViewport.width - 2)}

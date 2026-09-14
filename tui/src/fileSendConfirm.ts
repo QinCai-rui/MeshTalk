@@ -70,8 +70,17 @@ export function fileTypeLabel(filename: string, mimeType?: string): string {
 export async function stageFilesForConfirmation(paths: string[]): Promise<string[]> {
   const directory = join(tmpdir(), "meshtalk-drops", crypto.randomUUID())
   await mkdir(directory, { recursive: true })
-  return Promise.all(paths.map(async (source) => {
-    const destination = join(directory, basename(source))
+  const used = new Set<string>()
+  return Promise.all(paths.map(async (source, index) => {
+    const name = basename(source)
+    const dot = name.lastIndexOf(".")
+    const stem = dot > 0 ? name.slice(0, dot) : name
+    const extension = dot > 0 ? name.slice(dot) : ""
+    let stagedName = name
+    let suffix = 2
+    while (used.has(stagedName)) stagedName = `${stem}-${suffix++}${extension}`
+    used.add(stagedName)
+    const destination = join(directory, stagedName || `file-${index + 1}`)
     await copyFile(source, destination)
     return destination
   }))

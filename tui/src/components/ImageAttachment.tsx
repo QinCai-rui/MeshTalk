@@ -46,7 +46,8 @@ export function fittedImageSize(imageWidth: number, imageHeight: number, maxWidt
 }
 
 export function isLocalFileMissing(filePath: string | null | undefined): boolean {
-  return !filePath || !existsSync(filePath)
+  if (!filePath) return true
+  try { return !statSync(filePath).isFile() } catch { return true }
 }
 
 export function isFullyWithinViewport(node: Pick<BoxRenderable, "screenY" | "height">, viewport: Pick<BoxRenderable, "screenY" | "height">): boolean {

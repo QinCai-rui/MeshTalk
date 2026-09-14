@@ -21,6 +21,7 @@ export type Peer = {
 }
 
 export type GroupDelivery = { recipient_id: string; display_name: string; status: string; updated_at: number }
+export type FileDelivery = { recipient_id: string; display_name?: string; status: string; updated_at: number }
 export type Message = {
   message_id: string; sender_id: string; recipient_id?: string; group_id?: string; content: string
   created_at: number; kind?: string; deliveries?: GroupDelivery[]; delivered?: number; blocked?: number
@@ -40,9 +41,9 @@ export type SplashPreference = "card" | "boot-log" | "off"
 export type AdvancedConfig = { control_url?: string | null; control_pinned_ips: string[]; stun_server: string; stun_pinned_ips: string[]; image_protocol: ImageProtocol; confirm_file_send?: boolean; splash_style: SplashPreference; splash_duration_ms?: number; splash_phase_ms?: number; splash_welcome_ms?: number }
 export type FileConfirmSource = "drop" | "paste" | "clipboard" | "picker" | "image"
 export type PendingImage = { bytes: Uint8Array; mimeType: string }
-export type FileConfirmDialog = { kind: "file-confirm"; paths: string[]; source: FileConfirmSource; image?: PendingImage }
+export type FileConfirmDialog = { kind: "file-confirm"; paths: string[]; source: FileConfirmSource; target: Conversation; caption: string; image?: PendingImage }
 export type DebugInfo = { public_endpoint?: [string, number] | null; stun_server: string; local_tcp_port: number; rooms: RoomStatus[]; peers: Peer[] }
-export type FileTransfer = { file_id: string; filename: string; file_size: number; sender_id: string; recipient_id: string; group_id?: string | null; direction: string; status: string; file_path?: string | null; created_at: number; completed_at?: number | null; received_chunks?: number; total_chunks?: number }
+export type FileTransfer = { file_id: string; filename: string; file_size: number; sender_id: string; recipient_id: string; group_id?: string | null; direction: string; status: string; file_path?: string | null; created_at: number; completed_at?: number | null; received_chunks?: number; total_chunks?: number; file_sha256?: string; caption?: string; batch_id?: string | null; batch_index?: number | null; batch_count?: number | null; deliveries?: FileDelivery[] }
 export type ConversationItem = { type: "message"; createdAt: number; message: Message } | { type: "file"; createdAt: number; file: FileTransfer; allFiles: FileTransfer[] }
 export type ReplyTarget = { id: string; senderId: string; label: string; groupId?: string; kind: "message" | "file" }
 
@@ -67,7 +68,7 @@ export type Dialog =
   | { kind: "debug" } | { kind: "debug-endpoints" } | { kind: "debug-peer"; peerId: string; displayName: string }
   | { kind: "file-send" } | FileConfirmDialog | { kind: "file-list"; files: FileTransfer[] } | { kind: "file-download"; fileId: string; filename: string; filePath: string }
   | { kind: "image-view"; filePath?: string; bytes?: Uint8Array; filename: string; version?: number | null; returnTo?: "files" | "file-confirm"; returnDialog?: FileConfirmDialog }
-  | { kind: "delivery-details"; deliveries: GroupDelivery[] }
+  | { kind: "delivery-details"; deliveries: GroupDelivery[]; fileId?: string | null }
   | { kind: "files-dir"; filesDir: string; env?: string; configured?: string; dataDir?: string } | { kind: "group-file-send" }
   | { kind: "update"; release: import("../../common/updater").Release; installed?: boolean; installDir?: string; progress?: import("../../common/updater").UpdateProgress }
   | { kind: "update-directory"; release: import("../../common/updater").Release }
