@@ -231,11 +231,19 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sender_manager.sent, [])
 
     async def test_flush_purges_legacy_file_queue(self):
+        await self.sender_db.save_file_transfer({
+            "file_id": "legacy-file", "filename": "legacy.bin", "file_size": 1,
+            "chunk_size": 1, "total_chunks": 1, "sender_id": self.sender.peer_id,
+            "recipient_id": self.recipient.peer_id, "group_id": None,
+            "direction": "outbound", "status": "queued", "file_path": None,
+            "created_at": 1.0,
+        })
         await self.sender_db.add_to_outqueue(
             self.recipient.peer_id, PacketType.FILE_CHUNK.value, b"legacy", "legacy-file"
         )
         self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
         self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
+        self.assertEqual((await self.sender_db.get_file_transfer("legacy-file"))["status"], "failed")
 
     async def test_rapid_group_sends_produce_distinct_ids(self):
         group_id = self.sender_settings.create_room("Group").id

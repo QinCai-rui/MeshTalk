@@ -527,6 +527,11 @@ class FileTransferManager:
             logger.info("Purging %d legacy queued file packet(s) for %s", len(legacy), peer_id)
             for item in legacy:
                 await self.db.remove_from_outqueue(item["id"])
+            for file_id in {item["message_id"] for item in legacy if item["message_id"]}:
+                transfer = await self.db.get_file_transfer(file_id)
+                if transfer and transfer["direction"] == "outbound" and not transfer.get("file_sha256") and transfer["status"] != "completed":
+                    await self.db.update_file_transfer(file_id, status="failed")
+                    self._emit({"event": "file_failed", "file_id": file_id, "group_id": transfer["group_id"]})
             pending = [item for item in pending if item["packet_type"] not in legacy_types]
         # ACKs are receiver-owned and have no sender transfer row.
         for item in pending:
