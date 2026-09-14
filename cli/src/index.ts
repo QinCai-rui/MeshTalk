@@ -69,8 +69,13 @@ function asRecords(value: unknown): Record<string, unknown>[] {
 export function parseFileArguments(args: string[]): { paths: string[]; caption?: string } {
   const paths: string[] = [];
   let caption: string | undefined;
+  let options = true;
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] !== "--caption") {
+    if (options && args[index] === "--") {
+      options = false;
+      continue;
+    }
+    if (!options || args[index] !== "--caption") {
       paths.push(args[index]);
       continue;
     }

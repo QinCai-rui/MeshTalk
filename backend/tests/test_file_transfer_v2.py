@@ -122,6 +122,36 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "blocked")
         self.assertEqual(self.sender_manager.sent, [])
 
+    async def test_sent_transfer_retries_after_restart_timeout(self):
+        source = self.root / "restart.txt"
+        source.write_bytes(b"restart-data")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        row = await self.sender_db.get_file_transfer(file_id)
+        self.assertIsNotNone(row["awaiting_ack_at"])
+        restarted = FileTransferManager(
+            self.sender, self.sender_manager, self.sender_db, self.root / "sender-files",
+            settings=self.sender_settings,
+        )
+        with self.assertRaisesRegex(ValueError, "no retryable"):
+            await restarted.retry_file(file_id)
+        await self.sender_db.update_file_transfer(file_id, awaiting_ack_at=0)
+        self.sender_manager.sent.clear()
+        await restarted.retry_file(file_id)
+        self.assertTrue(self.sender_manager.sent)
+
+    async def test_group_failed_delivery_beats_queued_aggregate(self):
+        group_id = self.sender_settings.create_room("Group").id
+        await self.sender_db.upsert_group_member(group_id, self.sender.peer_id, "Sender")
+        await self.sender_db.upsert_group_member(group_id, self.recipient.peer_id, "Recipient")
+        source = self.root / "aggregate.txt"
+        source.write_bytes(b"aggregate-data")
+        file_id = await self.sender_transfer.send_group_file(group_id, str(source))
+        await self.sender_db.set_file_delivery(file_id, self.recipient.peer_id, "queued")
+        second = Identity.generate("Second")
+        await self.sender_db.set_file_delivery(file_id, second.peer_id, "failed")
+        await self.sender_transfer._recompute_aggregate(file_id)
+        self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "failed")
+
     async def test_empty_group_send_fails_without_snapshot(self):
         group_id = self.sender_settings.create_room("Solo").id
         await self.sender_db.upsert_group_member(group_id, self.sender.peer_id, "Sender")

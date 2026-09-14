@@ -14,6 +14,13 @@ describe("file command arguments", () => {
     expect(() => parseFileArguments(["one.txt", "--caption", "--caption"])).toThrow("--caption requires");
     expect(() => parseFileArguments(["--caption", "one", "--caption", "two"])).toThrow("--caption requires");
   });
+
+  test("treats options after -- as paths", () => {
+    expect(parseFileArguments(["--caption", "Notes", "--", "--caption"])).toEqual({
+      paths: ["--caption"],
+      caption: "Notes",
+    });
+  });
 });
 
 describe("file metadata output", () => {

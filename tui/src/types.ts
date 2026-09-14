@@ -21,7 +21,7 @@ export type Peer = {
 }
 
 export type GroupDelivery = { recipient_id: string; display_name: string; status: string; updated_at: number }
-export type FileDelivery = { recipient_id: string; display_name?: string; status: string; updated_at: number }
+export type FileDelivery = { recipient_id: string; display_name?: string; status: string; updated_at: number; awaiting_ack_at?: number | null }
 export type Message = {
   message_id: string; sender_id: string; recipient_id?: string; group_id?: string; content: string
   created_at: number; kind?: string; deliveries?: GroupDelivery[]; delivered?: number; blocked?: number
@@ -43,7 +43,7 @@ export type FileConfirmSource = "drop" | "paste" | "clipboard" | "picker" | "ima
 export type PendingImage = { bytes: Uint8Array; mimeType: string }
 export type FileConfirmDialog = { kind: "file-confirm"; paths: string[]; source: FileConfirmSource; target: Conversation; caption: string; image?: PendingImage }
 export type DebugInfo = { public_endpoint?: [string, number] | null; stun_server: string; local_tcp_port: number; rooms: RoomStatus[]; peers: Peer[] }
-export type FileTransfer = { file_id: string; filename: string; file_size: number; sender_id: string; recipient_id: string; group_id?: string | null; direction: string; status: string; file_path?: string | null; created_at: number; completed_at?: number | null; received_chunks?: number; total_chunks?: number; file_sha256?: string; caption?: string; batch_id?: string | null; batch_index?: number | null; batch_count?: number | null; deliveries?: FileDelivery[] }
+export type FileTransfer = { file_id: string; filename: string; file_size: number; sender_id: string; recipient_id: string; group_id?: string | null; direction: string; status: string; file_path?: string | null; created_at: number; completed_at?: number | null; awaiting_ack_at?: number | null; received_chunks?: number; total_chunks?: number; file_sha256?: string; caption?: string; batch_id?: string | null; batch_index?: number | null; batch_count?: number | null; deliveries?: FileDelivery[] }
 export type ConversationItem = { type: "message"; createdAt: number; message: Message } | { type: "file"; createdAt: number; file: FileTransfer; allFiles: FileTransfer[] }
 export type ReplyTarget = { id: string; senderId: string; label: string; groupId?: string; kind: "message" | "file" }
 

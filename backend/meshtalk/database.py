@@ -147,7 +147,8 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     caption TEXT NOT NULL DEFAULT '',
     batch_id TEXT,
     batch_index INTEGER,
-    batch_count INTEGER
+    batch_count INTEGER,
+    awaiting_ack_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS file_deliveries (
@@ -155,6 +156,7 @@ CREATE TABLE IF NOT EXISTS file_deliveries (
     recipient_id TEXT NOT NULL,
     status TEXT NOT NULL,
     updated_at REAL NOT NULL,
+    awaiting_ack_at REAL,
     PRIMARY KEY (file_id, recipient_id)
 );
 
@@ -242,10 +244,14 @@ class Database:
             "batch_id": "TEXT",
             "batch_index": "INTEGER",
             "batch_count": "INTEGER",
+            "awaiting_ack_at": "REAL",
         }
         for column, definition in file_migrations.items():
             if column not in file_columns:
                 await self._db.execute(f"ALTER TABLE file_transfers ADD COLUMN {column} {definition}")
+        delivery_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(file_deliveries)")}
+        if "awaiting_ack_at" not in delivery_columns:
+            await self._db.execute("ALTER TABLE file_deliveries ADD COLUMN awaiting_ack_at REAL")
         # Migrate group_messages table (older DBs lacked received_at/kind)
         try:
             gm_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_messages)")}
@@ -1025,11 +1031,12 @@ class Database:
     async def set_file_delivery(self, file_id: str, recipient_id: str, status: str) -> None:
         """Create or update one recipient's delivery state."""
         await self._db.execute(
-            """INSERT INTO file_deliveries (file_id, recipient_id, status, updated_at)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO file_deliveries (file_id, recipient_id, status, updated_at, awaiting_ack_at)
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(file_id, recipient_id) DO UPDATE SET
-                 status = excluded.status, updated_at = excluded.updated_at""",
-            (file_id, recipient_id, status, time.time()),
+                 status = excluded.status, updated_at = excluded.updated_at,
+                 awaiting_ack_at = excluded.awaiting_ack_at""",
+            (file_id, recipient_id, status, time.time(), time.time() if status == "sent" else None),
         )
         await self._db.commit()
 

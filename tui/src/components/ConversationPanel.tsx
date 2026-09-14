@@ -178,7 +178,17 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
   const attachments = files.length ? files : [file]
   const isBatch = attachments.length > 1
   const fileDeliveries = fileDeliveriesById.get(file.file_id) ?? []
-  const retryableStatus = (status: string) => status === "failed" || status === "blocked" || status === "unavailable" || status === "queued" || status === "sent"
+  const [now, setNow] = useState(() => Date.now() / 1000)
+  const nextRetryAt = Math.min(...attachments
+    .filter((attachment) => attachment.status === "sent" && attachment.awaiting_ack_at)
+    .map((attachment) => (attachment.awaiting_ack_at ?? 0) + 30))
+  useEffect(() => {
+    if (!Number.isFinite(nextRetryAt) || nextRetryAt <= now) return
+    const timer = setTimeout(() => setNow(Date.now() / 1000), (nextRetryAt - now) * 1000)
+    return () => clearTimeout(timer)
+  }, [nextRetryAt, now])
+  const retryableStatus = (status: string, awaitingAckAt?: number | null) => status === "failed" || status === "blocked" || status === "unavailable" || status === "queued" || (status === "sent" && (!awaitingAckAt || now >= awaitingAckAt + 30))
+  const singleRetryable = canRetryFile && retryableStatus(file.status, file.awaiting_ack_at)
   return (
     <box id={file.file_id} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "file", createdAt: file.created_at, file, allFiles: files }))} style={{ position: "relative", flexDirection: "column", marginBottom: 1, backgroundColor: selectedRow && !fileReplyHighlightStartedAt ? theme.selected : undefined }}>
       {fileReplyHighlightStartedAt && <HighlightOverlay key={fileReplyHighlightGeneration} id={`reply-highlight-${file.file_id}`} startedAt={fileReplyHighlightStartedAt} />}
@@ -188,15 +198,15 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
           <span fg={isLocal ? theme.accent : theme.text}>{isLocal ? "You" : selectedGroup ? senderName : selectedPeerName}</span>
           <span fg={theme.muted}> shared an attachment</span>
           {isLocal && !selectedGroup && <span fg={fileStatusColor(file.status)}>{fileStatusLabel(file.status)}</span>}
-          {!isBatch && canRetryFile && retryEnabled && <span fg={theme.text}> · </span>}
+          {!isBatch && singleRetryable && retryEnabled && <span fg={theme.text}> · </span>}
         </text>
-        {!isBatch && canRetryFile && retryEnabled && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box>}
+        {!isBatch && singleRetryable && retryEnabled && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box>}
         {!isBatch && isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries, file.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
         {file.caption ? <text wrapMode="word">{file.caption}</text> : null}
         {attachments.map((attachment) => {
           const unavailable = isLocalFileMissing(attachment.file_path) && !["queued", "transferring", "receiving"].includes(attachment.status)
           const attachmentDeliveries = fileDeliveriesById.get(attachment.file_id) ?? []
-          const attachmentRetryable = isLocal && retryableStatus(attachment.status)
+          const attachmentRetryable = isLocal && retryableStatus(attachment.status, attachment.awaiting_ack_at)
           return <box key={attachment.file_id} style={{ flexDirection: "column" }}>
             <text wrapMode="word"><span fg={theme.accent}>{attachment.filename}</span><span fg={theme.muted}> · {(attachment.file_size / 1024).toFixed(1)} KiB{attachments.length > 1 ? fileStatusLabel(attachment.status) : ""}</span>{isBatch && attachmentRetryable && retryEnabled ? <span fg={theme.text}> · </span> : null}</text>
             {isBatch && attachmentRetryable && retryEnabled ? <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(attachment.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box> : null}

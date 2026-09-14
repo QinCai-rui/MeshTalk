@@ -370,7 +370,10 @@ class FileTransferManager:
             await self.db.set_file_delivery(transfer["file_id"], recipient, status)
             await self._recompute_aggregate(transfer["file_id"])
         else:
-            await self.db.update_file_transfer(transfer["file_id"], status=status)
+            await self.db.update_file_transfer(
+                transfer["file_id"], status=status,
+                awaiting_ack_at=time.time() if status == "sent" else None,
+            )
 
     async def _deliver_v2(self, transfer: dict, recipient: str) -> None:
         if not await self._supports_v2(recipient):
@@ -385,7 +388,9 @@ class FileTransferManager:
         offer = self._offer(transfer, recipient)
         if not peer:
             await self.db.add_to_outqueue(recipient, PacketType.FILE_OFFER_V2.value, offer.encode(), transfer["file_id"], transfer["group_id"])
-            await self._queue_ranges(transfer, recipient, key, [(0, transfer["total_chunks"] - 1)])
+            if not await self._queue_ranges(transfer, recipient, key, [(0, transfer["total_chunks"] - 1)]):
+                self._emit({"event": "file_failed", "file_id": transfer["file_id"], "recipient_id": recipient, "group_id": transfer["group_id"]})
+                return
             await self._set_delivery(transfer, recipient, "queued")
             self._emit({"event": "file_queued", "file_id": transfer["file_id"], "recipient_id": recipient, "filename": transfer["filename"], "group_id": transfer["group_id"]})
             return
@@ -394,13 +399,15 @@ class FileTransferManager:
             await self.peer_manager.send_packet(peer, Packet(PacketType.FILE_OFFER_V2, offer.encode()))
         except Exception as exc:
             await self.db.add_to_outqueue(recipient, PacketType.FILE_OFFER_V2.value, offer.encode(), transfer["file_id"], transfer["group_id"])
-            await self._queue_ranges(transfer, recipient, key, [(0, transfer["total_chunks"] - 1)])
+            if not await self._queue_ranges(transfer, recipient, key, [(0, transfer["total_chunks"] - 1)]):
+                self._emit({"event": "file_failed", "file_id": transfer["file_id"], "recipient_id": recipient, "group_id": transfer["group_id"]})
+                return
             await self._set_delivery(transfer, recipient, "queued")
             logger.warning("Failed to send v2 file offer %s: %s", transfer["file_id"], exc)
             return
         await self._stream_ranges(peer, transfer, recipient, [(0, transfer["total_chunks"] - 1)])
 
-    async def _queue_ranges(self, transfer, recipient, key, ranges) -> None:
+    async def _queue_ranges(self, transfer, recipient, key, ranges) -> bool:
         path = Path(transfer["file_path"])
         try:
             with open(path, "rb") as src:
@@ -412,6 +419,8 @@ class FileTransferManager:
         except Exception as exc:
             await self._set_delivery(transfer, recipient, "failed")
             logger.warning("Could not queue file %s: %s", transfer["file_id"], exc)
+            return False
+        return True
 
     async def _mark_sent_unless_completed(self, transfer: dict, recipient: str) -> None:
         """Record awaiting-ACK state unless a completion ACK landed mid-stream."""
@@ -446,7 +455,9 @@ class FileTransferManager:
                             remaining = [(index + 1, end)] if index < end else []
                             pos = ranges.index((start, end))
                             remaining.extend(ranges[pos + 1:])
-                            await self._queue_ranges(transfer, recipient, peer.encryption_public_key, remaining)
+                            if not await self._queue_ranges(transfer, recipient, peer.encryption_public_key, remaining):
+                                self._emit({"event": "file_failed", "file_id": transfer["file_id"], "recipient_id": recipient, "group_id": transfer["group_id"]})
+                                return False
                             await self._set_delivery(transfer, recipient, "queued")
                             return False
                         sent += 1
@@ -473,12 +484,12 @@ class FileTransferManager:
             status = "completed"
         elif any(state in ("pending", "transferring", "sent") for state in states):
             status = "transferring"
-        elif any(state == "queued" for state in states):
-            status = "queued"
         elif any(state == "failed" for state in states):
             status = "failed"
         elif any(state == "blocked" for state in states):
             status = "blocked"
+        elif any(state == "queued" for state in states):
+            status = "queued"
         else:
             status = "unavailable"
         fields = {"status": status}
@@ -558,10 +569,10 @@ class FileTransferManager:
         if transfer["group_id"]:
             deliveries = await self.db.get_file_deliveries(file_id)
             targets = [d for d in deliveries if recipient_id is None or d["recipient_id"] == recipient_id]
-            targets = [d for d in targets if self._retryable(file_id, d["recipient_id"], d["status"])]
+            targets = [d for d in targets if self._retryable(file_id, d["recipient_id"], d["status"], d.get("awaiting_ack_at"))]
         else:
             target = recipient_id or transfer["recipient_id"]
-            if target != transfer["recipient_id"] or not self._retryable(file_id, target, transfer["status"]):
+            if target != transfer["recipient_id"] or not self._retryable(file_id, target, transfer["status"], transfer.get("awaiting_ack_at")):
                 targets = []
             else:
                 targets = [{"recipient_id": target}]
@@ -593,13 +604,17 @@ class FileTransferManager:
                 self._release_flush_lock(file_id, recipient, lock)
         return file_id
 
-    def _retryable(self, file_id: str, recipient: str, status: str) -> bool:
+    def _retryable(self, file_id: str, recipient: str, status: str, awaiting_ack_at: float | None = None) -> bool:
         if status in ("failed", "blocked", "queued", "unavailable"):
             return True
-        # A missing timestamp (e.g. after restart) means we cannot prove the
-        # ACK wait expired; stay non-retryable rather than duplicate in-flight data.
         since = self._awaiting_ack_since.get((file_id, recipient))
-        return status == "sent" and since is not None and time.monotonic() - since >= AWAITING_ACK_TIMEOUT
+        if since is not None:
+            return status == "sent" and time.monotonic() - since >= AWAITING_ACK_TIMEOUT
+        if awaiting_ack_at is not None:
+            return status == "sent" and time.time() - awaiting_ack_at >= AWAITING_ACK_TIMEOUT
+        # A persisted sent transfer has no monotonic timestamp after restart.
+        # Treat it as expired so it cannot remain stranded indefinitely.
+        return status == "sent"
 
     def _flush_lock(self, file_id: str, peer_id: str) -> asyncio.Lock:
         """Return the per-file/peer lock serializing flush, resend, and retry queueing."""
@@ -799,6 +814,7 @@ class FileTransferManager:
                 output.write(plaintext)
         except OSError as exc:
             await self.db.update_file_transfer(chunk.file_id, status="failed")
+            self._emit({"event": "file_failed", "file_id": chunk.file_id, "group_id": transfer["group_id"]})
             logger.warning("Failed to write chunk for %s: %s", chunk.file_id, exc)
             return
         received = await self.db.record_file_chunk_received(chunk.file_id, chunk.chunk_index, commit=False)
@@ -952,10 +968,10 @@ class FileTransferManager:
                         return
                 except Exception as exc:
                     logger.warning("Failed to resume file %s: %s", transfer["file_id"], exc)
-                    await self._set_delivery(transfer, peer.peer_id, "queued")
                     if peer.encryption_public_key:
                         try:
-                            await self._queue_ranges(transfer, peer.peer_id, peer.encryption_public_key, ranges)
+                            if await self._queue_ranges(transfer, peer.peer_id, peer.encryption_public_key, ranges):
+                                await self._set_delivery(transfer, peer.peer_id, "queued")
                         except Exception:
                             logger.warning("Failed to queue resumed file %s", transfer["file_id"], exc_info=True)
         finally:
