@@ -66,11 +66,13 @@ import {
   type PastedImageDedupRecord,
 } from "./pastedImageDedup";
 import {
-  applyMentionCompletion,
   filterMentionCandidates,
   mentionQueryAt,
   payloadMentions,
+  spansToTokens,
+  updateSpansAfterEdit,
   type MentionCandidate,
+  type MentionSpan,
 } from "./mentions";
 import {
   APP_RELEASE_VERSION,
@@ -181,6 +183,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const [groupActivity, setGroupActivity] = useState<Record<string, number>>({});
   const [mention, setMention] = useState<{ query: string; selected: number } | null>(null);
   const [mentionUnread, setMentionUnread] = useState<Record<string, number>>({});
+  // Picked mentions per conversation: `@Display Name` ranges in the composer
+  // that convert back to `<@peer_id>` tokens on send.
+  const [mentionSpans, setMentionSpans] = useState<Record<string, MentionSpan[]>>({});
+  const prevComposerText = useRef<Record<string, string>>({});
   const [notificationPreferences, setNotificationPreferences] =
     useState<NotificationPreferences | null>(null);
   const [notificationTestDelivery, setNotificationTestDelivery] =
@@ -341,12 +347,25 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   function handleComposerChange(content: string) {
     if (selectionKey)
       setDrafts((current) => ({ ...current, [selectionKey]: content }));
-    if (selection?.kind === "group" && !scrollFocused && !editingName) {
+    if (selection?.kind === "group" && selectionKey) {
       const cursor = composerRef.current?.cursorOffset ?? content.length;
-      const query = mentionQueryAt(content, cursor);
-      setMention((current) =>
-        query ? { query: query.query, selected: 0 } : current ? null : current,
-      );
+      const prev = prevComposerText.current[selectionKey] ?? content;
+      let spans = mentionSpans[selectionKey] ?? [];
+      if (prev !== content) {
+        spans = updateSpansAfterEdit(spans, prev, content);
+        setMentionSpans((current) => ({ ...current, [selectionKey]: spans }));
+      }
+      prevComposerText.current[selectionKey] = content;
+      if (!scrollFocused && !editingName) {
+        // Never trigger inside a picked mention: it is an atomic symbol.
+        const inSpan = spans.some((span) => span.start <= cursor && cursor <= span.end);
+        const query = inSpan ? undefined : mentionQueryAt(content, cursor);
+        setMention((current) =>
+          query ? { query: query.query, selected: 0 } : current ? null : current,
+        );
+      } else if (mention) {
+        setMention(null);
+      }
     } else if (mention) {
       setMention(null);
     }
@@ -422,6 +441,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     setMutedPeers,
     mutedGroups,
     setMutedGroups,
+    mentionSpans,
     notificationPreferences,
     setNotificationPreferences,
     notificationTestDelivery,
@@ -1314,6 +1334,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             ?.unread_count ?? 0);
     setScrollFocused(false);
     setMention(null);
+    prevComposerText.current[selectionKey] = drafts[selectionKey] ?? "";
     setDraftLength(new TextEncoder().encode(drafts[selectionKey] ?? "").length);
     setComposerHeight(MIN_COMPOSER_HEIGHT);
     if (selection.kind === "peer") {
@@ -1579,6 +1600,52 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         setMention(null);
         return;
       }
+      if (key.name === "left" || key.name === "right" || key.name === "home" || key.name === "end") {
+        // Moving the cursor out of the token dismisses the picker; span
+        // handling below keeps picked mentions atomic.
+        setMention(null);
+      }
+    }
+    if (
+      !dialog && !editingName && !scrollFocused && !isSending && selection && selectionKey &&
+      (mentionSpans[selectionKey]?.length ?? 0) > 0
+    ) {
+      const composer = composerRef.current;
+      const cursor = composer?.cursorOffset ?? 0;
+      const spans = mentionSpans[selectionKey] ?? [];
+      const noModifier = !key.ctrl && !key.meta && !key.super;
+      if (key.name === "backspace" && noModifier) {
+        const span = spans.find((item) => cursor > item.start && cursor <= item.end);
+        if (span && composer) {
+          key.preventDefault();
+          deleteMentionSpan(span);
+          return;
+        }
+      }
+      if (key.name === "delete" && noModifier) {
+        const span = spans.find((item) => cursor >= item.start && cursor < item.end);
+        if (span && composer) {
+          key.preventDefault();
+          deleteMentionSpan(span);
+          return;
+        }
+      }
+      if (key.name === "left" && noModifier) {
+        const span = spans.find((item) => cursor > item.start && cursor <= item.end);
+        if (span && composer) {
+          key.preventDefault();
+          composer.cursorOffset = span.start;
+          return;
+        }
+      }
+      if (key.name === "right" && noModifier) {
+        const span = spans.find((item) => cursor >= item.start && cursor < item.end);
+        if (span && composer) {
+          key.preventDefault();
+          composer.cursorOffset = span.end;
+          return;
+        }
+      }
     }
     if (key.name === "escape" && editingName) {
       setEditingName(false);
@@ -1802,20 +1869,61 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
 
   function completeMention(peerId: string) {
     const composer = composerRef.current;
-    const content = composer?.plainText ?? (selectionKey ? drafts[selectionKey] ?? "" : "");
+    const key = selectionKey;
+    const content = composer?.plainText ?? (key ? drafts[key] ?? "" : "");
     const cursor = composer?.cursorOffset ?? content.length;
     const query = mentionQueryAt(content, cursor);
-    if (!composer || !query) {
+    const candidate = mentionCandidates.find((item) => item.peerId === peerId);
+    if (!composer || !query || !candidate || !key) {
       setMention(null);
       return;
     }
-    applyMentionCompletion(composer, query.query.length, peerId);
-    const updated = composer.plainText;
-    if (selectionKey) setDrafts((current) => ({ ...current, [selectionKey]: updated }));
-    setDraftLength(new TextEncoder().encode(updated).length);
+    // Display `@Display Name`; the span converts back to `<@peer_id>` on send.
+    const insertAt = cursor - (query.query.length + 1);
+    for (let i = 0; i < query.query.length + 1; i++) composer.deleteCharBackward();
+    composer.insertText(`@${candidate.displayName} `);
+    const after = composer.plainText;
+    const span: MentionSpan = {
+      peerId,
+      name: candidate.displayName,
+      start: insertAt,
+      end: insertAt + candidate.displayName.length + 1,
+    };
+    const reconciled = updateSpansAfterEdit(mentionSpans[key] ?? [], content, after);
+    setMentionSpans((current) => ({ ...current, [key]: [...reconciled, span] }));
+    prevComposerText.current[key] = after;
+    setDrafts((current) => ({ ...current, [key]: after }));
+    setDraftLength(new TextEncoder().encode(after).length);
     setComposerHeight(getComposerHeight(composer));
     setMention(null);
-    handleComposerChange(updated);
+    handleComposerChange(after);
+  }
+
+  function deleteMentionSpan(span: MentionSpan) {
+    const composer = composerRef.current;
+    const key = selectionKey;
+    if (!composer || !key) return;
+    const before = composer.plainText;
+    if (before.slice(span.start, span.end) !== `@${span.name}`) {
+      // Stale span: drop it and leave the text alone.
+      setMentionSpans((current) => ({
+        ...current,
+        [key]: (current[key] ?? []).filter(
+          (item) => item.peerId !== span.peerId || item.start !== span.start || item.end !== span.end,
+        ),
+      }));
+      return;
+    }
+    composer.cursorOffset = span.end;
+    for (let i = 0; i < span.end - span.start; i++) composer.deleteCharBackward();
+    const after = composer.plainText;
+    const spans = updateSpansAfterEdit(mentionSpans[key] ?? [], before, after);
+    setMentionSpans((current) => ({ ...current, [key]: spans }));
+    prevComposerText.current[key] = after;
+    setDrafts((current) => ({ ...current, [key]: after }));
+    setDraftLength(new TextEncoder().encode(after).length);
+    setComposerHeight(getComposerHeight(composer));
+    setMention(null);
   }
   const selectedTypingNames = Object.values(
     typingPeers[selectionKey ?? ""] ?? {},
@@ -2031,9 +2139,18 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
           }
           stopOutgoingTyping();
           const sentSelection = selection;
+          const sentKey = selectionKeyRef.current;
           void actions.send(replyTo?.id).then((sent) => {
             if (sent) {
               setReplyTo(undefined);
+              if (sentKey) {
+                setMentionSpans((current) => {
+                  if (!(sentKey in current)) return current;
+                  const { [sentKey]: _, ...rest } = current;
+                  return rest;
+                });
+                delete prevComposerText.current[sentKey];
+              }
               if (sentSelection?.kind === "group")
                 setGroupActivity((current) => ({ ...current, [sentSelection.id]: Date.now() }));
             }

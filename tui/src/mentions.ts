@@ -4,6 +4,64 @@ export type MentionCandidate = {
   isSelf?: boolean
 }
 
+/**
+ * A picked mention as stored against composer text: the `@Display Name`
+ * range that must be converted back to `<@peer_id>` on send.
+ */
+export type MentionSpan = {
+  peerId: string
+  name: string
+  start: number
+  end: number
+}
+
+/**
+ * Reconcile mention spans with a single contiguous buffer edit, derived by
+ * diffing previous against next text. Spans fully before/after the edit are
+ * kept (shifted as needed); spans overlapping the edit broke into plain text
+ * and are dropped.
+ */
+export function updateSpansAfterEdit(
+  spans: MentionSpan[],
+  prevText: string,
+  nextText: string,
+): MentionSpan[] {
+  if (prevText === nextText) return spans
+  let start = 0
+  while (start < prevText.length && start < nextText.length && prevText[start] === nextText[start]) start++
+  let prevEnd = prevText.length
+  let nextEnd = nextText.length
+  while (prevEnd > start && nextEnd > start && prevText[prevEnd - 1] === nextText[nextEnd - 1]) {
+    prevEnd--
+    nextEnd--
+  }
+  const delta = nextEnd - start - (prevEnd - start)
+  const next: MentionSpan[] = []
+  for (const span of spans) {
+    if (span.end <= start) {
+      next.push(span)
+    } else if (span.start >= prevEnd) {
+      next.push({ ...span, start: span.start + delta, end: span.end + delta })
+    }
+  }
+  return next
+}
+
+/**
+ * Replace validated `@Display Name` spans with `<@peer_id>` tokens for
+ * sending. Spans whose text no longer matches are left as typed.
+ */
+export function spansToTokens(text: string, spans: MentionSpan[]): string {
+  const ordered = [...spans].sort((a, b) => b.start - a.start)
+  let result = text
+  for (const span of ordered) {
+    if (span.start < 0 || span.end > result.length || span.start >= span.end) continue
+    if (result.slice(span.start, span.end) !== `@${span.name}`) continue
+    result = result.slice(0, span.start) + `<@${span.peerId}>` + result.slice(span.end)
+  }
+  return result
+}
+
 const MENTION_TOKEN_RE = /<@([A-Za-z0-9_-]+)>/g
 
 /** Extract unique mentioned peer IDs from message content, in order. */
@@ -87,22 +145,4 @@ export function filterMentionCandidates(
     return aIndex - bIndex || a.displayName.localeCompare(b.displayName)
   })
   return filtered.slice(0, limit)
-}
-
-export type MentionEditor = {
-  deleteCharBackward: () => void
-  insertText: (text: string) => void
-}
-
-/**
- * Replace the `@query` token before the cursor with a `<@peer_id>` token.
- * `queryLength` is the length of the query without the `@`.
- */
-export function applyMentionCompletion(
-  editor: MentionEditor,
-  queryLength: number,
-  peerId: string,
-): void {
-  for (let i = 0; i < queryLength + 1; i++) editor.deleteCharBackward()
-  editor.insertText(`<@${peerId}> `)
 }

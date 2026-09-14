@@ -7,7 +7,7 @@ import { join, resolve } from "path"
 import { tmpdir } from "os"
 import { existsSync, statSync } from "fs"
 import { groupFromResponse, sortPeersByInteraction } from "./utils"
-import { payloadMentions } from "./mentions"
+import { payloadMentions, spansToTokens, type MentionSpan } from "./mentions"
 import { runCommand as navigationRunCommand } from "./navigation"
 import { sendTestNotification } from "./notifications"
 import { DEFAULT_STATUS, groupDeliveryLabel, MAX_MESSAGE_BYTES, MIN_COMPOSER_HEIGHT } from "./utils"
@@ -70,6 +70,7 @@ type ChatActionsDeps = {
   setMutedPeers: React.Dispatch<React.SetStateAction<Record<string, number>>>
   mutedGroups: Record<string, number>
   setMutedGroups: React.Dispatch<React.SetStateAction<Record<string, number>>>
+  mentionSpans: Record<string, MentionSpan[]>
   notificationPreferences: NotificationPreferences | null
   setNotificationPreferences: React.Dispatch<React.SetStateAction<NotificationPreferences | null>>
   notificationTestDelivery: Exclude<NotificationDelivery, "disabled"> | null
@@ -108,7 +109,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { draftLength, setDraftLength, composerHeight, setComposerHeight, isSending, setIsSending } = deps
   const { nameDraft, setNameDraft, editingName, setEditingName, scrollFocused, setScrollFocused } = deps
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
-  const { mutedPeers, setMutedPeers, mutedGroups, setMutedGroups, notificationPreferences, setNotificationPreferences } = deps
+  const { mutedPeers, setMutedPeers, mutedGroups, setMutedGroups, mentionSpans, notificationPreferences, setNotificationPreferences } = deps
   const { notificationTestDelivery, setNotificationTestDelivery } = deps
   const { flashingEnabled, setFlashingEnabled, dndEnabled, setDndEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
@@ -946,7 +947,10 @@ export function useChatActions(deps: ChatActionsDeps) {
 
   async function send(replyToMessageId?: string): Promise<boolean> {
     const composer = composerRef.current
-    const content = composer?.plainText.trim() ?? ""
+    // Picked mentions display as `@Display Name`; convert spans back to tokens.
+    const rawContent = composer?.plainText ?? ""
+    const spans = selectionKey ? (mentionSpans[selectionKey] ?? []) : []
+    const content = spansToTokens(rawContent, spans).trim()
     if (!content) { showStatus("Message is empty."); return false }
     if (!selection || !selectionKey || !identity) { showStatus("Select a peer or group before sending."); return false }
     if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) { showStatus("Message exceeds the 30 KiB limit."); return false }

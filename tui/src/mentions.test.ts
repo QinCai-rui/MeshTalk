@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test"
 import {
-  applyMentionCompletion,
   filterMentionCandidates,
   mentionQueryAt,
   mentionsPeer,
   parseMentions,
   payloadMentions,
   renderMentionedContent,
+  spansToTokens,
+  updateSpansAfterEdit,
 } from "./mentions"
 
 test("parseMentions extracts unique IDs in order", () => {
@@ -70,20 +71,34 @@ test("payloadMentions reads only the server payload, never content", () => {
   expect(payloadMentions(["abc", 123])).toEqual(["abc"])
 })
 
-test("applyMentionCompletion replaces @query with a token", () => {
-  let text = "hello @al"
-  let cursor = text.length
-  const editor = {
-    deleteCharBackward: () => {
-      text = text.slice(0, cursor - 1) + text.slice(cursor)
-      cursor -= 1
-    },
-    insertText: (value: string) => {
-      text = text.slice(0, cursor) + value + text.slice(cursor)
-      cursor += value.length
-    },
-  }
-  applyMentionCompletion(editor, 2, "alex-id")
-  expect(text).toBe("hello <@alex-id> ")
-  expect(cursor).toBe(text.length)
+test("updateSpansAfterEdit keeps, shifts, or drops spans", () => {
+  const spans = [
+    { peerId: "a", name: "Alex", start: 0, end: 5 },
+    { peerId: "b", name: "Bo", start: 10, end: 13 },
+  ]
+  // Insertion before everything shifts all spans.
+  expect(updateSpansAfterEdit(spans, "hi there", "oh hi there")).toEqual([
+    { peerId: "a", name: "Alex", start: 3, end: 8 },
+    { peerId: "b", name: "Bo", start: 13, end: 16 },
+  ])
+  // Edit overlapping the first span drops it but keeps the second (shifted).
+  expect(updateSpansAfterEdit(spans, "@Alex x @Bo", "@Alx x @Bo")).toEqual([
+    { peerId: "b", name: "Bo", start: 9, end: 12 },
+  ])
+  // Identical text keeps spans by reference.
+  expect(updateSpansAfterEdit(spans, "same", "same")).toBe(spans)
+})
+
+test("spansToTokens converts validated spans only", () => {
+  expect(
+    spansToTokens("hi @Alex and @Bo!", [
+      { peerId: "a", name: "Alex", start: 3, end: 8 },
+      { peerId: "b", name: "Bo", start: 13, end: 16 },
+    ]),
+  ).toBe("hi <@a> and <@b>!")
+  // Stale span text is left alone.
+  expect(spansToTokens("hi @Alec!", [{ peerId: "a", name: "Alex", start: 3, end: 8 }])).toBe(
+    "hi @Alec!",
+  )
+  expect(spansToTokens("plain", [])).toBe("plain")
 })
