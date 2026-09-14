@@ -720,14 +720,23 @@ export function useChatActions(deps: ChatActionsDeps) {
     return { valid, missing }
   }
 
-  async function sendFilesDirect(paths: string[], target = selection, caption = "") {
+  async function sendFilesDirect(paths: string[], target = selection, caption = ""): Promise<Array<{ path: string; reason: string }>> {
     if (!target) throw new Error("Select a peer or group before sending a file.")
     const payload = target.kind === "peer"
       ? { recipient_id: target.id, paths, caption }
       : { group_id: target.id, paths, caption }
     const response = await ipc.send(target.kind === "peer" ? "file_send" : "group_file_send", payload)
     if (response.error) throw new Error(response.error)
-    showStatus(paths.length === 1 ? `File transfer started: ${paths[0] ?? "file"} -> ${target.id.slice(0, 8)}` : `Started ${paths.length} file transfers.`)
+    const errors = Array.isArray(response.errors) ? response.errors : []
+    const reported = errors.map((entry: unknown) => typeof entry === "string"
+      ? { path: entry, reason: "" }
+      : { path: typeof (entry as { path?: unknown }).path === "string" ? (entry as { path: string }).path : "", reason: typeof (entry as { error?: unknown }).error === "string" ? (entry as { error: string }).error : "" })
+      .filter((entry) => entry.path)
+    const failed = reported.filter((entry) => paths.includes(entry.path))
+    const outstanding = failed.length ? failed : reported.length ? paths.map((path) => ({ path, reason: "" })) : []
+    const succeeded = paths.length - outstanding.length
+    if (succeeded > 0) showStatus(paths.length === 1 ? `File transfer started: ${paths[0] ?? "file"} -> ${target.id.slice(0, 8)}` : `Started ${succeeded} of ${paths.length} file transfers.`)
+    return outstanding
   }
 
   async function requestFileSend(paths: string[], source: FileConfirmSource) {
@@ -766,8 +775,19 @@ export function useChatActions(deps: ChatActionsDeps) {
         await Bun.write(path, pending.image.bytes)
         paths = [path]
       }
-      await sendFilesDirect(paths, pending.target, pending.caption)
+      const outstanding = await sendFilesDirect(paths, pending.target, pending.caption)
       if (dialogActionRef.current !== action) return
+      if (outstanding.length) {
+        const detail = outstanding.map((entry) => {
+          const name = entry.path.split(/[\\/]/).pop() ?? entry.path
+          return entry.reason ? `${name}: ${entry.reason}` : name
+        }).join("; ")
+        if (!pending.image) {
+          showDialog({ kind: "file-confirm", paths: outstanding.map((entry) => entry.path), source: pending.source, target: pending.target, caption: pending.caption })
+        }
+        setDialogError(`Failed to send ${detail}. Fix the files or retry.`)
+        return
+      }
       if (pending.caption && composerRef.current?.plainText.trim() === pending.caption) {
         composerRef.current.selectAll(); composerRef.current.deleteSelection()
         if (selectionKey) setDrafts((current) => updateBoundedEntry(current, selectionKey, "", MAX_DRAFT_ENTRIES))
