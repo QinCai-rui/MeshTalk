@@ -639,9 +639,11 @@ class Database:
         if file_path and await self.count_file_path_references(file_path) == 0:
             path = Path(file_path)
             try:
-                path.resolve().relative_to(files_base.resolve())
+                base = files_base.resolve()
+                path.resolve().relative_to(base)
                 path.unlink(missing_ok=True)
-                path.parent.rmdir()
+                if path.parent.resolve() != base:
+                    path.parent.rmdir()
             except (OSError, ValueError):
                 pass
         return transfer

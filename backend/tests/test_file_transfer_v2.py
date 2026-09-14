@@ -2,6 +2,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from meshtalk.database import Database
 from meshtalk.file_transfer import FileTransferManager
@@ -11,6 +12,7 @@ from meshtalk.protocol import (
     CAP_FILE_TRANSFER,
     CAP_FILE_TRANSFER_V2,
     FileAckV2Payload,
+    FileOfferV2Payload,
     Packet,
     PacketType,
 )
@@ -244,6 +246,42 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
         self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
         self.assertEqual((await self.sender_db.get_file_transfer("legacy-file"))["status"], "failed")
+
+    async def test_deliver_rechecks_dm_authorization(self):
+        source = self.root / "authorization.txt"
+        source.write_bytes(b"private")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        transfer = await self.sender_db.get_file_transfer(file_id)
+        await self.sender_db.remove_friend(self.recipient.peer_id)
+        self.sender_manager.sent.clear()
+        await self.sender_transfer._deliver_v2(transfer, self.recipient.peer_id)
+        self.assertEqual(self.sender_manager.sent, [])
+        self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "unavailable")
+
+    async def test_flush_lock_remains_cached(self):
+        lock = self.sender_transfer._flush_lock("file", self.recipient.peer_id)
+        self.sender_transfer._release_flush_lock("file", self.recipient.peer_id, lock)
+        self.assertIs(self.sender_transfer._flush_lock("file", self.recipient.peer_id), lock)
+
+    async def test_runtime_packet_error_is_logged_and_dropped(self):
+        with patch.object(self.sender_transfer, "_handle_offer", AsyncMock(side_effect=OSError("disk"))):
+            self.assertTrue(await self.sender_transfer.handle_packet(
+                self.recipient_peer, Packet(PacketType.FILE_OFFER_V2, b"payload")
+            ))
+
+    async def test_conflicting_offer_chunk_size_is_rejected(self):
+        source = self.root / "boundaries.txt"
+        source.write_bytes(b"twelve-bytes")
+        await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        offer_packet = self.sender_manager.sent[0]
+        await self.recipient_transfer.handle_packet(self.sender_peer, offer_packet)
+        offer = FileOfferV2Payload.decode(offer_packet.payload)
+        offer.chunk_size = offer.file_size + 1
+        offer.signature = self.sender.signing_private_key.sign(offer.signed_bytes())
+        with self.assertRaisesRegex(ValueError, "Conflicting"):
+            await self.recipient_transfer._handle_offer(
+                self.sender_peer, Packet(PacketType.FILE_OFFER_V2, offer.encode()), True
+            )
 
     async def test_rapid_group_sends_produce_distinct_ids(self):
         group_id = self.sender_settings.create_room("Group").id

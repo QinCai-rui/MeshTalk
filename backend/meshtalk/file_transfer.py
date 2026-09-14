@@ -391,6 +391,13 @@ class FileTransferManager:
             )
 
     async def _deliver_v2(self, transfer: dict, recipient: str) -> None:
+        if transfer["group_id"]:
+            authorized = await self._active_group_sender(transfer["group_id"]) and await self._group_recipient_eligible(transfer["group_id"], recipient)
+        else:
+            authorized = not await self.db.is_peer_blocked(recipient) and await self.db.is_friend(recipient)
+        if not authorized:
+            await self._set_delivery(transfer, recipient, "unavailable")
+            return
         if not await self._supports_v2(recipient):
             await self._set_delivery(transfer, recipient, "unavailable")
             return
@@ -595,8 +602,7 @@ class FileTransferManager:
                         await self._mark_sent_unless_completed(transfer, peer_id)
                         flushed += 1
             finally:
-                if not lock.locked() and self._flush_locks.get(lock_key) is lock:
-                    self._flush_locks.pop(lock_key, None)
+                self._release_flush_lock(file_id, peer_id, lock)
         return flushed
 
     async def retry_file(self, file_id: str, recipient_id: str | None = None) -> str:
@@ -660,8 +666,7 @@ class FileTransferManager:
         return self._flush_locks.setdefault((file_id, peer_id), asyncio.Lock())
 
     def _release_flush_lock(self, file_id: str, peer_id: str, lock: asyncio.Lock) -> None:
-        if not lock.locked() and self._flush_locks.get((file_id, peer_id)) is lock:
-            self._flush_locks.pop((file_id, peer_id), None)
+        """Retain locks so queued waiters cannot be split across lock instances."""
 
     def forget_transfer(self, file_id: str) -> None:
         """Drop bounded in-memory state after local transfer deletion."""
@@ -704,20 +709,18 @@ class FileTransferManager:
         if packet.type not in types:
             return False
         lock = self._packet_locks.setdefault(peer.peer_id, asyncio.Lock())
-        try:
-            async with lock:
-                try:
-                    if packet.type in (PacketType.FILE_OFFER, PacketType.FILE_OFFER_V2):
-                        await self._handle_offer(peer, packet, packet.type == PacketType.FILE_OFFER_V2)
-                    elif packet.type in (PacketType.FILE_CHUNK, PacketType.FILE_CHUNK_V2):
-                        await self._handle_chunk(peer, packet, packet.type == PacketType.FILE_CHUNK_V2)
-                    else:
-                        await self._handle_ack(peer, packet, packet.type == PacketType.FILE_ACK_V2)
-                except ValueError:
-                    logger.warning("Dropped invalid file packet %s from %s", packet.type, peer.peer_id, exc_info=True)
-        finally:
-            if not lock.locked() and self._packet_locks.get(peer.peer_id) is lock:
-                self._packet_locks.pop(peer.peer_id, None)
+        async with lock:
+            try:
+                if packet.type in (PacketType.FILE_OFFER, PacketType.FILE_OFFER_V2):
+                    await self._handle_offer(peer, packet, packet.type == PacketType.FILE_OFFER_V2)
+                elif packet.type in (PacketType.FILE_CHUNK, PacketType.FILE_CHUNK_V2):
+                    await self._handle_chunk(peer, packet, packet.type == PacketType.FILE_CHUNK_V2)
+                else:
+                    await self._handle_ack(peer, packet, packet.type == PacketType.FILE_ACK_V2)
+            except ValueError:
+                logger.warning("Dropped invalid file packet %s from %s", packet.type, peer.peer_id, exc_info=True)
+            except Exception:
+                logger.exception("Failed to handle file packet %s from %s", packet.type, peer.peer_id)
         return True
 
     @staticmethod
@@ -752,7 +755,7 @@ class FileTransferManager:
         existing = await self.db.get_file_transfer(offer.file_id)
         if existing:
             expected_hash = offer.file_sha256 if v2 else existing.get("file_sha256", "")
-            if existing["direction"] != "inbound" or existing["sender_id"] != offer.sender_id or existing["recipient_id"] != offer.recipient_id or existing["file_size"] != offer.file_size or existing["total_chunks"] != offer.total_chunks or existing["group_id"] != offer.group_id or existing.get("file_sha256", "") != expected_hash:
+            if existing["direction"] != "inbound" or existing["sender_id"] != offer.sender_id or existing["recipient_id"] != offer.recipient_id or existing["file_size"] != offer.file_size or existing["chunk_size"] != offer.chunk_size or existing["total_chunks"] != offer.total_chunks or existing["group_id"] != offer.group_id or existing.get("file_sha256", "") != expected_hash:
                 raise ValueError("Conflicting file offer")
             if existing["status"] == "completed":
                 await self._send_ack(peer, offer.file_id, "completed", v2=v2)

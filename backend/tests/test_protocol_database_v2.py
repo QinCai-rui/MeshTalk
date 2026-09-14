@@ -127,3 +127,10 @@ class FileDatabaseV2Tests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(outside.exists())
         finally:
             outside.unlink(missing_ok=True)
+
+    async def test_local_delete_preserves_files_base(self):
+        snapshot = self.root / "root-file.bin"
+        snapshot.write_bytes(b"keep-root")
+        await self.save_transfer(file_path=str(snapshot))
+        await self.db.delete_file_transfer_locally(FILE_ID, self.root)
+        self.assertTrue(self.root.is_dir())
