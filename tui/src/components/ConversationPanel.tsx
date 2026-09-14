@@ -90,9 +90,12 @@ const MESSAGE_MARKDOWN_STYLES = {
   punctuation: { fg: theme.markdown.punctuation },
 } as const
 
+const MENTION_POPUP_ROWS = 5
+
 export function ConversationPanel(props: ConversationPanelProps) {
   const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, mutedGroups = {}, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, unreadNow, markUnreadMessageVisible, openSettings, onToggleMute, mentionOpen = false, mentionCandidates = [], mentionSelected = 0, onMentionPick, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send } = props
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
+  const mentionListRef = useRef<ScrollBoxRenderable | null>(null)
   const [replyHighlight, setReplyHighlight] = useState<{ id: string; startedAt: number }>()
   const [replyHighlightNow, setReplyHighlightNow] = useState(0)
   const messageSyntaxStyle = useMemo(() => SyntaxStyle.fromStyles(MESSAGE_MARKDOWN_STYLES), [])
@@ -115,6 +118,13 @@ export function ConversationPanel(props: ConversationPanelProps) {
 
 
   useEffect(() => () => messageSyntaxStyle.destroy(), [messageSyntaxStyle])
+
+  // Keep the keyboard-highlighted mention visible while navigating a long list.
+  useEffect(() => {
+    if (!mentionOpen || !mentionCandidates.length) return
+    const peerId = mentionCandidates[Math.min(mentionSelected, mentionCandidates.length - 1)]?.peerId
+    if (peerId) mentionListRef.current?.scrollChildIntoView(`mention-pick-${peerId}`)
+  }, [mentionOpen, mentionSelected, mentionCandidates])
 
   useEffect(() => {
     if (!replyHighlight) return
@@ -320,6 +330,13 @@ export function ConversationPanel(props: ConversationPanelProps) {
       {mentionOpen && mentionCandidates.length > 0 && (
       <box id="mention-popup" position="absolute" bottom="100%" left={1} right={1} zIndex={10} border borderColor={theme.line} backgroundColor={theme.surface} paddingX={1} flexDirection="column">
         <text fg={theme.muted}>Mention a member (Tab/Enter picks, Esc cancels)</text>
+        <scrollbox
+          id="mention-list"
+          ref={mentionListRef}
+          style={{ height: Math.min(mentionCandidates.length, MENTION_POPUP_ROWS) }}
+          contentOptions={{ flexDirection: "column" }}
+          verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}
+        >
         {mentionCandidates.map((candidate, index) => (
           <box
             id={`mention-pick-${candidate.peerId}`}
@@ -332,6 +349,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
             </text>
           </box>
         ))}
+        </scrollbox>
       </box>
       )}
       <text fg={limitColor ?? theme.accent}><b>{!scrollFocused && !editingName && hasConversation ? "> " : ""}{composerTitle}</b></text>

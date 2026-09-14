@@ -42,7 +42,7 @@ its existing UI.
   layout rows. Temporary status messages replace keyboard hints in a fixed-height footer; long messages scroll inside that area without moving the composer. The footer aligns composer/history hints left and the highlighted settings shortcut right. Nothing is absolutely positioned over editable text.
 - In group chats, typing `@` opens a floating member picker overlaid just above
   the input without moving the conversation view (Up/Down moves, Tab/Enter picks,
-  Esc cancels, click also picks). Picks
+  Esc cancels, click also picks; long lists scroll internally). Picks
   are stored as `<@user_id>` tokens and rendered as `@Display Name`. Messages
   mentioning you keep a yellow row highlight, and the group's sidebar entry
   shows a yellow `@N mentioned` badge unless the group is muted.

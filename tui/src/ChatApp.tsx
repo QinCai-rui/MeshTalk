@@ -1784,7 +1784,8 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
       .filter((member): member is MentionCandidate => member !== undefined);
   }, [selection, selectedGroupId, groupMembers, identity]);
   const mentionCandidates = useMemo(
-    () => (mention ? filterMentionCandidates(mentionMembers, mention.query) : []),
+    // Fetch more than fits the popup; the list scrolls internally.
+    () => (mention ? filterMentionCandidates(mentionMembers, mention.query, 30) : []),
     [mention, mentionMembers],
   );
   const mentionOpen =
