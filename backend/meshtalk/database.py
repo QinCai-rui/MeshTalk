@@ -624,7 +624,7 @@ class Database:
         await self._db.commit()
         return cursor.rowcount > 0
 
-    async def delete_file_transfer_locally(self, file_id: str) -> dict | None:
+    async def delete_file_transfer_locally(self, file_id: str, files_base: Path) -> dict | None:
         """Remove all local metadata associated with an attachment."""
         transfer = await self.get_file_transfer(file_id)
         if transfer is None:
@@ -639,9 +639,10 @@ class Database:
         if file_path and await self.count_file_path_references(file_path) == 0:
             path = Path(file_path)
             try:
+                path.resolve().relative_to(files_base.resolve())
                 path.unlink(missing_ok=True)
                 path.parent.rmdir()
-            except OSError:
+            except (OSError, ValueError):
                 pass
         return transfer
 

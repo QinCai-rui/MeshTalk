@@ -273,6 +273,7 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         destination = sender_transfer._outgoing_path_for("oversize", source.name)
         self.assertFalse(destination.exists())
+        self.assertFalse(destination.parent.exists())
         self.assertEqual(list(destination.parent.glob("*.tmp")), [])
 
     async def test_duplicate_completed_ack_is_ignored(self):

@@ -157,9 +157,17 @@ class FileTransferManager:
             return destination, digest.hexdigest()
         except ValueError:
             temporary.unlink(missing_ok=True)
+            try:
+                destination.parent.rmdir()
+            except OSError:
+                pass
             raise
         except OSError as exc:
             temporary.unlink(missing_ok=True)
+            try:
+                destination.parent.rmdir()
+            except OSError:
+                pass
             raise ValueError(f"Could not store a local copy of file: {exc}") from exc
 
     def _snapshot_outgoing_file(self, source: Path, file_id: str, filename: str) -> Path:
@@ -339,6 +347,11 @@ class FileTransferManager:
         member = await self.db.get_group_member(group_id, recipient)
         return bool(member and member["active"] and not await self.db.is_peer_blocked(recipient) and await self._supports_v2(recipient))
 
+    async def _active_group_sender(self, group_id: str) -> bool:
+        group = (self.settings.rooms.get(group_id) if self.settings else None) or await self.db.get_group(group_id)
+        local = await self.db.get_group_member(group_id, self.identity.peer_id)
+        return bool(group and local and local["active"])
+
     async def _supports_v2(self, recipient: str) -> bool:
         peer = self.peer_manager.get_connected_peer(recipient)
         return peer.supports(CAP_FILE_TRANSFER_V2) if peer else await self.db.peer_supports(recipient, CAP_FILE_TRANSFER_V2)
@@ -366,6 +379,8 @@ class FileTransferManager:
         return payload
 
     async def _set_delivery(self, transfer: dict, recipient: str, status: str) -> None:
+        if status != "sent":
+            self._awaiting_ack_since.pop((transfer["file_id"], recipient), None)
         if transfer["group_id"]:
             await self.db.set_file_delivery(transfer["file_id"], recipient, status)
             await self._recompute_aggregate(transfer["file_id"])
@@ -504,6 +519,15 @@ class FileTransferManager:
             return 0
         flushed = 0
         pending = await self.db.get_pending_outgoing(peer_id)
+        legacy_types = {
+            PacketType.FILE_OFFER.value, PacketType.FILE_CHUNK.value, PacketType.FILE_ACK.value,
+        }
+        legacy = [item for item in pending if item["packet_type"] in legacy_types]
+        if legacy:
+            logger.info("Purging %d legacy queued file packet(s) for %s", len(legacy), peer_id)
+            for item in legacy:
+                await self.db.remove_from_outqueue(item["id"])
+            pending = [item for item in pending if item["packet_type"] not in legacy_types]
         # ACKs are receiver-owned and have no sender transfer row.
         for item in pending:
             if item["packet_type"] == PacketType.FILE_ACK_V2.value and peer.supports(CAP_FILE_TRANSFER_V2):
@@ -521,6 +545,14 @@ class FileTransferManager:
                 async with lock:
                     transfer = await self.db.get_file_transfer(file_id)
                     if not transfer or not peer.supports(CAP_FILE_TRANSFER_V2):
+                        continue
+                    if transfer["group_id"]:
+                        authorized = await self._active_group_sender(transfer["group_id"]) and await self._group_recipient_eligible(transfer["group_id"], peer_id)
+                    else:
+                        authorized = not await self.db.is_peer_blocked(peer_id) and await self.db.is_friend(peer_id)
+                    if not authorized:
+                        await self.db.remove_file_from_outqueue(file_id, peer_id)
+                        await self._set_delivery(transfer, peer_id, "unavailable")
                         continue
                     if transfer["direction"] == "outbound" and transfer["status"] == "completed":
                         for item in await self.db.get_pending_outgoing(peer_id):
@@ -567,6 +599,8 @@ class FileTransferManager:
         if not transfer or transfer["direction"] != "outbound":
             raise ValueError("Unknown outbound file_id")
         if transfer["group_id"]:
+            if not await self._active_group_sender(transfer["group_id"]):
+                raise ValueError("Not an active member of this group")
             deliveries = await self.db.get_file_deliveries(file_id)
             targets = [d for d in deliveries if recipient_id is None or d["recipient_id"] == recipient_id]
             targets = [d for d in targets if self._retryable(file_id, d["recipient_id"], d["status"], d.get("awaiting_ack_at"))]
@@ -623,6 +657,16 @@ class FileTransferManager:
     def _release_flush_lock(self, file_id: str, peer_id: str, lock: asyncio.Lock) -> None:
         if not lock.locked() and self._flush_locks.get((file_id, peer_id)) is lock:
             self._flush_locks.pop((file_id, peer_id), None)
+
+    def forget_transfer(self, file_id: str) -> None:
+        """Drop bounded in-memory state after local transfer deletion."""
+        self._integrity_retries.discard(file_id)
+        self._last_progress_events.pop(file_id, None)
+        task = self._pending_progress_commits.pop(file_id, None)
+        if task:
+            task.cancel()
+        for key in [key for key in self._awaiting_ack_since if key[0] == file_id]:
+            self._awaiting_ack_since.pop(key, None)
 
     async def resume_for_peer(self, peer_id: str) -> None:
         peer = self.peer_manager.get_connected_peer(peer_id)
@@ -862,6 +906,7 @@ class FileTransferManager:
                 except OSError:
                     pass
             return
+        self._integrity_retries.discard(transfer["file_id"])
         await self.db.complete_file_transfer(transfer["file_id"], time.time())
         await self._send_ack(peer, transfer["file_id"], "completed", v2=v2)
         self._emit({"event": "file_completed", "file_id": transfer["file_id"], "filename": transfer["filename"], "file_path": str(path), "file_size": transfer["file_size"], "sender_id": peer.peer_id, "group_id": transfer["group_id"], "caption": transfer.get("caption", ""), "batch_id": transfer.get("batch_id")})

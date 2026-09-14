@@ -110,10 +110,20 @@ class FileDatabaseV2Tests(unittest.IsolatedAsyncioTestCase):
         await self.db.mark_message_seen(FILE_ID)
         await self.db.add_to_outqueue("peer", PacketType.FILE_OFFER_V2, b"payload", FILE_ID)
         self.assertEqual(await self.db.count_file_path_references(snapshot), 2)
-        await self.db.delete_file_transfer_locally(FILE_ID)
+        await self.db.delete_file_transfer_locally(FILE_ID, self.root)
         self.assertTrue(snapshot.exists())
         self.assertFalse(await self.db.is_message_seen(FILE_ID))
         self.assertEqual(await self.db.get_file_deliveries(FILE_ID), [])
         self.assertEqual(await self.db.get_pending_outgoing("peer"), [])
-        await self.db.delete_file_transfer_locally(other_id)
+        await self.db.delete_file_transfer_locally(other_id, self.root)
         self.assertFalse(snapshot.exists())
+
+    async def test_local_delete_does_not_unlink_outside_files_base(self):
+        outside = self.root.parent / f"outside-{FILE_ID}.bin"
+        outside.write_bytes(b"keep")
+        try:
+            await self.save_transfer(file_path=str(outside))
+            await self.db.delete_file_transfer_locally(FILE_ID, self.root)
+            self.assertTrue(outside.exists())
+        finally:
+            outside.unlink(missing_ok=True)

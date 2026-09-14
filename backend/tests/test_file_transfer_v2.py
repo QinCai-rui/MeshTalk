@@ -202,6 +202,41 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "completed")
         self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
 
+    async def test_flush_purges_file_after_unfriend(self):
+        source = self.root / "unfriended.txt"
+        source.write_bytes(b"private")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        await self.sender_db.add_to_outqueue(
+            self.recipient.peer_id, PacketType.FILE_CHUNK_V2.value, b"stale", file_id
+        )
+        await self.sender_db.remove_friend(self.recipient.peer_id)
+        self.sender_manager.sent.clear()
+        self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
+        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
+        self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "unavailable")
+        self.assertEqual(self.sender_manager.sent, [])
+
+    async def test_group_retry_requires_active_local_membership(self):
+        group_id = self.sender_settings.create_room("Left group").id
+        await self.sender_db.upsert_group_member(group_id, self.sender.peer_id, "Sender")
+        await self.sender_db.upsert_group_member(group_id, self.recipient.peer_id, "Recipient")
+        source = self.root / "left.txt"
+        source.write_bytes(b"left")
+        file_id = await self.sender_transfer.send_group_file(group_id, str(source))
+        await self.sender_db.set_file_delivery(file_id, self.recipient.peer_id, "failed")
+        await self.sender_db.upsert_group_member(group_id, self.sender.peer_id, "Sender", active=False)
+        self.sender_manager.sent.clear()
+        with self.assertRaisesRegex(ValueError, "Not an active member"):
+            await self.sender_transfer.retry_file(file_id)
+        self.assertEqual(self.sender_manager.sent, [])
+
+    async def test_flush_purges_legacy_file_queue(self):
+        await self.sender_db.add_to_outqueue(
+            self.recipient.peer_id, PacketType.FILE_CHUNK.value, b"legacy", "legacy-file"
+        )
+        self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
+        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
+
     async def test_rapid_group_sends_produce_distinct_ids(self):
         group_id = self.sender_settings.create_room("Group").id
         await self.sender_db.upsert_group_member(group_id, self.sender.peer_id, "Sender")

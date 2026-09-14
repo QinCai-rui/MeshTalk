@@ -685,7 +685,9 @@ async def main(debug: bool = False) -> None:
         if group_id is not None and not isinstance(group_id, str):
             return {"error": "group_id must be a string"}
         is_file = req.get("file") is True
-        transfer = await db.delete_file_transfer_locally(message_id) if is_file else None
+        if is_file:
+            file_manager.forget_transfer(message_id)
+        transfer = await db.delete_file_transfer_locally(message_id, file_manager.files_base) if is_file else None
         if is_file:
             if transfer is None:
                 return {"error": "attachment not found"}
