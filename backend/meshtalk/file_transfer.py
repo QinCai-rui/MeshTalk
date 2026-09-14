@@ -235,9 +235,9 @@ class FileTransferManager:
     async def send_file(
         self, recipient_id: str, file_path_str: str, group_id: str | None = None, caption: str = ""
     ) -> str:
-        """Send one v2 DM; ``group_id`` remains accepted for old callers."""
+        """Send one v2 DM; ``group_id`` is rejected to fail closed on routing mistakes."""
         if group_id:
-            return await self.send_group_file(group_id, file_path_str, caption)
+            raise ValueError("Pass either a DM recipient or a group_id, not both")
         if await self.db.is_peer_blocked(recipient_id) or not await self.db.is_friend(recipient_id):
             raise ValueError("Recipient is blocked or is not a friend")
         return await self._create_send(file_path_str, caption, None, [recipient_id])
@@ -554,24 +554,47 @@ class FileTransferManager:
                 targets = [{"recipient_id": target}]
         if not targets:
             raise ValueError("Transfer has no retryable delivery")
+        if not transfer["group_id"]:
+            recipient = targets[0]["recipient_id"]
+            if await self.db.is_peer_blocked(recipient):
+                await self.db.update_file_transfer(file_id, status="blocked")
+                raise ValueError("This peer is blocked; unblock them to retry")
+            if not await self.db.is_friend(recipient):
+                await self.db.update_file_transfer(file_id, status="unavailable")
+                raise ValueError("Recipient is blocked or is not a friend")
         path = Path(transfer["file_path"] or "")
         if not path.is_file():
             await self.db.update_file_transfer(file_id, status="failed")
             raise ValueError("Source file not found; it may have been moved or deleted")
         for target in targets:
             recipient = target["recipient_id"]
-            await self.db.remove_file_from_outqueue(file_id, recipient)
-            if transfer["group_id"] and not await self._group_recipient_eligible(transfer["group_id"], recipient):
-                await self._set_delivery(transfer, recipient, "unavailable")
-                continue
-            await self._deliver_v2(transfer, recipient)
+            lock = self._flush_lock(file_id, recipient)
+            try:
+                async with lock:
+                    await self.db.remove_file_from_outqueue(file_id, recipient)
+                    if transfer["group_id"] and not await self._group_recipient_eligible(transfer["group_id"], recipient):
+                        await self._set_delivery(transfer, recipient, "unavailable")
+                        continue
+                    await self._deliver_v2(transfer, recipient)
+            finally:
+                self._release_flush_lock(file_id, recipient, lock)
         return file_id
 
     def _retryable(self, file_id: str, recipient: str, status: str) -> bool:
         if status in ("failed", "blocked", "queued", "unavailable"):
             return True
+        # A missing timestamp (e.g. after restart) means we cannot prove the
+        # ACK wait expired; stay non-retryable rather than duplicate in-flight data.
         since = self._awaiting_ack_since.get((file_id, recipient))
-        return status == "sent" and (since is None or time.monotonic() - since >= AWAITING_ACK_TIMEOUT)
+        return status == "sent" and since is not None and time.monotonic() - since >= AWAITING_ACK_TIMEOUT
+
+    def _flush_lock(self, file_id: str, peer_id: str) -> asyncio.Lock:
+        """Return the per-file/peer lock serializing flush, resend, and retry queueing."""
+        return self._flush_locks.setdefault((file_id, peer_id), asyncio.Lock())
+
+    def _release_flush_lock(self, file_id: str, peer_id: str, lock: asyncio.Lock) -> None:
+        if not lock.locked() and self._flush_locks.get((file_id, peer_id)) is lock:
+            self._flush_locks.pop((file_id, peer_id), None)
 
     async def resume_for_peer(self, peer_id: str) -> None:
         peer = self.peer_manager.get_connected_peer(peer_id)
@@ -665,14 +688,22 @@ class FileTransferManager:
             return
         safe = sanitize_filename(offer.filename)
         path = self._incoming_path_for(offer.file_id, offer.sender_id, offer.group_id, safe, offer.created_at)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "xb") as output:
-                output.seek(offer.file_size - 1)
-                output.write(b"\0")
-            os.chmod(path, 0o600)
-        except OSError as exc:
-            logger.warning("Failed to preallocate file %s: %s", offer.file_id, exc)
+        for _ in range(100):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "xb", opener=lambda p, flags: os.open(p, flags, 0o600)) as output:
+                    output.seek(offer.file_size - 1)
+                    output.write(b"\0")
+                os.chmod(path, 0o600)
+                break
+            except FileExistsError:
+                path = self._incoming_path_for(offer.file_id, offer.sender_id, offer.group_id, safe, offer.created_at)
+                continue
+            except OSError as exc:
+                logger.warning("Failed to preallocate file %s: %s", offer.file_id, exc)
+                return
+        else:
+            logger.warning("Failed to preallocate file %s: no free filename", offer.file_id)
             return
         await self.db.save_file_transfer({
             "file_id": offer.file_id, "filename": safe, "file_size": offer.file_size,
@@ -786,11 +817,13 @@ class FileTransferManager:
                 path.unlink(missing_ok=True)
                 try:
                     path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(path, "xb") as output:
+                    with open(path, "xb", opener=lambda p, flags: os.open(p, flags, 0o600)) as output:
                         output.seek(transfer["file_size"] - 1)
                         output.write(b"\0")
+                    os.chmod(path, 0o600)
                     # A full retry must overwrite every previously accepted chunk.
                     await self.db._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (transfer["file_id"],))
+                    await self.db._db.execute("UPDATE file_transfers SET received_chunks = 0 WHERE file_id = ?", (transfer["file_id"],))
                     await self.db.update_file_transfer(transfer["file_id"], status="transferring")
                     await self.db.commit()
                     await self._send_ack(peer, transfer["file_id"], "missing", [(0, transfer["total_chunks"] - 1)], v2=True)
@@ -854,6 +887,19 @@ class FileTransferManager:
             if any(end >= transfer["total_chunks"] for _, end in (ack.missing_ranges or [])):
                 logger.warning("Dropped invalid missing range for %s from %s", ack.file_id, peer.peer_id)
                 return
+            if transfer["group_id"]:
+                if not await self._authorized_inbound(peer, transfer["group_id"], v2=v2):
+                    await self._set_delivery(transfer, peer.peer_id, "unavailable")
+                    await self.db.remove_file_from_outqueue(ack.file_id, peer.peer_id)
+                    return
+            elif await self.db.is_peer_blocked(peer.peer_id):
+                await self.db.update_file_transfer(ack.file_id, status="blocked")
+                await self.db.remove_file_from_outqueue(ack.file_id, peer.peer_id)
+                return
+            elif not await self.db.is_friend(peer.peer_id):
+                await self.db.update_file_transfer(ack.file_id, status="unavailable")
+                await self.db.remove_file_from_outqueue(ack.file_id, peer.peer_id)
+                return
             if v2:
                 await self._resend_missing_chunks(peer, transfer, ack.missing_ranges or [])
             else:
@@ -880,19 +926,24 @@ class FileTransferManager:
             logger.warning("Failed to resume legacy file %s: %s", transfer["file_id"], exc)
 
     async def _resend_missing_chunks(self, peer, transfer, ranges) -> None:
+        lock = self._flush_lock(transfer["file_id"], peer.peer_id)
         try:
-            await self.db.remove_file_from_outqueue(transfer["file_id"], peer.peer_id)
-            if not await self._stream_ranges(peer, transfer, peer.peer_id, ranges):
-                await self._set_delivery(transfer, peer.peer_id, "queued")
-                return
-        except Exception as exc:
-            logger.warning("Failed to resume file %s: %s", transfer["file_id"], exc)
-            await self._set_delivery(transfer, peer.peer_id, "queued")
-            if peer.encryption_public_key:
+            async with lock:
                 try:
-                    await self._queue_ranges(transfer, peer.peer_id, peer.encryption_public_key, ranges)
-                except Exception:
-                    logger.warning("Failed to queue resumed file %s", transfer["file_id"], exc_info=True)
+                    await self.db.remove_file_from_outqueue(transfer["file_id"], peer.peer_id)
+                    if not await self._stream_ranges(peer, transfer, peer.peer_id, ranges):
+                        await self._set_delivery(transfer, peer.peer_id, "queued")
+                        return
+                except Exception as exc:
+                    logger.warning("Failed to resume file %s: %s", transfer["file_id"], exc)
+                    await self._set_delivery(transfer, peer.peer_id, "queued")
+                    if peer.encryption_public_key:
+                        try:
+                            await self._queue_ranges(transfer, peer.peer_id, peer.encryption_public_key, ranges)
+                        except Exception:
+                            logger.warning("Failed to queue resumed file %s", transfer["file_id"], exc_info=True)
+        finally:
+            self._release_flush_lock(transfer["file_id"], peer.peer_id, lock)
 
     async def list_transfers(self, peer_id: str | None = None, group_id: str | None = None) -> list[dict]:
         transfers = await self.db.get_file_transfers(peer_id=peer_id, group_id=group_id)
@@ -911,11 +962,21 @@ class FileTransferManager:
         transfer = await self.db.get_file_transfer(file_id)
         if not transfer:
             raise ValueError("Unknown file_id")
-        if transfer["status"] not in ("completed", "sent"):
-            raise ValueError(f"File not ready for download (status={transfer['status']})")
         source = Path(transfer["file_path"] or "")
-        if not source.is_file():
-            raise ValueError("Source file not found; it may have been moved or deleted")
+        if transfer["direction"] == "outbound":
+            # Senders copy from their own immutable snapshot: gate on local
+            # completeness, never on the delivery aggregate.
+            try:
+                complete = source.is_file() and source.stat().st_size == transfer["file_size"]
+            except OSError:
+                complete = False
+            if not complete:
+                raise ValueError(f"File not ready for download (status={transfer['status']})")
+        else:
+            if transfer["status"] != "completed":
+                raise ValueError(f"File not ready for download (status={transfer['status']})")
+            if not source.is_file():
+                raise ValueError("Source file not found; it may have been moved or deleted")
         raw = dest_path_str.strip().strip('"').strip("'")
         if not raw:
             raise ValueError("Destination path required")
@@ -929,9 +990,12 @@ class FileTransferManager:
             destination = Path.cwd() / destination
         if destination.exists() and destination.is_dir():
             destination /= transfer["filename"]
+        if os.path.islink(destination):
+            raise ValueError("Destination is a symlink; choose a different path")
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with open(source, "rb") as src, open(destination, "wb") as dst:
+            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with open(source, "rb") as src, open(fd, "wb") as dst:
                 shutil.copyfileobj(src, dst, 1024 * 1024)
             try:
                 shutil.copystat(source, destination)

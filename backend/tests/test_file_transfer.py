@@ -201,6 +201,9 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         sender_db = Database(self.root / "sender.db")
         await sender_db.connect()
         await sender_db.add_friend(self.recipient.peer_id, self.recipient.display_name)
+        await sender_db.upsert_group(self.group_id, "Test group")
+        await sender_db.upsert_group_member(self.group_id, self.sender.peer_id, self.sender.display_name)
+        await sender_db.upsert_group_member(self.group_id, self.recipient.peer_id, self.recipient.display_name)
         source = self.root / "source.bin"
         source.write_bytes(self.content)
         await sender_db.save_file_transfer({

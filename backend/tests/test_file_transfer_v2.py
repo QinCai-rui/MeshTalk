@@ -109,6 +109,18 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
         self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "completed")
 
+    async def test_retry_blocked_peer_marks_blocked_without_sending(self):
+        source = self.root / "blocked.txt"
+        source.write_bytes(b"blocked-data")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        await self.sender_db.update_file_transfer(file_id, status="failed")
+        await self.sender_db.block_peer(self.recipient.peer_id, "Recipient")
+        self.sender_manager.sent.clear()
+        with self.assertRaisesRegex(ValueError, "blocked"):
+            await self.sender_transfer.retry_file(file_id)
+        self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "blocked")
+        self.assertEqual(self.sender_manager.sent, [])
+
     async def test_rapid_group_sends_produce_distinct_ids(self):
         group_id = self.sender_settings.create_room("Group").id
         await self.sender_db.upsert_group_member(group_id, self.sender.peer_id, "Sender")
