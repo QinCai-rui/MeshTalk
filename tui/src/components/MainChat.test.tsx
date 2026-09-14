@@ -226,8 +226,8 @@ test("stored mention tokens render as display names with a yellow highlight", as
   props.selectionKey = "group:team"
   props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "me", display_name: "Taylor" }] }
   props.conversationItems = [
-    { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "hi <@me> and <@sam> and <@gone>!", created_at: 1788580800 } },
-    { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "alex", content: "no mentions here", created_at: 1788580860 } },
+    { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "hi <@me> and <@sam> and <@gone>!", mentions: ["me"], created_at: 1788580800 } },
+    { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "alex", content: "no mentions here", mentions: [], created_at: 1788580860 } },
   ]
   const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
   try {

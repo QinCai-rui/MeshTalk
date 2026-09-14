@@ -28,13 +28,20 @@ export function mentionsPeer(content: string, peerId: string): boolean {
 }
 
 /**
- * Resolve the mentioned peer IDs for a message from the server payload,
- * falling back to parsing the content (older backends omit the payload).
+ * Mentioned peer IDs straight from the server payload — the only source the
+ * client uses to decide "mentioned me". Message content is never parsed for
+ * this; it is only used to render `@Display Name` text.
  */
-export function resolveMentions(payload: unknown, content: string): string[] {
-  if (Array.isArray(payload) && payload.every((id): id is string => typeof id === "string"))
-    return [...new Set(payload)]
-  return parseMentions(content)
+export function payloadMentions(payload: unknown): string[] {
+  if (!Array.isArray(payload)) return []
+  const seen = new Set<string>()
+  const ids: string[] = []
+  for (const id of payload) {
+    if (typeof id !== "string" || seen.has(id)) continue
+    seen.add(id)
+    ids.push(id)
+  }
+  return ids
 }
 
 /**

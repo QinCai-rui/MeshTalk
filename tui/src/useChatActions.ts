@@ -7,6 +7,7 @@ import { join, resolve } from "path"
 import { tmpdir } from "os"
 import { existsSync, statSync } from "fs"
 import { groupFromResponse, sortPeersByInteraction } from "./utils"
+import { payloadMentions } from "./mentions"
 import { runCommand as navigationRunCommand } from "./navigation"
 import { sendTestNotification } from "./notifications"
 import { DEFAULT_STATUS, groupDeliveryLabel, MAX_MESSAGE_BYTES, MIN_COMPOSER_HEIGHT } from "./utils"
@@ -962,7 +963,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       }
       setMessages((c) => [...c, {
         message_id: response.message_id as string, sender_id: identity.peer_id,
-        ...(selection.kind === "peer" ? { recipient_id: selection.id } : { group_id: selection.id, deliveries: response.deliveries as GroupDelivery[], mentions: response.mentions as string[] | undefined }),
+        ...(selection.kind === "peer" ? { recipient_id: selection.id } : { group_id: selection.id, deliveries: response.deliveries as GroupDelivery[], mentions: payloadMentions(response.mentions) }),
         content, created_at: Date.now() / 1000, delivered: 0, queued: queued ? 1 : 0, reply_to_message_id: replyToMessageId,
       }])
       if (composer && composer === composerRef.current) { composer.selectAll(); composer.deleteSelection() }

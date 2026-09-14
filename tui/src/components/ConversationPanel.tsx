@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } 
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
 import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, isImageFile, MAX_MESSAGE_BYTES, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS } from "../utils"
-import { renderMentionedContent, resolveMentions, type MentionCandidate } from "../mentions"
+import { renderMentionedContent, payloadMentions, type MentionCandidate } from "../mentions"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
 
 type ConversationPanelProps = {
@@ -277,7 +277,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
           const mentioned =
             Boolean(selectedGroup) &&
             identity !== undefined &&
-            resolveMentions(message.mentions, message.content).includes(identity.peer_id)
+            payloadMentions(message.mentions).includes(identity.peer_id)
           const replyTarget = message.reply_to_message_id
             ? conversationItems.find((candidate) => candidate.type === "message" ? candidate.message.message_id === message.reply_to_message_id : candidate.file.file_id === message.reply_to_message_id)
             : undefined

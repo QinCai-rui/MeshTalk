@@ -864,11 +864,11 @@ authenticated peer's signing key; mismatched sender_id/responder_id is rejected.
 - Mentions: group message content may carry `<@user_id>` tokens (inserted by
   the sender's `@` member picker). The backend extracts the mentioned IDs and
   includes them as `mentions` in the `group_message` event, in `group_messages`
-  history entries, and in the `group_send` response, so clients determine
-  "mentioned me" from the payload (falling back to token parsing against older
-  backends). Receivers highlight the message, badge the group, and raise a
-  mention notification (bypasses group mutes, still gated by Do Not Disturb).
-  Clients render tokens as `@Display Name`.
+  history entries, and in the `group_send` response. Clients decide
+  "mentioned me" solely from that payload array — message content is never
+  parsed for detection (it is only rendered as `@Display Name`). Receivers
+  highlight the message, badge the group, and raise a mention notification
+  (bypasses group mutes, still gated by Do Not Disturb).
 - Profiles (PROFILE): {peer_id, display_name, tui_active, signature, dnd,
   dnd_signature}. Broadcast to every active peer on name change
   (broadcast_profile_update); tui_active reflects whether any TUI client is

@@ -5,8 +5,8 @@ import {
   mentionQueryAt,
   mentionsPeer,
   parseMentions,
+  payloadMentions,
   renderMentionedContent,
-  resolveMentions,
 } from "./mentions"
 
 test("parseMentions extracts unique IDs in order", () => {
@@ -61,12 +61,13 @@ test("filterMentionCandidates matches names case-insensitively", () => {
   ).toHaveLength(6)
 })
 
-test("resolveMentions prefers the server payload with content fallback", () => {
-  expect(resolveMentions(["abc", "abc", "def"], "hi <@abc>")).toEqual(["abc", "def"])
-  expect(resolveMentions(undefined, "hi <@abc>")).toEqual(["abc"])
-  expect(resolveMentions("not-an-array", "hi <@abc>")).toEqual(["abc"])
-  expect(resolveMentions([123], "hi <@abc>")).toEqual(["abc"])
-  expect(resolveMentions([], "plain")).toEqual([])
+test("payloadMentions reads only the server payload, never content", () => {
+  expect(payloadMentions(["abc", "abc", "def"])).toEqual(["abc", "def"])
+  expect(payloadMentions([])).toEqual([])
+  expect(payloadMentions(undefined)).toEqual([])
+  expect(payloadMentions("not-an-array")).toEqual([])
+  expect(payloadMentions([123])).toEqual([])
+  expect(payloadMentions(["abc", 123])).toEqual(["abc"])
 })
 
 test("applyMentionCompletion replaces @query with a token", () => {
