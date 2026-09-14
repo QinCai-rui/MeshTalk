@@ -328,7 +328,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
     <box paddingLeft={2} paddingRight={1} flexShrink={0} height={1} overflow="hidden" flexDirection="row" gap={1}><text fg={theme.accent} wrapMode="none">{typingText ?? (scrollFocused ? "Reading history" : "")}</text>{typingText && <TypingDots />}</box>
     <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, backgroundColor: theme.surface }}>
       {mentionOpen && mentionCandidates.length > 0 && (
-      <box id="mention-popup" position="absolute" bottom="100%" left={1} right={1} zIndex={10} border borderColor={theme.line} backgroundColor={theme.surface} paddingX={1} flexDirection="column">
+      <box id="mention-popup" position="absolute" bottom="100%" left={1} right={1} zIndex={10} border borderColor={theme.line} backgroundColor={theme.surface} paddingX={1} flexDirection="column" onMouseDown={(event) => event.preventDefault()}>
         <text fg={theme.muted}>Mention a member (Tab/Enter picks, Esc cancels)</text>
         <scrollbox
           id="mention-list"
@@ -341,7 +341,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
           <box
             id={`mention-pick-${candidate.peerId}`}
             key={candidate.peerId}
-            onMouseDown={() => onMentionPick?.(candidate.peerId)}
+            onMouseDown={(event) => { event.preventDefault(); onMentionPick?.(candidate.peerId); }}
             style={{ width: "100%", paddingLeft: 1, paddingRight: 1, backgroundColor: index === mentionSelected ? theme.selected : undefined }}
           >
             <text fg={index === mentionSelected ? theme.text : theme.muted} wrapMode="none">

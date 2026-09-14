@@ -1897,6 +1897,13 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
     setComposerHeight(getComposerHeight(composer));
     setMention(null);
     handleComposerChange(after);
+    // Clicking a popup row blurs the textarea via the renderer's default
+    // mousedown handling (row preventDefault suppresses it, but refocus
+    // anyway on the next tick in case any default handling already ran).
+    // Harmless on keyboard pick paths where focus never left.
+    setTimeout(() => {
+      if (composerRef.current === composer) composer.focus();
+    }, 0);
   }
 
   function deleteMentionSpan(span: MentionSpan) {
