@@ -17,6 +17,6 @@
     "@opentui/core": "^0.5.10",
     "@opentui/react": "^0.5.10",
     "react": "^19.2.8",
-    "web-tree-sitter": "0.25.10"
+    "web-tree-sitter": "0.27.0"
   }
 }
