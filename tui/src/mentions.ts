@@ -63,6 +63,17 @@ export function spansToTokens(text: string, spans: MentionSpan[]): string {
 }
 
 const MENTION_TOKEN_RE = /<@([A-Za-z0-9_-]+)>/g
+const MENTION_AT_RE = /^<@([A-Za-z0-9_-]+)>/
+
+function isEscapedAt(content: string, index: number): boolean {
+  let backslashes = 0
+  let i = index - 1
+  while (i >= 0 && content[i] === "\\") {
+    backslashes++
+    i--
+  }
+  return backslashes % 2 === 1
+}
 
 /** Extract unique mentioned peer IDs from message content, in order. */
 export function parseMentions(content: string): string[] {
@@ -70,6 +81,8 @@ export function parseMentions(content: string): string[] {
   const seen = new Set<string>()
   MENTION_TOKEN_RE.lastIndex = 0
   for (const match of content.matchAll(MENTION_TOKEN_RE)) {
+    const index = match.index ?? 0
+    if (isEscapedAt(content, index)) continue
     const id = match[1]!
     if (!seen.has(id)) {
       seen.add(id)
@@ -105,13 +118,33 @@ export function payloadMentions(payload: unknown): string[] {
 /**
  * Render stored `<@user_id>` tokens as `@Display Name` for display.
  * Unknown IDs fall back to `@unknown` so raw tokens never leak into the UI.
+ * Escaped tokens (`\<@id>`) render as literal `<@id>` and do not become pills;
+ * `\\` renders as a single `\`.
  */
 export function renderMentionedContent(
   content: string,
   resolveName: (peerId: string) => string | undefined,
 ): string {
-  MENTION_TOKEN_RE.lastIndex = 0
-  return content.replace(MENTION_TOKEN_RE, (_, peerId: string) => `@${resolveName(peerId) ?? "unknown"}`)
+  let result = ""
+  let i = 0
+  while (i < content.length) {
+    if (content[i] === "\\" && i + 1 < content.length) {
+      result += content[i + 1]
+      i += 2
+      continue
+    }
+    const slice = content.slice(i)
+    const match = MENTION_AT_RE.exec(slice)
+    if (match) {
+      const peerId = match[1]!
+      result += `@${resolveName(peerId) ?? "unknown"}`
+      i += match[0].length
+      continue
+    }
+    result += content[i]!
+    i++
+  }
+  return result
 }
 
 export type MentionSegment =
@@ -123,17 +156,34 @@ export function segmentMentionedContent(
   content: string,
   resolveName: (peerId: string) => string | undefined,
 ): MentionSegment[] {
-  MENTION_TOKEN_RE.lastIndex = 0
   const segments: MentionSegment[] = []
-  let last = 0
-  for (const match of content.matchAll(MENTION_TOKEN_RE)) {
-    const index = match.index ?? 0
-    if (index > last) segments.push({ type: "text", text: content.slice(last, index) })
-    const peerId = match[1]!
-    segments.push({ type: "mention", peerId, name: resolveName(peerId) ?? "unknown" })
-    last = index + match[0].length
+  let textBuffer = ""
+  let i = 0
+  const flushText = () => {
+    if (textBuffer) {
+      segments.push({ type: "text", text: textBuffer })
+      textBuffer = ""
+    }
   }
-  if (last < content.length) segments.push({ type: "text", text: content.slice(last) })
+  while (i < content.length) {
+    if (content[i] === "\\" && i + 1 < content.length) {
+      textBuffer += content[i + 1]!
+      i += 2
+      continue
+    }
+    const slice = content.slice(i)
+    const match = MENTION_AT_RE.exec(slice)
+    if (match) {
+      flushText()
+      const peerId = match[1]!
+      segments.push({ type: "mention", peerId, name: resolveName(peerId) ?? "unknown" })
+      i += match[0].length
+      continue
+    }
+    textBuffer += content[i]!
+    i++
+  }
+  flushText()
   return segments
 }
 

@@ -868,7 +868,9 @@ authenticated peer's signing key; mismatched sender_id/responder_id is rejected.
   "mentioned me" solely from that payload array — message content is never
   parsed for detection (it is only rendered as `@Display Name`). Receivers
   highlight the message, badge the group, and raise a mention notification
-  (bypasses group mutes, still gated by Do Not Disturb).
+  (bypasses group mutes, still gated by Do Not Disturb). A leading `\`
+  escapes `<@` so `\<@id>` is a literal and `\\` escapes to a single `\`
+  (`\\<@id>` is a mention preceded by `\`).
 - Profiles (PROFILE): {peer_id, display_name, tui_active, signature, dnd,
   dnd_signature}. Broadcast to every active peer on name change
   (broadcast_profile_update); tui_active reflects whether any TUI client is

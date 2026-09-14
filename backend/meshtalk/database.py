@@ -16,14 +16,36 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 MENTION_TOKEN_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
 
+# Matches a mention token only when its `<` is not escaped by an odd
+# run of preceding backslashes; the backslash itself escapes the next
+# character, and `\\` escapes to a literal `\`.
+_MENTION_AT_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
+
+
+def _is_escaped(content: str, index: int) -> bool:
+    r"""Whether the character at *index* is escaped by a preceding `\`."""
+    backslashes = 0
+    i = index - 1
+    while i >= 0 and content[i] == "\\":
+        backslashes += 1
+        i -= 1
+    return backslashes % 2 == 1
+
 
 def extract_mentions(content: str) -> list[str]:
-    """Extract unique mentioned peer IDs (`<@user_id>` tokens) in order."""
+    r"""Extract unique mentioned peer IDs (`<@user_id>` tokens) in order.
+
+    A token `\<@id>` (odd backslashes before `<`) is an escaped literal and
+    does not count as a mention; `\\` collapses to a single `\` so
+    `\\<@id>` is a mention preceded by a literal `\`.
+    """
     if not isinstance(content, str) or not content:
         return []
     seen: set[str] = set()
     mentions: list[str] = []
-    for match in MENTION_TOKEN_RE.finditer(content):
+    for match in _MENTION_AT_RE.finditer(content):
+        if _is_escaped(content, match.start()):
+            continue
         peer_id = match.group(1)
         if peer_id not in seen:
             seen.add(peer_id)
