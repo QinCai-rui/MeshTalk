@@ -7,6 +7,7 @@ from meshtalk.database import Database
 from meshtalk.file_transfer import FileTransferManager
 from meshtalk.identity import Identity
 from meshtalk.protocol import (
+    CAP_BLOCK_REPORTS,
     CAP_FILE_TRANSFER,
     CAP_FILE_TRANSFER_V2,
     FileAckV2Payload,
@@ -24,7 +25,7 @@ class FakePeer:
         self.encryption_public_key = identity.encryption_public_key_bytes()
 
     def supports(self, capability: str) -> bool:
-        return capability in (CAP_FILE_TRANSFER, CAP_FILE_TRANSFER_V2)
+        return capability in (CAP_FILE_TRANSFER, CAP_FILE_TRANSFER_V2, CAP_BLOCK_REPORTS)
 
 
 class FakePeerManager:
@@ -120,6 +121,56 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
             await self.sender_transfer.retry_file(file_id)
         self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "blocked")
         self.assertEqual(self.sender_manager.sent, [])
+
+    async def test_empty_group_send_fails_without_snapshot(self):
+        group_id = self.sender_settings.create_room("Solo").id
+        await self.sender_db.upsert_group_member(group_id, self.sender.peer_id, "Sender")
+        source = self.root / "solo.txt"
+        source.write_bytes(b"solo-data")
+        with self.assertRaisesRegex(ValueError, "No other members"):
+            await self.sender_transfer.send_group_file(group_id, str(source))
+        sent_dir = self.root / "sender-files" / "sent"
+        self.assertFalse(sent_dir.exists() and any(sent_dir.iterdir()))
+
+    async def test_resume_skips_blocked_peer(self):
+        source = self.root / "resume.txt"
+        source.write_bytes(b"resume-data")
+        await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        packets = list(self.sender_manager.sent)
+        self.sender_manager.sent.clear()
+        await self.recipient_transfer.handle_packet(self.sender_peer, packets[0])
+        await self.recipient_db.block_peer(self.sender.peer_id, "Sender")
+        await self.recipient_transfer.resume_for_peer(self.sender.peer_id)
+        self.assertEqual(self.recipient_manager.sent, [])
+
+    async def test_early_chunk_from_blocked_peer_dropped(self):
+        source = self.root / "early.txt"
+        source.write_bytes(b"early-data")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        packets = list(self.sender_manager.sent)
+        self.sender_manager.sent.clear()
+        await self.recipient_transfer.handle_packet(self.sender_peer, packets[1])
+        await self.recipient_db.block_peer(self.sender.peer_id, "Sender")
+        await self.recipient_transfer.handle_packet(self.sender_peer, packets[0])
+        self.assertIsNone(await self.recipient_db.get_file_transfer(file_id))
+        blocked = [p for p in self.recipient_manager.sent if p.type == PacketType.FILE_ACK_V2]
+        self.assertEqual(len(blocked), 1)
+        self.assertEqual(FileAckV2Payload.decode(blocked[0].payload).status, "blocked")
+
+    async def test_flush_completed_transfer_cleans_queue_without_regression(self):
+        source = self.root / "done.txt"
+        source.write_bytes(b"done-data")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        await self._pump(self.sender_manager, self.recipient_transfer, self.sender_peer)
+        await self._pump(self.recipient_manager, self.sender_transfer, self.recipient_peer)
+        self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "completed")
+        await self.sender_db.add_to_outqueue(
+            self.recipient.peer_id, PacketType.FILE_CHUNK_V2.value, b"stale", file_id
+        )
+        flushed = await self.sender_transfer.flush_for_peer(self.recipient.peer_id)
+        self.assertEqual(flushed, 0)
+        self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "completed")
+        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
 
     async def test_rapid_group_sends_produce_distinct_ids(self):
         group_id = self.sender_settings.create_room("Group").id

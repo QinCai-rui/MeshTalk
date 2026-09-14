@@ -296,6 +296,8 @@ class FileTransferManager:
     async def _create_send(
         self, file_path, caption, group_id, recipients, batch_id=None, batch_index=None, batch_count=None
     ) -> str:
+        if group_id and not recipients:
+            raise ValueError("No other members to send to")
         source = self._validate_source(file_path)
         caption = self._validate_caption(caption)
         file_id = uuid.uuid4().hex
@@ -411,6 +413,18 @@ class FileTransferManager:
             await self._set_delivery(transfer, recipient, "failed")
             logger.warning("Could not queue file %s: %s", transfer["file_id"], exc)
 
+    async def _mark_sent_unless_completed(self, transfer: dict, recipient: str) -> None:
+        """Record awaiting-ACK state unless a completion ACK landed mid-stream."""
+        current = await self.db.get_file_transfer(transfer["file_id"])
+        if transfer["group_id"]:
+            delivery = await self.db.get_file_delivery(transfer["file_id"], recipient)
+            if delivery and delivery["status"] == "completed":
+                return
+        elif current and current["status"] == "completed":
+            return
+        self._awaiting_ack_since[(transfer["file_id"], recipient)] = time.monotonic()
+        await self._set_delivery(transfer, recipient, "sent")
+
     async def _stream_ranges(self, peer, transfer, recipient, ranges) -> bool:
         path = Path(transfer["file_path"]) if transfer.get("file_path") else None
         if not path or not path.is_file() or not peer.encryption_public_key:
@@ -419,6 +433,7 @@ class FileTransferManager:
             return False
         try:
             sent = 0
+            full_stream = ranges == [(0, transfer["total_chunks"] - 1)]
             with open(path, "rb") as src:
                 for start, end in ranges:
                     for index in range(start, end + 1):
@@ -435,12 +450,11 @@ class FileTransferManager:
                             await self._set_delivery(transfer, recipient, "queued")
                             return False
                         sent += 1
-                        if self._should_emit_progress(transfer["file_id"], sent, transfer["total_chunks"]):
+                        if full_stream and self._should_emit_progress(transfer["file_id"], sent, transfer["total_chunks"]):
                             self._emit({"event": "file_progress", "file_id": transfer["file_id"], "received": sent, "total_chunks": transfer["total_chunks"], "direction": "outbound", "group_id": transfer["group_id"], "recipient_id": recipient})
                         if index % 10 == 0:
                             await asyncio.sleep(0)
-            self._awaiting_ack_since[(transfer["file_id"], recipient)] = time.monotonic()
-            await self._set_delivery(transfer, recipient, "sent")
+            await self._mark_sent_unless_completed(transfer, recipient)
             self._emit({"event": "file_sent", "file_id": transfer["file_id"], "recipient_id": recipient, "filename": transfer["filename"], "group_id": transfer["group_id"]})
             return True
         except Exception as exc:
@@ -530,8 +544,7 @@ class FileTransferManager:
                             break
                         await self.db.remove_from_outqueue(item["id"])
                     if not failed:
-                        self._awaiting_ack_since[(file_id, peer_id)] = time.monotonic()
-                        await self._set_delivery(transfer, peer_id, "sent")
+                        await self._mark_sent_unless_completed(transfer, peer_id)
                         flushed += 1
             finally:
                 if not lock.locked() and self._flush_locks.get(lock_key) is lock:
@@ -598,7 +611,7 @@ class FileTransferManager:
 
     async def resume_for_peer(self, peer_id: str) -> None:
         peer = self.peer_manager.get_connected_peer(peer_id)
-        if not peer:
+        if not peer or await self.db.is_peer_blocked(peer_id):
             return
         transfers = await self.db.get_file_transfers(peer_id, include_group=True)
         for transfer in transfers:
@@ -753,6 +766,9 @@ class FileTransferManager:
             try:
                 transfer = await self.db.get_file_transfer(file_id)
                 if not transfer or transfer["status"] == "completed":
+                    continue
+                if not await self._authorized_inbound(peer, transfer["group_id"], v2=v2):
+                    await self._send_ack(peer, file_id, "blocked", v2=v2)
                     continue
                 await self._store_chunk(peer, chunk, transfer, v2)
             except Exception:
