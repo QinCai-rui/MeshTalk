@@ -65,6 +65,8 @@ export function spansToTokens(text: string, spans: MentionSpan[]): string {
 const MENTION_TOKEN_RE = /<@([A-Za-z0-9_-]+)>/g
 const MENTION_AT_RE = /^<@([A-Za-z0-9_-]+)>/
 
+export const EVERYONE_PEER_ID = "everyone"
+
 function isEscapedAt(content: string, index: number): boolean {
   let backslashes = 0
   let i = index - 1
@@ -113,6 +115,14 @@ export function payloadMentions(payload: unknown): string[] {
     ids.push(id)
   }
   return ids
+}
+
+/**
+ * Whether a mentions payload targets everyone. The payload carries the
+ * sentinel `everyone` instead of enumerating every member's id.
+ */
+export function mentionsEveryone(payload: unknown): boolean {
+  return payloadMentions(payload).includes(EVERYONE_PEER_ID)
 }
 
 /**
@@ -312,6 +322,8 @@ export function filterMentionCandidates(
     ? members.filter((member) => member.displayName.toLowerCase().includes(normalized))
     : [...members]
   filtered.sort((a, b) => {
+    if (a.peerId === EVERYONE_PEER_ID) return -1
+    if (b.peerId === EVERYONE_PEER_ID) return 1
     if (!normalized) return a.displayName.localeCompare(b.displayName)
     const aIndex = a.displayName.toLowerCase().indexOf(normalized)
     const bIndex = b.displayName.toLowerCase().indexOf(normalized)

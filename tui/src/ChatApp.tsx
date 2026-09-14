@@ -70,6 +70,7 @@ import {
   filterMentionCandidates,
   mentionQueryAt,
   payloadMentions,
+  EVERYONE_PEER_ID,
   spansToTokens,
   updateSpansAfterEdit,
   type MentionCandidate,
@@ -927,7 +928,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
             senderId !== undefined &&
             senderId !== identity?.peer_id &&
             identity !== undefined &&
-            payloadMentions(event.mentions).includes(identity.peer_id);
+            (() => {
+              const mentions = payloadMentions(event.mentions);
+              return mentions.includes(identity.peer_id) || mentions.includes(EVERYONE_PEER_ID);
+            })();
           if (event.event === "group_message" && mentionedMe)
             // Mention notifications bypass per-group mutes; only DND blocks them.
             void notify(
@@ -1860,7 +1864,7 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
   const mentionMembers = useMemo<MentionCandidate[]>(() => {
     if (selection?.kind !== "group" || !selectedGroupId) return [];
     const members = groupMembers[selectedGroupId] ?? [];
-    return members
+    const list = members
       .map((member) => {
         const id = member.peer_id ?? member.member_id;
         if (!id) return undefined;
@@ -1872,6 +1876,10 @@ export function ChatApp({ splashStyle }: { splashStyle?: SplashStyle | false } =
         return candidate;
       })
       .filter((member): member is MentionCandidate => member !== undefined);
+    // `@everyone` is a virtual mention that expands to the whole group on
+    // the receivers' side; keep it first so it stays discoverable and the
+    // payload stays `["everyone"]` instead of enumerating every id.
+    return [{ peerId: "everyone", displayName: "everyone" }, ...list];
   }, [selection, selectedGroupId, groupMembers, identity]);
   const mentionCandidates = useMemo(
     // Fetch more than fits the popup; the list scrolls internally.

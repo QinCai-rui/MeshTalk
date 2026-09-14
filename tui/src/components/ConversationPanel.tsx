@@ -110,6 +110,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
   // it almost away; the calmer shell shifts between two amber tones instead.
   const flashingWarningColor = !flashingEnabled || blinkOn ? theme.warning : theme.warningPulse
   const resolveMentionName = (peerId: string): string | undefined => {
+    if (peerId === "everyone") return "everyone"
     if (peerId === identity?.peer_id) return identity.display_name
     return groupMembers[selectedGroupId ?? ""]?.find(
       (member) => (member.peer_id ?? member.member_id) === peerId,
@@ -294,7 +295,10 @@ export function ConversationPanel(props: ConversationPanelProps) {
           const mentioned =
             Boolean(selectedGroup) &&
             identity !== undefined &&
-            payloadMentions(message.mentions).includes(identity.peer_id)
+            (() => {
+              const mentions = payloadMentions(message.mentions);
+              return mentions.includes(identity.peer_id) || mentions.includes("everyone");
+            })()
           const replyTarget = message.reply_to_message_id
             ? conversationItems.find((candidate) => candidate.type === "message" ? candidate.message.message_id === message.reply_to_message_id : candidate.file.file_id === message.reply_to_message_id)
             : undefined
