@@ -27,7 +27,7 @@ services:
       - MESHTALK_CONTROL_URL=wss://meshtalk-control.qincai.xyz/v1/rendezvous
       - MESHTALK_STUN_SERVER=stun.l.google.com:19302
     volumes:
-      - meshtalk-data:/data/meshtalk
+      - ./docker_data/meshtalk:/data/meshtalk
     stdin_open: true
     tty: true
     # Host networking is required for LAN peer discovery (UDP broadcast).
@@ -36,5 +36,43 @@ services:
     network_mode: host
     restart: no
 
-volumes:
-  meshtalk-data:
+  analytics:
+    image: ghcr.io/qincai-rui/meshtalk/analytics:latest
+    # docker compose up --build analytics
+    build:
+      context: .
+      dockerfile: analytics/Dockerfile
+    environment:
+      - PORT=8089
+    volumes:
+      - ./docker_data/analytics:/data
+    ports:
+      # Anonymous ingest is spammable by design: bind localhost by default,
+      # put the Worker ORIGIN behind a firewall
+      - "127.0.0.1:${ANALYTICS_PORT:-8089}:8089"
+    restart: unless-stopped
+
+  analytics-dashboard:
+    # Read-only dashboard for the aggregate store (no IPs exist to show).
+    # Shares the ingest SQLite volume read-only; never writes.
+    # Same image as analytics; only the command differs.
+    image: ghcr.io/qincai-rui/meshtalk/analytics:latest
+    build:
+      context: .
+      dockerfile: analytics/Dockerfile
+    command: ["python", "dashboard.py"]
+    environment:
+      - ANALYTICS_DB=/data/analytics.sqlite
+      - DASHBOARD_PORT=8090
+      - BIND=0.0.0.0
+    volumes:
+      - ./docker_data/analytics:/data:ro
+    ports:
+      - "127.0.0.1:${ANALYTICS_DASHBOARD_PORT:-8090}:8090"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

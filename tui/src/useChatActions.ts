@@ -1,23 +1,27 @@
 import type { IPCClient } from "../../common/ipc-client"
 import type { Release } from "../../common/updater"
-import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, UPDATE_RESTART_EXIT_CODE } from "../../common/updater"
-import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus, SplashPreference } from "./types"
+import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, saveUpdateChannel as persistUpdateChannel, UPDATE_RESTART_EXIT_CODE, type UpdateChannel } from "../../common/updater"
+import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileConfirmSource, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus, SplashPreference } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
 import { join, resolve } from "path"
 import { tmpdir } from "os"
-import { existsSync, statSync } from "fs"
+import { statSync } from "fs"
+import { stageFilesForConfirmation } from "./fileSendConfirm"
 import { groupFromResponse, sortPeersByInteraction } from "./utils"
 import { payloadMentions, spansToTokens, type MentionSpan } from "./mentions"
 import { runCommand as navigationRunCommand } from "./navigation"
 import { sendTestNotification } from "./notifications"
 import { DEFAULT_STATUS, groupDeliveryLabel, MAX_MESSAGE_BYTES, MIN_COMPOSER_HEIGHT } from "./utils"
 import { goBack as navigateBack } from "./navigation"
+import { sameResponse, updateBoundedEntry } from "./stateRetention"
 
 declare const APP_VERSION: string
 declare const MESHTALK_RELEASE: boolean
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
 const MAX_PASTED_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_GROUP_MEMBER_CACHE = 32
+const MAX_DRAFT_ENTRIES = 200
 
 const IMAGE_EXTENSIONS: Record<string, string> = {
   "image/png": ".png",
@@ -92,6 +96,7 @@ type ChatActionsDeps = {
   setDialogDraft: (s: string) => void
   setDialogError: (s: string) => void
   setDialogBusy: (b: boolean) => void
+  setFriendRequests?: React.Dispatch<React.SetStateAction<FriendRequest[]>>
 
   statusResetRef: { current: ReturnType<typeof setTimeout> | undefined }
   copyToastResetRef: { current: ReturnType<typeof setTimeout> | undefined }
@@ -115,11 +120,29 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps
   const { statusResetRef, copyToastResetRef, dialogActionRef, dialogBusyRef, filePickerOpenRef, composerRef, selectionKey } = deps
+  const setFriendRequests = deps.setFriendRequests
 
-  function showStatus(message: string) {
+  function showStatus(message: string, durationMs = 2_000) {
     if (statusResetRef.current) clearTimeout(statusResetRef.current)
     setStatus(message)
-    statusResetRef.current = setTimeout(() => setStatus(DEFAULT_STATUS), 2_000)
+    statusResetRef.current = setTimeout(() => setStatus(DEFAULT_STATUS), durationMs)
+  }
+
+  const FRIEND_STATUS_MS = 5_000
+
+  async function refreshFriendRequestsSilent() {
+    try {
+      const response = await ipc.send("friend_requests")
+      if (!response.error && setFriendRequests) {
+        const next = response.requests as FriendRequest[]
+        setFriendRequests((current) => sameResponse(current, next) ? current : next)
+      }
+    } catch {}
+  }
+
+  function openFriendsInbox() {
+    void refreshFriendRequestsSilent()
+    showDialog({ kind: "friends" })
   }
 
   function showCopyToast() {
@@ -132,7 +155,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     const response = await ipc.send("peers")
     if (response.error) throw new Error(response.error)
     const next = sortPeersByInteraction(response.peers as Peer[])
-    setPeers(next)
+    setPeers((current) => sameResponse(current, next) ? current : next)
     setSelection((current) => current && (current.kind === "group" || next.some((p) => p.peer_id === current.id))
       ? current
       : next[0] ? { kind: "peer", id: next[0].peer_id } : groups[0] ? { kind: "group", id: groups[0].group_id } : undefined)
@@ -142,7 +165,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     const response = await ipc.send("groups")
     if (response.error) throw new Error(response.error)
     const next = (response.groups as Group[]).sort((a, b) => a.name.localeCompare(b.name))
-    setGroups(next)
+    setGroups((current) => sameResponse(current, next) ? current : next)
     setSelection((current) => {
       if (!current) return peers[0] ? { kind: "peer", id: peers[0].peer_id } : next[0] ? { kind: "group", id: next[0].group_id } : undefined
       if (current?.kind !== "group" || next.some((g) => g.group_id === current.id)) return current
@@ -154,13 +177,19 @@ export function useChatActions(deps: ChatActionsDeps) {
     if (!groupId) return
     const response = await ipc.send("group_members", { group_id: groupId })
     if (response.error) throw new Error(response.error)
-    setGroupMembers((current) => ({ ...current, [groupId]: response.members as GroupMember[] }))
+    const members = response.members as GroupMember[]
+    setGroupMembers((current) => sameResponse(current[groupId], members)
+      ? current
+      : updateBoundedEntry(current, groupId, members, MAX_GROUP_MEMBER_CACHE))
   }
 
   async function refreshFiles() {
     try {
       const response = await ipc.send("files")
-      if (!response.error) setFileTransfers(response.files as FileTransfer[])
+      if (!response.error) {
+        const next = response.files as FileTransfer[]
+        setFileTransfers((current) => sameResponse(current, next) ? current : next)
+      }
     } catch {}
   }
 
@@ -434,7 +463,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
       const members = response.members as GroupMember[]
-      setGroupMembers((c) => ({ ...c, [group.group_id]: members }))
+      setGroupMembers((current) => sameResponse(current[group.group_id], members)
+        ? current
+        : updateBoundedEntry(current, group.group_id, members, MAX_GROUP_MEMBER_CACHE))
       showDialog({ kind: "group-detail", group, members })
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -555,8 +586,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("friend_send", { peer_id: peerId, note })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus("Friend request sent. You can chat once they accept.")
+      showStatus("Friend request sent. You can chat once they accept.", FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -569,8 +601,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("friend_respond", { request_id: request.request_id, accept })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus(accept ? `You and ${request.sender_name} are now friends.` : `Declined ${request.sender_name}'s friend request.`)
+      showStatus(accept ? `You and ${request.sender_name} are now friends.` : `Declined ${request.sender_name}'s friend request. You can add them again later.`, FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -583,8 +616,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("friend_cancel", { request_id: requestId })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus("Friend request cancelled.")
+      showStatus("Friend request cancelled. You can send a new one from the conversation.", FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -598,8 +632,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
       const peer = peers.find((p) => p.peer_id === peerId)
-      showStatus(`Removed ${peer?.display_name ?? peerId} as a friend.`)
+      showStatus(`Removed ${peer?.display_name ?? peerId} as a friend.`, FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -624,8 +659,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("block_peer", { peer_id: peerId })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus(`Blocked ${displayName}. Their friend requests are now ignored.`)
+      showStatus(`Blocked ${displayName}. Their friend requests are now ignored.`, FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -638,8 +674,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("unblock_peer", { peer_id: peerId })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus(`Unblocked ${displayName}. They can send friend requests again.`)
+      showStatus(`Unblocked ${displayName}. They can send friend requests again.`, FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       finishDialogAction(action)
       void loadBlockedPeers()
     } catch (error) { failDialogAction(action, error) }
@@ -652,8 +689,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("block_peer", { peer_id: request.sender_id })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus(`Blocked ${request.sender_name}. Their friend requests are now ignored.`)
+      showStatus(`Blocked ${request.sender_name}. Their friend requests are now ignored.`, FRIEND_STATUS_MS)
       await refreshPeers()
+      await refreshFriendRequestsSilent()
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -696,6 +734,87 @@ export function useChatActions(deps: ChatActionsDeps) {
       showDialog({ kind: "file-list", files })
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
+  }
+
+  function expandUser(filePath: string): string {
+    const trimmed = filePath.trim()
+    const home = process.env.HOME || process.env.USERPROFILE || ""
+    if (home && (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\"))) return home + trimmed.slice(1)
+    return trimmed
+  }
+
+  function validLocalFiles(paths: string[]): { valid: string[]; missing: string[] } {
+    const valid: string[] = []
+    const missing: string[] = []
+    for (const raw of paths.slice(0, 32)) {
+      const trimmed = raw.trim()
+      if (!trimmed) continue
+      try {
+        const absolutePath = resolve(expandUser(trimmed))
+        const stat = statSync(absolutePath)
+        if (stat.isFile()) {
+          if (!valid.includes(absolutePath)) valid.push(absolutePath)
+        } else {
+          missing.push(trimmed)
+        }
+      } catch {
+        missing.push(trimmed)
+      }
+    }
+    return { valid, missing }
+  }
+
+  async function sendFilesDirect(paths: string[]) {
+    if (!selection) { showStatus("Select a peer or group before sending a file."); return }
+    let sent = 0
+    for (const filePath of paths) {
+      try {
+        if (selection.kind === "peer") {
+          const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: filePath })
+          if (response.error) throw new Error(response.error)
+        } else {
+          const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: filePath })
+          if (response.error) throw new Error(response.error)
+        }
+        sent++
+      } catch (error) {
+        showStatus(`Could not send ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+    }
+    if (sent === 1) showStatus(`File transfer started: ${paths[0] ?? "file"} -> ${selection.id.slice(0, 8)}`)
+    else if (sent > 1) showStatus(`Started ${sent} file transfers.`)
+  }
+
+  async function requestFileSend(paths: string[], source: FileConfirmSource) {
+    if (!selection) { showStatus("Select a peer or group first."); return }
+    const { valid, missing } = validLocalFiles(paths)
+    if (!valid.length) {
+      showStatus(missing.length ? `Not found: ${missing[0]}` : "No files found.")
+      return
+    }
+    try {
+      const confirmationPaths = source === "picker" ? valid : await stageFilesForConfirmation(valid)
+      showDialog({ kind: "file-confirm", paths: confirmationPaths, source })
+    } catch (error) {
+      showStatus(`Could not prepare file: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  function requestImageSend(bytes: Uint8Array, mimeType: string) {
+    if (!selection) { showStatus("Select a peer or group first."); return }
+    showDialog({ kind: "file-confirm", paths: [], source: "image", image: { bytes, mimeType } })
+  }
+
+  async function confirmPendingFileSend() {
+    const pending = dialog
+    if (!pending || pending.kind !== "file-confirm") return
+    closeDialog()
+    if (pending.image) {
+      await sendImage(pending.image.bytes, pending.image.mimeType)
+    } else {
+      await sendFilesDirect(pending.paths)
+    }
   }
 
   async function sendFile(filePath: string) {
@@ -931,20 +1050,6 @@ export function useChatActions(deps: ChatActionsDeps) {
     finally { finishDialogAction(action) }
   }
 
-  async function removeSelectedPeer() {
-    const peer = peers.find((item) => item.peer_id === selectedPeerId)
-    if (!peer) return
-    if (peer.is_online) { showStatus("Disconnect from this peer before removing it."); return }
-    try {
-      const response = await ipc.send("remove_peer", { peer_id: peer.peer_id })
-      if (response.error) throw new Error(response.error)
-      const remaining = peers.filter((item) => item.peer_id !== peer.peer_id)
-      setPeers(remaining)
-      setSelection(remaining[0] ? { kind: "peer", id: remaining[0].peer_id } : groups[0] ? { kind: "group", id: groups[0].group_id } : undefined)
-      showStatus(`Removed ${peer.display_name} from the peer list.`)
-    } catch (error) { if (!backendDisconnectedRef.current) setStatus(`Remove error: ${error instanceof Error ? error.message : String(error)}`) }
-  }
-
   async function send(replyToMessageId?: string): Promise<boolean> {
     const composer = composerRef.current
     // Picked mentions display as `@Display Name`; convert spans back to tokens.
@@ -971,7 +1076,9 @@ export function useChatActions(deps: ChatActionsDeps) {
         content, created_at: Date.now() / 1000, delivered: 0, queued: queued ? 1 : 0, reply_to_message_id: replyToMessageId,
       }])
       if (composer && composer === composerRef.current) { composer.selectAll(); composer.deleteSelection() }
-      setDrafts((c) => ({ ...c, [selectionKey]: "" }))
+      setDrafts((current) => updateBoundedEntry(
+        current, selectionKey, "", MAX_DRAFT_ENTRIES,
+      ))
       setDraftLength(0)
       setComposerHeight(MIN_COMPOSER_HEIGHT)
       showStatus(selection.kind === "group" ? `Group message sent: ${groupDeliveryLabel(response.deliveries as GroupDelivery[])}.`
@@ -988,6 +1095,16 @@ export function useChatActions(deps: ChatActionsDeps) {
     } finally { setIsSending(false) }
   }
 
+  function saveUpdateChannel(channel: UpdateChannel) {
+    try {
+      persistUpdateChannel(channel)
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : String(error))
+      return
+    }
+    void checkForUpdatesFromAbout()
+  }
+
   function runCommand(command: string) {
     if (command === "dnd") {
       toggleDnd()
@@ -998,14 +1115,15 @@ export function useChatActions(deps: ChatActionsDeps) {
       showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft,
       setRenameDialog: () => showDialog({ kind: "rename" }),
        loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms,
+       openFriendsInbox,
     })
   }
 
   return {
     showStatus, showCopyToast,
-    refreshPeers, refreshGroups, refreshGroupMembers, refreshFiles,
+    refreshPeers, refreshGroups, refreshGroupMembers, refreshFiles, refreshFriendRequestsSilent, openFriendsInbox,
     closeDialog, showDialog, goBack,
-    installUpdate, saveUpdateToken, restartUpdate, checkForUpdatesFromAbout,
+    installUpdate, saveUpdateToken, restartUpdate, checkForUpdatesFromAbout, saveUpdateChannel,
     loadControlStatus, configureControl, dismissControlSetup,
     loadAdvancedConfig, saveAdvancedConfig,
     loadRooms, createRoom, joinRoom, leaveRoom, loadRoomInvite,
@@ -1014,9 +1132,9 @@ export function useChatActions(deps: ChatActionsDeps) {
     loadFriendRequests, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer,
     loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest,
     reStun, loadDebugInfo, loadFiles,
-    sendFile, sendImage, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
+    sendFile, sendFilesDirect, sendImage, requestFileSend, requestImageSend, confirmPendingFileSend, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
     saveDisplayName, setAccessibilityFlashing, saveDndEnabled, toggleDnd,
     testNotificationDelivery, confirmNotificationDelivery, disableNotifications, toggleNotificationEvent,
-    removeSelectedPeer, send, runCommand,
+    send, runCommand,
   }
 }

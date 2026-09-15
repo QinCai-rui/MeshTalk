@@ -4,14 +4,6 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    branches:
-      - main
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - closed
   workflow_dispatch:
 
 concurrency:
@@ -23,11 +15,12 @@ env:
 
 jobs:
   changes:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged && github.event.pull_request.base.ref == 'main') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       client: ${{ steps.filter.outputs.client }}
       control: ${{ steps.filter.outputs.control }}
+      analytics: ${{ steps.filter.outputs.analytics }}
       build_matrix: ${{ steps.set-matrix.outputs.matrix }}
       merge_matrix: ${{ steps.set-matrix.outputs.merge_matrix }}
     steps:
@@ -57,6 +50,8 @@ jobs:
               - 'package.json'
               - 'bun.lock*'
               - '.dockerignore'
+            analytics:
+              - 'analytics/**'
 
       - name: Set build matrix
         id: set-matrix
@@ -70,6 +65,8 @@ jobs:
             MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"control"}]')
             BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"client","dockerfile":"Dockerfile.client","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"client","dockerfile":"Dockerfile.client","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
             MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"client"}]')
+            BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
+            MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"analytics"}]')
           else
             if [ "${{ steps.filter.outputs.control }}" = "true" ]; then
               BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"control","dockerfile":"Dockerfile.control","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"control","dockerfile":"Dockerfile.control","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
@@ -79,6 +76,11 @@ jobs:
             if [ "${{ steps.filter.outputs.client }}" = "true" ]; then
               BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"client","dockerfile":"Dockerfile.client","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"client","dockerfile":"Dockerfile.client","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
               MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"client"}]')
+            fi
+
+            if [ "${{ steps.filter.outputs.analytics }}" = "true" ]; then
+              BUILD=$(echo "$BUILD" | jq -c '. + [{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/amd64","runner":"ubuntu-latest","slug":"amd64"},{"component":"analytics","dockerfile":"analytics/Dockerfile","platform":"linux/arm64","runner":"ubuntu-24.04-arm","slug":"arm64"}]')
+              MERGE=$(echo "$MERGE" | jq -c '. + [{"component":"analytics"}]')
             fi
           fi
 
@@ -155,7 +157,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |

@@ -28,6 +28,7 @@ from .ipc import IPCServer
 from .protocol import Packet, PacketType, capability_for_packet
 from .rendezvous import RendezvousService
 from .settings import Settings
+from .analytics import Analytics
 
 logger = logging.getLogger("meshtalk")
 
@@ -56,16 +57,17 @@ async def main(debug: bool = False) -> None:
     db = Database(DATA_DIR / "meshtalk.db", identity.storage_key())
     await db.connect()
     settings = Settings(DATA_DIR / "settings.json")
+    analytics = Analytics(DATA_DIR / "settings.json")
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
     peer_manager.dnd_enabled = settings.dnd_enabled
     friend_manager = FriendManager(identity, peer_manager, db)
     group_router = GroupRouter(identity, peer_manager, db, settings)
     router = MessageRouter(
-        identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router
+        identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router, analytics=analytics
     )
     typing_router = TypingRouter(identity, peer_manager, db, settings, friend_manager)
-    file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings)
+    file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings, analytics=analytics)
     tui_clients: set[str] = set()
     typing_clients: dict[tuple[str, str], set[str]] = {}
 
@@ -157,6 +159,13 @@ async def main(debug: bool = False) -> None:
                 **peer.negotiated(),
             })
         if peer is not None:
+            transport = peer_manager.get_network_info(peer_id).get("active_transport")
+            if transport == "lan_tcp":
+                analytics.incr("transport.lan_ok")
+            elif transport == "remote_udp":
+                analytics.incr("transport.udp_ok")
+            elif transport == "remote_derp":
+                analytics.incr("transport.relay_fallback")
             await group_router.peer_connected(peer_id)
             await flush_outgoing(peer_id)
 
@@ -509,6 +518,14 @@ async def main(debug: bool = False) -> None:
                 settings.set_splash_style(splash_style)
             except ValueError as exc:
                 return {"error": str(exc)}
+        if "confirm_file_send" in req:
+            confirm_file_send = req["confirm_file_send"]
+            if not isinstance(confirm_file_send, bool):
+                return {"error": "confirm_file_send must be a boolean"}
+            try:
+                settings.set_confirm_file_send(confirm_file_send)
+            except ValueError as exc:
+                return {"error": str(exc)}
         if req.get("clear_control_pinned_ip") is True:
             settings.clear_control_pinned_ips()
             changed = True
@@ -560,17 +577,32 @@ async def main(debug: bool = False) -> None:
             "control_url": settings.control_url or None,
             "stun_server": f"{stun_host}:{stun_port}",
             "image_protocol": settings.image_protocol,
+            "confirm_file_send": settings.confirm_file_send,
             "splash_style": settings.splash_style,
             "splash_duration_ms": settings.splash_duration_ms,
             "splash_phase_ms": settings.splash_phase_ms,
             "splash_welcome_ms": settings.splash_welcome_ms,
+            "analytics_level": settings.analytics_level,
         }
+
+    async def handle_analytics(req: dict) -> dict:
+        if "level" in req or "analytics_level" in req:
+            level = req.get("level", req.get("analytics_level"))
+            if not isinstance(level, str):
+                return {"error": "analytics level must be a string"}
+            try:
+                settings.set_analytics_level(level)
+            except ValueError as exc:
+                return {"error": str(exc)}
+        return {"analytics_level": settings.analytics_level}
 
     async def handle_room_create(req: dict) -> dict:
         name = req.get("name")
         if name is not None and not isinstance(name, str):
             return {"error": "name must be a string"}
         room = settings.create_room(name)
+        analytics.incr("room.created")
+        if room.group_name: analytics.incr("group.created")
         await group_router.sync_groups()
         if room.group_name:
             await group_router.record_local_join(room.id)
@@ -587,6 +619,7 @@ async def main(debug: bool = False) -> None:
         if not isinstance(invite, str):
             return {"error": "invite required"}
         room = settings.join_room(invite)
+        analytics.incr("room.joined")
         await group_router.sync_groups()
         if room.group_name:
             await group_router.record_local_join(room.id)
@@ -784,6 +817,8 @@ async def main(debug: bool = False) -> None:
             return {"error": "recipient_id required"}
         if not isinstance(file_path, str) or not file_path:
             return {"error": "file_path required"}
+        if await db.is_peer_blocked(recipient_id):
+            return {"error": "This peer is blocked; unblock them to send files"}
         try:
             file_id = await file_manager.send_file(recipient_id, file_path)
         except ValueError as exc:
@@ -792,6 +827,19 @@ async def main(debug: bool = False) -> None:
             logger.exception("file_send failed")
             return {"error": str(exc)}
         return {"file_id": file_id}
+
+    async def handle_file_retry(req: dict) -> dict:
+        file_id = req.get("file_id")
+        if not isinstance(file_id, str) or not file_id:
+            return {"error": "file_id required"}
+        try:
+            retried = await file_manager.retry_file(file_id)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            logger.exception("file_retry failed")
+            return {"error": str(exc)}
+        return {"file_id": retried}
 
     async def handle_group_file_send(req: dict) -> dict:
         group_id = req.get("group_id")
@@ -902,6 +950,7 @@ async def main(debug: bool = False) -> None:
         "set_display_name": handle_set_display_name,
         "control": handle_control,
         "advanced_config": handle_advanced_config,
+        "analytics": handle_analytics,
         "room_create": handle_room_create,
         "room_join": handle_room_join,
         "room_leave": handle_room_leave,
@@ -920,6 +969,7 @@ async def main(debug: bool = False) -> None:
         "debug_re_stun": handle_debug_re_stun,
         "debug_info": handle_debug_info,
         "file_send": handle_file_send,
+        "file_retry": handle_file_retry,
         "group_file_send": handle_group_file_send,
         "files": handle_files,
         "file_info": handle_file_info,
@@ -969,9 +1019,24 @@ async def main(debug: bool = False) -> None:
 
     asyncio.create_task(periodic_cleanup())
 
+    async def periodic_analytics() -> None:
+        while True:
+            await asyncio.sleep(3600)
+            try:
+                await analytics.flush()
+            except Exception:
+                pass
+    analytics_task = asyncio.create_task(periodic_analytics())
+
     try:
         await stop_event.wait()
     finally:
+        analytics_task.cancel()
+        # Analytics must never delay shutdown: best-effort flush with a short timeout.
+        try:
+            await asyncio.wait_for(analytics.flush(), timeout=1.5)
+        except Exception:
+            pass
         await ipc.stop()
         await rendezvous.stop()
         await peer_manager.stop()

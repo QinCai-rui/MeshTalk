@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Validate review citations and one-click suggestions against a PR diff."""
+
+import argparse
+import ast
+import json
+import re
+import subprocess
+from pathlib import Path
+
+
+SUGGESTIONS = re.compile(r"```suggestions-json\s*(.*?)\s*```", re.DOTALL)
+# Only recognize path-like citations, avoiding ordinary prose such as "HTTP: 422".
+CITATION = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*[\w.-]+):(\d+)(?:-(\d+))?")
+SEVERITY = re.compile(r"\b(?:blocking|should-fix|nit|discussion)\b", re.IGNORECASE)
+SEVERITY_LABEL = re.compile(r"\*\*\s*(blocking|should-fix|nit|discussion)\b|\[(blocking|should-fix|nit|discussion)\]", re.IGNORECASE)
+BOLD_SEVERITY_HEADING = re.compile(
+    r"^\s*\*\*(?:blocking(?:\s*/\s*should-fix)?|should-fix|nit|needs\s+discussion(?:\s*/\s*residual\s+risk)?)\s*:?\*\*\s*$",
+    re.IGNORECASE,
+)
+NON_FINDING = re.compile(
+    r"^(?:no\b|none\b|notes?\b.*\bnon[- ]blocking\b|posted inline;\s*see the diff\.$)",
+    re.IGNORECASE,
+)
+CATEGORIES = {
+    "Functional Correctness",
+    "Security",
+    "Performance",
+    "Design",
+    "Testing",
+}
+SEVERITIES = {"Blocking", "Should-fix", "Nit", "Discussion"}
+EFFORTS = {"Trivial", "Moderate", "Significant"}
+
+
+def fail(errors: list[str], errors_path: Path) -> None:
+    errors_path.write_text("\n".join(errors) + "\n")
+    raise SystemExit(1)
+
+
+def parse_diff(diff_path: Path) -> tuple[dict[str, set[int]], dict[tuple[str, int], str]]:
+    added: dict[str, set[int]] = {}
+    content: dict[tuple[str, int], str] = {}
+    path: str | None = None
+    new_line: int | None = None
+    for raw in diff_path.read_text().splitlines():
+        match = re.match(r"diff --git a/(.*) b/(.*)", raw)
+        if match:
+            path = match.group(2)
+            added.setdefault(path, set())
+            new_line = None
+            continue
+        match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
+        if match:
+            new_line = int(match.group(1))
+            continue
+        if path is None or new_line is None:
+            continue
+        if raw.startswith("+") and not raw.startswith("+++"):
+            added[path].add(new_line)
+            content[path, new_line] = raw[1:]
+            new_line += 1
+        elif raw.startswith("-") and not raw.startswith("---"):
+            continue
+        elif not raw.startswith("\\"):
+            new_line += 1
+    return added, content
+
+
+def safe_path(path: str) -> bool:
+    return bool(path) and not path.startswith("/") and ".." not in Path(path).parts
+
+
+def syntax_error(path: str, source: str) -> str | None:
+    suffix = Path(path).suffix.lower()
+    try:
+        if suffix == ".py":
+            ast.parse(source, filename=path)
+        elif suffix == ".json":
+            json.loads(source)
+        elif suffix in {".sh", ".bash"}:
+            completed = subprocess.run(
+                ["bash", "-n"], input=source, text=True, capture_output=True, check=False
+            )
+            if completed.returncode:
+                return completed.stderr.strip() or "bash -n failed"
+    except (SyntaxError, ValueError) as error:
+        return str(error)
+    return None
+
+
+def is_heading(line: str) -> bool:
+    return bool(re.match(r"^\s{0,3}#{1,6}\s+", line) or BOLD_SEVERITY_HEADING.match(line))
+
+
+def is_severity_heading(line: str) -> bool:
+    return bool(
+        re.match(r"^\s{0,3}#{1,6}\s+", line)
+        and SEVERITY.search(line)
+        or BOLD_SEVERITY_HEADING.match(line)
+    )
+
+
+def block_is_non_finding(block: list[str]) -> bool:
+    for line in block:
+        if line.strip() and not is_severity_heading(line):
+            return bool(NON_FINDING.match(line.strip()))
+    return False
+
+
+def has_severity_label(block: str) -> bool:
+    # Only treat severity as a finding when used as an explicit label
+    # (bold/bracket label or line-leading label), not prose mentions
+    # such as "no blocking defects".
+    if SEVERITY_LABEL.search(block):
+        return True
+    for line in block.splitlines():
+        cleaned = re.sub(r"^\s*(?:#{1,6}\s*|(?:[-*]|\d+[.)])\s*|>\s*)*", "", line)
+        cleaned = re.sub(r"^[\*_`\[\(\s]+", "", cleaned)
+        if re.match(r"(?i)(blocking|should-fix|nit|discussion)\b\s*(?:[:/\-\]]|$)", cleaned):
+            return True
+    return False
+
+
+def review_blocks(review: str) -> list[list[str]]:
+    # Group by blank lines so a finding heading stays with its
+    # supporting bullets instead of fragmenting on every bullet.
+    blocks: list[list[str]] = []
+    for section in re.split(r"\n\s*\n", review):
+        lines = [line for line in section.splitlines() if line.strip()]
+        if lines:
+            blocks.append(lines)
+    return blocks
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--diff", required=True, type=Path)
+    parser.add_argument("--head-dir", required=True, type=Path)
+    parser.add_argument("--review", required=True, type=Path)
+    parser.add_argument("--suggestions", required=True, type=Path)
+    parser.add_argument("--errors", required=True, type=Path)
+    parser.add_argument("--required-suggestions", type=Path)
+    args = parser.parse_args()
+
+    added, diff_content = parse_diff(args.diff)
+    review = args.review.read_text()
+    errors: list[str] = []
+
+    human_review = review.split("```suggestions-json", 1)[0]
+    required_sections = (
+        "Verdict:",
+        "## Summary",
+        "### Nit",
+        "### Discussion",
+        "## Verification",
+        "**Ran by workflow**",
+        "**Ran by reviewer**",
+        "**Suggested (not run)**",
+    )
+    for section in required_sections:
+        if section not in human_review:
+            errors.append(f"Review is missing required section or label: {section}")
+    inherited_severity = False
+    for block_lines in review_blocks(human_review):
+        # Markdown severity headings (e.g. "### should-fix") apply to the
+        # following prose/bullets. Bold section labels (e.g. "**Blocking**")
+        # are skipped without inheriting, to avoid flagging "Tests:" prose.
+        if len(block_lines) == 1 and is_severity_heading(block_lines[0]):
+            if re.match(r"^\s{0,3}#{1,6}\s+", block_lines[0]):
+                inherited_severity = True
+            continue
+        # Other headings end the severity section.
+        if len(block_lines) == 1 and is_heading(block_lines[0]):
+            inherited_severity = False
+            continue
+        block = " ".join(block_lines)
+        if block_is_non_finding(block_lines):
+            continue
+        requires_citation = has_severity_label(block) or inherited_severity
+        citations = CITATION.findall(block)
+        changed_citations = []
+        invalid_citations = []
+        for path, start, end in citations:
+            end_line = int(end or start)
+            if path not in added:
+                # Avoid treating ordinary prose such as "HTTP: 422" as a citation.
+                if "/" in path or "." in path:
+                    invalid_citations.append((path, start, end, "missing"))
+                continue
+            invalid = [line for line in range(int(start), end_line + 1) if line not in added[path]]
+            if invalid:
+                invalid_citations.append((path, start, end, "context"))
+            else:
+                changed_citations.append((path, start, end))
+
+        if requires_citation and not changed_citations and not citations:
+            errors.append("Each severity-tagged finding must include an exact changed path:line citation.")
+        # A finding's primary changed-line citation is authoritative. Supporting
+        # references may point at unchanged context without invalidating the review.
+        if not changed_citations:
+            for path, start, end, _reason in invalid_citations:
+                if _reason == "missing":
+                    errors.append(f"Citation {path}:{start} does not name a file changed by this PR.")
+                else:
+                    errors.append(
+                        f"Citation {path}:{start}{'-' + end if end else ''} is not entirely on added PR lines."
+                    )
+
+    blocks = SUGGESTIONS.findall(review)
+    if len(blocks) != 1:
+        errors.append("Return exactly one suggestions-json block.")
+        fail(errors, args.errors)
+    try:
+        suggestions = json.loads(blocks[0])
+        if not isinstance(suggestions, list):
+            raise ValueError("must be a JSON array")
+    except (json.JSONDecodeError, ValueError) as error:
+        errors.append(f"The suggestions-json block is invalid: {error}.")
+        fail(errors, args.errors)
+
+    required: list[dict] = []
+    if args.required_suggestions and args.required_suggestions.exists():
+        try:
+            required = json.loads(args.required_suggestions.read_text())
+            if not isinstance(required, list):
+                raise ValueError("must be a JSON array")
+        except (json.JSONDecodeError, ValueError) as error:
+            errors.append(f"The required suggestions file is invalid: {error}.")
+            fail(errors, args.errors)
+
+    valid: list[tuple[dict, bool]] = []
+    for index, suggestion in enumerate([*suggestions, *required]):
+        is_required = index >= len(suggestions)
+        label = f"Suggestion {index + 1}"
+        if not isinstance(suggestion, dict):
+            errors.append(f"{label} is not an object.")
+            continue
+        path = suggestion.get("path")
+        line = suggestion.get("line")
+        replacement = suggestion.get("suggestion")
+        end_line = suggestion.get("end_line", line)
+        if not isinstance(path, str) or not safe_path(path):
+            errors.append(f"{label} has an unsafe or missing repo-relative path.")
+            continue
+        if not isinstance(line, int) or isinstance(line, bool):
+            errors.append(f"{label} has no integer new-file line.")
+            continue
+        if not isinstance(end_line, int) or isinstance(end_line, bool) or end_line < line:
+            errors.append(f"{label} has an invalid end_line.")
+            continue
+        if replacement is not None and (
+            not isinstance(replacement, str) or not replacement.strip()
+        ):
+            errors.append(f"{label} has an empty replacement.")
+            continue
+        comment = suggestion.get("comment")
+        if replacement is None and (
+            not isinstance(comment, str) or not comment.strip()
+        ):
+            errors.append(f"{label} has no finding text for its inline note.")
+            continue
+        if not isinstance(comment, str) or not all(
+            marker in comment for marker in ("What:", "Why it matters:", "Fix:")
+        ):
+            errors.append(
+                f"{label} comment must contain What:, Why it matters:, and Fix:."
+            )
+            continue
+        if suggestion.get("category") not in CATEGORIES:
+            errors.append(
+                f"{label} has an invalid category; use one of: "
+                + ", ".join(sorted(CATEGORIES))
+                + "."
+            )
+            continue
+        if suggestion.get("severity") not in SEVERITIES:
+            errors.append(
+                f"{label} has severity {suggestion.get('severity')!r}; inline items "
+                "must be Blocking, Should-fix, Nit, or Discussion."
+            )
+            continue
+        if suggestion.get("effort") not in EFFORTS:
+            errors.append(
+                f"{label} has an invalid effort; use one of: "
+                + ", ".join(sorted(EFFORTS))
+                + "."
+            )
+            continue
+        if path not in added or any(n not in added[path] for n in range(line, end_line + 1)):
+            errors.append(f"{label} targets {path}:{line}-{end_line}, outside added PR lines.")
+            continue
+        if replacement is None:
+            # Inline note: no replacement to apply, line checks above suffice.
+            valid.append((suggestion, is_required))
+            continue
+        head_path = args.head_dir / path
+        if not head_path.is_file():
+            errors.append(f"{label} cannot be checked because PR-head file {path} is unavailable.")
+            continue
+        source_lines = head_path.read_text().splitlines(keepends=True)
+        if end_line > len(source_lines):
+            errors.append(f"{label} targets past the end of {path}.")
+            continue
+        expected = [diff_content[path, n] for n in range(line, end_line + 1)]
+        actual = [line_text.rstrip("\r\n") for line_text in source_lines[line - 1:end_line]]
+        if actual != expected:
+            errors.append(f"{label} no longer matches PR-head source at {path}:{line}-{end_line}.")
+            continue
+        replacement_lines = replacement.splitlines(keepends=True)
+        if replacement_lines and not replacement_lines[-1].endswith(("\n", "\r")):
+            replacement_lines[-1] += "\n" if source_lines[end_line - 1].endswith("\n") else ""
+        patched = source_lines[:line - 1] + replacement_lines + source_lines[end_line:]
+        syntax = syntax_error(path, "".join(patched))
+        if syntax:
+            errors.append(f"{label} fails a syntax check after applying to {path}: {syntax}")
+            continue
+        valid.append((suggestion, is_required))
+
+    if errors:
+        fail(errors, args.errors)
+    deduplicated: list[dict] = []
+    seen: set[tuple[object, ...]] = set()
+    for suggestion, is_required in valid:
+        key = (
+            suggestion.get("path"), suggestion.get("line"), suggestion.get("end_line"),
+            suggestion.get("severity"), suggestion.get("comment"), suggestion.get("suggestion"),
+        )
+        if not is_required or key not in seen:
+            seen.add(key)
+            deduplicated.append(suggestion)
+    args.suggestions.write_text(json.dumps(deduplicated, separators=(",", ":")) + "\n")
+
+
+if __name__ == "__main__":
+    main()

@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, TYPE_CHECKING
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -31,18 +31,21 @@ from .protocol import (
     PacketType,
 )
 from .group_router import GroupRouter
+if TYPE_CHECKING:
+    from .analytics import Analytics
 
 logger = logging.getLogger(__name__)
 MAX_MESSAGE_CONTENT_SIZE = 30 * 1024
 
 
 class MessageRouter:
-    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None, friend_manager: FriendManager | None = None, group_router: GroupRouter | None = None) -> None:
+    def __init__(self, identity: Identity, peer_manager: PeerManager, db: Database, on_received: Callable[[dict], Awaitable[None]] | None = None, on_delivered: Callable[[str], Awaitable[None]] | None = None, friend_manager: FriendManager | None = None, group_router: GroupRouter | None = None, analytics: "Analytics | None" = None) -> None:
         self.identity, self.peer_manager, self.db = identity, peer_manager, db
         self.on_received = on_received
         self.on_delivered = on_delivered
         self.friend_manager = friend_manager or FriendManager(identity, peer_manager, db)
         self.group_router = group_router
+        self.analytics = analytics
 
     async def send_message(self, recipient_id: str, plaintext: bytes, reply_to_message_id: str | None = None) -> tuple[str, bool]:
         if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:

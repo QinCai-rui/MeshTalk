@@ -24,6 +24,7 @@ function props(files: FileTransfer[]): ComponentProps<typeof FileListDialogConte
     loadFilesDir: noop,
     setDialogDraft: noop,
     showDialog: noop,
+    closeDialog: noop,
     defaultDownloadPath: filename => join(tmpdir(), `copy-${filename}`),
   }
 }

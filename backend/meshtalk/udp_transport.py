@@ -234,6 +234,42 @@ class UdpTransport:
         session = self._sessions.get(peer_id)
         return session.endpoint if session and session.confirmed else None
 
+    def active_session_id(self, peer_id: str) -> bytes | None:
+        """Return the session id of the current active session for a peer, if any."""
+        session = self._sessions.get(peer_id)
+        return session.session_id if session else None
+
+    async def _dispatch_connected(self, session: Session) -> None:
+        """Invoke on_connected only if the session is still the active one.
+
+        Guards against the relay->direct handoff race where a stale async
+        callback could otherwise overwrite the newer route in PeerManager.
+        """
+        current = self._sessions.get(session.peer_id)
+        if current is not session:
+            logger.debug("Skipping stale UDP connected callback for %s", session.peer_id)
+            return
+        try:
+            await self.on_connected(
+                session.peer_id,
+                session.endpoint[0],
+                session.endpoint[1],
+                session.display_name,
+                session.encryption_public_key,
+                session.signing_public_key,
+                session.via_relay,
+                session.session_id,
+            )
+        except Exception:
+            logger.exception("on_connected callback failed for %s", session.peer_id)
+
+    async def _dispatch_disconnected(self, peer_id: str, session_id: bytes) -> None:
+        """Invoke on_disconnected with peer context on failure."""
+        try:
+            await self.on_disconnected(peer_id, session_id)
+        except Exception:
+            logger.exception("on_disconnected callback failed for %s", peer_id)
+
     def configure_derp(self, sender: DerpSender | None, server_enabled: bool = True) -> None:
         self.relay_enabled = server_enabled
         self._derp_sender = sender if self.relay_enabled else None
@@ -643,16 +679,16 @@ class UdpTransport:
                 self._send_authenticated(session, READY, 0)
             if not session.connected_notified:
                 session.connected_notified = True
-                self._spawn(self.on_connected(
-                    session.peer_id,
-                    session.endpoint[0],
-                    session.endpoint[1],
-                    session.display_name,
-                    session.encryption_public_key,
-                    session.signing_public_key,
-                    session.via_relay,
-                    session.session_id,
-                ))
+                # Spawn-time freshness check: skip callbacks for sessions that
+                # are no longer active (e.g. a retired relay route). An
+                # execution-time check in _dispatch_connected covers the async
+                # race where promotion happens after scheduling.
+                if self._sessions.get(session.peer_id) is not session:
+                    logger.debug(
+                        "Dropping connected callback for retired session %s", session.peer_id
+                    )
+                else:
+                    self._spawn(self._dispatch_connected(session))
             return
         if not session.confirmed:
             raise ValueError("UDP session is not confirmed")
@@ -663,7 +699,7 @@ class UdpTransport:
             active = self._sessions.get(session.peer_id) is session
             self._remove_session(session)
             if active:
-                self._spawn(self.on_disconnected(session.peer_id, session.session_id))
+                self._spawn(self._dispatch_disconnected(session.peer_id, session.session_id))
 
     def _send_authenticated(self, session: Session, message_type: int, token: int) -> None:
         header = AUTH_HEADER.pack(MAGIC, message_type, session.session_id, token)
@@ -736,6 +772,17 @@ class UdpTransport:
             for session, expires_at in list(self._retiring_sessions.values()):
                 if now >= expires_at:
                     self._remove_session(session)
+                    # Disconnect-aware retiring cleanup: if PeerManager still
+                    # references this retired route (stale relay object), notify
+                    # so a force-killed peer does not stay online. PeerManager
+                    # ignores the notification when a live replacement exists
+                    # (identity check), so this is safe during handoff.
+                    try:
+                        await self.on_disconnected(session.peer_id, session.session_id)
+                    except Exception:
+                        logger.exception(
+                            "on_disconnected callback failed for %s", session.peer_id
+                        )
                     continue
                 session.seen = {
                     message_id: seen_at for message_id, seen_at in session.seen.items()

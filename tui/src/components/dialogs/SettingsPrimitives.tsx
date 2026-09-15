@@ -22,13 +22,14 @@ export function SettingsScreen({ breadcrumb, description, dialogHeight, children
   </box>
 }
 
-export function SettingsMenu({ dialogHeight, headerRows = 3, options, onSelect, selectedIndex }: { dialogHeight: number; headerRows?: number; options: MouseSelectOption[]; onSelect: (option: MouseSelectOption) => void; selectedIndex?: number }) {
+export function SettingsMenu({ dialogHeight, headerRows = 3, options, onSelect, selectedIndex, marqueeNames, descriptionMode }: { dialogHeight: number; headerRows?: number; options: MouseSelectOption[]; onSelect: (option: MouseSelectOption) => void; selectedIndex?: number; marqueeNames?: boolean; descriptionMode?: "row" | "panel" | "hidden" }) {
   return <MouseSelect
     focused
     height={Math.max(4, dialogHeight - headerRows - 8)}
     options={options}
     selectedIndex={selectedIndex}
-    descriptionMode="panel"
+    marqueeNames={marqueeNames}
+    descriptionMode={descriptionMode ?? "panel"}
     onSelect={(_, option) => { if (option) onSelect(option) }}
     wrapSelection
   />

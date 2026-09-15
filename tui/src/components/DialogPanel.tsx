@@ -6,14 +6,20 @@ import { MouseSelect } from "./MouseSelect"
 import { MarqueeText } from "./MarqueeText"
 import { NotificationDialogs } from "./dialogs/NotificationDialogs"
 import { AboutDialog, SettingsLanding, UpdateDestinationDialog, UpdateDialog, UpdateTokenDialog } from "./dialogs/CommandDialogs"
+import { readUpdateChannel, type UpdateChannel } from "../../../common/updater"
 import { SettingsConfirm, SettingsField, SettingsMenu, SettingsNotice, SettingsScreen, SettingsSummary } from "./dialogs/SettingsPrimitives"
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useKeyboard } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
-import { isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
-import { ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
+import { addablePeers, isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
+import { statSync } from "fs"
+import { detectImageFormat, ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 import { chatTheme as theme } from "../chatTheme"
+import { fileConfirmImageBounds, fileTypeLabel, formatFileSize } from "../fileSendConfirm"
 import { SettingsPanel, usesSettingsPanel } from "./dialogs/SettingsPanel"
+import { isUpdaterDialog } from "../navigation"
+import { readLevel, writeLevel, markPrompted, type AnalyticsLevel } from "../../../common/analytics"
+import { APP_RELEASE_VERSION } from "../SplashScreen"
 import { ControlDialogContent, ControlCustomDialogContent, ControlStatusDialogContent, AdvancedDialogContent, CustomisationDialogContent, SplashStyleDialogContent, ImageProtocolDialogContent, IpPinningDialogContent, AdvancedControlDialogContent, AdvancedStunDialogContent, AdvancedControlIpDialogContent, AdvancedStunIpDialogContent } from "./dialogs/PreferenceDialogs"
 
 type DialogPanelProps = {
@@ -38,6 +44,7 @@ type DialogPanelProps = {
   selected: Peer | undefined
   selectedGroupId: string | undefined
   selection: { kind: "peer" | "group"; id: string } | undefined
+  friendRequests?: FriendRequest[]
   dialogWidthFor: (kind: Dialog["kind"]) => number
   appReleaseVersion: string
   isReleaseBuild: boolean
@@ -85,6 +92,7 @@ type DialogPanelProps = {
   loadFilesDir: () => void
   setFilesDir: (path: string) => void
   sendFile: (filePath: string) => void
+  confirmPendingFileSend: () => void
   downloadFile: (fileId: string, destPath: string) => void
   defaultDownloadPath: (filename: string) => string
   onDeleteFile?: (file: FileTransfer) => void
@@ -96,27 +104,33 @@ type DialogPanelProps = {
 
   saveDisplayName: (value?: string) => void
   checkForUpdatesFromAbout: () => void
+  saveUpdateChannel: (channel: UpdateChannel) => void
   installUpdate: (release: Release, destination?: string) => void
   saveUpdateToken: (release: Release | undefined, destination: string | undefined, token: string) => void
   restartUpdate: (installDir: string) => void
 }
 
 export function DialogPanel(props: DialogPanelProps) {
-  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, dndEnabled = false, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
+  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, dialogDraft, controlStatus, debugInfo, flashingEnabled, imageProtocol, splashStyle, groups, identity, mutedPeers, dndEnabled = false, notificationPreferences, notificationTestDelivery, peers, selected, selectedGroupId, selection, friendRequests = [], dialogWidthFor, appReleaseVersion, isReleaseBuild } = props
   const { runCommand, showDialog, closeDialog, goBack, setDialogDraft, setDialogError, setNameDraft } = props
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
   const { mutePeer, unmutePeer, muteGroup, unmuteGroup, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
-  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, downloadFile, defaultDownloadPath, onDeleteFile } = props
+  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, confirmPendingFileSend, downloadFile, defaultDownloadPath, onDeleteFile } = props
   const { testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent } = props
-  const { saveDisplayName, checkForUpdatesFromAbout, installUpdate, saveUpdateToken, restartUpdate } = props
+  const { saveDisplayName, checkForUpdatesFromAbout, saveUpdateChannel, installUpdate, saveUpdateToken, restartUpdate } = props
 
   if (!dialog) return null
   const fileManagerOpen = dialog.kind === "file-list"
+  const dismissible = !dialogBusy && !("firstRun" in dialog && dialog.firstRun) && !isUpdaterDialog(dialog)
+  const dismissOnOverlay = (event: { button?: number }) => {
+    if (event.button !== undefined && event.button !== 0) return
+    if (dismissible) closeDialog()
+  }
 
   const content = <>
       {dialog.kind === "settings" && <SettingsLanding dialogHeight={dialogHeight} />}
-      {dialog.kind === "about" && <AboutDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} isReleaseBuild={isReleaseBuild} checkForUpdates={checkForUpdatesFromAbout} />}
+      {dialog.kind === "about" && <AboutDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} isReleaseBuild={isReleaseBuild} checkForUpdates={checkForUpdatesFromAbout} updateChannel={readUpdateChannel()} saveUpdateChannel={saveUpdateChannel} />}
       {dialog.kind === "update" && <UpdateDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} closeDialog={closeDialog} installing={dialogBusy} installUpdate={installUpdate} restartUpdate={restartUpdate} chooseUpdateDestination={(release) => { setDialogError(""); setDialogDraft(""); showDialog({ kind: "update-directory", release }) }} />}
       {dialog.kind === "update-directory" && <UpdateDestinationDialog dialog={dialog} dialogHeight={dialogHeight} dialogError={dialogError} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} installUpdate={installUpdate} />}
       {dialog.kind === "update-token" && <UpdateTokenDialog dialog={dialog} dialogHeight={dialogHeight} dialogError={dialogError} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} saveUpdateToken={saveUpdateToken} />}
@@ -145,7 +159,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "remove-friend" && <RemoveFriendDialogContent dialog={dialog} dialogHeight={dialogHeight} unfriendPeer={unfriendPeer} showDialog={showDialog} />}
       {dialog.kind === "friend-requests" && <FriendRequestsDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "friend-request-incoming" && <FriendRequestIncomingDialogContent dialog={dialog} dialogHeight={dialogHeight} blockSenderFromRequest={blockSenderFromRequest} respondToFriendRequest={respondToFriendRequest} />}
-      {dialog.kind === "friends" && <FriendsDialogContent dialogHeight={dialogHeight} loadBlockedPeers={loadBlockedPeers} runCommand={runCommand} showDialog={showDialog} />}
+      {dialog.kind === "friends" && <FriendsDialogContent dialogHeight={dialogHeight} peers={peers} identity={identity} friendRequests={friendRequests} loadBlockedPeers={loadBlockedPeers} showDialog={showDialog} unblockPeer={unblockPeer} />}
       {["notification-enable", "notification-confirm", "notification-fallback", "notifications", "notification-settings", "notification-peer"].includes(dialog.kind) && <NotificationDialogs dialog={dialog as Extract<Dialog, { kind: "notification-enable" | "notification-confirm" | "notification-fallback" | "notifications" | "notification-settings" | "notification-peer" }>} dialogBusy={dialogBusy} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} identity={identity} mutedPeers={mutedPeers} dndEnabled={dndEnabled} notificationPreferences={notificationPreferences} notificationTestDelivery={notificationTestDelivery} peers={peers} selectedPeerId={selected?.peer_id} showDialog={showDialog} testNotificationDelivery={testNotificationDelivery} disableNotifications={disableNotifications} confirmNotificationDelivery={confirmNotificationDelivery} toggleNotificationEvent={toggleNotificationEvent} runCommand={runCommand} />}
       {dialog.kind === "accessibility" && <AccessibilityDialogContent dialogHeight={dialogHeight} flashingEnabled={flashingEnabled} setAccessibilityFlashing={setAccessibilityFlashing} />}
       {dialog.kind === "blocked" && <BlockedDialogContent dialog={dialog} dialogHeight={dialogHeight} loadBlockedPeers={loadBlockedPeers} showDialog={showDialog} unblockPeer={unblockPeer} />}
@@ -156,26 +170,28 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "debug-endpoints" && <DebugEndpointsDialogContent debugInfo={debugInfo} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "debug-peer" && <DebugPeerDialogContent dialog={dialog} debugInfo={debugInfo} dialogHeight={dialogHeight} />}
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
-      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
+      {dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} screenWidth={dialogWidthFor("file-list") + 2} screenHeight={dialogHeight + 4} imageProtocol={imageProtocol} peers={peers} groups={groups} selection={selection} closeDialog={closeDialog} showDialog={showDialog} confirmPendingFileSend={confirmPendingFileSend} />}
+      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
-      {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
+      {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} bytes={dialog.bytes} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} />}
   </>
-  if (usesSettingsPanel(dialog)) return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center">
-    <box width={dialogWidthFor(dialog.kind)} height={dialogHeight} border borderColor={theme.line} backgroundColor={theme.surfaceRaised} paddingX={1} paddingY={dialogHeight > 12 ? 1 : 0}>
+  if (usesSettingsPanel(dialog)) return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center" onMouseDown={dismissOnOverlay}>
+    <box width={dialogWidthFor(dialog.kind)} height={dialogHeight} border borderColor={theme.line} backgroundColor={theme.surfaceRaised} paddingX={1} paddingY={dialogHeight > 12 ? 1 : 0} onMouseDown={event => event.stopPropagation()}>
       <SettingsPanel dialog={dialog} width={dialogWidthFor(dialog.kind) - 4} height={dialogHeight - 4} busy={dialogBusy} error={dialogError} runCommand={runCommand} goBack={goBack}>{content}</SettingsPanel>
     </box>
   </box>
-  return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center">
-    <box width={dialogWidthFor(dialog.kind)} height={dialogHeight} border={!fileManagerOpen} borderColor={theme.line} backgroundColor={fileManagerOpen ? theme.canvas : theme.surfaceRaised} padding={fileManagerOpen ? 0 : 1} gap={fileManagerOpen ? 0 : 1} overflow="hidden" flexDirection="column">
+  return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center" onMouseDown={dismissOnOverlay}>
+    <box width={dialogWidthFor(dialog.kind)} height={dialogHeight} border={!fileManagerOpen} borderColor={theme.line} backgroundColor={fileManagerOpen ? theme.canvas : theme.surfaceRaised} padding={fileManagerOpen ? 0 : 1} gap={fileManagerOpen ? 0 : 1} overflow="hidden" flexDirection="column" onMouseDown={event => event.stopPropagation()}>
       {content}
     </box>
   </box>
 }
 
 type ImageViewerDialogContentProps = {
-  filePath: string
+  filePath?: string
+  bytes?: Uint8Array
   filename: string
   dialogWidth: number
   dialogHeight: number
@@ -183,15 +199,15 @@ type ImageViewerDialogContentProps = {
 }
 
 export function imageViewerPropsEqual(previous: ImageViewerDialogContentProps, next: ImageViewerDialogContentProps): boolean {
-  return previous.filePath === next.filePath && previous.filename === next.filename && previous.dialogWidth === next.dialogWidth && previous.dialogHeight === next.dialogHeight && previous.imageProtocol === next.imageProtocol
+  return previous.filePath === next.filePath && previous.bytes === next.bytes && previous.filename === next.filename && previous.dialogWidth === next.dialogWidth && previous.dialogHeight === next.dialogHeight && previous.imageProtocol === next.imageProtocol
 }
 
-const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePath, filename, dialogWidth, dialogHeight, imageProtocol }: ImageViewerDialogContentProps) {
+const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePath, bytes, filename, dialogWidth, dialogHeight, imageProtocol }: ImageViewerDialogContentProps) {
   return (
     <>
       <text wrapMode="none"><span fg={theme.success}>{filename}</span></text>
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, alignItems: "center", justifyContent: "center" }}>
-        <ImageAttachment filePath={filePath} filename={filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} />
+        <ImageAttachment filePath={filePath} bytes={bytes} filename={filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} />
       </box>
       <text fg={theme.muted}>Esc returns.</text>
     </>
@@ -332,7 +348,7 @@ function MuteTimeoutDialogContent({ dialog, dialogHeight, mutePeer, muteGroup }:
 }
 
 function UnmuteConfirmDialogContent({ dialog, dialogHeight, unmutePeer, unmuteGroup, showDialog }: { dialog: Extract<Dialog, { kind: "unmute-confirm" }>; dialogHeight: number; unmutePeer: (peerId: string) => void; unmuteGroup?: (groupId: string) => void; showDialog: (d: Dialog) => void }) {
-  return <SettingsScreen breadcrumb={["Notifications", "Unmute"]} description={dialog.groupId ? "Desktop notifications from this group will be allowed again." : "Desktop notifications from this peer will be allowed again."} dialogHeight={dialogHeight}><SettingsConfirm question={<>Resume notifications from <span fg={theme.accent}>{dialog.displayName}</span>?</>} detail={dialog.groupId ? "Desktop notifications from this group will be allowed again." : "Desktop notifications from this peer will be allowed again."} confirmLabel="Unmute notifications" onConfirm={() => { if (dialog.groupId) void unmuteGroup?.(dialog.groupId); else if (dialog.peerId) void unmutePeer(dialog.peerId) }} onCancel={() => showDialog({ kind: "settings" })} /></SettingsScreen>
+  return <SettingsScreen breadcrumb={["Notifications", "Unmute"]} description={dialog.groupId ? "Desktop notifications from this group will be allowed again." : "Desktop notifications from this peer will be allowed again."} dialogHeight={dialogHeight}><SettingsConfirm question={<>Resume notifications from <span fg={theme.accent}>{dialog.displayName}</span>?</>} detail={dialog.groupId ? "Desktop notifications from this group will be allowed again." : "Desktop notifications from this peer will be allowed again."} confirmLabel="Unmute notifications" onConfirm={() => { if (dialog.groupId) void unmuteGroup?.(dialog.groupId); else if (dialog.peerId) void unmutePeer(dialog.peerId) }} onCancel={() => showDialog({ kind: "notifications" })} /></SettingsScreen>
 }
 
 function AddFriendDialogContent({ dialog, dialogHeight, dialogDraft, setDialogDraft, sendFriendRequest }: { dialog: Extract<Dialog, { kind: "add-friend" }>; dialogHeight: number; dialogDraft: string; setDialogDraft: (v: string) => void; sendFriendRequest: (peerId: string, note: string) => void }) {
@@ -346,7 +362,7 @@ function AddFriendDialogContent({ dialog, dialogHeight, dialogDraft, setDialogDr
 }
 
 function RemoveFriendDialogContent({ dialog, dialogHeight, unfriendPeer, showDialog }: { dialog: Extract<Dialog, { kind: "remove-friend" }>; dialogHeight: number; unfriendPeer: (peerId: string) => void; showDialog: (d: Dialog) => void }) {
-  return <SettingsScreen breadcrumb={["Friends", "Remove friend"]} description="Their future messages will be blocked until you accept a new friend request." dialogHeight={dialogHeight}><SettingsConfirm question={<>Remove <span fg={theme.accent}>{dialog.displayName}</span> as a friend?</>} detail="Their future messages will be blocked until you accept a new friend request." confirmLabel="Remove friend" destructive onConfirm={() => void unfriendPeer(dialog.peerId)} onCancel={() => showDialog({ kind: "settings" })} /></SettingsScreen>
+  return <SettingsScreen breadcrumb={["Friends", "Remove friend"]} description="Their future messages will be blocked until you accept a new friend request." dialogHeight={dialogHeight}><SettingsConfirm question={<>Remove <span fg={theme.accent}>{dialog.displayName}</span> as a friend?</>} detail="Their future messages will be blocked until you accept a new friend request." confirmLabel="Remove friend" destructive onConfirm={() => void unfriendPeer(dialog.peerId)} onCancel={() => showDialog({ kind: "friends" })} /></SettingsScreen>
 }
 
 function FriendRequestsDialogContent({ dialog, dialogHeight, showDialog }: { dialog: Extract<Dialog, { kind: "friend-requests" }>; dialogHeight: number; showDialog: (d: Dialog) => void }) {
@@ -396,18 +412,91 @@ function FriendRequestIncomingDialogContent({ dialog, dialogHeight, blockSenderF
   )
 }
 
-function FriendsDialogContent({ dialogHeight, loadBlockedPeers, runCommand, showDialog }: { dialogHeight: number; loadBlockedPeers: () => void; runCommand: (cmd: string) => void; showDialog: (d: Dialog) => void }) {
+type FriendsTab = "requests" | "add" | "friends" | "blocked"
+
+function FriendsDialogContent({ dialogHeight, peers, identity, friendRequests, loadBlockedPeers, showDialog, unblockPeer }: { dialogHeight: number; peers: Peer[]; identity: { peer_id: string; display_name: string } | undefined; friendRequests: FriendRequest[]; loadBlockedPeers: () => void; showDialog: (d: Dialog) => void; unblockPeer: (peerId: string, displayName: string) => void }) {
+  const [tab, setTab] = useState<FriendsTab>("requests")
+  useKeyboard((key) => {
+    if (key.ctrl || key.meta || key.defaultPrevented) return
+    const order: FriendsTab[] = ["requests", "add", "friends", "blocked"]
+    const index = ["1", "2", "3", "4"].indexOf(key.name)
+    if (index >= 0 && order[index] !== tab) {
+      key.preventDefault()
+      setTab(order[index]!)
+    }
+  })
+  const incoming = friendRequests.filter((request) => request.direction === "incoming")
+  const outgoing = friendRequests.filter((request) => request.direction === "outgoing")
+  const addable = addablePeers(peers, identity?.peer_id)
+  const friends = peers.filter((peer) => peer.is_friend).sort((a, b) => a.display_name.localeCompare(b.display_name))
+  const blocked = peers.filter((peer) => peer.is_blocked).sort((a, b) => a.display_name.localeCompare(b.display_name))
+  const tabs = [
+    { id: "requests" as const, label: `Requests (${incoming.length + outgoing.length})` },
+    { id: "add" as const, label: `Add (${addable.length})` },
+    { id: "friends" as const, label: `Friends (${friends.length})` },
+    { id: "blocked" as const, label: `Blocked (${blocked.length})` },
+  ]
+  const tabBar = <box flexDirection="column" flexShrink={0}>
+    {tabs.map((entry, index) => <box key={entry.id} id={`friends-tab-${entry.id}`} height={1} overflow="hidden" onMouseDown={(event) => { if (event.button === 0) setTab(entry.id) }}><text fg={tab === entry.id ? theme.accent : theme.muted} wrapMode="none">{tab === entry.id ? `> [${index + 1}] ${entry.label}` : `  [${index + 1}] ${entry.label}`}</text></box>)}
+  </box>
+  const selectRequest = (option: { value?: string }) => {
+    const value = option.value
+    if (!value) return
+    if (value.startsWith("incoming:")) {
+      const request = friendRequests.find((item) => item.request_id === value.slice("incoming:".length))
+      if (request) showDialog({ kind: "friend-request-incoming", request })
+    } else if (value.startsWith("outgoing:")) {
+      const request = friendRequests.find((item) => item.request_id === value.slice("outgoing:".length))
+      if (request) showDialog({ kind: "cancel-friend-confirm", requestId: request.request_id, displayName: request.recipient_name ?? request.sender_name })
+    }
+  }
   return (
-    <SettingsScreen breadcrumb={["Friends"]} description="Manage trusted peers, requests, and request blocking." dialogHeight={dialogHeight}>
-      <SettingsMenu dialogHeight={dialogHeight} options={[
-        { section: "Requests", name: "Friend requests", description: "Review incoming requests or cancel your pending requests.", value: "friend-requests" },
-        { section: "Selected peer", name: "Add friend", description: "Send a friend request to the peer selected in the conversation list.", value: "add-friend" },
-        { section: "Selected peer", name: "Remove friend", description: "Remove the selected friend and block future messages until a new request is accepted.", value: "remove-friend", tone: "warning" },
-        { section: "Privacy", name: "Blocked requests", description: "Block a person or unblock a previously blocked requester.", value: "blocked" },
-      ]} onSelect={(option) => {
-      if (option.value === "blocked") void loadBlockedPeers()
-      else runCommand(option.value)
-      }} />
+    <SettingsScreen breadcrumb={["Friends", "Inbox"]} dialogHeight={dialogHeight}>
+      {tabBar}
+      {tab === "requests" && (<>
+        {!incoming.length && !outgoing.length ? <SettingsNotice>No friend requests are pending.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={[
+          ...incoming.map((request) => ({
+            name: request.sender_name, description: request.note || "Accept, decline, or block this request.", value: `incoming:${request.request_id}`, status: "Needs response", tone: "accent" as const,
+          })),
+          ...outgoing.map((request) => ({
+            name: request.recipient_name ?? request.sender_name, description: "Pending. Cancel this request if you no longer want to connect.", value: `outgoing:${request.request_id}`, status: "Pending",
+          })),
+        ]} onSelect={(option) => selectRequest(option)} />
+      </>)}
+      {tab === "add" && (<>
+        {!addable.length ? <SettingsNotice>No addable peers right now. Join a room to discover more people.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={addable.map((peer) => ({
+          name: peer.display_name, description: peer.is_online ? "Online. Send them a friend request." : "Offline. The request sends when you connect.", value: `add:${peer.peer_id}`, status: peer.is_online ? "Online" : "Offline", tone: "accent" as const,
+        }))} onSelect={(option) => {
+          const peer = addable.find((item) => item.peer_id === option.value.slice("add:".length))
+          if (peer) showDialog({ kind: "add-friend", peerId: peer.peer_id, displayName: peer.display_name })
+        }} />
+      </>)}
+      {tab === "friends" && (<>
+        {!friends.length ? <SettingsNotice>No friends yet. Accept a request or add someone from the Add tab.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={friends.map((peer) => ({
+          name: peer.display_name, description: "Remove this friend. Their future messages stay blocked until re-accepted.", value: `friend:${peer.peer_id}`, status: peer.is_online ? "Online" : "Offline",
+        }))} onSelect={(option) => {
+          const peer = friends.find((item) => item.peer_id === option.value.slice("friend:".length))
+          if (peer) showDialog({ kind: "remove-friend", peerId: peer.peer_id, displayName: peer.display_name })
+        }} />
+      </>)}
+      {tab === "blocked" && (<>
+        {!blocked.length ? <SettingsNotice>No people are blocked.</SettingsNotice> : null}
+        <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={[
+          ...blocked.map((peer) => ({ name: peer.display_name, description: "Allow friend requests from this person again.", value: `unblock:${peer.peer_id}`, status: "Blocked", tone: "warning" as const })),
+          { name: "Block a peer", description: "Ignore future friend requests from a specific person.", value: "block-pick", tone: "danger" as const },
+          { name: "Manage blocked list", description: "Open the full blocked-people manager.", value: "manage" },
+        ]} onSelect={(option) => {
+          if (option.value === "block-pick") { showDialog({ kind: "block-peer-pick" }); return }
+          if (option.value === "manage") { void loadBlockedPeers(); return }
+          if (option.value.startsWith("unblock:")) {
+            const peer = blocked.find((item) => `unblock:${item.peer_id}` === option.value)
+            if (peer) void unblockPeer(peer.peer_id, peer.display_name)
+          }
+        }} />
+      </>)}
     </SettingsScreen>
   )
 }
@@ -466,24 +555,45 @@ function BlockPeerDialogContent({ dialog, dialogHeight, blockPeer, loadBlockedPe
 }
 
 function CancelFriendConfirmDialogContent({ dialog, dialogHeight, cancelFriendRequest, loadFriendRequests, showDialog }: { dialog: Extract<Dialog, { kind: "cancel-friend-confirm" }>; dialogHeight: number; cancelFriendRequest: (requestId: string) => void; loadFriendRequests: () => void; showDialog: (d: Dialog) => void }) {
-  return <SettingsScreen breadcrumb={["Friends", "Requests", "Cancel request"]} description="The pending request will be withdrawn and no longer visible to them." dialogHeight={dialogHeight}><SettingsConfirm question={<>Cancel the friend request to <span fg={theme.accent}>{dialog.displayName}</span>?</>} detail="The pending request will be withdrawn and no longer visible to them." confirmLabel="Cancel request" cancelLabel="Keep request" destructive onConfirm={() => void cancelFriendRequest(dialog.requestId)} onCancel={() => { showDialog({ kind: "friend-requests", requests: [] }); void loadFriendRequests() }} /></SettingsScreen>
+  return <SettingsScreen breadcrumb={["Friends", "Requests", "Cancel request"]} description="The pending request will be withdrawn and no longer visible to them." dialogHeight={dialogHeight}><SettingsConfirm question={<>Cancel the friend request to <span fg={theme.accent}>{dialog.displayName}</span>?</>} detail="The pending request will be withdrawn and no longer visible to them." confirmLabel="Cancel request" cancelLabel="Keep request" destructive onConfirm={() => void cancelFriendRequest(dialog.requestId)} onCancel={() => showDialog({ kind: "friends" })} /></SettingsScreen>
 }
 
 function DebugDialogContent({ dialog, controlStatus, debugInfo, dialogHeight, reStun, loadDebugInfo, showDialog }: { dialog: Extract<Dialog, { kind: "debug" }>; controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }; debugInfo: DebugInfo | null; dialogHeight: number; reStun: () => void; loadDebugInfo: () => void; showDialog: (d: Dialog) => void }) {
+  const [analyticsLevel, setAnalyticsLevel] = useState<AnalyticsLevel>(() => {
+    try { return readLevel() } catch { return "off" }
+  })
+  const applyAnalyticsLevel = (level: AnalyticsLevel) => {
+    try {
+      writeLevel(level);
+      // Persist the prompt marker so a Diagnostics choice counts as an
+      // explicit choice and does not re-prompt on next launch. Off stays
+      // soft-off: it re-asks after an upgrade by design.
+      try { markPrompted(APP_RELEASE_VERSION); } catch {}
+      setAnalyticsLevel(level)
+    } catch {}
+  }
+  const analyticsStatus = analyticsLevel === "extended" ? "On" : analyticsLevel === "basic" ? "Basic" : "Off"
   return (
-    <SettingsScreen breadcrumb={["Diagnostics"]} description="Inspect connection state and peer endpoints." dialogHeight={dialogHeight}>
+    <SettingsScreen breadcrumb={["Diagnostics"]} description="Connection health, peer endpoints, and analytics." dialogHeight={dialogHeight}>
       <text><span fg={theme.muted}>Control: </span>{controlStatus.connected ? "Connected" : "Disconnected"}{controlStatus.reconnect_attempts ? ` (reconnects: ${controlStatus.reconnect_attempts})` : ""}</text>
       <text><span fg={theme.muted}>STUN server: </span>{debugInfo?.stun_server ?? "..."}</text>
-      <MouseSelect focused height={Math.min(8, Math.max(1, dialogHeight - 8))} options={[
-        { name: "Re-STUN", description: "Re-query STUN server and republish endpoint cards", value: "re-stun" },
-        { name: "Endpoints", description: "View your endpoint and connected peers", value: "endpoints" },
-        { name: "Refresh", description: "Reload debug information", value: "refresh" },
-      ]} onSelect={(_, option) => {
+      <text><span fg={theme.muted}>Analytics: </span>{analyticsStatus}<span fg={theme.subdued}> — {analyticsLevel === "extended" ? "version ping + room/group/transport counters" : analyticsLevel === "basic" ? "version ping only" : "disabled"}</span></text>
+      <SettingsMenu dialogHeight={dialogHeight} headerRows={11} options={[
+        { section: "Connection", name: "Re-STUN", description: "Re-query STUN server and republish endpoint cards", value: "re-stun" },
+        { section: "Connection", name: "Endpoints", description: "View your endpoint and connected peers", value: "endpoints" },
+        { section: "Connection", name: "Refresh", description: "Reload connection information", value: "refresh" },
+        { section: "Analytics", name: "Extended analytics", description: "Version ping + room/group/transport counters", value: "analytics-extended", status: analyticsLevel === "extended" ? "Current" : undefined, tone: "accent" },
+        { section: "Analytics", name: "Basic analytics", description: "Version ping only, no usage counters", value: "analytics-basic", status: analyticsLevel === "basic" ? "Current" : undefined },
+        { section: "Analytics", name: "Analytics off", description: "Send nothing (asks again after upgrades)", value: "analytics-off", status: analyticsLevel === "off" ? "Current" : undefined, tone: "warning" },
+      ]} onSelect={(option) => {
         if (!option) return
         if (option.value === "re-stun") void reStun()
         else if (option.value === "endpoints") { showDialog({ kind: "debug-endpoints" }); void loadDebugInfo() }
         else if (option.value === "refresh") void loadDebugInfo()
-      }} wrapSelection showDescription />
+        else if (option.value === "analytics-extended") applyAnalyticsLevel("extended")
+        else if (option.value === "analytics-basic") applyAnalyticsLevel("basic")
+        else if (option.value === "analytics-off") applyAnalyticsLevel("off")
+      }} />
     </SettingsScreen>
   )
 }
@@ -534,6 +644,68 @@ function DebugPeerDialogContent({ dialog, debugInfo, dialogHeight }: { dialog: E
   )
 }
 
+export function FileConfirmDialogContent({ dialog, dialogWidth, dialogHeight, screenWidth, screenHeight, imageProtocol, peers, groups, selection, closeDialog, showDialog, confirmPendingFileSend }: { dialog: Extract<Dialog, { kind: "file-confirm" }>; dialogWidth: number; dialogHeight: number; screenWidth: number; screenHeight: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; selection: { kind: "peer" | "group"; id: string } | undefined; closeDialog: () => void; showDialog: (dialog: Dialog) => void; confirmPendingFileSend: () => void }) {
+  const targetName = selection?.kind === "peer"
+    ? peers.find((p) => p.peer_id === selection.id)?.display_name ?? selection.id.slice(0, 8)
+    : groups.find((g) => g.group_id === selection?.id)?.name ?? "group"
+  const imageFilename = dialog.image
+    ? `pasted-image.${detectImageFormat(dialog.image.bytes) ?? dialog.image.mimeType.split("/").pop() ?? "img"}`
+    : undefined
+  const entries = useMemo(() => {
+    if (dialog.image) {
+      return [{ name: imageFilename ?? "pasted-image", type: fileTypeLabel(imageFilename ?? "pasted-image", dialog.image.mimeType), size: dialog.image.bytes.byteLength, exists: true }]
+    }
+    return dialog.paths.map((path) => {
+      try {
+        const stat = statSync(path)
+        const name = path.split(/[\\/]/).pop() || path
+        return { name, type: fileTypeLabel(name), size: stat.isFile() ? stat.size : null, exists: stat.isFile() }
+      } catch {
+        const name = path.split(/[\\/]/).pop() || path
+        return { name, type: fileTypeLabel(name), size: null, exists: false }
+      }
+    })
+  }, [dialog, imageFilename])
+  const imagePath = !dialog.image && dialog.paths.length === 1 && entries[0]?.exists && isImageFile(entries[0].name)
+    ? dialog.paths[0]
+    : undefined
+  const previewFilename = imageFilename ?? (imagePath ? entries[0]?.name : undefined)
+  const previewSize = dialog.image?.bytes.byteLength ?? (imagePath ? entries[0]?.size : undefined)
+  const previewBounds = fileConfirmImageBounds(screenWidth, screenHeight, dialogWidth, dialogHeight)
+  const sendable = entries.filter((entry) => entry.exists).length
+  const title = entries.length > 1 ? `Send ${sendable} files to ${targetName}?` : dialog.image ? `Send image to ${targetName}?` : `Send file to ${targetName}?`
+  return (
+    <>
+      <text><b>{title}</b></text>
+      {(dialog.image || imagePath) && previewFilename ? <>
+        <box style={{ height: previewBounds.maxHeight, minHeight: previewBounds.maxHeight, flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
+          <ImageAttachment id="file-confirm-image-preview" filePath={imagePath} bytes={dialog.image?.bytes} filename={previewFilename} protocol={imageProtocol} expectedImage fullSize={false} lazy={false} maxWidth={previewBounds.maxWidth} maxHeight={previewBounds.maxHeight} onOpen={() => dialog.image
+            ? showDialog({ kind: "image-view", bytes: dialog.image.bytes, filename: previewFilename, returnTo: "file-confirm", returnDialog: dialog })
+            : showDialog({ kind: "image-view", filePath: imagePath!, filename: previewFilename, returnTo: "file-confirm", returnDialog: dialog })} />
+        </box>
+        <box style={{ height: 1, minHeight: 1, flexShrink: 0 }}>
+          <MarqueeText width={Math.max(1, dialogWidth - 4)} text={`${previewFilename} / ${fileTypeLabel(previewFilename, dialog.image?.mimeType)} / ${previewSize == null ? "size unavailable" : formatFileSize(previewSize)}`} />
+        </box>
+        <box style={{ height: 1, minHeight: 1, flexShrink: 0 }}><text fg={theme.muted}>Click preview to fullscreen · Esc returns</text></box>
+      </> : <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
+        {entries.map((entry) => (
+          <text key={entry.name} wrapMode="word">
+            <span fg={entry.exists ? theme.text : theme.danger}>{entry.name}</span>
+            <span fg={theme.muted}> / {entry.type} / {entry.size !== null ? formatFileSize(entry.size) : "missing"}</span>
+          </text>
+        ))}
+      </scrollbox>}
+      <MouseSelect focused height={2} options={[
+        ...(sendable ? [{ name: "Send", description: "Send the selected file", value: "send", tone: "accent" as const }] : []),
+        { name: "Cancel", description: "Close without sending", value: "cancel" },
+      ]} onSelect={(_, option) => {
+        if (option?.value === "send") void confirmPendingFileSend()
+        else closeDialog()
+      }} wrapSelection showDescription={false} />
+    </>
+  )
+}
+
 function FileSendDialogContent({ dialog, dialogWidth, selection, peers, groups, dialogDraft, setDialogDraft, sendFile }: { dialog: Extract<Dialog, { kind: "file-send" }>; dialogWidth: number; selection: { kind: "peer" | "group"; id: string } | undefined; peers: Peer[]; groups: Group[]; dialogDraft: string; setDialogDraft: (v: string) => void; sendFile: (path: string) => void }) {
   const targetName = selection?.kind === "peer" ? peers.find((p) => p.peer_id === selection.id)?.display_name ?? selection.id.slice(0, 8) : groups.find((g) => g.group_id === selection?.id)?.name ?? "group"
   return (
@@ -546,7 +718,7 @@ function FileSendDialogContent({ dialog, dialogWidth, selection, peers, groups, 
   )
 }
 
-export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, peers, groups, loadFiles, loadFilesDir, setDialogDraft, showDialog, defaultDownloadPath, onDeleteFile }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; defaultDownloadPath: (filename: string) => string; onDeleteFile?: (file: FileTransfer) => void }) {
+export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, peers, groups, loadFiles, loadFilesDir, setDialogDraft, showDialog, closeDialog, defaultDownloadPath, onDeleteFile }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; closeDialog: () => void; defaultDownloadPath: (filename: string) => string; onDeleteFile?: (file: FileTransfer) => void }) {
   const [filter, setFilter] = useState<"all" | "inbound" | "outbound" | "images" | "other">("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<FileTransfer | null>(null)
@@ -691,7 +863,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
       <FileManagerAction shortcut="D" label="elete" onPress={requestDelete} danger />
       <FileManagerAction shortcut="L" label="ocation" onPress={() => void loadFilesDir()} />
       <FileManagerAction shortcut="R" label="efresh" onPress={() => void loadFiles()} />
-      <FileManagerAction shortcut="Esc" label=" Back" onPress={() => showDialog({ kind: "settings" })} />
+      <FileManagerAction shortcut="Esc" label=" Close" onPress={() => closeDialog()} />
       <text fg={theme.muted}>Up/Down or J/K select</text>
     </box>
     {pendingDelete ? <box style={{ position: "absolute", left: 2, right: 2, top: Math.max(1, Math.floor(dialogHeight / 2) - 3), border: true, borderColor: theme.danger, backgroundColor: theme.dangerSurface, padding: 1, flexDirection: "column", gap: 1 }}>

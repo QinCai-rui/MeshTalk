@@ -1,0 +1,88 @@
+<section class="pt-28 pb-24">
+  <div class="max-w-3xl mx-auto px-6">
+    <p class="text-mesh-accent font-mono text-sm mb-3">LEGAL</p>
+    <h1 class="text-4xl md:text-5xl font-bold text-white mb-2">Privacy Policy</h1>
+    <p class="text-sm text-mesh-muted mb-12">Last updated: 2026-09-09</p>
+
+    <div class="prose prose-invert max-w-none space-y-10 text-mesh-text leading-relaxed">
+
+      <p class="text-mesh-muted text-sm leading-relaxed">
+        MeshTalk is built to minimize data collection: chats are end-to-end encrypted, work over LAN with no internet at all, and the control service never sees message contents. This policy covers the one exception — the <strong class="text-white">optional, off-by-default aggregate analytics</strong> (also called telemetry) in release builds — and nothing else, because there is nothing else to cover: we operate no accounts, no tracking, no advertising, and no other data collection.
+      </p>
+
+      <div>
+        <h2 class="text-xl font-bold text-white mb-3">1. Scope</h2>
+        <p class="text-sm text-mesh-muted mb-3">This policy applies only to the analytics described here. It does not apply to:</p>
+        <ul class="space-y-2 text-sm text-mesh-muted">
+          <li class="flex items-start gap-2"><span class="text-mesh-accent mt-1">→</span> your messages, files, friends, rooms, or identities, which never leave your devices except as end-to-end encrypted traffic to peers you chose;</li>
+          <li class="flex items-start gap-2"><span class="text-mesh-accent mt-1">→</span> the control/relay service and STUN, which necessarily observe network endpoints to connect peers;</li>
+          <li class="flex items-start gap-2"><span class="text-mesh-accent mt-1">→</span> third-party services you interact with directly (e.g. update checks via your platform's channels, Cloudflare edge logs).</li>
+        </ul>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-bold text-white mb-3">2. What we collect — and only with your consent</h2>
+        <p class="text-sm text-mesh-muted mb-3">Analytics is <strong class="text-white">off until you explicitly opt in</strong> (first-launch dialog, Off preselected; no pre-ticked boxes). Two levels:</p>
+        <div class="space-y-3">
+          <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-4">
+            <p class="text-sm font-semibold text-white mb-1">Basic</p>
+            <p class="text-sm text-mesh-muted">A Tier-0 version ping, at most once per app version: app version, operating system, CPU architecture.</p>
+          </div>
+          <div class="rounded-xl border border-mesh-border bg-mesh-card/30 p-4">
+            <p class="text-sm font-semibold text-white mb-1">Extended (Tier 1, optional)</p>
+            <p class="text-sm text-mesh-muted">The above plus aggregate counters for room/group lifecycle and transport paths, and sanitized stability counters (exception class names only, never messages or tracebacks). Sent at most hourly and on clean shutdown. Per-event counts saturate at 10,000 and clear after each attempt.</p>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-bold text-white mb-3">3. What we never collect</h2>
+        <p class="text-sm text-mesh-muted">No persistent or installation IDs, peer IDs, public keys, room IDs or secrets, invites, message or file contents, filenames, paths, usernames, or message/file activity counters. There is deliberately no way to join analytics records back to a person or device on our side.</p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-bold text-white mb-3">4. How we use it</h2>
+        <p class="text-sm text-mesh-muted">Solely to understand release adoption and connection health across platforms so development effort goes where it matters. We do not use it for advertising, profiling, pricing, or any automated decision-making, and we do not sell or share aggregates with third parties.</p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-bold text-white mb-3">5. Sharing and third parties</h2>
+        <ul class="space-y-2 text-sm text-mesh-muted">
+          <li class="flex items-start gap-2"><span class="text-mesh-accent mt-1">→</span> The analytics proxy runs on Cloudflare Workers and forwards to our ingest. Neither sells or shares this data.</li>
+          <li class="flex items-start gap-2"><span class="text-mesh-accent mt-1">→</span><span>IP addresses <strong class="text-white">are not stored</strong> — the server keeps only daily aggregate counters — but they are unavoidably visible in transit for delivery and per-IP rate-limiting.</span></li>
+          <li class="flex items-start gap-2"><span class="text-mesh-accent mt-1">→</span> Counts are approximate; the endpoint is open and unauthenticated by design, so counts are poisonable and must not be treated as exact.</li>
+        </ul>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-bold text-white mb-3">6. Retention</h2>
+        <p class="text-sm text-mesh-muted">90-day rolling daily aggregates, then deleted. No raw requests, payloads, or IPs are logged or retained by us.</p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-bold text-white mb-3">7. Your choices and rights</h2>
+        <ul class="space-y-2 text-sm text-mesh-muted">
+          <li class="flex items-start gap-2"><span class="text-mesh-accent mt-1">→</span><span><strong class="text-white">Change or withdraw consent anytime:</strong> Settings &rsaquo; Diagnostics, or <code class="font-mono text-mesh-accent text-xs">MESHTALK_ANALYTICS=extended|basic|off</code>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-mesh-accent mt-1">→</span><span><strong class="text-white">Verify yourself:</strong> with analytics off, <code class="font-mono text-mesh-accent text-xs">tcpdump</code> / proxy logs should show no egress to the analytics hosts outside update checks.</span></li>
+          <li class="flex items-start gap-2"><span class="text-mesh-accent mt-1">→</span> Because we hold no identifiers, we cannot look up, export, or delete "your" records specifically — there is nothing keyed to you.</li>
+        </ul>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-bold text-white mb-3">8. Children</h2>
+        <p class="text-sm text-mesh-muted">MeshTalk has no age-gated accounts and analytics contains no personal data, but analytics should not be enabled for children under 13 (or your local age of digital consent) — leave it off.</p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-bold text-white mb-3">9. Changes to this policy</h2>
+        <p class="text-sm text-mesh-muted">Material changes will be noted here with a new date and, where feasible, announced with the release. Continued opt-in after a change takes effect constitutes acceptance; you can always switch analytics off.</p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-bold text-white mb-3">10. Contact</h2>
+        <p class="text-sm text-mesh-muted">Questions or requests: open an issue at <a href="https://github.com/QinCai-rui/MeshTalk/issues/new" target="_blank" rel="noopener" class="text-mesh-accent hover:underline">QinCai-rui/MeshTalk</a>.</p>
+      </div>
+
+    </div>
+  </div>
+</section>

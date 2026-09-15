@@ -4,11 +4,14 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from meshtalk.database import Database
 from meshtalk.encryption import encrypt_for_recipient
-from meshtalk.file_transfer import FileTransferManager
+from meshtalk.file_transfer import (
+    MAX_PROGRESS_EVENTS,
+    FileTransferManager,
+)
 from meshtalk.identity import Identity
 from meshtalk.protocol import (
     CAP_FILE_TRANSFER,
@@ -339,3 +342,133 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(sender_manager.sent, [])
         await sender_db.close()
+
+    async def test_progress_updates_are_coalesced_for_large_transfers(self):
+        with patch("meshtalk.file_transfer.time.monotonic", return_value=1.0):
+            emitted = [
+                index
+                for index in range(1, 1_001)
+                if self.receiver._should_emit_progress(self.file_id, index, 1_000)
+            ]
+
+        self.assertEqual(emitted[0], 1)
+        self.assertEqual(emitted[-1], 1_000)
+        self.assertLessEqual(len(emitted), MAX_PROGRESS_EVENTS + 1)
+
+    async def test_partial_progress_is_flushed_after_a_bounded_delay(self):
+        commit = AsyncMock()
+        self.receiver.db.commit = commit
+
+        with patch("meshtalk.file_transfer.FILE_PROGRESS_COMMIT_INTERVAL", 0.01):
+            self.receiver._schedule_progress_commit(self.file_id)
+            await asyncio.sleep(0.02)
+
+        commit.assert_awaited_once()
+
+
+class GroupDeliveryPreservationTest(unittest.IsolatedAsyncioTestCase):
+    """Queued/inbound group rows must still flush/resume per peer.
+
+    DM listings exclude group fan-out rows, but the per-peer delivery
+    paths opt into include_group=True. These tests pin that behavior so a
+    future change to the delivery flag cannot silently break group delivery
+    while the listing tests stay green.
+    """
+
+    async def asyncSetUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        self.sender = Identity.generate("Sender")
+        self.recipient = Identity.generate("Recipient")
+        self.sender_peer = FakePeer(self.sender)
+        self.recipient_peer = FakePeer(self.recipient)
+        self.content = b"abcdefgh"
+
+    async def asyncTearDown(self):
+        self.tempdir.cleanup()
+
+    async def test_flush_for_peer_delivers_queued_group_row(self):
+        sender_db = Database(self.root / "sender.db")
+        await sender_db.connect()
+        try:
+            source = self.root / "source.bin"
+            source.write_bytes(self.content)
+            await sender_db.save_file_transfer({
+                "file_id": "queued-group-file",
+                "filename": "group.bin",
+                "file_size": len(self.content),
+                "chunk_size": 4,
+                "total_chunks": 2,
+                "sender_id": self.sender.peer_id,
+                "recipient_id": self.recipient.peer_id,
+                "group_id": "a" * 32,
+                "direction": "outbound",
+                "status": "queued",
+                "file_path": str(source),
+                "created_at": 1.0,
+            })
+            sender_manager = FakePeerManager(self.recipient_peer)
+            sender_transfer = FileTransferManager(
+                self.sender, sender_manager, sender_db, self.root / "sender-files"
+            )
+
+            flushed = await sender_transfer.flush_for_peer(self.recipient.peer_id)
+
+            self.assertEqual(flushed, 1)
+            self.assertEqual(
+                (await sender_db.get_file_transfer("queued-group-file"))["status"], "sent"
+            )
+            types = [packet.type for packet in sender_manager.sent]
+            self.assertEqual(types[0], PacketType.FILE_OFFER)
+            self.assertTrue(all(t == PacketType.FILE_CHUNK for t in types[1:]))
+            self.assertEqual(len(types), 3)
+        finally:
+            await sender_db.close()
+
+    async def test_resume_for_peer_requests_missing_group_chunks(self):
+        recipient_db = Database(self.root / "recipient.db")
+        await recipient_db.connect()
+        try:
+            await recipient_db.save_file_transfer({
+                "file_id": "inbound-group-file",
+                "filename": "group.bin",
+                "file_size": len(self.content),
+                "chunk_size": 4,
+                "total_chunks": 2,
+                "sender_id": self.sender.peer_id,
+                "recipient_id": self.recipient.peer_id,
+                "group_id": "a" * 32,
+                "direction": "inbound",
+                "status": "transferring",
+                "file_path": str(self.root / "incoming.bin"),
+                "created_at": 1.0,
+            })
+            recipient_manager = FakePeerManager(self.sender_peer)
+            recipient_transfer = FileTransferManager(
+                self.recipient, recipient_manager, recipient_db,
+                self.root / "recipient-files",
+            )
+
+            await recipient_transfer.resume_for_peer(self.sender.peer_id)
+
+            self.assertEqual(len(recipient_manager.sent), 1)
+            ack = FileAckPayload.decode(recipient_manager.sent[0].payload)
+            self.assertEqual(ack.status, "missing")
+            self.assertEqual(ack.missing_ranges, [(0, 1)])
+        finally:
+            await recipient_db.close()
+
+
+class DatabaseCloseTest(unittest.IsolatedAsyncioTestCase):
+    async def test_close_releases_connection_after_commit_failure(self):
+        db = Database(Path("unused.db"))
+        connection = type("Connection", (), {})()
+        connection.commit = AsyncMock(side_effect=OSError("commit failed"))
+        connection.close = AsyncMock()
+        db._db = connection
+
+        with self.assertRaisesRegex(OSError, "commit failed"):
+            await db.close()
+
+        connection.close.assert_awaited_once()
+        self.assertIsNone(db._db)

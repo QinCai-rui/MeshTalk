@@ -790,7 +790,7 @@ both peers.
 2. **Receiver** emits a `file_offer` IPC event so the TUI can show an incoming file notification. Acceptance is implicit (auto-download on receipt of chunks).
 3. **Sender** sends `FILE_CHUNK` packets in order, each containing an AES-256-GCM encrypted slice of the file. Each chunk is individually E2EE using the same one-time ephemeral X25519/AES-GCM construction as messages (section 7.1), with the AAD containing the chunk routing metadata.
 4. **Receiver** decrypts, reassembles chunks by `(file_id, chunk_index)`, and writes to `~/.meshtalk/files/<file_id>/<sanitized_filename>`. Completed files emit a `file_completed` IPC event with the local path.
-5. **Receiver** sends a signed `FILE_ACK` with status `completed` (or `partial` with `missing_ranges` for retransmission). The sender marks the transfer `delivered` on receipt.
+5. **Receiver** sends a signed `FILE_ACK` with status `completed` (or `missing` with `missing_ranges` for retransmission). The sender marks the transfer `delivered` on receipt. If the sender is not a friend (direct) or not an active member / is blocked (group), the receiver sends `FILE_ACK` with status `blocked` instead — parity with `MESSAGE_BLOCKED` — and the sender marks the transfer `blocked` and emits `file_blocked`.
 6. **Offline queueing**: `FILE_OFFER` and `FILE_CHUNK` packets are queued in the outgoing queue when the recipient is offline, identical to message queueing. On reconnect, queued transfers are flushed via `flush_for_peer`.
 7. **Resume**: `resume_for_peer` detects partially received transfers and sends `FILE_ACK` with `missing_ranges` so the sender retransmits only the missing chunks.
 
@@ -801,7 +801,7 @@ both peers.
 - Filenames are sanitized on both sender and receiver to prevent path traversal.
 - File storage is scoped to `~/.meshtalk/files/<file_id>/` — files never escape this directory.
 - Peers that do not negotiate `file_transfer` never receive file packets.
-- Incoming file offers from non-friends (for direct transfers) or non-members (for group transfers) are rejected.
+- Incoming file offers from non-friends (for direct transfers) or non-members (for group transfers) are rejected with a signed `FILE_ACK blocked` notice (requires `block_reports`, like `MESSAGE_BLOCKED`).
 - Early-chunk buffer has a TTL (30 s) and per-file cap (8 chunks) to bound memory usage from out-of-order arrivals.
 - Packet locks are cleaned up after unlock to prevent resource leaks.
 

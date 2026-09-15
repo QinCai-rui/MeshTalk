@@ -1,7 +1,8 @@
 import { MouseSelect } from "../MouseSelect"
 import { MarqueeText } from "../MarqueeText"
-import { releaseInstallDir } from "../../../../common/updater"
+import { releaseInstallDir, type UpdateChannel } from "../../../../common/updater"
 import { resolve } from "path"
+import { useState } from "react"
 import type { Dialog } from "../../types"
 import { chatTheme as theme } from "../../chatTheme"
 import { SettingsScreen } from "./SettingsPrimitives"
@@ -29,9 +30,27 @@ type AboutDialogProps = {
   dialogWidth: number
   isReleaseBuild: boolean
   checkForUpdates: () => void
+  updateChannel: UpdateChannel
+  saveUpdateChannel: (channel: UpdateChannel) => void
 }
 
-export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeight, dialogWidth, isReleaseBuild, checkForUpdates }: AboutDialogProps) {
+export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeight, dialogWidth, isReleaseBuild, checkForUpdates, updateChannel: initialChannel, saveUpdateChannel }: AboutDialogProps) {
+  const [channel, setChannel] = useState<UpdateChannel>(initialChannel)
+  const [confirmUnstable, setConfirmUnstable] = useState(false)
+  const pickChannel = (value: string | undefined) => {
+    if (value === "stable") {
+      setChannel("stable")
+      setConfirmUnstable(false)
+      saveUpdateChannel("stable")
+    } else if (value === "unstable") {
+      setConfirmUnstable(true)
+    }
+  }
+  const confirmSwitch = () => {
+    setChannel("unstable")
+    setConfirmUnstable(false)
+    saveUpdateChannel("unstable")
+  }
   return <SettingsScreen breadcrumb={["About & updates"]} description="MeshTalk terminal messenger." dialogHeight={dialogHeight}>
   <box style={{ flexDirection: "column", gap: 1, width: "100%" }}>
     <text><span fg={theme.link}>Version </span><span fg={theme.success}><b>{appReleaseVersion}</b></span></text>
@@ -46,13 +65,30 @@ export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeig
     ]} text="" />
      <text fg={theme.subdued}>Fully decentralised</text>
      <text fg={theme.subdued}>Private by architecture • Not by policy</text>
+    <text><span fg={theme.muted}>Update channel: </span><span fg={channel === "unstable" ? theme.warning : theme.success}>{channel === "unstable" ? "Unstable (prereleases)" : "Stable"}</span></text>
+    {confirmUnstable ? <>
+      <text fg={theme.warning}><b>Switch to unstable prereleases?</b></text>
+      <text fg={theme.muted} wrapMode="word">You CAN: get every prerelease with the latest fixes as they merge, and switch back to Stable anytime.</text>
+      <text fg={theme.muted} wrapMode="word">You CANNOT: downgrade — going back to Stable will NOT roll you back, you wait until a stable release catches up. Prereleases can be buggy, and you will be prompted about updates a lot.</text>
+      <MouseSelect focused height={Math.max(4, Math.min(4, dialogHeight - 9))} options={[
+        { name: "Switch to unstable", description: "Receive prereleases and check now", value: "confirm" },
+        { name: "Go back", description: "Stay on the stable channel", value: "back" },
+      ]} onSelect={(_, option) => {
+        if (option?.value === "confirm") confirmSwitch()
+        else if (option?.value === "back") setConfirmUnstable(false)
+      }} wrapSelection showDescription />
+    </> : <>
     {dialog.checked && <MarqueeText width={dialogWidth - 4} fg={isReleaseBuild ? theme.success : theme.danger} text={isReleaseBuild ? "You are up to date, or release metadata is unavailable." : "Updates are available only in compiled MeshTalk releases."} />}
     {dialogError && <text fg={theme.danger}>{dialogError}</text>}
-    <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={[
-      { name: dialog.checking ? "Checking for updates..." : "Check for updates", description: isReleaseBuild ? "Look for the latest stable MeshTalk release" : "Available in compiled MeshTalk releases", value: "check" },
+    <MouseSelect focused height={Math.max(3, Math.min(8, dialogHeight - 9))} options={[
+      { name: dialog.checking ? "Checking for updates..." : "Check for updates", description: isReleaseBuild ? (channel === "unstable" ? "Look for the latest release, prereleases included" : "Look for the latest stable MeshTalk release") : "Available in compiled MeshTalk releases", value: "check" },
+      { name: "Stable channel", description: "Finished releases only", value: "stable", status: channel === "stable" ? "Current" : undefined },
+      { name: "Unstable channel", description: "Every prerelease as it merges", value: "unstable", status: channel === "unstable" ? "Current" : undefined, tone: "warning" },
     ]} onSelect={(_, option) => {
       if (option?.value === "check" && !dialog.checking) checkForUpdates()
+      else pickChannel(option?.value)
     }} wrapSelection showDescription />
+    </>}
   </box>
   </SettingsScreen>
 }

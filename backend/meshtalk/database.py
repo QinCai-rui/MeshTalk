@@ -310,8 +310,23 @@ class Database:
 
     async def close(self) -> None:
         """Close the database connection."""
-        if self._db:
-            await self._db.close()
+        db = self._db
+        if db:
+            try:
+                await db.commit()
+            except BaseException:
+                # Cleanup must not hide the commit failure that triggered shutdown.
+                try:
+                    await db.close()
+                except Exception:
+                    pass
+                self._db = None
+                raise
+            else:
+                try:
+                    await db.close()
+                finally:
+                    self._db = None
 
     async def get_peer(self, peer_id: str) -> dict | None:
         """Retrieve peer information by peer ID."""
@@ -982,14 +997,26 @@ class Database:
         await self._db.execute(f"UPDATE file_transfers SET {sets} WHERE file_id = ?", tuple(values))
         await self._db.commit()
 
-    async def get_file_transfers(self, peer_id: str | None = None, group_id: str | None = None) -> list[dict]:
-        """Retrieve file transfers filtered by peer ID or group ID."""
+    async def get_file_transfers(self, peer_id: str | None = None, group_id: str | None = None, include_group: bool = False) -> list[dict]:
+        """Retrieve file transfers filtered by peer ID or group ID.
+
+        A peer-only query returns direct transfers only (group_id IS NULL)
+        so group fan-out rows do not leak into DM history. Pass
+        include_group=True for internal per-peer delivery paths (flush/resume)
+        that must still see queued group transfers for that peer.
+        """
         query = "SELECT * FROM file_transfers"
         clauses: list[str] = []
         params: list[str] = []
         if peer_id:
             clauses.append("(sender_id = ? OR recipient_id = ?)")
             params.extend([peer_id, peer_id])
+            if not group_id and not include_group:
+                # Falsy group_id (None, or "" which IPC validation already
+                # rejects) means a DM listing: direct transfers only. Wire
+                # decode only yields None or a 32-hex id, and direct rows
+                # store NULL, so IS NULL cannot hide a real group row.
+                clauses.append("group_id IS NULL")
         if group_id:
             clauses.append("group_id = ?")
             params.append(group_id)
@@ -1012,8 +1039,14 @@ class Database:
         ) as cursor:
             return await cursor.fetchone() is not None
 
-    async def record_file_chunk_received(self, file_id: str, chunk_index: int) -> int:
-        """Mark a file chunk as received and return total received chunks count."""
+    async def record_file_chunk_received(
+        self, file_id: str, chunk_index: int, *, commit: bool = True
+    ) -> int:
+        """Mark a file chunk as received and return total received chunks count.
+
+        File receivers can commit progress in bounded batches. The default
+        remains durable per call for other callers and resume-sensitive paths.
+        """
         await self._db.execute(
             "INSERT OR IGNORE INTO file_received_chunks (file_id, chunk_index) VALUES (?, ?)",
             (file_id, chunk_index),
@@ -1026,8 +1059,13 @@ class Database:
             "UPDATE file_transfers SET received_chunks = ? WHERE file_id = ?",
             (received_chunks, file_id),
         )
-        await self._db.commit()
+        if commit:
+            await self._db.commit()
         return received_chunks
+
+    async def commit(self) -> None:
+        """Commit pending changes made by a batched operation."""
+        await self._db.commit()
 
     async def get_missing_file_chunk_ranges(self, file_id: str, total_chunks: int) -> list[tuple[int, int]]:
         """Calculate contiguous ranges of missing file chunks."""

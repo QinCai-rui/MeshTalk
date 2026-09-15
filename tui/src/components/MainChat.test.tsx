@@ -43,7 +43,7 @@ function panelProps(width: number): ComponentProps<typeof ConversationPanel> {
       { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "I shared the **updated notes**. What do you think?", created_at: 1788580800 } },
       { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "me", content: "Looks good. The simpler layout makes it much easier to read.", created_at: 1788580860, delivered: 1 } },
     ],
-    deliveredMessageIds: new Set(), dialogOpen: false, draftLength: 0, drafts: {}, flashingEnabled: false, blinkOn: true, composerHeight: 3, composerRef: createRef<TextareaRenderable>(), groupMembers: {}, identity: { peer_id: "me", display_name: "Taylor" }, imageProtocol: "blocks", limitedGroupMembers: [], capabilityGapMessage: "", isSending: false, limitColor: undefined, mutedPeers: {}, peers, selected: peers[0], selectedGroup: undefined, selectedGroupId: undefined, selectedHasCapabilityGap: false, selectedReplyTargetId: undefined, replyTo: undefined, selectionKey: "peer:alex", unreadMessageStates: {}, unreadNow: 0, markUnreadMessageVisible: noop, openSettings: noop, openImage: noop, openDeliveryDetails: noop, typingNames: [], editingName: false, scrollFocused: false, scrollboxRef: createRef<ScrollBoxRenderable>(), status: DEFAULT_STATUS, setComposerHeight: noop, setDraftLength: noop, setScrollFocused: noop, selectReplyTarget: noop, clearReplyTarget: noop, onComposerChange: noop, send: noop,
+    deliveredMessageIds: new Set(), dialogOpen: false, draftLength: 0, drafts: {}, flashingEnabled: false, blinkOn: true, composerHeight: 3, composerRef: createRef<TextareaRenderable>(), groupMembers: {}, identity: { peer_id: "me", display_name: "Taylor" }, imageProtocol: "blocks", limitedGroupMembers: [], capabilityGapMessage: "", isSending: false, limitColor: undefined, mutedPeers: {}, peers, selected: peers[0], selectedGroup: undefined, selectedGroupId: undefined, selectedHasCapabilityGap: false, selectedReplyTargetId: undefined, replyTo: undefined, selectionKey: "peer:alex", unreadMessageStates: {}, markUnreadMessageVisible: noop, openSettings: noop, openImage: noop, openDeliveryDetails: noop, typingNames: [], editingName: false, scrollFocused: false, scrollboxRef: createRef<ScrollBoxRenderable>(), status: DEFAULT_STATUS, setComposerHeight: noop, setDraftLength: noop, setScrollFocused: noop, selectReplyTarget: noop, clearReplyTarget: noop, onComposerChange: noop, send: noop,
   }
 }
 // Markdown's worker initializes asynchronously, independently of the renderer scheduler.
@@ -81,7 +81,7 @@ for (const width of [120, 80, 64, 48, 32]) {
       expect(frame).toContain("Write a message...")
       expect(frame).toContain("30,720 bytes")
       expect(frame).toContain("Ctrl+P settings")
-      expect(frame.replace(/\s+/g, " ")).toContain("Ctrl+↑↓ chats")
+      expect(frame).not.toContain("Ctrl+↑↓ chats")
       const commandsShortcut = setup.renderer.root.findDescendantById("settings-shortcut")!
       expect(commandsShortcut).toBeDefined()
       if (!props.compact) expect(commandsShortcut.screenX).toBeGreaterThan(props.composerRef.current!.screenX)
@@ -530,11 +530,11 @@ test("rendezvous and capability warnings pulse softly and remain readable", asyn
     const frame = await settle(bright, "Out-of-sync with MeshTalk")
     expect(frame).toContain("Limited: This peer needs a newer client.")
     expect(frame).toContain("Offline: messages queue")
-    expect(frame).toContain("Messages blocked until your friend request")
+    expect(frame).toContain("Messaging is blocked until you become friends.")
     brightRendezvous = foregroundFor(bright, "Out-of-sync with MeshTalk")
     brightCapability = foregroundFor(bright, "Limited: This peer")
     brightOffline = foregroundFor(bright, "Offline: messages queue")
-    brightFriend = foregroundFor(bright, "Messages blocked until")
+    brightFriend = foregroundFor(bright, "Messaging is blocked until")
     expect(brightRendezvous).toBeDefined()
     expect(brightCapability).toBeDefined()
     expect(brightOffline).toBeDefined()
@@ -548,7 +548,7 @@ test("rendezvous and capability warnings pulse softly and remain readable", asyn
     expect(foregroundFor(dim, "Out-of-sync with MeshTalk")).not.toEqual(brightRendezvous)
     expect(foregroundFor(dim, "Limited: This peer")).not.toEqual(brightCapability)
     expect(foregroundFor(dim, "Offline: messages queue")).not.toEqual(brightOffline)
-    expect(foregroundFor(dim, "Messages blocked until")).not.toEqual(brightFriend)
+    expect(foregroundFor(dim, "Messaging is blocked until")).not.toEqual(brightFriend)
   } finally { await close(dim) }
 
   const staticWarning = await testRender(<ConversationPanel {...warningProps} flashingEnabled={false} blinkOn={false} />, { width: 80, height: 26 })
@@ -557,7 +557,7 @@ test("rendezvous and capability warnings pulse softly and remain readable", asyn
     expect(foregroundFor(staticWarning, "Out-of-sync with MeshTalk")).toEqual(brightRendezvous)
     expect(foregroundFor(staticWarning, "Limited: This peer")).toEqual(brightCapability)
     expect(foregroundFor(staticWarning, "Offline: messages queue")).toEqual(brightOffline)
-    expect(foregroundFor(staticWarning, "Messages blocked until")).toEqual(brightFriend)
+    expect(foregroundFor(staticWarning, "Messaging is blocked until")).toEqual(brightFriend)
   } finally { await close(staticWarning) }
 })
 
@@ -638,8 +638,232 @@ test("history selection and unread visibility retain their message IDs", async (
   } finally { await close(setup) }
 })
 
+test("unread highlights animate through an OpenTUI overlay", async () => {
+  const props = panelProps(80)
+  props.unreadMessageStates = {
+    m1: {
+      conversationKey: "peer:alex",
+      receivedAt: Date.now(),
+      visibleAt: Date.now(),
+    },
+  }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    await settle(setup, "updated notes")
+    const overlay = setup.renderer.root.findDescendantById("unread-highlight-m1")!
+    expect(overlay).toBeDefined()
+    expect(overlay.opacity).toBeLessThan(1)
+  } finally { await close(setup) }
+})
+
+test("delivery details are shown for group messages, not direct messages", async () => {
+  const directProps = panelProps(80)
+  const directMessage = directProps.conversationItems[1]!
+  if (directMessage.type !== "message") throw new Error("expected message")
+  directMessage.message.blocked = 1
+  const direct = await testRender(<ConversationPanel {...directProps} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(direct, "Looks good")
+    expect(frame).toContain("blocked")
+    expect(frame).not.toContain("click for details")
+  } finally { await close(direct) }
+
+  const groupProps = panelProps(80)
+  groupProps.selected = undefined
+  groupProps.selectedGroup = group
+  groupProps.selectedGroupId = group.group_id
+  groupProps.selectionKey = "group:team"
+  const groupMessage = groupProps.conversationItems[1]!
+  if (groupMessage.type !== "message") throw new Error("expected message")
+  groupMessage.message.group_id = group.group_id
+  groupMessage.message.deliveries = [{ recipient_id: "alex", display_name: "Alex Morgan", status: "delivered", updated_at: 1788580861 }]
+  const groupSetup = await testRender(<ConversationPanel {...groupProps} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(groupSetup, "Looks good")
+    expect(frame).toContain("click for details")
+  } finally { await close(groupSetup) }
+})
+
+test("sidebar no-peers empty state offers friend, connection, and LAN help actions", async () => {
+  const props = sidebarProps(120)
+  props.peers = []
+  props.groups = []
+  let added = 0
+  let connection = 0
+  let lanHelp = 0
+  props.onAddFriend = () => { added++ }
+  props.onOpenConnection = () => { connection++ }
+  props.onOpenLanHelp = () => { lanHelp++ }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "No peers yet")
+    expect(frame).toContain("No peers yet")
+    expect(frame.replace(/\s+/g, " ")).toContain("LAN-only? You're good")
+    expect(frame).toContain("Add friend")
+    expect(frame).toContain("Connection")
+    const add = setup.renderer.root.findDescendantById("sidebar-empty-peers-add")!
+    await act(async () => { await setup.mockMouse.click(add.screenX + 1, add.screenY) })
+    expect(added).toBe(1)
+    const conn = setup.renderer.root.findDescendantById("sidebar-empty-peers-connection")!
+    await act(async () => { await setup.mockMouse.click(conn.screenX + 1, conn.screenY) })
+    expect(connection).toBe(1)
+    const help = setup.renderer.root.findDescendantById("sidebar-empty-peers-lan-help")!
+    await act(async () => { await setup.mockMouse.click(help.screenX + 1, help.screenY) })
+    expect(lanHelp).toBe(1)
+    const dismiss = setup.renderer.root.findDescendantById("sidebar-empty-peers-dismiss")!
+    await act(async () => { await setup.mockMouse.click(dismiss.screenX + 1, dismiss.screenY) })
+    const collapsed = await settle(setup, "Waiting for peers")
+    expect(collapsed).toContain("Waiting for peers")
+  } finally { await close(setup) }
+})
+
+test("sidebar no-groups empty state offers create and join actions", async () => {
+  const props = sidebarProps(120)
+  props.groups = []
+  let created = 0
+  let joined = 0
+  props.onCreateGroup = () => { created++ }
+  props.onJoinGroup = () => { joined++ }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "No groups yet")
+    expect(frame).toContain("Create group")
+    expect(frame).toContain("Join with invite")
+    const create = setup.renderer.root.findDescendantById("sidebar-empty-groups-create")!
+    await act(async () => { await setup.mockMouse.click(create.screenX + 1, create.screenY) })
+    expect(created).toBe(1)
+    const join = setup.renderer.root.findDescendantById("sidebar-empty-groups-join")!
+    await act(async () => { await setup.mockMouse.click(join.screenX + 1, join.screenY) })
+    expect(joined).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("empty DM keeps optional tips hidden without losing the draft", async () => {
+  const props = panelProps(80)
+  props.conversationItems = []
+  props.drafts = { "peer:alex": "Keep me" }
+  let attached = 0
+  props.onAttachFile = () => { attached++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "No messages yet")
+    expect(frame).toContain("No messages yet")
+    expect(frame).toContain("Tips")
+    expect(frame).not.toContain("Write first message")
+    expect(frame).not.toContain("Attach file")
+    const tips = setup.renderer.root.findDescendantById("empty-conversation-dm-tips")!
+    await act(async () => { await setup.mockMouse.click(tips.screenX + 1, tips.screenY) })
+    const expanded = await settle(setup, "Write first message")
+    expect(expanded).toContain("Attach file")
+    expect(expanded).toContain("Hide tips")
+    const attach = setup.renderer.root.findDescendantById("empty-conversation-dm-tips-expanded-attach")!
+    await act(async () => { await setup.mockMouse.click(attach.screenX + 1, attach.screenY) })
+    expect(attached).toBe(1)
+    expect(props.composerRef.current!.plainText).toBe("Keep me")
+    const dismiss = setup.renderer.root.findDescendantById("empty-conversation-dm-tips-expanded-dismiss")!
+    await act(async () => { await setup.mockMouse.click(dismiss.screenX + 1, dismiss.screenY) })
+    const collapsed = await settle(setup, "Tips")
+    expect(collapsed).toContain("No messages yet")
+    expect(collapsed).not.toContain("Write first message")
+    expect(props.composerRef.current!.plainText).toBe("Keep me")
+  } finally { await close(setup) }
+})
+
+test("empty group keeps optional tips hidden until requested", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.conversationItems = []
+  props.selectionKey = "group:team"
+  let attached = 0
+  props.onAttachFile = () => { attached++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "Say hello to the group")
+    expect(frame).toContain("Tips")
+    expect(frame).not.toContain("Write first message")
+    const tips = setup.renderer.root.findDescendantById("empty-conversation-group-tips")!
+    await act(async () => { await setup.mockMouse.click(tips.screenX + 1, tips.screenY) })
+    const expanded = await settle(setup, "Write first message")
+    expect(expanded).toContain("Attach file")
+    const attach = setup.renderer.root.findDescendantById("empty-conversation-group-tips-expanded-attach")!
+    await act(async () => { await setup.mockMouse.click(attach.screenX + 1, attach.screenY) })
+    expect(attached).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("remote discovery warning offers a connection action and LAN reassurance", async () => {
+  const props = panelProps(80)
+  props.hasRooms = true
+  props.controlStatus = { connected: false, reconnect_attempts: 1 }
+  let opened = 0
+  props.onOpenConnection = () => { opened++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "Remote discovery is not configured")
+    expect(frame.replace(/\s+/g, " ")).toContain("LAN-only? You're good")
+    expect(frame).toContain("Open connection")
+    const action = setup.renderer.root.findDescendantById("rendezvous-action-open")!
+    await act(async () => { await setup.mockMouse.click(action.screenX + 1, action.screenY) })
+    expect(opened).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("no-selection empty state offers friend and group actions", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = undefined
+  props.selectionKey = undefined
+  props.conversationItems = []
+  let added = 0
+  let created = 0
+  props.onAddFriend = () => { added++ }
+  props.onCreateGroup = () => { created++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "No conversation selected")
+    expect(frame).toContain("Add friend")
+    expect(frame).toContain("Create group")
+    const add = setup.renderer.root.findDescendantById("empty-no-selection-add")!
+    await act(async () => { await setup.mockMouse.click(add.screenX + 1, add.screenY) })
+    expect(added).toBe(1)
+    const create = setup.renderer.root.findDescendantById("empty-no-selection-create")!
+    await act(async () => { await setup.mockMouse.click(create.screenX + 1, create.screenY) })
+    expect(created).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("stranger conversation shows one concise friend action row", async () => {
+  const props = panelProps(80)
+  props.selected = { ...peers[0]!, is_friend: false, friend_request: undefined }
+  props.conversationItems = []
+  const seen: string[] = []
+  props.onFriendAction = action => { seen.push(action) }
+  let attached = 0
+  props.onAttachFile = () => { attached++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "You need to be friends")
+    expect(frame).toContain("You need to be friends to message.")
+    expect(frame).toContain("Add friend")
+    expect(frame).toContain("Block")
+    expect(frame).toContain("Inbox")
+    expect(frame).not.toContain("Messages blocked until your friend request")
+    expect(frame).not.toContain("Ctrl+P > Friends > Add friend")
+    expect(frame).not.toContain("Alt+1 Add friend")
+    expect(frame).not.toContain("No messages yet")
+    expect(frame).not.toContain("Write first message")
+    expect(frame).not.toContain("Attach file")
+    expect(frame).not.toContain("Hide tips")
+    const action = setup.renderer.root.findDescendantById("friend-inline-add")!
+    await act(async () => { await setup.mockMouse.click(action.screenX + 1, action.screenY) })
+    expect(seen).toContain("add")
+  } finally { await close(setup) }
+})
+
 for (const width of [80, 48, 32]) {
-  test(`status replaces hints without moving the composer at ${width} columns`, async () => {
+  test(`status keeps the settings shortcut without moving the composer at ${width} columns`, async () => {
     const props = panelProps(chatLayout(width).panelWidth)
     let changeStatus: (status: string) => void = noop
     function Fixture() {
@@ -656,7 +880,7 @@ for (const width of [80, 48, 32]) {
       let frame = await settle(setup)
       expect(frame).toContain("Message sent.")
       expect(frame).not.toContain("Enter send")
-      expect(frame).not.toContain("Ctrl+P settings")
+      expect(frame).toContain("Ctrl+P settings")
       expect(props.composerRef.current!.screenY).toBe(y)
       expect(props.scrollboxRef.current!.viewport.height).toBe(historyHeight)
       await act(async () => { changeStatus("Connection error: " + "More details. ".repeat(50) + "End of status.") })
@@ -668,7 +892,7 @@ for (const width of [80, 48, 32]) {
       expect(frame.replace(/\s+/g, " ")).toContain("End of status.")
       await act(async () => { changeStatus(DEFAULT_STATUS) })
       frame = await settle(setup)
-      expect(frame).toContain("Enter send")
+      expect(frame).not.toContain("Enter send")
       expect(frame).toContain("Ctrl+P settings")
       expect(props.composerRef.current!.screenY).toBe(y)
     } finally { await close(setup) }

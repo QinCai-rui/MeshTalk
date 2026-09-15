@@ -28,6 +28,7 @@ __pycache__/
 
 # Data
 .meshtalk/
+docker_data/
 
 # IDE
 .vscode/
@@ -47,3 +48,11 @@ Thumbs.db
 
 # opencode config
 opencode.json
+.review-context/
+
+# superpowers working docs (never commit)
+docs/superpowers/
+.superpowers/
+
+# local worktrees
+.worktrees/
