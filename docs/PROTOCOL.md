@@ -220,7 +220,7 @@ encrypted HANDSHAKE_CONFIRM ------------------------------>
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
-`file_transfer`, `typing_indicators`, `message_replies`,
+`file_transfer`, `typing_indicators`, `message_replies`, `at_mentions`,
 `direct_route_recovery`). The agreed capability set is the **intersection** of
 both peers' advertised sets, and higher-level code gates behaviour on it:
 `text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
@@ -228,7 +228,10 @@ enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
 `friend_requests` enables the friend-request packet family, `group_chat` enables
 the group packet family, and `file_transfer` enables file offer/chunk/ack
 packets (section 7.6). `message_replies` enables reply references on message
-packets. `direct_route_recovery` enables probing and promotion of an introduced
+packets. `at_mentions` marks a peer as able to render `<@user_id>` mention
+tokens as highlighted pills; senders transitively downgrade mention content
+to plain `@Display Name` text for peers that do not advertise it, so older
+peers stay readable instead of seeing raw tokens. `direct_route_recovery` enables probing and promotion of an introduced
 direct UDP route while an established remote UDP session is using DERP. It does
 not gate the initial direct connection attempt or the existing LAN TCP takeover
 behavior, so older peers retain their established behavior; an older peer
@@ -872,7 +875,9 @@ authenticated peer's signing key; mismatched sender_id/responder_id is rejected.
   escapes `<@` so `\<@id>` is a literal and `\\` escapes to a single `\`
   (`\\<@id>` is a mention preceded by `\`). The virtual token `<@everyone>`
   mentions the whole group and is carried as `["everyone"]` instead of
-  enumerating every member's id.
+  enumerating every member's id. Recipients without the `at_mentions`
+  capability receive the same message with tokens pre-rendered to plain
+  `@Display Name` text.
 - Profiles (PROFILE): {peer_id, display_name, tui_active, signature, dnd,
   dnd_signature}. Broadcast to every active peer on name change
   (broadcast_profile_update); tui_active reflects whether any TUI client is
@@ -1051,7 +1056,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators, message_replies, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators, message_replies, at_mentions, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |

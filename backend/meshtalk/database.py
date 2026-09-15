@@ -52,6 +52,41 @@ def extract_mentions(content: str) -> list[str]:
             mentions.append(peer_id)
     return mentions
 
+
+def render_mentions_plain(content: str, names: dict[str, str]) -> str:
+    r"""Render `<@user_id>` tokens as plain `@Display Name` text.
+
+    Used for recipients without mention support so mentions stay readable
+    instead of arriving as raw tokens. Escape rules mirror the rich client:
+    `\\` becomes `\`, `\\<@id>` renders the literal `<@id>`, and a lone
+    `\` before any other character is left untouched.
+    """
+    parts: list[str] = []
+    i = 0
+    n = len(content)
+    while i < n:
+        ch = content[i]
+        if ch == "\\" and i + 1 < n and content[i + 1] == "\\":
+            parts.append("\\")
+            i += 2
+            continue
+        if ch == "\\":
+            match = MENTION_TOKEN_RE.match(content, i + 1)
+            if match:
+                parts.append(match.group(0))
+                i += 1 + len(match.group(0))
+                continue
+        if ch == "<":
+            match = MENTION_TOKEN_RE.match(content, i)
+            if match:
+                peer_id = match.group(1)
+                parts.append("@everyone" if peer_id == "everyone" else "@" + names.get(peer_id, "unknown"))
+                i += len(match.group(0))
+                continue
+        parts.append(ch)
+        i += 1
+    return "".join(parts)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS peers (
     peer_id TEXT PRIMARY KEY,

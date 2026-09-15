@@ -126,6 +126,45 @@ export function mentionsEveryone(payload: unknown): boolean {
 }
 
 /**
+ * Shared mention scan: `\\` collapses to `\`, `\<@id>` is a literal, `<@id>`
+ * is a mention, and a lone `\` before anything else stays untouched (so
+ * paths like `C:\new` survive). Mirrors the backend escape rules.
+ */
+function scanMentionContent(
+  content: string,
+  onText: (text: string) => void,
+  onMention: (peerId: string) => void,
+): void {
+  let i = 0
+  while (i < content.length) {
+    const ch = content[i]!
+    if (ch === "\\" && content[i + 1] === "\\") {
+      onText("\\")
+      i += 2
+      continue
+    }
+    if (ch === "\\") {
+      const escaped = MENTION_AT_RE.exec(content.slice(i + 1))
+      if (escaped) {
+        onText(escaped[0])
+        i += 1 + escaped[0].length
+        continue
+      }
+    }
+    if (ch === "<") {
+      const match = MENTION_AT_RE.exec(content.slice(i))
+      if (match) {
+        onMention(match[1]!)
+        i += match[0].length
+        continue
+      }
+    }
+    onText(ch)
+    i += 1
+  }
+}
+
+/**
  * Render stored `<@user_id>` tokens as `@Display Name` for display.
  * Unknown IDs fall back to `@unknown` so raw tokens never leak into the UI.
  * Escaped tokens (`\<@id>`) render as literal `<@id>` and do not become pills;
@@ -136,24 +175,15 @@ export function renderMentionedContent(
   resolveName: (peerId: string) => string | undefined,
 ): string {
   let result = ""
-  let i = 0
-  while (i < content.length) {
-    if (content[i] === "\\" && i + 1 < content.length) {
-      result += content[i + 1]
-      i += 2
-      continue
-    }
-    const slice = content.slice(i)
-    const match = MENTION_AT_RE.exec(slice)
-    if (match) {
-      const peerId = match[1]!
+  scanMentionContent(
+    content,
+    (text) => {
+      result += text
+    },
+    (peerId) => {
       result += `@${resolveName(peerId) ?? "unknown"}`
-      i += match[0].length
-      continue
-    }
-    result += content[i]!
-    i++
-  }
+    },
+  )
   return result
 }
 
@@ -168,31 +198,22 @@ export function segmentMentionedContent(
 ): MentionSegment[] {
   const segments: MentionSegment[] = []
   let textBuffer = ""
-  let i = 0
   const flushText = () => {
     if (textBuffer) {
       segments.push({ type: "text", text: textBuffer })
       textBuffer = ""
     }
   }
-  while (i < content.length) {
-    if (content[i] === "\\" && i + 1 < content.length) {
-      textBuffer += content[i + 1]!
-      i += 2
-      continue
-    }
-    const slice = content.slice(i)
-    const match = MENTION_AT_RE.exec(slice)
-    if (match) {
+  scanMentionContent(
+    content,
+    (text) => {
+      textBuffer += text
+    },
+    (peerId) => {
       flushText()
-      const peerId = match[1]!
       segments.push({ type: "mention", peerId, name: resolveName(peerId) ?? "unknown" })
-      i += match[0].length
-      continue
-    }
-    textBuffer += content[i]!
-    i++
-  }
+    },
+  )
   flushText()
   return segments
 }
