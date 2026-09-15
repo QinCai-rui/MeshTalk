@@ -340,6 +340,15 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.sender_db.get_file_delivery(file_id, legacy.peer_id))["status"], "unavailable")
         self.assertEqual((await self.sender_db.get_file_delivery(file_id, self.recipient.peer_id))["status"], "sent")
 
+    async def test_flush_purges_undeliverable_acks_without_v2(self):
+        await self.sender_db.add_to_outqueue(
+            self.recipient.peer_id, PacketType.FILE_ACK_V2.value, b"ack-bytes", "ack-file"
+        )
+        self.sender_manager.peer = FakePeer(self.recipient, (CAP_FILE_TRANSFER, CAP_BLOCK_REPORTS))
+        self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
+        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
+        self.assertEqual(self.sender_manager.sent, [])
+
     async def test_group_retry_explicit_legacy_recipient_raises(self):
         group_id = self.sender_settings.create_room("Mixed retry").id
         legacy = Identity.generate("Legacy")
@@ -353,6 +362,22 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "file_transfer_v2"):
             await self.sender_transfer.retry_file(file_id, recipient_id=legacy.peer_id)
         self.assertEqual((await self.sender_db.get_file_delivery(file_id, legacy.peer_id))["status"], "unavailable")
+        self.assertEqual(self.sender_manager.sent, [])
+
+    async def test_group_retry_blocked_member_reports_blocked(self):
+        group_id = self.sender_settings.create_room("Blocked retry").id
+        blocked = Identity.generate("Blocked")
+        for identity in (self.sender, self.recipient, blocked):
+            await self.sender_db.upsert_group_member(group_id, identity.peer_id, identity.display_name)
+        source = self.root / "blockedretry.txt"
+        source.write_bytes(b"blocked retry")
+        file_id = await self.sender_transfer.send_group_file(group_id, str(source))
+        await self.sender_db.set_file_delivery(file_id, blocked.peer_id, "failed")
+        await self.sender_db.block_peer(blocked.peer_id, "Blocked")
+        self.sender_manager.sent.clear()
+        with self.assertRaisesRegex(ValueError, "blocked"):
+            await self.sender_transfer.retry_file(file_id, recipient_id=blocked.peer_id)
+        self.assertEqual((await self.sender_db.get_file_delivery(file_id, blocked.peer_id))["status"], "unavailable")
         self.assertEqual(self.sender_manager.sent, [])
 
     async def test_flush_sends_no_bytes_without_v2(self):

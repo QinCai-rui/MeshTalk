@@ -203,13 +203,14 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
         </text>
         {!isBatch && singleRetryable && retryEnabled && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box>}
         {!isBatch && isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries, file.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
-        {headerCaption ? <text wrapMode="word">{headerCaption}</text> : null}
+        {!isBatch && headerCaption ? <text wrapMode="word">{headerCaption}</text> : null}
         {attachments.map((attachment) => {
           const unavailable = isLocalFileMissing(attachment.file_path) && !["queued", "transferring", "receiving"].includes(attachment.status)
           const attachmentDeliveries = fileDeliveriesById.get(attachment.file_id) ?? []
           const attachmentRetryable = isLocal && retryableStatus(attachment.status, attachment.awaiting_ack_at)
           return <box key={attachment.file_id} style={{ flexDirection: "column" }}>
             <text wrapMode="word"><span fg={theme.accent}>{attachment.filename}</span><span fg={theme.muted}> · {(attachment.file_size / 1024).toFixed(1)} KiB{attachments.length > 1 ? fileStatusLabel(attachment.status) : ""}</span>{isBatch && attachmentRetryable && retryEnabled ? <span fg={theme.text}> · </span> : null}</text>
+            {isBatch && attachment.caption ? <text wrapMode="word">{attachment.caption}</text> : null}
             {isBatch && attachmentRetryable && retryEnabled ? <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(attachment.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box> : null}
             {isBatch && isLocal && selectedGroup ? <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(attachmentDeliveries, attachment.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(attachmentDeliveries)} <u>(click for details)</u></text></box> : null}
             {unavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}

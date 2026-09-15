@@ -309,7 +309,7 @@ class FileTransferManager:
         if not group_id and not await self._supports_v2(recipients[0]):
             raise ValueError("Recipient does not support file_transfer_v2; ask them to upgrade MeshTalk to receive files")
         if group_id and not any([await self._group_recipient_eligible(group_id, recipient) for recipient in recipients]):
-            raise ValueError("No group members support file_transfer_v2; ask them to upgrade MeshTalk to receive files")
+            raise ValueError("No group members can receive files (members may be blocked, inactive, or on a client without file_transfer_v2)")
         source = self._validate_source(file_path)
         caption = self._validate_caption(caption)
         file_id = uuid.uuid4().hex
@@ -352,6 +352,17 @@ class FileTransferManager:
     async def _group_recipient_eligible(self, group_id: str, recipient: str) -> bool:
         member = await self.db.get_group_member(group_id, recipient)
         return bool(member and member["active"] and not await self.db.is_peer_blocked(recipient) and await self._supports_v2(recipient))
+
+    async def _group_recipient_blocked_reason(self, group_id: str, recipient: str) -> str:
+        """Explain why a group member cannot receive files, most actionable first."""
+        member = await self.db.get_group_member(group_id, recipient)
+        if not member or not member["active"]:
+            return "Recipient is not an active member of this group"
+        if await self.db.is_peer_blocked(recipient):
+            return "Recipient is blocked; unblock them to retry"
+        if not await self._supports_v2(recipient):
+            return "Recipient does not support file_transfer_v2; ask them to upgrade MeshTalk to receive files"
+        return "Recipient cannot receive files"
 
     async def _active_group_sender(self, group_id: str) -> bool:
         group = (self.settings.rooms.get(group_id) if self.settings else None) or await self.db.get_group(group_id)
@@ -547,15 +558,21 @@ class FileTransferManager:
                     await self.db.update_file_transfer(file_id, status="failed")
                     self._emit({"event": "file_failed", "file_id": file_id, "group_id": transfer["group_id"]})
             pending = [item for item in pending if item["packet_type"] not in legacy_types]
-        # ACKs are receiver-owned and have no sender transfer row.
+        # ACKs are receiver-owned and have no sender transfer row. They are
+        # regenerated on resume, so ones a downgraded peer cannot receive are
+        # purged instead of accumulating.
         for item in pending:
-            if item["packet_type"] == PacketType.FILE_ACK_V2.value and peer.supports(CAP_FILE_TRANSFER_V2):
-                try:
-                    await self.peer_manager.send_packet(peer, Packet(PacketType.FILE_ACK_V2, item["encrypted_payload"]))
-                except Exception:
-                    continue
+            if item["packet_type"] != PacketType.FILE_ACK_V2.value:
+                continue
+            if not peer.supports(CAP_FILE_TRANSFER_V2):
                 await self.db.remove_from_outqueue(item["id"])
-                flushed += 1
+                continue
+            try:
+                await self.peer_manager.send_packet(peer, Packet(PacketType.FILE_ACK_V2, item["encrypted_payload"]))
+            except Exception:
+                continue
+            await self.db.remove_from_outqueue(item["id"])
+            flushed += 1
         file_ids = {item["message_id"] for item in pending if item["packet_type"] in (PacketType.FILE_OFFER_V2.value, PacketType.FILE_CHUNK_V2.value) and item["message_id"]}
         for file_id in file_ids:
             lock_key = (file_id, peer_id)
@@ -661,7 +678,7 @@ class FileTransferManager:
                     if transfer["group_id"] and not await self._group_recipient_eligible(transfer["group_id"], recipient):
                         await self._set_delivery(transfer, recipient, "unavailable")
                         if recipient_id is not None:
-                            raise ValueError("Recipient does not support file_transfer_v2; ask them to upgrade MeshTalk to receive files")
+                            raise ValueError(await self._group_recipient_blocked_reason(transfer["group_id"], recipient))
                         continue
                     await self._deliver_v2(transfer, recipient)
             finally:
