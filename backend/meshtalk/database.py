@@ -8,10 +8,84 @@ from __future__ import annotations
 import time
 import os
 import json
+import re
 from pathlib import Path
 
 import aiosqlite
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+MENTION_TOKEN_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
+
+# Matches a mention token only when its `<` is not escaped by an odd
+# run of preceding backslashes; the backslash itself escapes the next
+# character, and `\\` escapes to a literal `\`.
+_MENTION_AT_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
+
+
+def _is_escaped(content: str, index: int) -> bool:
+    r"""Whether the character at *index* is escaped by a preceding `\`."""
+    backslashes = 0
+    i = index - 1
+    while i >= 0 and content[i] == "\\":
+        backslashes += 1
+        i -= 1
+    return backslashes % 2 == 1
+
+
+def extract_mentions(content: str) -> list[str]:
+    r"""Extract unique mentioned peer IDs (`<@user_id>` tokens) in order.
+
+    A token `\<@id>` (odd backslashes before `<`) is an escaped literal and
+    does not count as a mention; `\\` collapses to a single `\` so
+    `\\<@id>` is a mention preceded by a literal `\`.
+    """
+    if not isinstance(content, str) or not content:
+        return []
+    seen: set[str] = set()
+    mentions: list[str] = []
+    for match in _MENTION_AT_RE.finditer(content):
+        if _is_escaped(content, match.start()):
+            continue
+        peer_id = match.group(1)
+        if peer_id not in seen:
+            seen.add(peer_id)
+            mentions.append(peer_id)
+    return mentions
+
+
+def render_mentions_plain(content: str, names: dict[str, str]) -> str:
+    r"""Render `<@user_id>` tokens as plain `@Display Name` text.
+
+    Used for recipients without mention support so mentions stay readable
+    instead of arriving as raw tokens. Escape rules mirror the rich client:
+    `\\` becomes `\`, `\\<@id>` renders the literal `<@id>`, and a lone
+    `\` before any other character is left untouched.
+    """
+    parts: list[str] = []
+    i = 0
+    n = len(content)
+    while i < n:
+        ch = content[i]
+        if ch == "\\" and i + 1 < n and content[i + 1] == "\\":
+            parts.append("\\")
+            i += 2
+            continue
+        if ch == "\\":
+            match = MENTION_TOKEN_RE.match(content, i + 1)
+            if match:
+                parts.append(match.group(0))
+                i += 1 + len(match.group(0))
+                continue
+        if ch == "<":
+            match = MENTION_TOKEN_RE.match(content, i)
+            if match:
+                peer_id = match.group(1)
+                parts.append("@everyone" if peer_id == "everyone" else "@" + names.get(peer_id, "unknown"))
+                i += len(match.group(0))
+                continue
+        parts.append(ch)
+        i += 1
+    return "".join(parts)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS peers (
@@ -187,6 +261,8 @@ class Database:
             await self._db.execute("ALTER TABLE peers ADD COLUMN signing_public_key BLOB")
         if "tui_active" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN tui_active INTEGER NOT NULL DEFAULT 0")
+        if "dnd" not in columns:
+            await self._db.execute("ALTER TABLE peers ADD COLUMN dnd INTEGER NOT NULL DEFAULT 0")
         if "lan_endpoint" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN lan_endpoint TEXT")
         if "remote_endpoint" not in columns:
@@ -328,11 +404,12 @@ class Database:
     async def upsert_peer(
         self, peer_id: str, display_name: str, public_key: bytes, signing_public_key: bytes,
         tui_active: bool = False, capabilities: list[str] | None = None,
+        dnd: bool = False,
     ) -> None:
         """Insert or update peer information including keys and online status."""
         await self._db.execute(
-            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active, capabilities)
-               VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active, capabilities, dnd)
+               VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
                ON CONFLICT(peer_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  public_key = excluded.public_key,
@@ -340,8 +417,9 @@ class Database:
                  last_seen = excluded.last_seen,
                    is_online = 1,
                    tui_active = excluded.tui_active,
+                   dnd = excluded.dnd,
                    capabilities = COALESCE(excluded.capabilities, peers.capabilities)""",
-            (peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active), json.dumps(sorted(set(capabilities))) if capabilities is not None else None),
+            (peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active), json.dumps(sorted(set(capabilities))) if capabilities is not None else None, int(dnd)),
         )
         await self._db.commit()
 
@@ -781,6 +859,7 @@ class Database:
             messages = [dict(row) async for row in cursor]
         for message in messages:
             message["content"] = self._decrypt_content(message["content"]) or ""
+            message["mentions"] = extract_mentions(message["content"])
             message["deliveries"] = await self.get_group_deliveries(message["message_id"])
         return messages
 

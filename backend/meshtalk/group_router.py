@@ -9,11 +9,12 @@ from typing import Awaitable, Callable
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .database import Database
+from .database import Database, extract_mentions, render_mentions_plain
 from .encryption import decrypt_as_recipient, encrypt_for_recipient
 from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
 from .protocol import (
+    CAP_AT_MENTIONS,
     CAP_GROUP_CHAT,
     CAP_MESSAGE_REPLIES,
     MAX_PACKET_SIZE,
@@ -132,6 +133,7 @@ class GroupRouter:
         for member in members:
             status = "unavailable" if await self.db.is_peer_blocked(member["peer_id"]) else "pending"
             await self.db.set_group_delivery(message_id, member["peer_id"], status)
+        plain_names: dict[str, str] | None = None
         for member in members:
             recipient_id = member["peer_id"]
             if await self.db.is_peer_blocked(recipient_id):
@@ -144,11 +146,26 @@ class GroupRouter:
             ):
                 await self.db.set_group_delivery(message_id, recipient_id, "unavailable")
                 continue
+            if peer is not None:
+                mentions_supported = peer.supports(CAP_AT_MENTIONS)
+            else:
+                mentions_supported = await self.db.peer_supports(recipient_id, CAP_AT_MENTIONS)
+            if mentions_supported:
+                outgoing = plaintext
+            else:
+                # Peers without mention support would display raw `<@id>`
+                # tokens; send pre-rendered `@Display Name` text instead so
+                # mentions stay readable for them.
+                if plain_names is None:
+                    plain_names = {m["peer_id"]: m["display_name"] for m in members}
+                    plain_names["everyone"] = "everyone"
+                    plain_names[self.identity.peer_id] = self.identity.display_name
+                outgoing = render_mentions_plain(content, plain_names).encode("utf-8")
             try:
                 payload = GroupMessagePayload(
                     message_id, group_id, self.identity.peer_id, recipient_id, created_at, b"", reply_to_message_id=reply_to_message_id
                 )
-                payload.encrypted_content = encrypt_for_recipient(key, plaintext, payload.associated_data())
+                payload.encrypted_content = encrypt_for_recipient(key, outgoing, payload.associated_data())
                 payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
                 encoded = payload.encode()
                 if len(encoded) > MAX_PACKET_SIZE:
@@ -224,6 +241,7 @@ class GroupRouter:
                     "event": "group_message", "message_id": message.message_id,
                     "group_id": message.group_id, "sender_id": message.sender_id,
                     "content": content, "created_at": message.created_at, "reply_to_message_id": message.reply_to_message_id,
+                    "mentions": extract_mentions(content),
                 })
         acknowledgement = GroupAckPayload(message.message_id, message.group_id, self.identity.peer_id)
         acknowledgement.signature = self.identity.signing_private_key.sign(acknowledgement.signed_bytes())

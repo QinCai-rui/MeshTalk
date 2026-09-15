@@ -220,7 +220,7 @@ encrypted HANDSHAKE_CONFIRM ------------------------------>
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
-`file_transfer`, `file_transfer_v2`, `typing_indicators`, `message_replies`,
+`file_transfer`, `file_transfer_v2`, `typing_indicators`, `message_replies`, `at_mentions`,
 `direct_route_recovery`). The agreed capability set is the **intersection** of
 both peers' advertised sets, and higher-level code gates behaviour on it:
 `text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
@@ -229,7 +229,10 @@ enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
 the group packet family, `file_transfer` enables v1 file offer/chunk/ack
 packets, and `file_transfer_v2` enables the v2 file offer/chunk/ack packets
 (section 7.6). `message_replies` enables reply references on message
-packets. `direct_route_recovery` enables probing and promotion of an introduced
+packets. `at_mentions` marks a peer as able to render `<@user_id>` mention
+tokens as highlighted pills; senders transitively downgrade mention content
+to plain `@Display Name` text for peers that do not advertise it, so older
+peers stay readable instead of seeing raw tokens. `direct_route_recovery` enables probing and promotion of an introduced
 direct UDP route while an established remote UDP session is using DERP. It does
 not gate the initial direct connection attempt or the existing LAN TCP takeover
 behavior, so older peers retain their established behavior; an older peer
@@ -871,10 +874,31 @@ authenticated peer's signing key; mismatched sender_id/responder_id is rejected.
   the removal locally so both views converge.
 - Mute: mute(peer_id, timeout) silences notifications for timeout seconds (0 =
   permanent). Stored in settings.json.
-- Profiles (PROFILE): {peer_id, display_name, tui_active, signature}. Broadcast
-  to every active peer on name change (broadcast_profile_update); tui_active
-  reflects whether any TUI client is connected (drives "active/away/offline"
-   presence in peers).
+- Mentions: group message content may carry `<@user_id>` tokens (inserted by
+  the sender's `@` member picker). The backend extracts the mentioned IDs and
+  includes them as `mentions` in the `group_message` event, in `group_messages`
+  history entries, and in the `group_send` response. Clients decide
+  "mentioned me" solely from that payload array — message content is never
+  parsed for detection (it is only rendered as `@Display Name`). Receivers
+  highlight the message, badge the group, and raise a mention notification
+  (bypasses group mutes, still gated by Do Not Disturb). A leading `\`
+  escapes `<@` so `\<@id>` is a literal and `\\` escapes to a single `\`
+  (`\\<@id>` is a mention preceded by `\`). The virtual token `<@everyone>`
+  mentions the whole group and is carried as `["everyone"]` instead of
+  enumerating every member's id. Recipients without the `at_mentions`
+  capability receive the same message with tokens pre-rendered to plain
+  `@Display Name` text.
+- Profiles (PROFILE): {peer_id, display_name, tui_active, signature, dnd,
+  dnd_signature}. Broadcast to every active peer on name change
+  (broadcast_profile_update); tui_active reflects whether any TUI client is
+  connected (drives "active/away/offline" presence in peers). dnd carries Do
+  Not Disturb state under a separate signature so older clients (which verify
+  only the legacy signature and ignore the unknown fields) keep accepting
+  profile updates.
+- Do Not Disturb: dnd(enabled) pauses all notifications locally and broadcasts
+  the state to peers, who render the peer with a red presence circle. Stored
+  in settings.json and reported as dnd (per peer) in peers and dnd_enabled
+  in identity.
 - Typing (TYPING): a signed envelope `{sender_id, recipient_id, created_at,
   encrypted_content, signature}`. The encrypted body is `{group_id|null,
   is_typing}`. Direct events are friend-only; group events require an active
@@ -906,7 +930,7 @@ over IPC.
 |--------|--------|---------|
 | send | recipient_id, content, reply_to_message_id? | message_id |
 | delete_message | message_id, group_id?, file? | Removes the local message or attachment history and any local attachment file. Never transmitted to peers. |
-| peers | - | List of peers with presence, unread counts, friend/blocked flags, network info. |
+| peers | - | List of peers with presence, DND state, unread counts, friend/blocked flags, network info. |
 | remove_peer | peer_id | Removed (only if not connected). |
 | friend_send | peer_id, note? | request_id |
 | friend_respond | request_id, accept | request_id, accepted |
@@ -918,7 +942,7 @@ over IPC.
 | blocked_peers | - | Blocked list. |
 | tui_presence | client_id, active | Toggles TUI-active presence. |
 | typing | client_id, recipient_id or group_id, is_typing | Transient typing update; exactly one conversation target is required. |
-| identity | - | peer_id, display_name, setup state. |
+| identity | - | peer_id, display_name, setup state, DND state. |
 | status | - | peer_id, connected peers + network info, control URL/connected, public endpoint, rooms. |
 | messages | peer_id | Conversation history (marks read). |
 | set_display_name | display_name | New name; broadcasts PROFILE. |
@@ -930,8 +954,8 @@ over IPC.
 | rooms | - | Room membership counts. |
 | groups | - | Named groups with cached active-member and unread counts. |
 | group_members | group_id | Cached active roster with online state. |
-| group_messages | group_id | Last 200 local messages/system events and per-recipient deliveries; marks read. |
-| group_send | group_id, content, reply_to_message_id? | message_id and per-recipient `sent`, `delivered`, `queued`, or `unavailable` status. |
+| group_messages | group_id | Last 200 local messages/system events, per-message `mentions`, and per-recipient deliveries; marks read. |
+| group_send | group_id, content, reply_to_message_id? | message_id, per-recipient `sent`, `delivered`, `queued`, or `unavailable` status, and `mentions`. |
 | group_leave | group_id | Sends/queues signed leave events, removes local room/group state, returns group_id. |
 | file_send | recipient_id, file_path | file_id — send a file to a direct peer. |
 | group_file_send | group_id, file_path | Per-recipient results — send a file to all active group members. |
@@ -941,6 +965,7 @@ over IPC.
 | files_dir | path? | Get or set the files storage directory (`~/.meshtalk/files` by default). |
 | mute / unmute | peer_id, timeout? | Mute state. |
 | muted_peers | - | Current mutes. |
+| dnd | enabled? | Global Do Not Disturb state; pauses all notifications and broadcasts DND presence to peers. |
 | notifications | setup_dismissed?, delivery?, events? | Global notification preferences. Delivery is `terminal`, `native`, or `disabled`; events controls messages, friend requests, file offers, and completed files. |
 | debug_re_stun | - | Re-run STUN + re-announce. |
 | debug_info | - | Full peer/endpoint/room diagnostic dump. |
@@ -959,7 +984,8 @@ group and affected message/member; `group_sent` reports an offline queued copy
 being flushed, and `group_delivered` reports its recipient ACK.
 `typing` contains `sender_id`, `display_name`, `group_id` (or null),
 `is_typing`, and `created_at`; clients must order updates by `created_at` and
-expire active state locally if no refresh or stop arrives.
+expire active state locally if no refresh or stop arrives. `group_message`
+carries `mentions` (mentioned peer IDs extracted from `<@user_id>` tokens).
 
 The CLI exposes `room create <name>`, `room join`, `groups` / `group list`, and
 `group members|messages|send|leave`. `watch` prints incoming group messages and
@@ -1040,7 +1066,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, file_transfer_v2, typing_indicators, message_replies, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, file_transfer_v2, typing_indicators, message_replies, at_mentions, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |

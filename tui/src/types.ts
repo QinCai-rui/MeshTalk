@@ -6,6 +6,7 @@ export type Peer = {
   last_interaction: number
   unread_count: number
   presence?: "active" | "away" | "offline"
+  dnd?: boolean
   is_friend?: boolean
   is_blocked?: boolean
   friend_request?: "incoming" | "outgoing" | "both" | null
@@ -26,6 +27,7 @@ export type Message = {
   message_id: string; sender_id: string; recipient_id?: string; group_id?: string; content: string
   created_at: number; kind?: string; deliveries?: GroupDelivery[]; delivered?: number; blocked?: number
   queued?: number; failed?: number; received_at?: number; reply_to_message_id?: string | null
+  mentions?: string[]
 }
 export type UnreadMessageState = { conversationKey: string; receivedAt: number; visibleAt?: number }
 export type Group = { group_id: string; name: string; member_count: number; unread_count: number }
@@ -55,8 +57,8 @@ export type Dialog =
   | { kind: "advanced-control-ip" } | { kind: "advanced-stun-ip" } | { kind: "rooms"; rooms: RoomStatus[] }
   | { kind: "room-create" } | { kind: "room-join" } | { kind: "room-created"; roomId: string; invite: string; copied: boolean; created?: boolean }
   | { kind: "room-detail"; room: RoomStatus } | { kind: "group-detail"; group: Group; members: GroupMember[] }
-  | { kind: "rename"; firstRun?: boolean } | { kind: "mute-timeout"; peerId: string; displayName: string }
-  | { kind: "unmute-confirm"; peerId: string; displayName: string } | { kind: "add-friend"; peerId: string; displayName: string }
+  | { kind: "rename"; firstRun?: boolean } | { kind: "mute-timeout"; peerId?: string; groupId?: string; displayName: string }
+  | { kind: "unmute-confirm"; peerId?: string; groupId?: string; displayName: string } | { kind: "add-friend"; peerId: string; displayName: string }
   | { kind: "remove-friend"; peerId: string; displayName: string } | { kind: "friend-requests"; requests: FriendRequest[] }
   | { kind: "friend-request-incoming"; request: FriendRequest } | { kind: "friends" } | { kind: "blocked"; blocked: BlockedPeer[] }
   | { kind: "block-peer-pick" } | { kind: "block-peer"; peerId: string; displayName: string }

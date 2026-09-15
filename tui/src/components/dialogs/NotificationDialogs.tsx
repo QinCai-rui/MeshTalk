@@ -11,6 +11,7 @@ type Props = {
   dialogWidth: number
   identity: { peer_id: string; display_name: string } | undefined
   mutedPeers: Record<string, number>
+  dndEnabled?: boolean
   notificationPreferences: NotificationPreferences | null
   notificationTestDelivery: Exclude<NotificationDelivery, "disabled"> | null
   peers: Peer[]
@@ -24,7 +25,7 @@ type Props = {
 }
 
 export function NotificationDialogs(props: Props) {
-  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, identity, mutedPeers, notificationPreferences, notificationTestDelivery, peers, selectedPeerId, showDialog, testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent, runCommand } = props
+  const { dialog, dialogBusy, dialogError, dialogHeight, dialogWidth, identity, mutedPeers, dndEnabled = false, notificationPreferences, notificationTestDelivery, peers, selectedPeerId, showDialog, testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent, runCommand } = props
   if (dialog.kind === "notification-enable") return <SettingsScreen breadcrumb={["Notifications", "Delivery"]} description="Choose whether MeshTalk may send alerts outside the terminal." dialogHeight={dialogHeight}>
     {dialogBusy ? <SettingsNotice tone="warning">Switch to another terminal tab. The test will be sent in four seconds.</SettingsNotice> : null}
     <SettingsMenu dialogHeight={dialogHeight} headerRows={dialogBusy ? 7 : 4} options={[
@@ -48,20 +49,21 @@ export function NotificationDialogs(props: Props) {
       { section: "Next step", name: "Keep notifications off", description: "Do not send desktop alerts. You can configure this later.", value: "disable", status: "Off" },
     ]} onSelect={(option) => { if (option.value === "test") testNotificationDelivery("native", dialog.firstRun); else disableNotifications(dialog.firstRun) }} />
   </SettingsScreen>
-  if (dialog.kind === "notifications") return <NotificationMenu dialogHeight={dialogHeight} peers={peers} selectedPeerId={selectedPeerId} identity={identity} mutedPeers={mutedPeers} showDialog={showDialog} />
+  if (dialog.kind === "notifications") return <NotificationMenu dialogHeight={dialogHeight} peers={peers} selectedPeerId={selectedPeerId} identity={identity} mutedPeers={mutedPeers} dndEnabled={dndEnabled} showDialog={showDialog} runCommand={runCommand} />
   if (dialog.kind === "notification-settings") return <NotificationSettings dialogBusy={dialogBusy} dialogHeight={dialogHeight} dialogWidth={dialogWidth} notificationPreferences={notificationPreferences} notificationTestDelivery={notificationTestDelivery} notificationEventEnabled={(event) => Boolean(notificationPreferences?.events[event])} showDialog={showDialog} testNotificationDelivery={testNotificationDelivery} toggleNotificationEvent={toggleNotificationEvent} />
   return <NotificationPeer dialogHeight={dialogHeight} peers={peers} selectedPeerId={selectedPeerId} identity={identity} mutedPeers={mutedPeers} runCommand={runCommand} />
 }
 
-function NotificationMenu({ dialogHeight, peers, selectedPeerId, identity, mutedPeers, showDialog }: Pick<Props, "dialogHeight" | "peers" | "selectedPeerId" | "identity" | "mutedPeers" | "showDialog">) {
+function NotificationMenu({ dialogHeight, peers, selectedPeerId, identity, mutedPeers, dndEnabled = false, showDialog, runCommand }: Pick<Props, "dialogHeight" | "peers" | "selectedPeerId" | "identity" | "mutedPeers" | "dndEnabled" | "showDialog" | "runCommand">) {
   const peer = peers.find((item) => item.peer_id === selectedPeerId)
   const isMuted = peer ? !!mutedPeers[peer.peer_id] : false
   const peerStatus = !peer ? "No peer selected" : peer.peer_id === identity?.peer_id ? "This is you" : isMuted ? "Muted" : peer.is_online ? "Alerts allowed" : "Offline"
   return <SettingsScreen breadcrumb={["Notifications"]} description="Manage desktop delivery and alerts from the selected peer." dialogHeight={dialogHeight}>
     <SettingsMenu dialogHeight={dialogHeight} options={[
       { section: "General", name: "Desktop alerts", description: "Choose the delivery method, send a test, and select which events trigger alerts.", value: "desktop" },
+      { section: "General", name: "Do Not Disturb", description: dndEnabled ? "All notifications are paused and peers see you as unavailable. Press Enter to turn off." : "Pause all notifications. Peers will see you as unavailable. Press Enter to turn on.", value: "dnd", status: dndEnabled ? "On" : "Off", tone: dndEnabled ? "warning" : "default" },
       { section: "Selected peer", name: peer ? peer.display_name : "Peer alerts", description: !peer ? "Select a peer in the conversation list first." : peer.peer_id === identity?.peer_id ? "Your own notifications cannot be muted." : !peer.is_online && !isMuted ? `${peer.display_name} is offline and cannot be muted until connected.` : "Mute or unmute alerts from this peer.", value: "peer", status: peerStatus, tone: isMuted ? "warning" : peer ? "default" : "warning" },
-    ]} onSelect={(option) => { if (option.value === "desktop") showDialog({ kind: "notification-settings" }); else showDialog({ kind: "notification-peer" }) }} />
+    ]} onSelect={(option) => { if (option.value === "desktop") showDialog({ kind: "notification-settings" }); else if (option.value === "dnd") runCommand("dnd"); else showDialog({ kind: "notification-peer" }) }} />
   </SettingsScreen>
 }
 

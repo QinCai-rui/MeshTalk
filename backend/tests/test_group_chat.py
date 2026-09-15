@@ -92,6 +92,29 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
                     break
                 await asyncio.sleep(0.02)
 
+    async def test_group_message_event_and_history_carry_mentions(self):
+        bob_id = self.identities[1].peer_id
+        message_id, _ = await self.groups[0].send_message(
+            self.group_id, f"hello <@{bob_id}> and <@{bob_id}>".encode()
+        )
+        plain_id, _ = await self.groups[0].send_message(self.group_id, b"no mentions")
+        received = {}
+        async with asyncio.timeout(3):
+            while message_id not in received or plain_id not in received:
+                while not self.events[1].empty():
+                    event = self.events[1].get_nowait()
+                    if event["event"] == "group_message":
+                        received[event["message_id"]] = event
+                await asyncio.sleep(0.02)
+        self.assertEqual(received[message_id]["mentions"], [bob_id])
+        self.assertEqual(received[plain_id]["mentions"], [])
+        messages = {
+            message["message_id"]: message
+            for message in await self.databases[1].get_group_messages(self.group_id)
+        }
+        self.assertEqual(messages[message_id]["mentions"], [bob_id])
+        self.assertEqual(messages[plain_id]["mentions"], [])
+
     async def test_group_reply_references_original_message(self):
         original_id, _ = await self.groups[0].send_message(self.group_id, b"original")
         for index in (1, 2):

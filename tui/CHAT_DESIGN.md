@@ -28,7 +28,8 @@ its existing UI.
    An underlined `+ N more` link beneath the members opens the full member list.
    Group entries are contiguous with no gap, like DMs.
 - Sidebar peers use the original green/amber/gray presence colours and heart/request
-  arrow markers. The conversation header retains textual state labels; muted state,
+  arrow markers; peers with Do Not Disturb on show a red presence circle and a
+  DND flag instead. The conversation header retains textual state labels; muted state,
   capability limits, and delivery state still use words. Selected rows and the active composer also have a plain `>` marker.
 - The header holds the conversation name and connection/state details. Endpoint
   addresses and long relay descriptions simplify when space is limited.
@@ -39,6 +40,13 @@ its existing UI.
   enabled; Accessibility settings can keep them static.
 - Typing, reply context, input, byte usage, and keyboard help each occupy their own
   layout rows. Temporary status messages replace keyboard hints in a fixed-height footer; long messages scroll inside that area without moving the composer. The footer aligns composer/history hints left and the highlighted settings shortcut right. Nothing is absolutely positioned over editable text.
+- In group chats, typing `@` opens a floating member picker overlaid just above
+  the input without moving the conversation view (Up/Down moves, Tab/Enter picks,
+  Esc cancels, click also picks; long lists scroll internally; the composer
+  stays focused so typing continues). Picks
+  are stored as `<@user_id>` tokens and rendered as `@Display Name`. Messages
+  mentioning you keep a yellow row highlight, and the group's sidebar entry
+  shows a yellow `@N mentioned` badge unless the group is muted.
 - The chat pane receives its actual available width. Its zero flex basis prevents
   an old horizontal layout measurement from pushing the composer offscreen on resize.
 

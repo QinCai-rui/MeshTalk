@@ -98,18 +98,197 @@ test("sidebar uses friend/request markers and mouse selection retains the conver
   let selection: unknown
   const props = sidebarProps(120)
   props.peers = [{ ...peers[0]!, presence: "away", capability_gap: true, friend_request: "both" }]
-  props.mutedPeers = { alex: 1 }
+  props.mutedPeers = {}
   props.setSelection = value => { selection = value }
   const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
   try {
     const frame = await settle(setup)
     expect(frame).toContain("Groups (1)")
     expect(frame).not.toContain("──── Groups")
-    for (const label of ["~", "♥", "↙", "↗", "Limited", "Muted", "3 new"]) expect(frame).toContain(label)
+    for (const label of ["~", "♥", "↙", "↗", "Limited", "3 new"]) expect(frame).toContain(label)
+    expect(frame).not.toContain("Muted")
     for (const label of ["Away", "Offline", "Friend", "Request received", "Request sent"]) expect(frame).not.toContain(label)
     const row = setup.renderer.root.findDescendantById("nav-peer-alex")!
     await act(async () => { await setup.mockMouse.click(row.screenX + 1, row.screenY) })
     expect(selection).toEqual({ kind: "peer", id: "alex" })
+  } finally { await close(setup) }
+})
+
+test("muted peers and groups hide unread badges while staying dimmed", async () => {
+  const props = sidebarProps(120)
+  props.peers = [{ ...peers[0]!, unread_count: 3 }]
+  props.groups = [{ ...group, unread_count: 2 }]
+  props.mutedPeers = { alex: 0 }
+  props.mutedGroups = { team: 0 }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup)
+    expect(frame).toContain("Muted")
+    expect(frame).not.toContain("3 new")
+    expect(frame).not.toContain("2 new")
+  } finally { await close(setup) }
+})
+
+test("top bar shows a mute toggle for the selected conversation", async () => {
+  const props = panelProps(80)
+  let toggled = 0
+  props.mutedPeers = {}
+  props.mutedGroups = {}
+  props.onToggleMute = () => { toggled++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    await settle(setup, "Alex Morgan")
+    const toggle = setup.renderer.root.findDescendantById("mute-toggle")!
+    expect(toggle).toBeDefined()
+    await act(async () => { await setup.mockMouse.click(toggle.screenX + 1, toggle.screenY) })
+    expect(toggled).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("peers with Do Not Disturb show a red circle and DND flag", async () => {
+  const props = sidebarProps(120)
+  props.peers = [{ ...peers[0]!, dnd: true }]
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Alex Morgan")
+    expect(frame).toContain("DND")
+    const fg = foregroundFor(setup, "Alex Morgan") as unknown as { toInts: () => number[] }
+    expect(fg?.toInts()).toEqual([255, 95, 95, 255])
+  } finally { await close(setup) }
+})
+
+test("sidebar shows a Do Not Disturb indicator when DND is on", async () => {
+  const props = sidebarProps(120)
+  props.dndEnabled = true
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Do Not Disturb on")
+    expect(frame).toContain("Do Not Disturb on")
+    const fg = foregroundFor(setup, "Do Not Disturb on") as unknown as { toInts: () => number[] }
+    expect(fg?.toInts()).toEqual([255, 95, 95, 255])
+  } finally { await close(setup) }
+})
+
+test("conversation header marks a peer with Do Not Disturb", async () => {
+  const props = panelProps(80)
+  props.selected = { ...peers[0]!, dnd: true }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "Alex Morgan")
+    expect(frame).toContain("DND")
+  } finally { await close(setup) }
+})
+
+test("Do Not Disturb blocks all desktop notifications", async () => {
+  const { notify } = await import("../notifications")
+  let triggered = 0
+  const renderer = { capabilities: { notifications: true }, triggerNotification: () => { triggered++ } }
+  const preferences = { setup_dismissed: true, delivery: "terminal" as const, events: { messages: true, friend_requests: true, file_offers: true, file_completed: true } }
+  for (const event of ["messages", "friend_requests", "file_offers", "file_completed"] as const)
+    await notify(preferences, event, renderer, "hello", true)
+  expect(triggered).toBe(0)
+  await notify(preferences, "messages", renderer, "hello", false)
+  expect(triggered).toBe(1)
+})
+
+test("mention popup lists matching members above the input and picks on click", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "me", display_name: "Taylor" }] }
+  props.mentionOpen = true
+  props.mentionCandidates = [
+    { peerId: "alex", displayName: "Alex Morgan" },
+    { peerId: "me", displayName: "Taylor", isSelf: true },
+  ]
+  props.mentionSelected = 1
+  let picked: string | undefined
+  props.onMentionPick = (peerId) => { picked = peerId }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    const frame = await settle(setup, "Alex Morgan")
+    expect(setup.renderer.root.findDescendantById("mention-popup")).toBeDefined()
+    expect(frame).toContain("@Alex Morgan")
+    expect(frame).toContain("@Taylor (you)")
+    const row = setup.renderer.root.findDescendantById("mention-pick-alex")!
+    await act(async () => { await setup.mockMouse.click(row.screenX + 1, row.screenY) })
+    expect(picked).toBe("alex")
+  } finally { await close(setup) }
+})
+
+test("stored mention tokens render as display names with a yellow highlight", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "me", display_name: "Taylor" }] }
+  props.conversationItems = [
+    { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "hi <@me> and <@sam> and <@gone>!", mentions: ["me"], created_at: 1788580800 } },
+    { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "alex", content: "no mentions here", mentions: [], created_at: 1788580860 } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    const frame = await settle(setup, "@Taylor")
+    expect(frame).toContain("hi @Taylor and @Sam Chen and @unknown!")
+    expect(frame).not.toContain("<@me>")
+    expect(frame).toContain("no mentions here")
+    const spans = setup.captureSpans().lines.flatMap((line) => line.spans)
+    const bgOf = (text: string) =>
+      (spans.find((span) => span.text === text)?.bg as unknown as { toInts?: () => number[] })?.toInts?.()
+    // The pill itself carries the blue block background...
+    expect(bgOf("@Taylor")).toEqual([29, 78, 137, 255])
+    // ...while the surrounding row keeps the yellow mention highlight.
+    expect(bgOf("hi ")).toEqual([77, 63, 30, 255])
+  } finally { await close(setup) }
+})
+
+test("mention highlight follows the server payload over raw content", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "me", display_name: "Taylor" }] }
+  props.conversationItems = [
+    { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "payload says hi", mentions: ["me"], created_at: 1788580800 } },
+    { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "alex", content: "hi <@me> but payload disagrees", mentions: [], created_at: 1788580860 } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    await settle(setup, "payload says hi")
+    const spans = setup.captureSpans().lines.flatMap((line) => line.spans)
+    const bgOf = (text: string) =>
+      (spans.find((span) => span.text.includes(text))?.bg as unknown as { toInts?: () => number[] })?.toInts?.()
+    // Payload mention highlights even without a token in content...
+    expect(bgOf("payload says hi")).toEqual([77, 63, 30, 255])
+    // ...and an empty payload suppresses the highlight despite the token.
+    expect(bgOf("payload disagrees")).toBeUndefined()
+  } finally { await close(setup) }
+})
+
+test("sidebar highlights groups with unread mentions", async () => {
+  const props = sidebarProps(120)
+  props.groups = [{ ...group, unread_count: 1 }]
+  props.mentionCounts = { team: 2 }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Design studio")
+    expect(frame).toContain("@2 mentioned")
+  } finally { await close(setup) }
+})
+
+test("sidebar hides mention highlights for muted groups", async () => {
+  const props = sidebarProps(120)
+  props.groups = [{ ...group, unread_count: 1 }]
+  props.mentionCounts = { team: 2 }
+  props.mutedGroups = { team: 0 }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Design studio")
+    expect(frame).not.toContain("mentioned")
   } finally { await close(setup) }
 })
 
