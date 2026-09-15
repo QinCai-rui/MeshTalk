@@ -720,17 +720,20 @@ export function useChatActions(deps: ChatActionsDeps) {
     return { valid, missing }
   }
 
-  async function sendFilesDirect(paths: string[], target = selection, caption = ""): Promise<Array<{ path: string; reason: string }>> {
+  async function sendFilesDirect(paths: string[], target = selection, caption = ""): Promise<Array<{ path: string; reason: string; fileId?: string }>> {
     if (!target) throw new Error("Select a peer or group before sending a file.")
     const payload = target.kind === "peer"
       ? paths.length === 1 ? { recipient_id: target.id, file_path: paths[0], caption } : { recipient_id: target.id, paths, caption }
       : paths.length === 1 ? { group_id: target.id, file_path: paths[0], caption } : { group_id: target.id, paths, caption }
     const response = await ipc.send(target.kind === "peer" ? "file_send" : "group_file_send", payload)
-    if (response.error) throw new Error(response.error)
+    if (response.error) {
+      const fileId = typeof response.file_id === "string" ? response.file_id : undefined
+      throw Object.assign(new Error(response.error), fileId ? { fileId } : {})
+    }
     const errors = Array.isArray(response.errors) ? response.errors : []
     const reported = errors.map((entry: unknown) => typeof entry === "string"
       ? { path: entry, reason: "" }
-      : { path: typeof (entry as { path?: unknown }).path === "string" ? (entry as { path: string }).path : "", reason: typeof (entry as { error?: unknown }).error === "string" ? (entry as { error: string }).error : "" })
+      : { path: typeof (entry as { path?: unknown }).path === "string" ? (entry as { path: string }).path : "", reason: typeof (entry as { error?: unknown }).error === "string" ? (entry as { error: string }).error : "", fileId: typeof (entry as { file_id?: unknown }).file_id === "string" ? (entry as { file_id: string }).file_id : undefined })
       .filter((entry) => entry.path)
     const failed = reported.filter((entry) => paths.includes(entry.path))
     const fallbackReason = errors.length ? errors.map((entry) => typeof entry === "string" ? entry : JSON.stringify(entry)).join("; ") : ""
@@ -781,7 +784,8 @@ export function useChatActions(deps: ChatActionsDeps) {
       if (outstanding.length) {
         const detail = outstanding.map((entry) => {
           const name = entry.path.split(/[\\/]/).pop() ?? entry.path
-          return entry.reason ? `${name}: ${entry.reason}` : name
+          const id = entry.fileId ? ` [${entry.fileId.slice(0, 8)}]` : ""
+          return entry.reason ? `${name}: ${entry.reason}${id}` : `${name}${id}`
         }).join("; ")
         if (!pending.image) {
           showDialog({ kind: "file-confirm", paths: outstanding.map((entry) => entry.path), source: pending.source, target: pending.target, caption: pending.caption })

@@ -55,7 +55,9 @@ Commands:
 
 function hasError(response: IPCResponse): boolean {
   if (response.error) {
-    console.error(`Error: ${response.error}`);
+    const ids = [response.file_id, ...(Array.isArray(response.file_ids) ? response.file_ids : [])]
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+    console.error(`Error: ${response.error}${ids.length ? ` (file_id: ${ids.join(", ")})` : ""}`);
     process.exitCode = 1;
     return true;
   }
@@ -131,7 +133,13 @@ export function printTransferStarted(response: IPCResponse, prefix = "File trans
     console.log(`  ${result.file_id}${result.recipient_id ? ` -> ${result.recipient_id}` : ""}`);
   }
   if (Array.isArray(response.errors)) {
-    for (const error of response.errors) console.error(`Error: ${typeof error === "string" ? error : JSON.stringify(error)}`);
+    for (const error of response.errors) {
+      if (typeof error === "string") console.error(`Error: ${error}`);
+      else {
+        const record = error as Record<string, unknown>;
+        console.error(`Error: ${record.path ?? "?"}: ${record.error ?? JSON.stringify(error)}${typeof record.file_id === "string" ? ` (file_id: ${record.file_id})` : ""}`);
+      }
+    }
   }
 }
 

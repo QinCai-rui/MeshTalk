@@ -63,6 +63,9 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         await self.db.upsert_group_member(
             self.group_id, self.sender.peer_id, self.sender.display_name
         )
+        await self.db.upsert_group_member(
+            self.group_id, self.recipient.peer_id, self.recipient.display_name
+        )
         self.recipient_manager = FakePeerManager(self.sender_peer)
         self.receiver = FileTransferManager(
             self.recipient, self.recipient_manager, self.db, self.root / "recipient-files",

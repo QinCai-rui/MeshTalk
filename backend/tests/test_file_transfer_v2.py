@@ -281,8 +281,9 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_ipc_unsupported_send_batch_and_retry_report_errors(self):
         # Execute the actual nested IPC handlers without starting network services.
         tree = ast.parse((Path(__file__).parents[1] / "meshtalk" / "__main__.py").read_text())
-        handlers = [node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
-                    and node.name in ("handle_file_send", "handle_file_retry")]
+        handlers = [node for node in ast.walk(tree)
+                    if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+                    and node.name in ("handle_file_send", "handle_file_retry", "_file_error", "_batch_error")]
         namespace = {"db": self.sender_db, "file_manager": self.sender_transfer}
         exec(compile(ast.Module(body=handlers, type_ignores=[]), "__main__.py", "exec"), namespace)
         source = self.root / "ipc.txt"
@@ -521,8 +522,9 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_batch_all_fail_returns_top_level_error(self):
         tree = ast.parse((Path(__file__).parents[1] / "meshtalk" / "__main__.py").read_text())
-        handlers = [node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
-                    and node.name in ("handle_file_send", "handle_group_file_send")]
+        handlers = [node for node in ast.walk(tree)
+                    if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+                    and node.name in ("handle_file_send", "handle_group_file_send", "_file_error", "_batch_error")]
         namespace = {"db": self.sender_db, "file_manager": self.sender_transfer}
         exec(compile(ast.Module(body=handlers, type_ignores=[]), "__main__.py", "exec"), namespace)
         missing = [str(self.root / "gone-a.txt"), str(self.root / "gone-b.txt")]
@@ -536,6 +538,69 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.recipient_db.upsert_group_member(group_id, self.sender.peer_id, "Sender")
         self.assertFalse(await self.recipient_transfer._authorized_inbound(self.sender_peer, group_id, v2=False))
         self.assertFalse(await self.recipient_transfer._authorized_inbound(self.sender_peer, group_id, v2=True))
+
+    async def test_failed_send_hands_back_file_id(self):
+        tree = ast.parse((Path(__file__).parents[1] / "meshtalk" / "__main__.py").read_text())
+        handlers = [node for node in ast.walk(tree)
+                    if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+                    and node.name in ("handle_file_send", "_file_error", "_batch_error")]
+        namespace = {"db": self.sender_db, "file_manager": self.sender_transfer}
+        exec(compile(ast.Module(body=handlers, type_ignores=[]), "__main__.py", "exec"), namespace)
+        offline_manager = FakePeerManager(None)
+        offline_transfer = FileTransferManager(
+            self.sender, offline_manager, self.sender_db, self.root / "sender-files",
+            settings=self.sender_settings,
+        )
+        await self.sender_db.upsert_peer(
+            self.recipient.peer_id, "Recipient", self.recipient.encryption_public_key_bytes(),
+            self.recipient.signing_public_key_bytes(),
+            capabilities=[CAP_FILE_TRANSFER, CAP_FILE_TRANSFER_V2],
+        )
+        source = self.root / "handback.txt"
+        source.write_bytes(b"handback-data")
+        second = self.root / "handback-two.txt"
+        second.write_bytes(b"handback-two")
+        namespace["file_manager"] = offline_transfer
+
+        async def fail_queue(self, transfer, recipient, key, ranges):
+            await offline_transfer._set_delivery(transfer, recipient, "failed")
+            return False
+
+        with patch.object(FileTransferManager, "_queue_ranges", fail_queue):
+            response = await namespace["handle_file_send"](
+                {"recipient_id": self.recipient.peer_id, "file_path": str(source)})
+            self.assertIn("error", response)
+            self.assertIn("file_id", response)
+            row = await self.sender_db.get_file_transfer(response["file_id"])
+            self.assertIsNotNone(row)
+            self.assertEqual(row["status"], "failed")
+            multi = await namespace["handle_file_send"](
+                {"recipient_id": self.recipient.peer_id, "paths": [str(source), str(second)]})
+            self.assertIn("error", multi)
+            self.assertNotIn("results", multi)
+            self.assertEqual(len(multi.get("file_ids", [])), 2)
+            for failed_id in multi["file_ids"]:
+                failed_row = await self.sender_db.get_file_transfer(failed_id)
+                self.assertIsNotNone(failed_row)
+                self.assertEqual(failed_row["status"], "failed")
+
+    async def test_group_bulk_retry_total_failure_raises(self):
+        group_id = self.sender_settings.create_room("Bulk fail").id
+        for identity in (self.sender, self.recipient):
+            await self.sender_db.upsert_group_member(group_id, identity.peer_id, identity.display_name)
+        source = self.root / "bulkfail.txt"
+        source.write_bytes(b"bulk-fail-data")
+        file_id = await self.sender_transfer.send_group_file(group_id, str(source))
+        await self.sender_db.set_file_delivery(file_id, self.recipient.peer_id, "failed")
+        manager = self.sender_transfer
+
+        async def fail_stream(_self, peer, transfer, recipient, ranges):
+            await manager._set_delivery(transfer, recipient, "failed")
+            return False
+
+        with patch.object(FileTransferManager, "_stream_ranges", fail_stream):
+            with self.assertRaisesRegex(ValueError, "Failed to deliver"):
+                await self.sender_transfer.retry_file(file_id)
 
     async def test_send_queue_failure_raises_without_silent_success(self):
         offline_manager = FakePeerManager(None)

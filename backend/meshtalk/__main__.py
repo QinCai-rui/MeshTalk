@@ -788,6 +788,26 @@ async def main(debug: bool = False) -> None:
             "peers": peers_info,
         }
 
+    def _file_error(exc: Exception) -> dict:
+        """Build an IPC error, handing back the failed file_id when the backend kept a retryable row."""
+        response: dict = {"error": str(exc)}
+        file_id = getattr(exc, "file_id", None)
+        if file_id:
+            response["file_id"] = file_id
+        return response
+
+    def _batch_error(result: dict) -> dict:
+        details = "; ".join(
+            f"{entry.get('path', '?')}: {entry.get('error', entry)}" for entry in result["errors"]
+        )
+        response: dict = {"error": details or "no files started"}
+        file_ids = sorted({entry.get("file_id") for entry in result["errors"] if entry.get("file_id")})
+        if len(file_ids) == 1:
+            response["file_id"] = file_ids[0]
+        elif file_ids:
+            response["file_ids"] = file_ids
+        return response
+
     async def handle_file_send(req: dict) -> dict:
         recipient_id = req.get("recipient_id")
         if not isinstance(recipient_id, str) or not recipient_id:
@@ -808,15 +828,12 @@ async def main(debug: bool = False) -> None:
                 return {"file_id": file_id, "results": [{"recipient_id": recipient_id, "file_id": file_id}], "errors": []}
             result = await file_manager.send_batch(recipient_id, paths, caption=caption)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return _file_error(exc)
         except Exception as exc:
             logger.exception("file_send failed")
             return {"error": str(exc)}
         if not result["results"]:
-            details = "; ".join(
-                f"{entry.get('path', '?')}: {entry.get('error', entry)}" for entry in result["errors"]
-            )
-            return {"error": details or "no files started"}
+            return _batch_error(result)
         return result
 
     async def handle_file_retry(req: dict) -> dict:
@@ -855,15 +872,12 @@ async def main(debug: bool = False) -> None:
                 return {"file_id": file_id, "results": [{"recipient_id": "", "file_id": file_id}], "errors": []}
             result = await file_manager.send_batch(group_id, paths, group_id=group_id, caption=caption)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return _file_error(exc)
         except Exception as exc:
             logger.exception("group_file_send failed")
             return {"error": str(exc)}
         if not result["results"]:
-            details = "; ".join(
-                f"{entry.get('path', '?')}: {entry.get('error', entry)}" for entry in result["errors"]
-            )
-            return {"error": details or "no files started"}
+            return _batch_error(result)
         return result
 
     async def handle_files(req: dict) -> dict:

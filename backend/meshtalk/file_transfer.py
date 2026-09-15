@@ -293,7 +293,10 @@ class FileTransferManager:
                     file_id = await self._create_send(path, item_caption, None, [target_id], batch_id, index, len(entries))
                 results.append({"recipient_id": GROUP_FILE_SENDER_ROW_RECIPIENT if group_id else target_id, "file_id": file_id})
             except Exception as exc:
-                errors.append({"path": str(path), "error": str(exc)})
+                entry: dict = {"path": str(path), "error": str(exc)}
+                if getattr(exc, "file_id", None):
+                    entry["file_id"] = exc.file_id
+                errors.append(entry)
         return {"batch_id": batch_id, "results": results, "errors": errors}
 
     async def _prepare_group_send(self, group_id, path, caption, batch_id, index, count) -> str:
@@ -354,7 +357,9 @@ class FileTransferManager:
                     delivered += 1
         await self._recompute_aggregate(file_id)
         if not delivered:
-            raise ValueError("Failed to deliver file; transfer marked failed and can be retried")
+            error = ValueError("Failed to deliver file; transfer marked failed and can be retried")
+            error.file_id = file_id  # type: ignore[attr-defined]
+            raise error
         return file_id
 
     async def _group_recipient_eligible(self, group_id: str, recipient: str) -> bool:
@@ -560,12 +565,27 @@ class FileTransferManager:
         if not peer:
             return 0
         if await self.db.is_peer_blocked(peer_id):
+            blocked_ids = set()
             for item in await self.db.get_pending_outgoing(peer_id):
                 if item["packet_type"] in (
                     PacketType.FILE_OFFER_V2.value, PacketType.FILE_CHUNK_V2.value,
                     PacketType.FILE_ACK_V2.value,
                 ):
                     await self.db.remove_from_outqueue(item["id"])
+                    if item["message_id"]:
+                        blocked_ids.add(item["message_id"])
+            for file_id in blocked_ids:
+                transfer = await self.db.get_file_transfer(file_id)
+                if not transfer or transfer["direction"] != "outbound":
+                    continue
+                if transfer["group_id"]:
+                    delivery = await self.db.get_file_delivery(file_id, peer_id)
+                    if not delivery or delivery["status"] == "completed":
+                        continue
+                elif transfer["status"] == "completed":
+                    continue
+                await self._set_delivery(transfer, peer_id, "blocked")
+                self._emit({"event": "file_blocked", "file_id": file_id, "recipient_id": peer_id, "group_id": transfer["group_id"]})
             return 0
         flushed = 0
         pending = await self.db.get_pending_outgoing(peer_id)
@@ -722,7 +742,7 @@ class FileTransferManager:
                         raise ValueError("Failed to deliver file; transfer marked failed and can be retried")
             finally:
                 self._release_flush_lock(file_id, recipient, lock)
-        if not delivered and (recipient_id is not None or not transfer["group_id"]):
+        if not delivered:
             raise ValueError("Failed to deliver file; transfer marked failed and can be retried")
         return file_id
 
@@ -829,10 +849,8 @@ class FileTransferManager:
             room = await self.db.get_group(group_id)
             if not room:
                 return False
-        if not v2:
-            return bool(member and member["active"])
         local = await self.db.get_group_member(group_id, self.identity.peer_id)
-        return bool(room and member and member["active"] and local and local["active"])
+        return bool(member and member["active"] and local and local["active"])
 
     async def _handle_offer(self, peer, packet, v2: bool) -> None:
         capability = CAP_FILE_TRANSFER_V2 if v2 else CAP_FILE_TRANSFER
@@ -1006,7 +1024,7 @@ class FileTransferManager:
                     await self._send_ack(peer, transfer["file_id"], "missing", [(0, transfer["total_chunks"] - 1)], v2=True)
                 except OSError:
                     pass
-            if not retried and v2:
+            if not retried:
                 self._emit({"event": "file_failed", "file_id": transfer["file_id"], "group_id": transfer["group_id"]})
             return
         self._integrity_retries.discard(transfer["file_id"])

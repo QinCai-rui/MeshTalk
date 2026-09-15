@@ -14,6 +14,8 @@ test("failed batches report errors without success; partial batches retain succe
     printTransferStarted({ ...response, results: [{ file_id: "file", recipient_id: "peer" }] });
     expect(log).toHaveBeenCalledWith("File transfer batch batch started");
     expect(log).toHaveBeenCalledWith("  file -> peer");
+    printTransferStarted({ id: 2, batch_id: "batch", results: [], errors: [{ path: "one.txt", error: "Failed to deliver", file_id: "abc123" }] });
+    expect(error.mock.calls.flat().join(" ")).toContain("abc123");
   } finally {
     log.mockRestore();
     error.mockRestore();

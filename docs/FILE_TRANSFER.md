@@ -205,18 +205,26 @@ Behavior:
 - `flush_for_peer(peer_id)`: per-file lock (new; inbound `_packet_locks`
   are not enough — `handle_peer_changed` can overlap flushes). Re-send
   offer if unacked, then **missing ranges only**. Do not delete outqueue
-  chunk rows on partial failure. Returns flushed count.
+  chunk rows on partial failure. Returns flushed count. A blocked peer's
+  queued file rows are purged and its deliveries marked `blocked` with a
+  `file_blocked` event.
 - `retry_file(file_id, recipient_id=None)`: allowed from
   `failed/blocked/queued/unavailable` and `sent`-awaiting-ack only after
-  timeout; defaults to failed deliveries; clears stale outqueue rows for
-  the retried scope first (existing behavior, keep).
+  timeout (earlier `sent` retries report "awaiting acknowledgement; retry
+  after 30 seconds"); defaults to failed deliveries; clears stale outqueue
+  rows for the retried scope first (existing behavior, keep). A retry that
+  delivers to nobody raises instead of reporting success.
 - `resume_for_peer(peer_id)`: completed inbound → re-send completion ACK;
   partial → `missing` request (v2). All v2 sends gated on
   `peer.supports(CAP_FILE_TRANSFER_V2)`.
 - `__main__.py` IPC: `file_send {recipient_id, file_path|paths[],
   caption?}`, `group_file_send {group_id, file_path|paths[], caption?}`
   → `{batch_id?, file_id?, results:[{recipient_id, file_id}],
-  errors[]}` (legacy single-path shape keeps working);
+  errors[]}` (legacy single-path shape keeps working). A send that creates
+  a row but delivers to nobody raises/returns an error that hands back the
+  `file_id` (`error.file_id`, batch entries carry `file_id`, all-fail
+  batches collapse to one `file_id`/`file_ids`), so callers can retry or
+  clean up the failed row. All-fail batches return top-level `error`.
   `file_retry {file_id, recipient_id?}`; `files {peer_id?, group_id?}`
   includes `deliveries` for group rows; `file_progress` always carries
   `{file_id, received, total_chunks, direction}` in both directions.
