@@ -101,13 +101,13 @@ Encoding: JSON objects, same conventions as v1 (`signature` as hex,
 canonical `signed_bytes` via `json.dumps(separators=(",",":"),
 sort_keys=True)`).
 
-- `FileOfferV2 { file_id: uuid4-hex, batch_id?: uuid4-hex,
+- `FileOfferV2 { file_id: uuid4v4-hex (RFC4122 variant), batch_id?: uuid4v4-hex,
   batch_index?: int, batch_count?: int, filename: sanitized ≤255,
   file_size: 1..50MiB, chunk_size: 1..28KiB, total_chunks:
   ceil(file_size/chunk_size) ≤ 10000 with size/chunks consistency,
   file_sha256: [a-f0-9]{64} of plaintext, caption: UTF-8 0..1024 bytes
   (optional, default ""), sender_id, recipient_id, group_id? (32-hex or
-  absent), created_at: number, signature: 64B Ed25519 }`.
+  absent), created_at: finite number > 0, signature: 64B Ed25519 }`.
   `signed_bytes` covers every field except `signature`. Batch refs are
   all-or-none with `0 <= batch_index < batch_count <= 32`. Any violation →
   `ValueError("Invalid file offer v2 payload")`, drop + log, no row.
@@ -116,10 +116,14 @@ sort_keys=True)`).
   Construction, AAD (`file_id/chunk_index/sender/recipient[/group_id]`),
   per-chunk ephemeral X25519/AES-GCM, and Ed25519 `sha256(aad+ciphertext)`
   signing are identical to v1 — forward secrecy per chunk preserved.
-  Bounds-check `chunk_index < total_chunks`.
+  Bounds-check `chunk_index < total_chunks`. `total_chunks` is not covered
+  by the signature; handlers must compare it to the offer value and reject
+  mismatches (conflicting-offer check + per-chunk match check).
 - `FileAckV2 { file_id, recipient_id, status: completed|missing|blocked,
-  missing_ranges?: [[start,end]...] (required iff missing, each
-  `0 <= start <= end < total_chunks`), signature }`. No `ack` status.
+  missing_ranges?: [[start,end]...] (required iff missing; protocol bound
+  `0 <= start <= end < 10000` with strictly increasing non-touching ranges,
+  and handlers additionally enforce `end < offer.total_chunks`), signature }`.
+  No `ack` status.
 
 Behavior:
 

@@ -20,7 +20,7 @@ export type Peer = {
   capability_gap?: boolean
 }
 
-export type GroupDelivery = { recipient_id: string; display_name: string; status: string; updated_at: number }
+export type GroupDelivery = { recipient_id: string; display_name: string; status: string; updated_at: number; awaiting_ack_at?: number | null }
 export type FileDelivery = { recipient_id: string; display_name?: string; status: string; updated_at: number; awaiting_ack_at?: number | null }
 export type Message = {
   message_id: string; sender_id: string; recipient_id?: string; group_id?: string; content: string

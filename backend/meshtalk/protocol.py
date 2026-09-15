@@ -1194,13 +1194,13 @@ class FileOfferV2Payload:
             or caption_size > MAX_FILE_CAPTION_BYTES
             or not _valid_peer_id(self.sender_id)
             or not _valid_peer_id(self.recipient_id)
-            or (self.group_id is not None and re.fullmatch(r"[a-f0-9]{32}", self.group_id) is None)
+            or (self.group_id is not None and (not isinstance(self.group_id, str) or re.fullmatch(r"[a-f0-9]{32}", self.group_id) is None))
             or not isinstance(self.created_at, (int, float))
             or isinstance(self.created_at, bool)
             or not math.isfinite(self.created_at)
             or self.created_at <= 0
             or not valid_batch
-            or (require_signature and len(self.signature) != 64)
+            or (require_signature and (not isinstance(self.signature, bytes) or len(self.signature) != 64))
         ):
             raise ValueError("Invalid file offer v2 payload")
 
@@ -1276,10 +1276,10 @@ class FileChunkV2Payload:
             or not isinstance(self.total_chunks, int) or isinstance(self.total_chunks, bool)
             or not 0 <= self.chunk_index < self.total_chunks <= MAX_FILE_CHUNKS
             or not _valid_peer_id(self.sender_id) or not _valid_peer_id(self.recipient_id)
-            or (self.group_id is not None and re.fullmatch(r"[a-f0-9]{32}", self.group_id) is None)
+            or (self.group_id is not None and (not isinstance(self.group_id, str) or re.fullmatch(r"[a-f0-9]{32}", self.group_id) is None))
             or not isinstance(self.encrypted_content, bytes)
             or not 60 <= len(self.encrypted_content) <= MAX_PACKET_SIZE
-            or (require_signature and len(self.signature) != 64)
+            or (require_signature and (not isinstance(self.signature, bytes) or len(self.signature) != 64))
         ):
             raise ValueError("Invalid file chunk v2 payload")
 
@@ -1290,6 +1290,7 @@ class FileChunkV2Payload:
         return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
     def signed_bytes(self) -> bytes:
+        self._validate(require_signature=False)
         return hashlib.sha256(self.associated_data() + self.encrypted_content).digest()
 
     def encode(self) -> bytes:
@@ -1353,7 +1354,7 @@ class FileAckV2Payload:
             or self.status not in ("completed", "missing", "blocked")
             or (self.status == "missing") != bool(valid_ranges)
             or (self.status != "missing" and self.missing_ranges is not None)
-            or (require_signature and len(self.signature) != 64)
+            or (require_signature and (not isinstance(self.signature, bytes) or len(self.signature) != 64))
         ):
             raise ValueError("Invalid file ack v2 payload")
 

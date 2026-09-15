@@ -1,5 +1,25 @@
-import { describe, expect, test } from "bun:test";
-import { fileMetadataLines, parseFileArguments } from "./index";
+import { describe, expect, spyOn, test } from "bun:test";
+import { fileMetadataLines, parseFileArguments, printTransferStarted } from "./index";
+
+test("failed batches report errors without success; partial batches retain successes", () => {
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  const error = spyOn(console, "error").mockImplementation(() => {});
+  const exitCode = process.exitCode;
+  try {
+    const response = { id: 1, batch_id: "batch", results: [], errors: [{ path: "one.txt", error: "Recipient does not support file_transfer_v2" }] };
+    printTransferStarted(response);
+    expect(log).not.toHaveBeenCalled();
+    expect(error.mock.calls.flat().join(" ")).toContain("does not support file_transfer_v2");
+    expect(process.exitCode).toBe(1);
+    printTransferStarted({ ...response, results: [{ file_id: "file", recipient_id: "peer" }] });
+    expect(log).toHaveBeenCalledWith("File transfer batch batch started");
+    expect(log).toHaveBeenCalledWith("  file -> peer");
+  } finally {
+    log.mockRestore();
+    error.mockRestore();
+    process.exitCode = exitCode;
+  }
+});
 
 describe("file command arguments", () => {
   test("parses multiple paths and a caption", () => {

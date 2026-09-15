@@ -1864,6 +1864,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       completed: 0,
       sent: 1,
       failed: 2,
+      blocked: 2,
       queued: 3,
       receiving: 4,
       transferring: 5,

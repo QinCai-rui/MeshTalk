@@ -1,3 +1,4 @@
+import ast
 import tempfile
 import unittest
 import uuid
@@ -20,14 +21,15 @@ from meshtalk.settings import Settings
 
 
 class FakePeer:
-    def __init__(self, identity: Identity):
+    def __init__(self, identity: Identity, capabilities: tuple[str, ...] | None = None):
         self.peer_id = identity.peer_id
         self.display_name = identity.display_name
         self.signing_public_key = identity.signing_public_key_bytes()
         self.encryption_public_key = identity.encryption_public_key_bytes()
+        self.capabilities = capabilities or (CAP_FILE_TRANSFER, CAP_FILE_TRANSFER_V2, CAP_BLOCK_REPORTS)
 
     def supports(self, capability: str) -> bool:
-        return capability in (CAP_FILE_TRANSFER, CAP_FILE_TRANSFER_V2, CAP_BLOCK_REPORTS)
+        return capability in self.capabilities
 
 
 class FakePeerManager:
@@ -263,6 +265,133 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.sender_transfer._release_flush_lock("file", self.recipient.peer_id, lock)
         self.assertIs(self.sender_transfer._flush_lock("file", self.recipient.peer_id), lock)
 
+    async def test_send_rejects_without_v2_before_snapshot(self):
+        self.sender_manager.peer = FakePeer(self.recipient, (CAP_FILE_TRANSFER, CAP_BLOCK_REPORTS))
+        source = self.root / "nov2.txt"
+        source.write_bytes(b"no v2 support")
+        with patch.object(self.sender_transfer, "_snapshot_with_hash") as snapshot:
+            with self.assertRaisesRegex(ValueError, "does not support file_transfer_v2"):
+                await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+            snapshot.assert_not_called()
+        self.assertEqual(await self.sender_db.get_file_transfers(self.recipient.peer_id), [])
+        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
+        self.assertEqual(self.sender_manager.sent, [])
+
+    async def test_ipc_unsupported_send_batch_and_retry_report_errors(self):
+        # Execute the actual nested IPC handlers without starting network services.
+        tree = ast.parse((Path(__file__).parents[1] / "meshtalk" / "__main__.py").read_text())
+        handlers = [node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
+                    and node.name in ("handle_file_send", "handle_file_retry")]
+        namespace = {"db": self.sender_db, "file_manager": self.sender_transfer}
+        exec(compile(ast.Module(body=handlers, type_ignores=[]), "__main__.py", "exec"), namespace)
+        source = self.root / "ipc.txt"
+        source.write_bytes(b"ipc data")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        await self.sender_db.update_file_transfer(file_id, status="failed")
+        self.sender_manager.sent.clear()
+        self.recipient_peer.capabilities = (CAP_FILE_TRANSFER,)
+        with patch.object(self.sender_transfer, "_snapshot_with_hash") as snapshot:
+            for payload in ({"file_path": str(source)}, {"paths": [str(source)]}):
+                response = await namespace["handle_file_send"]({"recipient_id": self.recipient.peer_id, **payload})
+                self.assertIn("does not support file_transfer_v2", response["error"])
+                self.assertNotIn("file_id", response)
+            paths = [str(source), str(self.root / "second.txt")]
+            response = await namespace["handle_file_send"]({"recipient_id": self.recipient.peer_id, "paths": paths})
+            self.assertIn("file_transfer_v2", response["error"])
+            self.assertNotIn("file_id", response)
+            self.assertNotIn("results", response)
+            snapshot.assert_not_called()
+        response = await namespace["handle_file_retry"]({"file_id": file_id})
+        self.assertIn("does not support file_transfer_v2", response["error"])
+        self.assertNotIn("file_id", response)
+        self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "unavailable")
+        self.assertEqual(len(await self.sender_db.get_file_transfers(self.recipient.peer_id)), 1)
+        self.assertEqual(self.sender_manager.sent, [])
+        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
+
+    async def test_group_send_rejects_all_legacy_group_before_snapshot(self):
+        group_id = self.sender_settings.create_room("Legacy only").id
+        legacy = Identity.generate("Legacy")
+        for identity in (self.sender, legacy):
+            await self.sender_db.upsert_group_member(group_id, identity.peer_id, identity.display_name)
+        source = self.root / "alllegacy.txt"
+        source.write_bytes(b"all legacy")
+        with patch.object(self.sender_transfer, "_snapshot_with_hash") as snapshot:
+            with self.assertRaisesRegex(ValueError, "file_transfer_v2"):
+                await self.sender_transfer.send_group_file(group_id, str(source))
+            snapshot.assert_not_called()
+        self.assertEqual(await self.sender_db.get_file_transfers(include_group=True), [])
+        self.assertEqual(await self.sender_db.get_pending_outgoing(legacy.peer_id), [])
+
+    async def test_group_send_and_retry_preserve_partial_delivery_to_legacy_member(self):
+        group_id = self.sender_settings.create_room("Mixed").id
+        legacy = Identity.generate("Legacy")
+        for identity in (self.sender, self.recipient, legacy):
+            await self.sender_db.upsert_group_member(group_id, identity.peer_id, identity.display_name)
+        source = self.root / "mixed.txt"
+        source.write_bytes(b"mixed group")
+        result = await self.sender_transfer.send_batch(group_id, [str(source)], group_id=group_id)
+        self.assertEqual(result["errors"], [])
+        file_id = result["results"][0]["file_id"]
+        self.assertEqual((await self.sender_db.get_file_delivery(file_id, legacy.peer_id))["status"], "unavailable")
+        self.assertEqual((await self.sender_db.get_file_delivery(file_id, self.recipient.peer_id))["status"], "sent")
+        await self.sender_db.set_file_delivery(file_id, self.recipient.peer_id, "failed")
+        self.assertEqual(await self.sender_transfer.retry_file(file_id), file_id)
+        self.assertEqual((await self.sender_db.get_file_delivery(file_id, legacy.peer_id))["status"], "unavailable")
+        self.assertEqual((await self.sender_db.get_file_delivery(file_id, self.recipient.peer_id))["status"], "sent")
+
+    async def test_group_retry_explicit_legacy_recipient_raises(self):
+        group_id = self.sender_settings.create_room("Mixed retry").id
+        legacy = Identity.generate("Legacy")
+        for identity in (self.sender, self.recipient, legacy):
+            await self.sender_db.upsert_group_member(group_id, identity.peer_id, identity.display_name)
+        source = self.root / "mixedretry.txt"
+        source.write_bytes(b"mixed retry")
+        file_id = await self.sender_transfer.send_group_file(group_id, str(source))
+        await self.sender_db.set_file_delivery(file_id, legacy.peer_id, "failed")
+        self.sender_manager.sent.clear()
+        with self.assertRaisesRegex(ValueError, "file_transfer_v2"):
+            await self.sender_transfer.retry_file(file_id, recipient_id=legacy.peer_id)
+        self.assertEqual((await self.sender_db.get_file_delivery(file_id, legacy.peer_id))["status"], "unavailable")
+        self.assertEqual(self.sender_manager.sent, [])
+
+    async def test_flush_sends_no_bytes_without_v2(self):
+        source = self.root / "nov2flush.txt"
+        source.write_bytes(b"no v2 flush")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        self.sender_manager.sent.clear()
+        self.sender_manager.peer = FakePeer(self.recipient, (CAP_FILE_TRANSFER, CAP_BLOCK_REPORTS))
+        self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
+        self.assertEqual(self.sender_manager.sent, [])
+
+    async def test_offline_without_v2_queues_nothing(self):
+        offline_manager = FakePeerManager(None)
+        offline_transfer = FileTransferManager(
+            self.sender, offline_manager, self.sender_db, self.root / "sender-files",
+            settings=self.sender_settings,
+        )
+        await self.sender_db.upsert_peer(
+            self.recipient.peer_id, "Recipient", self.recipient.encryption_public_key_bytes(),
+            self.recipient.signing_public_key_bytes(), capabilities=[CAP_FILE_TRANSFER],
+        )
+        source = self.root / "nov2offline.txt"
+        source.write_bytes(b"no v2 offline")
+        with patch.object(offline_transfer, "_snapshot_with_hash") as snapshot:
+            with self.assertRaisesRegex(ValueError, "does not support file_transfer_v2"):
+                await offline_transfer.send_file(self.recipient.peer_id, str(source))
+            snapshot.assert_not_called()
+        self.assertEqual(await self.sender_db.get_file_transfers(self.recipient.peer_id), [])
+        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
+
+    async def test_inbound_v2_dropped_without_v2(self):
+        source = self.root / "nov2inbound.txt"
+        source.write_bytes(b"no v2 inbound")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        offer_packet = self.sender_manager.sent[0]
+        v1_only_sender = FakePeer(self.sender, (CAP_FILE_TRANSFER, CAP_BLOCK_REPORTS))
+        self.assertTrue(await self.recipient_transfer.handle_packet(v1_only_sender, offer_packet))
+        self.assertIsNone(await self.recipient_db.get_file_transfer(file_id))
+
     async def test_runtime_packet_error_is_logged_and_dropped(self):
         with patch.object(self.sender_transfer, "_handle_offer", AsyncMock(side_effect=OSError("disk"))):
             self.assertTrue(await self.sender_transfer.handle_packet(
@@ -337,3 +466,47 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         decoded = FileAckV2Payload.decode(missing[0].payload)
         self.assertEqual(decoded.status, "missing")
         self.assertEqual(decoded.missing_ranges, [(0, transfer["total_chunks"] - 1)])
+
+    async def test_flush_v2_loss_purges_and_marks_unavailable(self):
+        source = self.root / "v2loss.txt"
+        source.write_bytes(b"v2-loss-data")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        await self.sender_db.add_to_outqueue(
+            self.recipient.peer_id, PacketType.FILE_CHUNK_V2.value, b"stale", file_id
+        )
+        self.sender_manager.sent.clear()
+        self.sender_manager.peer = FakePeer(self.recipient, (CAP_FILE_TRANSFER, CAP_BLOCK_REPORTS))
+        self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
+        self.assertEqual(self.sender_manager.sent, [])
+        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
+        self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "unavailable")
+
+    async def test_resume_skips_unauthorized_peer(self):
+        source = self.root / "resumeauth.txt"
+        source.write_bytes(b"resume-auth-data")
+        await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        packets = list(self.sender_manager.sent)
+        self.sender_manager.sent.clear()
+        await self.recipient_transfer.handle_packet(self.sender_peer, packets[0])
+        await self.recipient_db.remove_friend(self.sender.peer_id)
+        self.recipient_manager.sent.clear()
+        await self.recipient_transfer.resume_for_peer(self.sender.peer_id)
+        self.assertEqual(self.recipient_manager.sent, [])
+
+    async def test_batch_all_fail_returns_top_level_error(self):
+        tree = ast.parse((Path(__file__).parents[1] / "meshtalk" / "__main__.py").read_text())
+        handlers = [node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
+                    and node.name in ("handle_file_send", "handle_group_file_send")]
+        namespace = {"db": self.sender_db, "file_manager": self.sender_transfer}
+        exec(compile(ast.Module(body=handlers, type_ignores=[]), "__main__.py", "exec"), namespace)
+        missing = [str(self.root / "gone-a.txt"), str(self.root / "gone-b.txt")]
+        response = await namespace["handle_file_send"]({"recipient_id": self.recipient.peer_id, "paths": missing})
+        self.assertIn("error", response)
+        self.assertNotIn("file_id", response)
+        self.assertNotIn("results", response)
+
+    async def test_unnamed_room_rejects_inbound(self):
+        group_id = self.recipient_settings.create_room().id
+        await self.recipient_db.upsert_group_member(group_id, self.sender.peer_id, "Sender")
+        self.assertFalse(await self.recipient_transfer._authorized_inbound(self.sender_peer, group_id, v2=False))
+        self.assertFalse(await self.recipient_transfer._authorized_inbound(self.sender_peer, group_id, v2=True))

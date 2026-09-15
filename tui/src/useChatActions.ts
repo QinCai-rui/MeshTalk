@@ -723,8 +723,8 @@ export function useChatActions(deps: ChatActionsDeps) {
   async function sendFilesDirect(paths: string[], target = selection, caption = ""): Promise<Array<{ path: string; reason: string }>> {
     if (!target) throw new Error("Select a peer or group before sending a file.")
     const payload = target.kind === "peer"
-      ? { recipient_id: target.id, paths, caption }
-      : { group_id: target.id, paths, caption }
+      ? paths.length === 1 ? { recipient_id: target.id, file_path: paths[0], caption } : { recipient_id: target.id, paths, caption }
+      : paths.length === 1 ? { group_id: target.id, file_path: paths[0], caption } : { group_id: target.id, paths, caption }
     const response = await ipc.send(target.kind === "peer" ? "file_send" : "group_file_send", payload)
     if (response.error) throw new Error(response.error)
     const errors = Array.isArray(response.errors) ? response.errors : []
@@ -733,7 +733,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       : { path: typeof (entry as { path?: unknown }).path === "string" ? (entry as { path: string }).path : "", reason: typeof (entry as { error?: unknown }).error === "string" ? (entry as { error: string }).error : "" })
       .filter((entry) => entry.path)
     const failed = reported.filter((entry) => paths.includes(entry.path))
-    const outstanding = failed.length ? failed : reported.length ? paths.map((path) => ({ path, reason: "" })) : []
+    const outstanding = failed.length ? failed : errors.length ? paths.map((path) => ({ path, reason: "" })) : []
     const succeeded = paths.length - outstanding.length
     if (succeeded > 0) showStatus(paths.length === 1 ? `File transfer started: ${paths[0] ?? "file"} -> ${target.id.slice(0, 8)}` : `Started ${succeeded} of ${paths.length} file transfers.`)
     return outstanding
@@ -808,11 +808,11 @@ export function useChatActions(deps: ChatActionsDeps) {
       const expanded = home && (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\")) ? home + trimmed.slice(1) : trimmed
       const absolutePath = resolve(expanded)
       if (selection?.kind === "peer") {
-        const response = await ipc.send("file_send", { recipient_id: selection.id, paths: [absolutePath], caption: "" })
+        const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: absolutePath, caption: "" })
         if (response.error) throw new Error(response.error)
         showStatus(`File transfer started: ${absolutePath} -> ${selection.id.slice(0, 8)}`)
       } else if (selection?.kind === "group") {
-        const response = await ipc.send("group_file_send", { group_id: selection.id, paths: [absolutePath], caption: "" })
+        const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: absolutePath, caption: "" })
         if (response.error) throw new Error(response.error)
         showStatus(`Group file transfer started: ${absolutePath}`)
       } else { throw new Error("Select a peer or group first") }

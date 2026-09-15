@@ -119,11 +119,15 @@ function sendFilePayload(targetKey: "recipient_id" | "group_id", target: string,
   };
 }
 
-function printTransferStarted(response: IPCResponse, prefix = "File transfer"): void {
-  if (response.batch_id) console.log(`${prefix} batch ${response.batch_id} started`);
+export function printTransferStarted(response: IPCResponse, prefix = "File transfer"): void {
+  const results = asRecords(response.results);
+  const errors = Array.isArray(response.errors) ? response.errors : [];
+  if (errors.length) process.exitCode = 1;
+  if (errors.length && !results.length && !response.file_id) console.error(`${prefix} failed: no files started`);
+  else if (response.batch_id) console.log(`${prefix} batch ${response.batch_id} started`);
   else if (response.file_id) console.log(`${prefix} ${response.file_id} started`);
   else console.log(`${prefix} started`);
-  for (const result of asRecords(response.results)) {
+  for (const result of results) {
     console.log(`  ${result.file_id}${result.recipient_id ? ` -> ${result.recipient_id}` : ""}`);
   }
   if (Array.isArray(response.errors)) {
@@ -419,7 +423,7 @@ export async function main(): Promise<void> {
 
     if (command === "group") {
       const [subcommand, groupId, ...words] = args;
-      if (!groupId) throw new Error(`Usage: ${PROGRAM} group <members|messages|send|leave> <group-id> [message]`);
+      if (!groupId) throw new Error(`Usage: ${PROGRAM} group <members|messages|send|send-file|leave> <group-id> [message]`);
 
       if (subcommand === "members" && !words.length) {
         const response = await ipc.send("group_members", { group_id: groupId });

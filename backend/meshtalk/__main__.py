@@ -810,6 +810,9 @@ async def main(debug: bool = False) -> None:
         except Exception as exc:
             logger.exception("file_send failed")
             return {"error": str(exc)}
+        if not result["results"]:
+            details = "; ".join(entry.get("error", str(entry)) for entry in result["errors"])
+            return {"error": details or "no files started"}
         return result
 
     async def handle_file_retry(req: dict) -> dict:
@@ -846,12 +849,16 @@ async def main(debug: bool = False) -> None:
             if len(paths) == 1:
                 file_id = await file_manager.send_group_file(group_id, paths[0], caption=caption)
                 return {"file_id": file_id, "results": [{"recipient_id": "", "file_id": file_id}], "errors": []}
-            return await file_manager.send_batch(group_id, paths, group_id=group_id, caption=caption)
+            result = await file_manager.send_batch(group_id, paths, group_id=group_id, caption=caption)
         except ValueError as exc:
             return {"error": str(exc)}
         except Exception as exc:
             logger.exception("group_file_send failed")
             return {"error": str(exc)}
+        if not result["results"]:
+            details = "; ".join(entry.get("error", str(entry)) for entry in result["errors"])
+            return {"error": details or "no files started"}
+        return result
 
     async def handle_files(req: dict) -> dict:
         peer_id = req.get("peer_id")

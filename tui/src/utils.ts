@@ -85,9 +85,15 @@ export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
   const delivered = deliveries.filter((delivery) => delivery.status === "delivered").length
   const queued = deliveries.filter((delivery) => delivery.status === "queued").length
   const unavailable = deliveries.filter((delivery) => delivery.status === "unavailable").length
+  const failed = deliveries.filter((delivery) => delivery.status === "failed" || delivery.status === "blocked").length
+  const sent = deliveries.filter((delivery) => delivery.status === "sent").length
+  const pending = deliveries.filter((delivery) => delivery.status === "pending").length
   const details = [`delivered ${delivered}/${deliveries.length}`]
   if (queued) details.push(`queued ${queued}`)
   if (unavailable) details.push(`unavailable ${unavailable}`)
+  if (failed) details.push(`failed ${failed}`)
+  if (sent) details.push(`sent ${sent}`)
+  if (pending) details.push(`pending ${pending}`)
   return details.join(" · ")
 }
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }

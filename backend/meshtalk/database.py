@@ -1128,6 +1128,11 @@ class Database:
         """Commit pending changes made by a batched operation."""
         await self._db.commit()
 
+    async def reset_file_received_chunks(self, file_id: str) -> None:
+        """Drop all received-chunk state so a full integrity retry overwrites every chunk."""
+        await self._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (file_id,))
+        await self._db.execute("UPDATE file_transfers SET received_chunks = 0 WHERE file_id = ?", (file_id,))
+
     async def get_missing_file_chunk_ranges(self, file_id: str, total_chunks: int) -> list[tuple[int, int]]:
         """Calculate contiguous ranges of missing file chunks."""
         async with self._db.execute(

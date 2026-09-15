@@ -189,6 +189,7 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
   }, [nextRetryAt, now])
   const retryableStatus = (status: string, awaitingAckAt?: number | null) => status === "failed" || status === "blocked" || status === "unavailable" || status === "queued" || (status === "sent" && (!awaitingAckAt || now >= awaitingAckAt + 30))
   const singleRetryable = canRetryFile && retryableStatus(file.status, file.awaiting_ack_at)
+  const headerCaption = file.caption || attachments.find((attachment) => attachment.caption)?.caption
   return (
     <box id={file.file_id} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "file", createdAt: file.created_at, file, allFiles: files }))} style={{ position: "relative", flexDirection: "column", marginBottom: 1, backgroundColor: selectedRow && !fileReplyHighlightStartedAt ? theme.selected : undefined }}>
       {fileReplyHighlightStartedAt && <HighlightOverlay key={fileReplyHighlightGeneration} id={`reply-highlight-${file.file_id}`} startedAt={fileReplyHighlightStartedAt} />}
@@ -202,7 +203,7 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
         </text>
         {!isBatch && singleRetryable && retryEnabled && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box>}
         {!isBatch && isLocal && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries, file.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></box>}
-        {file.caption ? <text wrapMode="word">{file.caption}</text> : null}
+        {headerCaption ? <text wrapMode="word">{headerCaption}</text> : null}
         {attachments.map((attachment) => {
           const unavailable = isLocalFileMissing(attachment.file_path) && !["queued", "transferring", "receiving"].includes(attachment.status)
           const attachmentDeliveries = fileDeliveriesById.get(attachment.file_id) ?? []
