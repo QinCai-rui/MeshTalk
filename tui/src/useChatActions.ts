@@ -19,7 +19,7 @@ declare const APP_VERSION: string
 declare const MESHTALK_RELEASE: boolean
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
-const MAX_PASTED_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_FILE_SIZE = 50 * 1024 * 1024
 const MAX_GROUP_MEMBER_CACHE = 32
 const MAX_DRAFT_ENTRIES = 200
 
@@ -764,26 +764,33 @@ export function useChatActions(deps: ChatActionsDeps) {
     return { valid, missing }
   }
 
-  async function sendFilesDirect(paths: string[]) {
-    if (!selection) { showStatus("Select a peer or group before sending a file."); return }
-    let sent = 0
-    for (const filePath of paths) {
-      try {
-        if (selection.kind === "peer") {
-          const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: filePath })
-          if (response.error) throw new Error(response.error)
-        } else {
-          const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: filePath })
-          if (response.error) throw new Error(response.error)
-        }
-        sent++
-      } catch (error) {
-        showStatus(`Could not send ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
-        return
-      }
+  async function sendFilesDirect(paths: string[], target = selection, caption = ""): Promise<Array<{ path: string; reason: string; fileId?: string }>> {
+    if (!target) throw new Error("Select a peer or group before sending a file.")
+    const payload = target.kind === "peer"
+      ? paths.length === 1 ? { recipient_id: target.id, file_path: paths[0], caption } : { recipient_id: target.id, paths, caption }
+      : paths.length === 1 ? { group_id: target.id, file_path: paths[0], caption } : { group_id: target.id, paths, caption }
+    const response = await ipc.send(target.kind === "peer" ? "file_send" : "group_file_send", payload)
+    if (response.error) {
+      const fileId = typeof response.file_id === "string" ? response.file_id : undefined
+      const fileIds = [...(fileId ? [fileId] : []), ...(Array.isArray(response.file_ids) ? response.file_ids : [])]
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
+      const ids = [...new Set(fileIds)]
+      throw Object.assign(
+        new Error(ids.length ? `${response.error} [${ids.map((id) => id.slice(0, 8)).join(", ")}]` : String(response.error)),
+        { ...(fileId ? { fileId } : {}), ...(ids.length ? { fileIds: ids } : {}) },
+      )
     }
-    if (sent === 1) showStatus(`File transfer started: ${paths[0] ?? "file"} -> ${selection.id.slice(0, 8)}`)
-    else if (sent > 1) showStatus(`Started ${sent} file transfers.`)
+    const errors = Array.isArray(response.errors) ? response.errors : []
+    const reported = errors.map((entry: unknown) => typeof entry === "string"
+      ? { path: entry, reason: "" }
+      : { path: typeof (entry as { path?: unknown }).path === "string" ? (entry as { path: string }).path : "", reason: typeof (entry as { error?: unknown }).error === "string" ? (entry as { error: string }).error : "", fileId: typeof (entry as { file_id?: unknown }).file_id === "string" ? (entry as { file_id: string }).file_id : undefined })
+      .filter((entry) => entry.path)
+    const failed = reported.filter((entry) => paths.includes(entry.path))
+    const fallbackReason = errors.length ? errors.map((entry) => typeof entry === "string" ? entry : JSON.stringify(entry)).join("; ") : ""
+    const outstanding = failed.length ? failed : errors.length ? paths.map((path) => ({ path, reason: fallbackReason })) : []
+    const succeeded = paths.length - outstanding.length
+    if (succeeded > 0) showStatus(paths.length === 1 ? `File transfer started: ${paths[0] ?? "file"} -> ${target.id.slice(0, 8)}` : `Started ${succeeded} of ${paths.length} file transfers.`)
+    return outstanding
   }
 
   async function requestFileSend(paths: string[], source: FileConfirmSource) {
@@ -795,7 +802,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     }
     try {
       const confirmationPaths = source === "picker" ? valid : await stageFilesForConfirmation(valid)
-      showDialog({ kind: "file-confirm", paths: confirmationPaths, source })
+      showDialog({ kind: "file-confirm", paths: confirmationPaths, source, target: selection, caption: composerRef.current?.plainText.trim() ?? "" })
     } catch (error) {
       showStatus(`Could not prepare file: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -803,18 +810,47 @@ export function useChatActions(deps: ChatActionsDeps) {
 
   function requestImageSend(bytes: Uint8Array, mimeType: string) {
     if (!selection) { showStatus("Select a peer or group first."); return }
-    showDialog({ kind: "file-confirm", paths: [], source: "image", image: { bytes, mimeType } })
+    if (!bytes || !bytes.byteLength) { showStatus("The pasted image is empty."); return }
+    if (bytes.byteLength > MAX_FILE_SIZE) { showStatus("Pasted image exceeds the 50 MiB limit."); return }
+    showDialog({ kind: "file-confirm", paths: [], source: "image", target: selection, caption: composerRef.current?.plainText.trim() ?? "", image: { bytes, mimeType } })
   }
 
   async function confirmPendingFileSend() {
     const pending = dialog
     if (!pending || pending.kind !== "file-confirm") return
-    closeDialog()
-    if (pending.image) {
-      await sendImage(pending.image.bytes, pending.image.mimeType)
-    } else {
-      await sendFilesDirect(pending.paths)
-    }
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      let paths = pending.paths
+      if (pending.image) {
+        const extension = IMAGE_EXTENSIONS[pending.image.mimeType.toLowerCase()]
+        if (!extension) throw new Error(`Unsupported pasted image type: ${pending.image.mimeType}`)
+        const path = join(tmpdir(), `meshtalk-pasted-image-${crypto.randomUUID()}${extension}`)
+        await Bun.write(path, pending.image.bytes)
+        paths = [path]
+      }
+      const outstanding = await sendFilesDirect(paths, pending.target, pending.caption)
+      if (dialogActionRef.current !== action) return
+      if (outstanding.length) {
+        const detail = outstanding.map((entry) => {
+          const name = entry.path.split(/[\\/]/).pop() ?? entry.path
+          const id = entry.fileId ? ` [${entry.fileId.slice(0, 8)}]` : ""
+          return entry.reason ? `${name}: ${entry.reason}${id}` : `${name}${id}`
+        }).join("; ")
+        if (!pending.image) {
+          showDialog({ kind: "file-confirm", paths: outstanding.map((entry) => entry.path), source: pending.source, target: pending.target, caption: pending.caption })
+        }
+        setDialogError(`Failed to send ${detail}. Fix the files or retry.`)
+        return
+      }
+      if (pending.caption && composerRef.current?.plainText.trim() === pending.caption) {
+        composerRef.current.selectAll(); composerRef.current.deleteSelection()
+        if (selectionKey) setDrafts((current) => updateBoundedEntry(current, selectionKey, "", MAX_DRAFT_ENTRIES))
+        setDraftLength(0); setComposerHeight(MIN_COMPOSER_HEIGHT)
+      }
+      closeDialog()
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
   }
 
   async function sendFile(filePath: string) {
@@ -827,11 +863,11 @@ export function useChatActions(deps: ChatActionsDeps) {
       const expanded = home && (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\")) ? home + trimmed.slice(1) : trimmed
       const absolutePath = resolve(expanded)
       if (selection?.kind === "peer") {
-        const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: absolutePath })
+        const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: absolutePath, caption: "" })
         if (response.error) throw new Error(response.error)
         showStatus(`File transfer started: ${absolutePath} -> ${selection.id.slice(0, 8)}`)
       } else if (selection?.kind === "group") {
-        const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: absolutePath })
+        const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: absolutePath, caption: "" })
         if (response.error) throw new Error(response.error)
         showStatus(`Group file transfer started: ${absolutePath}`)
       } else { throw new Error("Select a peer or group first") }
@@ -839,21 +875,6 @@ export function useChatActions(deps: ChatActionsDeps) {
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
-  }
-
-  async function sendImage(bytes: Uint8Array, mimeType: string) {
-    if (!selection) { showStatus("Select a peer or group before pasting an image."); return }
-    const extension = IMAGE_EXTENSIONS[mimeType.toLowerCase()]
-    if (!extension) { showStatus(`Unsupported pasted image type: ${mimeType}`); return }
-    if (!bytes.byteLength) { showStatus("The pasted image is empty."); return }
-    if (bytes.byteLength > MAX_PASTED_IMAGE_BYTES) { showStatus("Pasted image exceeds the 8 MiB limit."); return }
-    const filePath = join(tmpdir(), `meshtalk-pasted-image-${crypto.randomUUID()}${extension}`)
-    try {
-      await Bun.write(filePath, bytes)
-      await sendFile(filePath)
-    } catch (error) {
-      showStatus(`Could not send pasted image: ${error instanceof Error ? error.message : String(error)}`)
-    }
   }
 
   async function openFilePicker() {

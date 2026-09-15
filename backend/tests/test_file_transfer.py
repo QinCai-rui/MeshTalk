@@ -15,6 +15,7 @@ from meshtalk.file_transfer import (
 from meshtalk.identity import Identity
 from meshtalk.protocol import (
     CAP_FILE_TRANSFER,
+    CAP_FILE_TRANSFER_V2,
     FileAckPayload,
     FileChunkPayload,
     FileOfferPayload,
@@ -32,7 +33,7 @@ class FakePeer:
         self.encryption_public_key = identity.encryption_public_key_bytes()
 
     def supports(self, capability: str) -> bool:
-        return capability == CAP_FILE_TRANSFER
+        return capability in (CAP_FILE_TRANSFER, CAP_FILE_TRANSFER_V2)
 
 
 class FakePeerManager:
@@ -61,6 +62,9 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.group_id = self.settings.create_room("Test group").id
         await self.db.upsert_group_member(
             self.group_id, self.sender.peer_id, self.sender.display_name
+        )
+        await self.db.upsert_group_member(
+            self.group_id, self.recipient.peer_id, self.recipient.display_name
         )
         self.recipient_manager = FakePeerManager(self.sender_peer)
         self.receiver = FileTransferManager(
@@ -123,6 +127,11 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored_path.read_bytes(), self.content)
         await self.receiver.handle_packet(self.sender_peer, self._chunk(1))
         self.assertEqual((await self.db.get_file_transfer(self.file_id))["status"], "completed")
+
+    async def test_v1_failed_row_rejects_chunks_without_write(self):
+        await self.db.update_file_transfer(self.file_id, status="failed")
+        self.assertTrue(await self.receiver.handle_packet(self.sender_peer, self._chunk(0)))
+        self.assertEqual((await self.db.get_file_transfer(self.file_id))["status"], "failed")
 
     async def test_direct_files_use_sender_folder_and_timestamped_name(self):
         await self.db.add_friend(self.sender.peer_id, self.sender.display_name)
@@ -199,6 +208,10 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
     async def test_missing_request_resends_only_requested_chunks(self):
         sender_db = Database(self.root / "sender.db")
         await sender_db.connect()
+        await sender_db.add_friend(self.recipient.peer_id, self.recipient.display_name)
+        await sender_db.upsert_group(self.group_id, "Test group")
+        await sender_db.upsert_group_member(self.group_id, self.sender.peer_id, self.sender.display_name)
+        await sender_db.upsert_group_member(self.group_id, self.recipient.peer_id, self.recipient.display_name)
         source = self.root / "source.bin"
         source.write_bytes(self.content)
         await sender_db.save_file_transfer({
@@ -238,6 +251,7 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         source.write_bytes(self.content)
         sender_db = Database(self.root / "sender.db")
         await sender_db.connect()
+        await sender_db.add_friend(self.recipient.peer_id, self.recipient.display_name)
         sender_manager = FakePeerManager(self.recipient_peer)
         sender_transfer = FileTransferManager(
             self.sender, sender_manager, sender_db, self.root / "sender-files"
@@ -267,6 +281,7 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         destination = sender_transfer._outgoing_path_for("oversize", source.name)
         self.assertFalse(destination.exists())
+        self.assertFalse(destination.parent.exists())
         self.assertEqual(list(destination.parent.glob("*.tmp")), [])
 
     async def test_duplicate_completed_ack_is_ignored(self):
@@ -387,7 +402,7 @@ class GroupDeliveryPreservationTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.tempdir.cleanup()
 
-    async def test_flush_for_peer_delivers_queued_group_row(self):
+    async def test_flush_does_not_originate_legacy_queued_group_row(self):
         sender_db = Database(self.root / "sender.db")
         await sender_db.connect()
         try:
@@ -414,14 +429,11 @@ class GroupDeliveryPreservationTest(unittest.IsolatedAsyncioTestCase):
 
             flushed = await sender_transfer.flush_for_peer(self.recipient.peer_id)
 
-            self.assertEqual(flushed, 1)
+            self.assertEqual(flushed, 0)
             self.assertEqual(
-                (await sender_db.get_file_transfer("queued-group-file"))["status"], "sent"
+                (await sender_db.get_file_transfer("queued-group-file"))["status"], "queued"
             )
-            types = [packet.type for packet in sender_manager.sent]
-            self.assertEqual(types[0], PacketType.FILE_OFFER)
-            self.assertTrue(all(t == PacketType.FILE_CHUNK for t in types[1:]))
-            self.assertEqual(len(types), 3)
+            self.assertEqual(sender_manager.sent, [])
         finally:
             await sender_db.close()
 

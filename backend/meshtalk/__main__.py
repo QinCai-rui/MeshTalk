@@ -102,6 +102,19 @@ async def main(debug: bool = False) -> None:
             return
         for item in items:
             packet_type = PacketType(item["packet_type"])
+            # File transfers are flushed by file_manager to avoid sending their
+            # offer and chunks twice through the generic outbound queue. Skip
+            # them before capability handling so file rows are never
+            # mis-attributed to message tables.
+            if item["packet_type"] in (
+                PacketType.FILE_OFFER.value,
+                PacketType.FILE_CHUNK.value,
+                PacketType.FILE_ACK.value,
+                PacketType.FILE_OFFER_V2.value,
+                PacketType.FILE_CHUNK_V2.value,
+                PacketType.FILE_ACK_V2.value,
+            ):
+                continue
             required = capability_for_packet(packet_type)
             if required is not None and not peer.supports(required):
                 if item["message_id"] and item.get("group_id"):
@@ -110,10 +123,6 @@ async def main(debug: bool = False) -> None:
                     await db.mark_message_failed(item["message_id"])
                     await ipc.broadcast_event({"event": "message_failed", "message_id": item["message_id"]})
                 await db.remove_from_outqueue(item["id"])
-                continue
-            # File transfers are flushed by file_manager to avoid sending their
-            # offer and chunks twice through the generic outbound queue.
-            if item["packet_type"] in (PacketType.FILE_OFFER.value, PacketType.FILE_CHUNK.value, PacketType.FILE_ACK.value):
                 continue
             if not await group_router.can_flush(peer, item):
                 if item["message_id"] and item.get("group_id"):
@@ -690,15 +699,12 @@ async def main(debug: bool = False) -> None:
         if group_id is not None and not isinstance(group_id, str):
             return {"error": "group_id must be a string"}
         is_file = req.get("file") is True
-        transfer = await db.delete_file_transfer_locally(message_id) if is_file else None
+        if is_file:
+            file_manager.forget_transfer(message_id)
+        transfer = await db.delete_file_transfer_locally(message_id, file_manager.files_base) if is_file else None
         if is_file:
             if transfer is None:
                 return {"error": "attachment not found"}
-            if transfer["direction"] == "inbound" and transfer.get("file_path"):
-                try:
-                    Path(transfer["file_path"]).unlink(missing_ok=True)
-                except OSError:
-                    logger.warning("Could not remove local attachment file %s", transfer["file_path"])
         else:
             deleted = await db.delete_message_locally(message_id, group_id)
             if not deleted:
@@ -810,30 +816,63 @@ async def main(debug: bool = False) -> None:
             "peers": peers_info,
         }
 
+    def _file_error(exc: Exception) -> dict:
+        """Build an IPC error, handing back the failed file_id when the backend kept a retryable row."""
+        response: dict = {"error": str(exc)}
+        file_id = getattr(exc, "file_id", None)
+        if file_id:
+            response["file_id"] = file_id
+        return response
+
+    def _batch_error(result: dict) -> dict:
+        details = "; ".join(
+            f"{entry.get('path', '?')}: {entry.get('error', entry)}" for entry in result["errors"]
+        )
+        response: dict = {"error": details or "no files started"}
+        file_ids = sorted({entry.get("file_id") for entry in result["errors"] if entry.get("file_id")})
+        if len(file_ids) == 1:
+            response["file_id"] = file_ids[0]
+        elif file_ids:
+            response["file_ids"] = file_ids
+        return response
+
     async def handle_file_send(req: dict) -> dict:
         recipient_id = req.get("recipient_id")
-        file_path = req.get("file_path")
         if not isinstance(recipient_id, str) or not recipient_id:
             return {"error": "recipient_id required"}
-        if not isinstance(file_path, str) or not file_path:
-            return {"error": "file_path required"}
+        paths = req.get("paths")
+        if paths is None:
+            paths = [req.get("file_path")]
+        if not isinstance(paths, list) or not paths or len(paths) > 32 or not all(isinstance(path, str) and path for path in paths):
+            return {"error": "file_path or paths[] required (maximum 32)"}
+        caption = req.get("caption", "")
+        if not isinstance(caption, str):
+            return {"error": "caption must be text"}
         if await db.is_peer_blocked(recipient_id):
             return {"error": "This peer is blocked; unblock them to send files"}
         try:
-            file_id = await file_manager.send_file(recipient_id, file_path)
+            if len(paths) == 1:
+                file_id = await file_manager.send_file(recipient_id, paths[0], caption=caption)
+                return {"file_id": file_id, "results": [{"recipient_id": recipient_id, "file_id": file_id}], "errors": []}
+            result = await file_manager.send_batch(recipient_id, paths, caption=caption)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return _file_error(exc)
         except Exception as exc:
             logger.exception("file_send failed")
             return {"error": str(exc)}
-        return {"file_id": file_id}
+        if not result["results"]:
+            return _batch_error(result)
+        return result
 
     async def handle_file_retry(req: dict) -> dict:
         file_id = req.get("file_id")
         if not isinstance(file_id, str) or not file_id:
             return {"error": "file_id required"}
         try:
-            retried = await file_manager.retry_file(file_id)
+            recipient_id = req.get("recipient_id")
+            if recipient_id is not None and (not isinstance(recipient_id, str) or not recipient_id):
+                return {"error": "recipient_id must be a non-empty string"}
+            retried = await file_manager.retry_file(file_id, recipient_id=recipient_id)
         except ValueError as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -843,30 +882,31 @@ async def main(debug: bool = False) -> None:
 
     async def handle_group_file_send(req: dict) -> dict:
         group_id = req.get("group_id")
-        file_path = req.get("file_path")
         if not isinstance(group_id, str) or not group_id:
             return {"error": "group_id required"}
-        if not isinstance(file_path, str) or not file_path:
-            return {"error": "file_path required"}
+        paths = req.get("paths")
+        if paths is None:
+            paths = [req.get("file_path")]
+        if not isinstance(paths, list) or not paths or len(paths) > 32 or not all(isinstance(path, str) and path for path in paths):
+            return {"error": "file_path or paths[] required (maximum 32)"}
+        caption = req.get("caption", "")
+        if not isinstance(caption, str):
+            return {"error": "caption must be text"}
         if group_id not in settings.rooms or settings.rooms[group_id].group_name is None:
             return {"error": "Unknown group"}
-        members = await db.get_group_members(group_id)
-        results = []
-        errors = []
-        for member in members:
-            recipient_id = member["peer_id"]
-            if recipient_id == identity.peer_id:
-                continue
-            if await db.is_peer_blocked(recipient_id):
-                continue
-            try:
-                fid = await file_manager.send_file(recipient_id, file_path, group_id=group_id)
-                results.append({"recipient_id": recipient_id, "file_id": fid})
-            except Exception as exc:
-                errors.append(f"{recipient_id[:8]}: {exc}")
-        if not results and errors:
-            return {"error": "; ".join(errors)}
-        return {"results": results, "errors": errors}
+        try:
+            if len(paths) == 1:
+                file_id = await file_manager.send_group_file(group_id, paths[0], caption=caption)
+                return {"file_id": file_id, "results": [{"recipient_id": "", "file_id": file_id}], "errors": []}
+            result = await file_manager.send_batch(group_id, paths, group_id=group_id, caption=caption)
+        except ValueError as exc:
+            return _file_error(exc)
+        except Exception as exc:
+            logger.exception("group_file_send failed")
+            return {"error": str(exc)}
+        if not result["results"]:
+            return _batch_error(result)
+        return result
 
     async def handle_files(req: dict) -> dict:
         peer_id = req.get("peer_id")

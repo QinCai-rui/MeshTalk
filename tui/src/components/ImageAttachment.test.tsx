@@ -3,7 +3,7 @@ import { testRender } from "@opentui/react/test-utils"
 import { mkdir, rm } from "fs/promises"
 import { join } from "path"
 import { tmpdir } from "os"
-import { ImageAttachment, detectImageFormat, fittedImageSize, isFullyWithinViewport } from "./ImageAttachment"
+import { ImageAttachment, detectImageFormat, fittedImageSize, isFullyWithinViewport, isLocalFileMissing } from "./ImageAttachment"
 import { imageViewerPropsEqual } from "./DialogPanel"
 import { goBack } from "../navigation"
 
@@ -15,6 +15,13 @@ test("identifies supported formats and fits an image within its terminal area", 
   expect(fittedImageSize(1600, 900, 40, 12)).toEqual({ width: 40, height: 12 })
   expect(isFullyWithinViewport({ screenY: 6, height: 4 }, { screenY: 5, height: 8 })).toBe(true)
   expect(isFullyWithinViewport({ screenY: 4, height: 4 }, { screenY: 5, height: 8 })).toBe(false)
+})
+
+test("treats a directory as a missing local file", async () => {
+  const directory = join(tmpdir(), `meshtalk-directory-test-${crypto.randomUUID()}`)
+  await mkdir(directory)
+  try { expect(isLocalFileMissing(directory)).toBe(true) }
+  finally { await rm(directory, { recursive: true, force: true }) }
 })
 
 test("opens a loaded thumbnail with a mouse click", async () => {

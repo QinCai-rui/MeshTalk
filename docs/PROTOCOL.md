@@ -220,14 +220,15 @@ encrypted HANDSHAKE_CONFIRM ------------------------------>
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
-`file_transfer`, `typing_indicators`, `message_replies`, `at_mentions`,
+`file_transfer`, `file_transfer_v2`, `typing_indicators`, `message_replies`, `at_mentions`,
 `direct_route_recovery`). The agreed capability set is the **intersection** of
 both peers' advertised sets, and higher-level code gates behaviour on it:
 `text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
 enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
 `friend_requests` enables the friend-request packet family, `group_chat` enables
-the group packet family, and `file_transfer` enables file offer/chunk/ack
-packets (section 7.6). `message_replies` enables reply references on message
+the group packet family, `file_transfer` enables v1 file offer/chunk/ack
+packets, and `file_transfer_v2` enables the v2 file offer/chunk/ack packets
+(section 7.6). `message_replies` enables reply references on message
 packets. `at_mentions` marks a peer as able to render `<@user_id>` mention
 tokens as highlighted pills; senders transitively downgrade mention content
 to plain `@Display Name` text for peers that do not advertise it, so older
@@ -493,7 +494,7 @@ JSON hello (canonical, then Ed25519-signed):
 
 ```json
 {
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "typing_indicators", "message_replies", "direct_route_recovery"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "file_transfer_v2", "typing_indicators", "message_replies", "direct_route_recovery"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -520,8 +521,12 @@ During the handshake, peers exchange signed lists of supported capabilities.
   - `block_reports`: Report message blocking status (`MESSAGE_BLOCKED`).
   - `group_chat`: Exchange `GROUP_MESSAGE`, `GROUP_MESSAGE_ACK`, and
     `GROUP_LEAVE` packets for mutually joined named rooms.
-  - `file_transfer`: Exchange `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
+  - `file_transfer`: Exchange v1 `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
     packets for cross-platform file transfer with image preview and download.
+  - `file_transfer_v2`: Exchange v2 `FILE_OFFER_V2`, `FILE_CHUNK_V2`, and
+    `FILE_ACK_V2` packets (SHA-256 integrity, captions, batches, per-recipient
+    group deliveries). A peer lacking it never receives v2 bytes; sends to it
+    are marked `unavailable`.
   - `typing_indicators`: Exchange encrypted, transient `TYPING` packets.
   - `message_replies`: Exchange messages that reference an original message or attachment.
   - `direct_route_recovery`: Probe and promote a direct UDP route after a DERP session is established; enabled only for the negotiated intersection.
@@ -775,7 +780,9 @@ messages from peers or the control service.
 File transfer sends binary files between peers using the same E2EE envelope as
 messages. Files are chunked into encrypted pieces, sent as `FILE_CHUNK` packets,
 and reassembled by the receiver. The `file_transfer` capability is required on
-both peers.
+both peers. The v2 family (`FILE_OFFER_V2`/`FILE_CHUNK_V2`/`FILE_ACK_V2`,
+0x15-0x17) adds SHA-256 integrity, captions, and batches, and requires
+`file_transfer_v2` on both peers instead; v1 remains receive-only.
 
 #### Protocol Constants
 
@@ -839,6 +846,9 @@ after key confirmation, all application packets use encrypted TCP records.
 | FILE_OFFER | 0x11 | File Offer | Signed file metadata (filename, size, chunk count) for a direct or group transfer. |
 | FILE_CHUNK | 0x12 | File Chunk | E2EE encrypted file data chunk with per-chunk signature. |
 | FILE_ACK | 0x13 | File Ack | Delivery acknowledgement with optional `missing_ranges` for retransmission. |
+| FILE_OFFER_V2 | 0x15 | File Offer v2 | Signed metadata + SHA-256 + caption + batch refs. Requires `file_transfer_v2`. |
+| FILE_CHUNK_V2 | 0x16 | File Chunk v2 | E2EE encrypted file data chunk with per-chunk signature. Requires `file_transfer_v2`. |
+| FILE_ACK_V2 | 0x17 | File Ack v2 | Delivery acknowledgement (`completed`/`missing`/`blocked`) + ranges. Requires `file_transfer_v2`. |
 | TYPING | 0x14 | Typing | Signed, pairwise-encrypted transient typing state. |
 
 UDP transport-level frame types (udp_transport.py): HELLO=1, DATA=2, ACK=3,
@@ -1056,7 +1066,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, typing_indicators, message_replies, at_mentions, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, file_transfer_v2, typing_indicators, message_replies, at_mentions, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |

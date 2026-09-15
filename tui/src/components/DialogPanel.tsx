@@ -96,6 +96,7 @@ type DialogPanelProps = {
   downloadFile: (fileId: string, destPath: string) => void
   defaultDownloadPath: (filename: string) => string
   onDeleteFile?: (file: FileTransfer) => void
+  onRetryFile?: (fileId: string, recipientId?: string) => void
 
   testNotificationDelivery: (delivery: Exclude<NotificationDelivery, "disabled">, firstRun?: boolean) => void
   disableNotifications: (firstRun?: boolean) => void
@@ -116,7 +117,7 @@ export function DialogPanel(props: DialogPanelProps) {
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
   const { mutePeer, unmutePeer, muteGroup, unmuteGroup, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
-  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, confirmPendingFileSend, downloadFile, defaultDownloadPath, onDeleteFile } = props
+  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, confirmPendingFileSend, downloadFile, defaultDownloadPath, onDeleteFile, onRetryFile } = props
   const { testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent } = props
   const { saveDisplayName, checkForUpdatesFromAbout, saveUpdateChannel, installUpdate, saveUpdateToken, restartUpdate } = props
 
@@ -170,12 +171,12 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "debug-endpoints" && <DebugEndpointsDialogContent debugInfo={debugInfo} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "debug-peer" && <DebugPeerDialogContent dialog={dialog} debugInfo={debugInfo} dialogHeight={dialogHeight} />}
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
-      {dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} screenWidth={dialogWidthFor("file-list") + 2} screenHeight={dialogHeight + 4} imageProtocol={imageProtocol} peers={peers} groups={groups} selection={selection} closeDialog={closeDialog} showDialog={showDialog} confirmPendingFileSend={confirmPendingFileSend} />}
-      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
+      {dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} screenWidth={dialogWidthFor("file-list") + 2} screenHeight={dialogHeight + 4} imageProtocol={imageProtocol} peers={peers} groups={groups} closeDialog={closeDialog} showDialog={showDialog} confirmPendingFileSend={confirmPendingFileSend} />}
+      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} onRetryFile={onRetryFile} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
       {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} bytes={dialog.bytes} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
-      {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} />}
+      {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} onRetryFile={onRetryFile} />}
   </>
   if (usesSettingsPanel(dialog)) return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center" onMouseDown={dismissOnOverlay}>
     <box width={dialogWidthFor(dialog.kind)} height={dialogHeight} border borderColor={theme.line} backgroundColor={theme.surfaceRaised} paddingX={1} paddingY={dialogHeight > 12 ? 1 : 0} onMouseDown={event => event.stopPropagation()}>
@@ -214,15 +215,20 @@ const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePa
   )
 }, imageViewerPropsEqual)
 
-function DeliveryDetailsDialogContent({ dialog }: { dialog: Extract<Dialog, { kind: "delivery-details" }> }) {
-  const statusOrder = ["delivered", "sent", "queued", "pending", "unavailable"]
-  const statusColor: Record<string, string> = { delivered: theme.success, sent: theme.markdown.heading, queued: theme.warning, pending: theme.muted, unavailable: theme.danger }
+function DeliveryDetailsDialogContent({ dialog, onRetryFile }: { dialog: Extract<Dialog, { kind: "delivery-details" }>; onRetryFile?: (fileId: string, recipientId?: string) => void }) {
+  const nowSec = Date.now() / 1000
+  const statusOrder = ["delivered", "sent", "queued", "pending", "failed", "blocked", "unavailable"]
+  const statusColor: Record<string, string> = { delivered: theme.success, sent: theme.markdown.heading, queued: theme.warning, pending: theme.muted, failed: theme.danger, blocked: theme.danger, unavailable: theme.danger }
   const grouped = statusOrder.map((status) => [status, dialog.deliveries.filter((delivery) => delivery.status === status)] as const).filter(([, deliveries]) => deliveries.length)
+  const retryable = (status: string, awaitingAckAt?: number | null) => ["failed", "blocked", "unavailable", "queued"].includes(status) || (status === "sent" && (!awaitingAckAt || nowSec >= awaitingAckAt + 30))
   return <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
     {!dialog.deliveries.length ? <text fg={theme.muted}>No delivery details are available yet.</text> : null}
     {grouped.map(([status, deliveries]) => <box key={status} style={{ flexDirection: "column", marginBottom: 1 }}>
       <text fg={statusColor[status]}><b>{status[0].toUpperCase() + status.slice(1)} ({deliveries.length})</b></text>
-      {deliveries.map((delivery: GroupDelivery) => <text key={delivery.recipient_id}>  {delivery.display_name}</text>)}
+      {deliveries.map((delivery: GroupDelivery) => <box key={delivery.recipient_id} style={{ flexDirection: "row", gap: 2 }}>
+        <text>  {delivery.display_name}</text>
+        {retryable(status, delivery.awaiting_ack_at) && dialog.fileId && onRetryFile ? <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile(dialog.fileId!, delivery.recipient_id) } }}><text fg={theme.text}><u>Retry</u></text></box> : null}
+      </box>)}
     </box>)}
   </scrollbox>
 }
@@ -644,10 +650,10 @@ function DebugPeerDialogContent({ dialog, debugInfo, dialogHeight }: { dialog: E
   )
 }
 
-export function FileConfirmDialogContent({ dialog, dialogWidth, dialogHeight, screenWidth, screenHeight, imageProtocol, peers, groups, selection, closeDialog, showDialog, confirmPendingFileSend }: { dialog: Extract<Dialog, { kind: "file-confirm" }>; dialogWidth: number; dialogHeight: number; screenWidth: number; screenHeight: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; selection: { kind: "peer" | "group"; id: string } | undefined; closeDialog: () => void; showDialog: (dialog: Dialog) => void; confirmPendingFileSend: () => void }) {
-  const targetName = selection?.kind === "peer"
-    ? peers.find((p) => p.peer_id === selection.id)?.display_name ?? selection.id.slice(0, 8)
-    : groups.find((g) => g.group_id === selection?.id)?.name ?? "group"
+export function FileConfirmDialogContent({ dialog, dialogWidth, dialogHeight, screenWidth, screenHeight, imageProtocol, peers, groups, closeDialog, showDialog, confirmPendingFileSend }: { dialog: Extract<Dialog, { kind: "file-confirm" }>; dialogWidth: number; dialogHeight: number; screenWidth: number; screenHeight: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; closeDialog: () => void; showDialog: (dialog: Dialog) => void; confirmPendingFileSend: () => void }) {
+  const targetName = dialog.target.kind === "peer"
+    ? peers.find((p) => p.peer_id === dialog.target.id)?.display_name ?? dialog.target.id.slice(0, 8)
+    : groups.find((g) => g.group_id === dialog.target.id)?.name ?? "group"
   const imageFilename = dialog.image
     ? `pasted-image.${detectImageFormat(dialog.image.bytes) ?? dialog.image.mimeType.split("/").pop() ?? "img"}`
     : undefined
@@ -677,6 +683,7 @@ export function FileConfirmDialogContent({ dialog, dialogWidth, dialogHeight, sc
   return (
     <>
       <text><b>{title}</b></text>
+      {dialog.caption ? <text wrapMode="word"><span fg={theme.muted}>Caption: </span>{dialog.caption}</text> : null}
       {(dialog.image || imagePath) && previewFilename ? <>
         <box style={{ height: previewBounds.maxHeight, minHeight: previewBounds.maxHeight, flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
           <ImageAttachment id="file-confirm-image-preview" filePath={imagePath} bytes={dialog.image?.bytes} filename={previewFilename} protocol={imageProtocol} expectedImage fullSize={false} lazy={false} maxWidth={previewBounds.maxWidth} maxHeight={previewBounds.maxHeight} onOpen={() => dialog.image
@@ -718,7 +725,7 @@ function FileSendDialogContent({ dialog, dialogWidth, selection, peers, groups, 
   )
 }
 
-export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, peers, groups, loadFiles, loadFilesDir, setDialogDraft, showDialog, closeDialog, defaultDownloadPath, onDeleteFile }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; closeDialog: () => void; defaultDownloadPath: (filename: string) => string; onDeleteFile?: (file: FileTransfer) => void }) {
+export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, peers, groups, loadFiles, loadFilesDir, setDialogDraft, showDialog, closeDialog, defaultDownloadPath, onDeleteFile, onRetryFile }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; closeDialog: () => void; defaultDownloadPath: (filename: string) => string; onDeleteFile?: (file: FileTransfer) => void; onRetryFile?: (fileId: string) => void }) {
   const [filter, setFilter] = useState<"all" | "inbound" | "outbound" | "images" | "other">("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<FileTransfer | null>(null)
@@ -754,6 +761,8 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
   }, [pendingDelete])
   const selectedFile = filtered.find((f) => f.file_id === selectedId) ?? null
   const canSaveSelected = !!selectedFile && ["completed", "sent"].includes(selectedFile.status) && !isLocalFileMissing(selectedFile.file_path)
+  const canRetrySelected = !!selectedFile && selectedFile.direction === "outbound" && onRetryFile && (["failed", "blocked", "unavailable", "queued"].includes(selectedFile.status) || (selectedFile.status === "sent" && (!selectedFile.awaiting_ack_at || Date.now() / 1000 >= (selectedFile.awaiting_ack_at ?? 0) + 30)))
+  const batchPosition = selectedFile?.batch_id && Number.isInteger(selectedFile.batch_index) && Number.isInteger(selectedFile.batch_count) ? `Batch ${(selectedFile.batch_index ?? 0) + 1}/${selectedFile.batch_count}` : null
   const saveSelected = () => {
     if (!selectedFile || !canSaveSelected) return
     setDialogDraft(defaultDownloadPath(selectedFile.filename))
@@ -846,6 +855,9 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
             <text fg={theme.text} wrapMode="word"><b>{selectedFile.filename}</b></text>
             <text fg={theme.muted}>{formatSize(selectedFile.file_size)} / <span fg={status.color}>{status.label}</span>{isImageFile(selectedFile.filename) ? " / image" : ""}</text>
             <text fg={theme.muted}>{transferDirection(selectedFile)}{selectedFile.group_id ? " / group" : ""}</text>
+            {selectedFile.caption ? <text wrapMode="word">{selectedFile.caption}</text> : null}
+            {batchPosition ? <text fg={theme.muted}>{batchPosition}</text> : null}
+            {canRetrySelected && onRetryFile ? <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile(selectedFile.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box> : null}
             <text fg={theme.muted}>Transfer {selectedFile.file_id.slice(0, 8)}</text>
             <box height={1} />
             <text fg={theme.muted}>Local file</text>
