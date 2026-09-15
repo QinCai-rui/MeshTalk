@@ -728,7 +728,13 @@ export function useChatActions(deps: ChatActionsDeps) {
     const response = await ipc.send(target.kind === "peer" ? "file_send" : "group_file_send", payload)
     if (response.error) {
       const fileId = typeof response.file_id === "string" ? response.file_id : undefined
-      throw Object.assign(new Error(response.error), fileId ? { fileId } : {})
+      const fileIds = [...(fileId ? [fileId] : []), ...(Array.isArray(response.file_ids) ? response.file_ids : [])]
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
+      const ids = [...new Set(fileIds)]
+      throw Object.assign(
+        new Error(ids.length ? `${response.error} [${ids.map((id) => id.slice(0, 8)).join(", ")}]` : String(response.error)),
+        { ...(fileId ? { fileId } : {}), ...(ids.length ? { fileIds: ids } : {}) },
+      )
     }
     const errors = Array.isArray(response.errors) ? response.errors : []
     const reported = errors.map((entry: unknown) => typeof entry === "string"
