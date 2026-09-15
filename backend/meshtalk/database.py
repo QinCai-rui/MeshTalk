@@ -640,14 +640,10 @@ class Database:
             path = Path(file_path)
             try:
                 base = files_base.resolve()
-            try:
-                path.resolve().relative_to(files_base.resolve())
+                path.resolve().relative_to(base)
                 path.unlink(missing_ok=True)
-                if path.parent != files_base.resolve():
-                    try:
-                        path.parent.rmdir()
-                    except OSError:
-                        pass
+                if path.parent.resolve() != base:
+                    path.parent.rmdir()
             except (OSError, ValueError):
                 pass
         return transfer
@@ -1131,6 +1127,11 @@ class Database:
     async def commit(self) -> None:
         """Commit pending changes made by a batched operation."""
         await self._db.commit()
+
+    async def reset_file_received_chunks(self, file_id: str) -> None:
+        """Drop all received-chunk state so a full integrity retry overwrites every chunk."""
+        await self._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (file_id,))
+        await self._db.execute("UPDATE file_transfers SET received_chunks = 0 WHERE file_id = ?", (file_id,))
 
     async def get_missing_file_chunk_ranges(self, file_id: str, total_chunks: int) -> list[tuple[int, int]]:
         """Calculate contiguous ranges of missing file chunks."""

@@ -55,7 +55,9 @@ Commands:
 
 function hasError(response: IPCResponse): boolean {
   if (response.error) {
-    console.error(`Error: ${response.error}`);
+    const ids = [response.file_id, ...(Array.isArray(response.file_ids) ? response.file_ids : [])]
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+    console.error(`Error: ${response.error}${ids.length ? ` (file_id: ${ids.join(", ")})` : ""}`);
     process.exitCode = 1;
     return true;
   }
@@ -119,15 +121,25 @@ function sendFilePayload(targetKey: "recipient_id" | "group_id", target: string,
   };
 }
 
-function printTransferStarted(response: IPCResponse, prefix = "File transfer"): void {
-  if (response.batch_id) console.log(`${prefix} batch ${response.batch_id} started`);
+export function printTransferStarted(response: IPCResponse, prefix = "File transfer"): void {
+  const results = asRecords(response.results);
+  const errors = Array.isArray(response.errors) ? response.errors : [];
+  if (errors.length) process.exitCode = 1;
+  if (errors.length && !results.length && !response.file_id) console.error(`${prefix} failed: no files started`);
+  else if (response.batch_id) console.log(`${prefix} batch ${response.batch_id} started`);
   else if (response.file_id) console.log(`${prefix} ${response.file_id} started`);
   else console.log(`${prefix} started`);
-  for (const result of asRecords(response.results)) {
+  for (const result of results) {
     console.log(`  ${result.file_id}${result.recipient_id ? ` -> ${result.recipient_id}` : ""}`);
   }
   if (Array.isArray(response.errors)) {
-    for (const error of response.errors) console.error(`Error: ${typeof error === "string" ? error : JSON.stringify(error)}`);
+    for (const error of response.errors) {
+      if (typeof error === "string") console.error(`Error: ${error}`);
+      else {
+        const record = error as Record<string, unknown>;
+        console.error(`Error: ${record.path ?? "?"}: ${record.error ?? JSON.stringify(error)}${typeof record.file_id === "string" ? ` (file_id: ${record.file_id})` : ""}`);
+      }
+    }
   }
 }
 
@@ -419,7 +431,7 @@ export async function main(): Promise<void> {
 
     if (command === "group") {
       const [subcommand, groupId, ...words] = args;
-      if (!groupId) throw new Error(`Usage: ${PROGRAM} group <members|messages|send|leave> <group-id> [message]`);
+      if (!groupId) throw new Error(`Usage: ${PROGRAM} group <members|messages|send|send-file|leave> <group-id> [message]`);
 
       if (subcommand === "members" && !words.length) {
         const response = await ipc.send("group_members", { group_id: groupId });

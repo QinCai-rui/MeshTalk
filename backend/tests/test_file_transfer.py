@@ -63,6 +63,9 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         await self.db.upsert_group_member(
             self.group_id, self.sender.peer_id, self.sender.display_name
         )
+        await self.db.upsert_group_member(
+            self.group_id, self.recipient.peer_id, self.recipient.display_name
+        )
         self.recipient_manager = FakePeerManager(self.sender_peer)
         self.receiver = FileTransferManager(
             self.recipient, self.recipient_manager, self.db, self.root / "recipient-files",
@@ -124,6 +127,11 @@ class FileTransferRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored_path.read_bytes(), self.content)
         await self.receiver.handle_packet(self.sender_peer, self._chunk(1))
         self.assertEqual((await self.db.get_file_transfer(self.file_id))["status"], "completed")
+
+    async def test_v1_failed_row_rejects_chunks_without_write(self):
+        await self.db.update_file_transfer(self.file_id, status="failed")
+        self.assertTrue(await self.receiver.handle_packet(self.sender_peer, self._chunk(0)))
+        self.assertEqual((await self.db.get_file_transfer(self.file_id))["status"], "failed")
 
     async def test_direct_files_use_sender_folder_and_timestamped_name(self):
         await self.db.add_friend(self.sender.peer_id, self.sender.display_name)

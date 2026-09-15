@@ -44,6 +44,7 @@ class FileProtocolV2Tests(unittest.TestCase):
             {"file_sha256": "A" * 64}, {"caption": "x" * 1025},
             {"total_chunks": 2}, {"batch_id": BATCH_ID},
             {"batch_id": BATCH_ID, "batch_index": 2, "batch_count": 2},
+            {"group_id": 123}, {"signature": "s" * 64},
         ]
         for changes in invalid:
             with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "Invalid file offer v2 payload"):
@@ -56,6 +57,10 @@ class FileProtocolV2Tests(unittest.TestCase):
     def test_chunk_and_ack_strict_validation(self):
         with self.assertRaisesRegex(ValueError, "Invalid file chunk v2 payload"):
             FileChunkV2Payload(FILE_ID, 1, 1, "sender", "recipient", b"x" * 60, b"s" * 64).encode()
+        with self.assertRaisesRegex(ValueError, "Invalid file chunk v2 payload"):
+            FileChunkV2Payload(FILE_ID, 0, 1, "sender", "recipient", b"x" * 60, b"s" * 64, group_id=123).encode()
+        with self.assertRaisesRegex(ValueError, "Invalid file chunk v2 payload"):
+            FileChunkV2Payload(FILE_ID, -1, 1, "sender", "recipient", b"x" * 60, b"s" * 64).signed_bytes()
         for status, ranges in (("ack", None), ("missing", None), ("completed", [(0, 0)])):
             with self.subTest(status=status), self.assertRaisesRegex(ValueError, "Invalid file ack v2 payload"):
                 FileAckV2Payload(FILE_ID, "recipient", status, b"s" * 64, ranges).encode()
