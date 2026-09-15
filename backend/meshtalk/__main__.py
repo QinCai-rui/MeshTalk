@@ -101,17 +101,10 @@ async def main(debug: bool = False) -> None:
             return
         for item in items:
             packet_type = PacketType(item["packet_type"])
-            required = capability_for_packet(packet_type)
-            if required is not None and not peer.supports(required):
-                if item["message_id"] and item.get("group_id"):
-                    await db.set_group_delivery(item["message_id"], peer_id, "unavailable")
-                elif item["message_id"]:
-                    await db.mark_message_failed(item["message_id"])
-                    await ipc.broadcast_event({"event": "message_failed", "message_id": item["message_id"]})
-                await db.remove_from_outqueue(item["id"])
-                continue
             # File transfers are flushed by file_manager to avoid sending their
-            # offer and chunks twice through the generic outbound queue.
+            # offer and chunks twice through the generic outbound queue. Skip
+            # them before capability handling so file rows are never
+            # mis-attributed to message tables.
             if item["packet_type"] in (
                 PacketType.FILE_OFFER.value,
                 PacketType.FILE_CHUNK.value,
@@ -120,6 +113,15 @@ async def main(debug: bool = False) -> None:
                 PacketType.FILE_CHUNK_V2.value,
                 PacketType.FILE_ACK_V2.value,
             ):
+                continue
+            required = capability_for_packet(packet_type)
+            if required is not None and not peer.supports(required):
+                if item["message_id"] and item.get("group_id"):
+                    await db.set_group_delivery(item["message_id"], peer_id, "unavailable")
+                elif item["message_id"]:
+                    await db.mark_message_failed(item["message_id"])
+                    await ipc.broadcast_event({"event": "message_failed", "message_id": item["message_id"]})
+                await db.remove_from_outqueue(item["id"])
                 continue
             if not await group_router.can_flush(peer, item):
                 if item["message_id"] and item.get("group_id"):
@@ -811,7 +813,9 @@ async def main(debug: bool = False) -> None:
             logger.exception("file_send failed")
             return {"error": str(exc)}
         if not result["results"]:
-            details = "; ".join(entry.get("error", str(entry)) for entry in result["errors"])
+            details = "; ".join(
+                f"{entry.get('path', '?')}: {entry.get('error', entry)}" for entry in result["errors"]
+            )
             return {"error": details or "no files started"}
         return result
 
@@ -856,7 +860,9 @@ async def main(debug: bool = False) -> None:
             logger.exception("group_file_send failed")
             return {"error": str(exc)}
         if not result["results"]:
-            details = "; ".join(entry.get("error", str(entry)) for entry in result["errors"])
+            details = "; ".join(
+                f"{entry.get('path', '?')}: {entry.get('error', entry)}" for entry in result["errors"]
+            )
             return {"error": details or "no files started"}
         return result
 

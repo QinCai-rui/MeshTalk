@@ -733,7 +733,8 @@ export function useChatActions(deps: ChatActionsDeps) {
       : { path: typeof (entry as { path?: unknown }).path === "string" ? (entry as { path: string }).path : "", reason: typeof (entry as { error?: unknown }).error === "string" ? (entry as { error: string }).error : "" })
       .filter((entry) => entry.path)
     const failed = reported.filter((entry) => paths.includes(entry.path))
-    const outstanding = failed.length ? failed : errors.length ? paths.map((path) => ({ path, reason: "" })) : []
+    const fallbackReason = errors.length ? errors.map((entry) => typeof entry === "string" ? entry : JSON.stringify(entry)).join("; ") : ""
+    const outstanding = failed.length ? failed : errors.length ? paths.map((path) => ({ path, reason: fallbackReason })) : []
     const succeeded = paths.length - outstanding.length
     if (succeeded > 0) showStatus(paths.length === 1 ? `File transfer started: ${paths[0] ?? "file"} -> ${target.id.slice(0, 8)}` : `Started ${succeeded} of ${paths.length} file transfers.`)
     return outstanding

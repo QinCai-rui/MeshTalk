@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import tempfile
 import unittest
 import uuid
@@ -136,7 +137,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
             self.sender, self.sender_manager, self.sender_db, self.root / "sender-files",
             settings=self.sender_settings,
         )
-        with self.assertRaisesRegex(ValueError, "no retryable"):
+        with self.assertRaisesRegex(ValueError, "awaiting acknowledgement"):
             await restarted.retry_file(file_id)
         await self.sender_db.update_file_transfer(file_id, awaiting_ack_at=0)
         self.sender_manager.sent.clear()
@@ -535,3 +536,109 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.recipient_db.upsert_group_member(group_id, self.sender.peer_id, "Sender")
         self.assertFalse(await self.recipient_transfer._authorized_inbound(self.sender_peer, group_id, v2=False))
         self.assertFalse(await self.recipient_transfer._authorized_inbound(self.sender_peer, group_id, v2=True))
+
+    async def test_send_queue_failure_raises_without_silent_success(self):
+        offline_manager = FakePeerManager(None)
+        offline_transfer = FileTransferManager(
+            self.sender, offline_manager, self.sender_db, self.root / "sender-files",
+            settings=self.sender_settings,
+        )
+        await self.sender_db.upsert_peer(
+            self.recipient.peer_id, "Recipient", self.recipient.encryption_public_key_bytes(),
+            self.recipient.signing_public_key_bytes(),
+            capabilities=[CAP_FILE_TRANSFER, CAP_FILE_TRANSFER_V2],
+        )
+        source = self.root / "queuefail.txt"
+        source.write_bytes(b"queue-fail-data")
+
+        async def fail_queue(self, transfer, recipient, key, ranges):
+            await offline_transfer._set_delivery(transfer, recipient, "failed")
+            return False
+
+        with patch.object(FileTransferManager, "_queue_ranges", fail_queue):
+            with self.assertRaisesRegex(ValueError, "Failed to deliver"):
+                await offline_transfer.send_file(self.recipient.peer_id, str(source))
+        rows = await self.sender_db.get_file_transfers(self.recipient.peer_id)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "failed")
+
+    async def test_retry_stream_failure_raises_without_silent_success(self):
+        source = self.root / "retryfail.txt"
+        source.write_bytes(b"retry-fail-data")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        await self.sender_db.update_file_transfer(file_id, status="failed")
+        self.sender_manager.sent.clear()
+
+        manager = self.sender_transfer
+
+        async def fail_stream(_peer_manager_self, peer, transfer, recipient, ranges):
+            await manager._set_delivery(transfer, recipient, "failed")
+            return False
+
+        with patch.object(FileTransferManager, "_stream_ranges", fail_stream):
+            with self.assertRaisesRegex(ValueError, "Failed to deliver"):
+                await self.sender_transfer.retry_file(file_id)
+        self.assertEqual((await self.sender_db.get_file_transfer(file_id))["status"], "failed")
+        chunks = [p for p in self.sender_manager.sent if p.type == PacketType.FILE_CHUNK_V2]
+        self.assertEqual(chunks, [])
+
+    async def test_flush_blocked_peer_purges_file_queue(self):
+        source = self.root / "flushblocked.txt"
+        source.write_bytes(b"flush-blocked-data")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        await self.sender_db.add_to_outqueue(
+            self.recipient.peer_id, PacketType.FILE_CHUNK_V2.value, b"stale", file_id
+        )
+        await self.sender_db.add_to_outqueue(
+            self.recipient.peer_id, PacketType.FILE_ACK_V2.value, b"ack", file_id
+        )
+        await self.sender_db.block_peer(self.recipient.peer_id, "Recipient")
+        self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
+        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
+
+    async def test_retry_blocked_peer_purges_file_queue(self):
+        source = self.root / "retryblocked.txt"
+        source.write_bytes(b"retry-blocked-data")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        await self.sender_db.update_file_transfer(file_id, status="failed")
+        await self.sender_db.add_to_outqueue(
+            self.recipient.peer_id, PacketType.FILE_CHUNK_V2.value, b"stale", file_id
+        )
+        await self.sender_db.block_peer(self.recipient.peer_id, "Recipient")
+        with self.assertRaisesRegex(ValueError, "blocked"):
+            await self.sender_transfer.retry_file(file_id)
+        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
+
+    async def test_second_integrity_failure_emits_file_failed(self):
+        source = self.root / "integrity.txt"
+        source.write_bytes(b"integrity-data")
+        file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
+        packets = list(self.sender_manager.sent)
+        self.sender_manager.sent.clear()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        self.recipient_transfer.on_event = capture
+        for packet in packets:
+            await self.recipient_transfer.handle_packet(self.sender_peer, packet)
+        await asyncio.sleep(0)
+        self.assertEqual((await self.recipient_db.get_file_transfer(file_id))["status"], "completed")
+        # Simulate a second corruption after the one-shot retry was consumed.
+        self.recipient_transfer._integrity_retries.add(file_id)
+        transfer = await self.recipient_db.get_file_transfer(file_id)
+        with open(transfer["file_path"], "r+b") as output:
+            output.seek(0)
+            output.write(b"X")
+        await self.recipient_transfer._complete_inbound_transfer(self.sender_peer, transfer, v2=True)
+        await asyncio.sleep(0)
+        self.assertEqual((await self.recipient_db.get_file_transfer(file_id))["status"], "failed")
+        self.assertTrue(any(event.get("event") == "file_failed" for event in events))
+
+    async def test_send_to_non_friend_reports_not_a_friend(self):
+        await self.sender_db.remove_friend(self.recipient.peer_id)
+        source = self.root / "nonfriend.txt"
+        source.write_bytes(b"non-friend-data")
+        with self.assertRaisesRegex(ValueError, "not a friend"):
+            await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
