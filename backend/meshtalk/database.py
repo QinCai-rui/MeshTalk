@@ -640,10 +640,14 @@ class Database:
             path = Path(file_path)
             try:
                 base = files_base.resolve()
-                path.resolve().relative_to(base)
+            try:
+                path.resolve().relative_to(files_base.resolve())
                 path.unlink(missing_ok=True)
-                if path.parent.resolve() != base:
-                    path.parent.rmdir()
+                if path.parent != files_base.resolve():
+                    try:
+                        path.parent.rmdir()
+                    except OSError:
+                        pass
             except (OSError, ValueError):
                 pass
         return transfer
