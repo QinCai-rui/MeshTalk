@@ -69,7 +69,7 @@ import {
   type PastedImageDedupRecord,
 } from "./pastedImageDedup";
 import { fileConfirmDialogHeight, fileConfirmDialogWidth, hasImageConfirmationPreview, parsePotentialFilePaths } from "./fileSendConfirm";
-import { existsSync, statSync } from "fs";
+import { statSync } from "fs";
 import {
   APP_RELEASE_VERSION,
   IS_RELEASE_BUILD,
@@ -1392,11 +1392,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       try {
         return statSync(expanded).isFile();
       } catch {
-        try {
-          return existsSync(expanded);
-        } catch {
-          return false;
-        }
+        return false;
       }
     });
     if (!existing.length) return false;
@@ -1856,7 +1852,10 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const conversationFiles = useMemo(() => {
     const grouped = new Map<string, FileTransfer[]>();
     for (const f of conversationFileTransfers) {
-      const key = `${f.filename}|${f.sender_id}|${f.group_id ?? ""}|${Math.round(f.created_at)}`;
+      const legacyGroup = !f.batch_id && !f.file_sha256 && !f.deliveries && f.group_id && f.direction === "outbound";
+      const key = legacyGroup
+        ? `legacy:${f.filename}|${f.sender_id}|${f.group_id}|${Math.round(f.created_at)}`
+        : `file:${f.file_id}`;
       const list = grouped.get(key);
       if (list) list.push(f);
       else grouped.set(key, [f]);
@@ -1874,8 +1873,16 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       list.reduce((a, b) =>
         (statusPriority[a.status] ?? 99) <= (statusPriority[b.status] ?? 99) ? a : b,
       );
-    return [...grouped.values()]
-      .map((list) => ({ file: best(list), all: list }))
+    const logicalFiles = [...grouped.values()].map((list) => ({ file: best(list), all: list }));
+    const batches = new Map<string, { file: FileTransfer; all: FileTransfer[] }>();
+    for (const logical of logicalFiles) {
+      const key = logical.file.batch_id ? `batch:${logical.file.batch_id}` : `file:${logical.file.file_id}`;
+      const current = batches.get(key);
+      if (current) current.all.push(logical.file);
+      else batches.set(key, { file: logical.file, all: logical.file.batch_id ? [logical.file] : logical.all });
+    }
+    return [...batches.values()]
+      .map(({ file, all }) => ({ file, all: all.sort((a, b) => (a.batch_index ?? 0) - (b.batch_index ?? 0)) }))
       .sort((a, b) => a.file.created_at - b.file.created_at);
   }, [conversationFileTransfers]);
   const conversationItems = useMemo<ConversationItem[]>(
@@ -2031,8 +2038,8 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
               version: file.completed_at,
             });
         }}
-        openDeliveryDetails={(deliveries) =>
-          actions.showDialog({ kind: "delivery-details", deliveries })
+        openDeliveryDetails={(deliveries, fileId) =>
+          actions.showDialog({ kind: "delivery-details", deliveries, fileId })
         }
         setComposerHeight={setComposerHeight}
         setDraftLength={setDraftLength}
@@ -2053,8 +2060,8 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         onFriendAction={handleInlineFriendAction}
         onOpenConnection={() => actions.showDialog({ kind: "control" })}
         onAttachFile={() => void actions.openFilePicker()}
-        onRetryFile={(fileId) => {
-          void ipc.send("file_retry", { file_id: fileId }).then((response) => {
+        onRetryFile={(fileId, recipientId) => {
+          void ipc.send("file_retry", recipientId ? { file_id: fileId, recipient_id: recipientId } : { file_id: fileId }).then((response) => {
             if (response.error) actions.showStatus(`Retry failed: ${response.error}`);
             else {
               actions.showStatus("Retrying file transfer.");
@@ -2172,6 +2179,13 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           confirmPendingFileSend={actions.confirmPendingFileSend}
           downloadFile={actions.downloadFile}
           defaultDownloadPath={actions.defaultDownloadPath}
+          onRetryFile={(fileId, recipientId) => {
+            void ipc.send("file_retry", recipientId ? { file_id: fileId, recipient_id: recipientId } : { file_id: fileId }).then((response: any) => {
+              if (response?.error) { setStatus(`Retry failed: ${response.error}`); return }
+              setStatus("Retrying file transfer.");
+              refreshSelectedConversationFiles();
+            }).catch((e: unknown) => setStatus(`Retry failed: ${e instanceof Error ? e.message : String(e)}`))
+          }}
           onDeleteFile={(file) => {
             void ipc.send("delete_message", { message_id: file.file_id, group_id: file.group_id ?? undefined, file: true }).then((response: any) => {
               if (response?.error) { setStatus(`Delete failed: ${response.error}`); return }

@@ -142,7 +142,22 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     file_path TEXT,
     created_at REAL NOT NULL,
     completed_at REAL,
-    received_chunks INTEGER NOT NULL DEFAULT 0
+    received_chunks INTEGER NOT NULL DEFAULT 0,
+    file_sha256 TEXT NOT NULL DEFAULT '',
+    caption TEXT NOT NULL DEFAULT '',
+    batch_id TEXT,
+    batch_index INTEGER,
+    batch_count INTEGER,
+    awaiting_ack_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS file_deliveries (
+    file_id TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    awaiting_ack_at REAL,
+    PRIMARY KEY (file_id, recipient_id)
 );
 
 CREATE TABLE IF NOT EXISTS file_received_chunks (
@@ -222,6 +237,21 @@ class Database:
                 await self._db.execute("ALTER TABLE groups ADD COLUMN name TEXT NOT NULL DEFAULT ''")
         except Exception:
             pass
+        file_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(file_transfers)")}
+        file_migrations = {
+            "file_sha256": "TEXT NOT NULL DEFAULT ''",
+            "caption": "TEXT NOT NULL DEFAULT ''",
+            "batch_id": "TEXT",
+            "batch_index": "INTEGER",
+            "batch_count": "INTEGER",
+            "awaiting_ack_at": "REAL",
+        }
+        for column, definition in file_migrations.items():
+            if column not in file_columns:
+                await self._db.execute(f"ALTER TABLE file_transfers ADD COLUMN {column} {definition}")
+        delivery_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(file_deliveries)")}
+        if "awaiting_ack_at" not in delivery_columns:
+            await self._db.execute("ALTER TABLE file_deliveries ADD COLUMN awaiting_ack_at REAL")
         # Migrate group_messages table (older DBs lacked received_at/kind)
         try:
             gm_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_messages)")}
@@ -594,15 +624,32 @@ class Database:
         await self._db.commit()
         return cursor.rowcount > 0
 
-    async def delete_file_transfer_locally(self, file_id: str) -> dict | None:
-        """Remove a local attachment record, chunks, and pending sends."""
+    async def delete_file_transfer_locally(self, file_id: str, files_base: Path) -> dict | None:
+        """Remove all local metadata associated with an attachment."""
         transfer = await self.get_file_transfer(file_id)
         if transfer is None:
             return None
         await self._db.execute("DELETE FROM file_transfers WHERE file_id = ?", (file_id,))
         await self._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (file_id,))
+        await self._db.execute("DELETE FROM file_deliveries WHERE file_id = ?", (file_id,))
         await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (file_id,))
+        await self._db.execute("DELETE FROM seen_messages WHERE message_id = ?", (file_id,))
         await self._db.commit()
+        file_path = transfer.get("file_path")
+        if file_path and await self.count_file_path_references(file_path) == 0:
+            path = Path(file_path)
+            try:
+                base = files_base.resolve()
+            try:
+                path.resolve().relative_to(files_base.resolve())
+                path.unlink(missing_ok=True)
+                if path.parent != files_base.resolve():
+                    try:
+                        path.parent.rmdir()
+                    except OSError:
+                        pass
+            except (OSError, ValueError):
+                pass
         return transfer
 
     async def upsert_group(self, group_id: str, name: str) -> None:
@@ -927,13 +974,15 @@ class Database:
         """Store or update a file transfer record in the database."""
         await self._db.execute(
             """INSERT OR REPLACE INTO file_transfers
-               (file_id, filename, file_size, chunk_size, total_chunks, sender_id, recipient_id, group_id, direction, status, file_path, created_at, completed_at, received_chunks)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (file_id, filename, file_size, chunk_size, total_chunks, sender_id, recipient_id, group_id, direction, status, file_path, created_at, completed_at, received_chunks, file_sha256, caption, batch_id, batch_index, batch_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 transfer["file_id"], transfer["filename"], transfer["file_size"], transfer["chunk_size"],
                 transfer["total_chunks"], transfer["sender_id"], transfer["recipient_id"], transfer.get("group_id"),
                 transfer["direction"], transfer["status"], transfer.get("file_path"), transfer["created_at"],
                 transfer.get("completed_at"), transfer.get("received_chunks", 0),
+                transfer.get("file_sha256", ""), transfer.get("caption", ""), transfer.get("batch_id"),
+                transfer.get("batch_index"), transfer.get("batch_count"),
             ),
         )
         await self._db.commit()
@@ -965,8 +1014,12 @@ class Database:
         clauses: list[str] = []
         params: list[str] = []
         if peer_id:
-            clauses.append("(sender_id = ? OR recipient_id = ?)")
+            peer_clause = "(sender_id = ? OR recipient_id = ?)"
             params.extend([peer_id, peer_id])
+            if include_group:
+                peer_clause = "(" + peer_clause + " OR EXISTS (SELECT 1 FROM file_deliveries d WHERE d.file_id = file_transfers.file_id AND d.recipient_id = ?))"
+                params.append(peer_id)
+            clauses.append(peer_clause)
             if not group_id and not include_group:
                 # Falsy group_id (None, or "" which IPC validation already
                 # rejects) means a DM listing: direct transfers only. Wire
@@ -981,6 +1034,62 @@ class Database:
         query += " ORDER BY created_at DESC"
         async with self._db.execute(query, tuple(params)) as cursor:
             return [dict(row) async for row in cursor]
+
+    async def set_file_delivery(self, file_id: str, recipient_id: str, status: str) -> None:
+        """Create or update one recipient's delivery state."""
+        await self._db.execute(
+            """INSERT INTO file_deliveries (file_id, recipient_id, status, updated_at, awaiting_ack_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(file_id, recipient_id) DO UPDATE SET
+                 status = excluded.status, updated_at = excluded.updated_at,
+                 awaiting_ack_at = excluded.awaiting_ack_at""",
+            (file_id, recipient_id, status, time.time(), time.time() if status == "sent" else None),
+        )
+        await self._db.commit()
+
+    async def get_file_delivery(self, file_id: str, recipient_id: str) -> dict | None:
+        """Return one recipient's delivery state."""
+        async with self._db.execute(
+            "SELECT * FROM file_deliveries WHERE file_id = ? AND recipient_id = ?",
+            (file_id, recipient_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_file_deliveries(self, file_id: str) -> list[dict]:
+        """Return all recipient states for a logical file send."""
+        async with self._db.execute(
+            "SELECT * FROM file_deliveries WHERE file_id = ? ORDER BY recipient_id", (file_id,)
+        ) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def delete_file_delivery(self, file_id: str, recipient_id: str) -> bool:
+        """Delete one recipient's delivery state."""
+        cursor = await self._db.execute(
+            "DELETE FROM file_deliveries WHERE file_id = ? AND recipient_id = ?",
+            (file_id, recipient_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def remove_file_from_outqueue(self, file_id: str, recipient_id: str | None = None) -> int:
+        """Delete queued file packets, optionally scoped to one recipient."""
+        if recipient_id is None:
+            cursor = await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (file_id,))
+        else:
+            cursor = await self._db.execute(
+                "DELETE FROM outgoing_queue WHERE message_id = ? AND recipient_id = ?",
+                (file_id, recipient_id),
+            )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def count_file_path_references(self, file_path: str | Path) -> int:
+        """Count transfer rows sharing a local file path."""
+        async with self._db.execute(
+            "SELECT COUNT(*) FROM file_transfers WHERE file_path = ?", (str(file_path),)
+        ) as cursor:
+            return (await cursor.fetchone())[0]
 
     async def get_pending_file_offers(self) -> list[dict]:
         """Retrieve all file transfers that are pending or actively transferring."""
