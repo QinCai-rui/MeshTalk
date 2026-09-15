@@ -1017,6 +1017,14 @@ class FileTransferManager:
                 try:
                     await self.db.remove_file_from_outqueue(transfer["file_id"], peer.peer_id)
                     if not await self._stream_ranges(peer, transfer, peer.peer_id, ranges):
+                        if transfer["group_id"]:
+                            delivery = await self.db.get_file_delivery(transfer["file_id"], peer.peer_id)
+                            if delivery and delivery["status"] == "failed":
+                                return
+                        else:
+                            current = await self.db.get_file_transfer(transfer["file_id"])
+                            if current and current["status"] == "failed":
+                                return
                         await self._set_delivery(transfer, peer.peer_id, "queued")
                         return
                 except Exception as exc:
