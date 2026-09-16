@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+import math
 import os
 import secrets
 import tempfile
@@ -640,15 +641,26 @@ class Settings:
             self.rooms[room.id] = room
         raw_mutes = data.get("muted_peers", {})
         now = time.time()
-        for peer_id, until in raw_mutes.items():
-            if not isinstance(peer_id, str) or not isinstance(until, (int, float)):
-                continue
-            if until <= 0 or now < until:
-                self.muted_peers[peer_id] = float(until)
+        if isinstance(raw_mutes, dict):
+            for peer_id, until in raw_mutes.items():
+                if (
+                    not isinstance(peer_id, str)
+                    or not isinstance(until, (int, float))
+                    or isinstance(until, bool)
+                    or not math.isfinite(float(until))
+                ):
+                    continue
+                if until <= 0 or now < until:
+                    self.muted_peers[peer_id] = float(until)
         raw_group_mutes = data.get("muted_groups", {})
         if isinstance(raw_group_mutes, dict):
             for group_id, until in raw_group_mutes.items():
-                if not isinstance(group_id, str) or not isinstance(until, (int, float)):
+                if (
+                    not isinstance(group_id, str)
+                    or not isinstance(until, (int, float))
+                    or isinstance(until, bool)
+                    or not math.isfinite(float(until))
+                ):
                     continue
                 if until <= 0 or now < until:
                     self.muted_groups[group_id] = float(until)

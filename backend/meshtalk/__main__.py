@@ -35,12 +35,15 @@ logger = logging.getLogger("meshtalk")
 
 
 def _is_valid_mute_timeout(timeout: object) -> bool:
-    return timeout is None or (
-        isinstance(timeout, (int, float))
-        and not isinstance(timeout, bool)
-        and math.isfinite(float(timeout))
-        and timeout >= 0
-    )
+    if timeout is None:
+        return True
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+        return False
+    try:
+        value = float(timeout)
+    except OverflowError:
+        return False
+    return value >= 0 and math.isfinite(value) and math.isfinite(time.time() + value)
 
 
 def _get_data_dir() -> Path:

@@ -8,7 +8,7 @@ from meshtalk.identity import Identity
 from meshtalk.friends import FriendManager
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerManager
-from meshtalk.protocol import HEADER_SIZE, Packet, PacketType, ProfilePayload
+from meshtalk.protocol import CAP_PROFILE_SYNC, HEADER_SIZE, Packet, PacketType, ProfilePayload
 
 
 class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
@@ -340,6 +340,28 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         peer = await self.db_a.get_peer(self.identity_b.peer_id)
         self.assertEqual(peer["dnd"], 1)
         self.assertTrue(await self.db_a.peer_supports(self.identity_b.peer_id, "at_mentions"))
+
+    async def test_connect_restores_dnd_without_profile_sync(self):
+        initiator, recipient, initiator_db, recipient_identity, port = (
+            (self.manager_a, self.manager_b, self.db_a, self.identity_b, 34992)
+            if self.identity_a.peer_id < self.identity_b.peer_id
+            else (self.manager_b, self.manager_a, self.db_b, self.identity_a, 34991)
+        )
+        recipient.capabilities.remove(CAP_PROFILE_SYNC)
+        await initiator_db.upsert_peer(
+            recipient_identity.peer_id,
+            recipient_identity.display_name,
+            recipient_identity.encryption_public_key_bytes(),
+            recipient_identity.signing_public_key_bytes(),
+            dnd=True,
+        )
+
+        await initiator.connect_to_peer(recipient_identity.peer_id, "127.0.0.1", port)
+
+        peer = initiator.get_connected_peer(recipient_identity.peer_id)
+        self.assertIsNotNone(peer)
+        self.assertFalse(peer.supports(CAP_PROFILE_SYNC))
+        self.assertTrue(peer.dnd)
 
     async def test_lan_peer_is_not_connected_before_challenge_confirmation(self):
         reader, writer = await asyncio.open_connection("127.0.0.1", 34992)

@@ -217,6 +217,8 @@ class MutePeerPersistenceTest(unittest.TestCase):
         for timeout in (True, -1, float("inf"), float("nan"), "1"):
             with self.subTest(timeout=timeout):
                 self.assertFalse(_is_valid_mute_timeout(timeout))
+        with patch("meshtalk.__main__.time.time", return_value=float("inf")):
+            self.assertFalse(_is_valid_mute_timeout(1))
 
     def test_permanent_mute_survives_reload(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -282,6 +284,20 @@ class MutePeerPersistenceTest(unittest.TestCase):
             settings = Settings(path)
 
             self.assertEqual(settings.muted_groups, {})
+
+    def test_non_finite_and_boolean_mutes_are_ignored_on_load(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            path.write_text(json.dumps({
+                "version": 1,
+                "muted_peers": {"permanent": 0, "boolean": True, "infinite": float("inf")},
+                "muted_groups": {"permanent": 0, "boolean": False, "not-a-number": float("nan")},
+            }))
+
+            settings = Settings(path)
+
+            self.assertEqual(settings.muted_peers, {"permanent": 0.0})
+            self.assertEqual(settings.muted_groups, {"permanent": 0.0})
 
 
 class DndPersistenceTest(unittest.TestCase):

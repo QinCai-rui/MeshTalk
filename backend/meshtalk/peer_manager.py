@@ -242,6 +242,11 @@ class PeerManager:
                 self._known_endpoints[peer_id] = {}
             self._known_endpoints[peer_id].update(endpoints)
 
+    async def _seed_peer_dnd(self, peer: PeerConnection) -> None:
+        """Restore the last verified DND state until a profile update arrives."""
+        stored = await self.db.get_peer(peer.peer_id)
+        peer.dnd = bool(stored["dnd"]) if stored else False
+
     async def connect_to_peer(self, peer_id: str | None, address: str, tcp_port: int) -> None:
         if peer_id:
             self.record_lan_candidate(peer_id, address, tcp_port)
@@ -277,6 +282,7 @@ class PeerManager:
                 return
             if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
                 raise ValueError("Connected peer limit reached")
+            await self._seed_peer_dnd(peer)
             peer.state = PeerState.CONNECTED
             self.peers[peer.peer_id] = peer
             self.record_lan_candidate(peer.peer_id, address, tcp_port)
@@ -324,6 +330,7 @@ class PeerManager:
                 return
             if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
                 raise ValueError("Connected peer limit reached")
+            await self._seed_peer_dnd(peer)
             self.peers[peer.peer_id] = peer
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, capabilities=peer.remote_capabilities)
             self._start_receive_loop(peer)
@@ -389,6 +396,7 @@ class PeerManager:
         gaps = self.udp.get_capability_gaps(peer_id)
         if gaps is not None:
             peer.remote_capabilities, peer.peer_missing_capabilities, peer.local_missing_capabilities = gaps
+        await self._seed_peer_dnd(peer)
         self._udp_peers[peer_id] = peer
         self._known_endpoints.setdefault(peer_id, {})[peer.transport] = peer.endpoint
         active = self.peers.get(peer_id)
