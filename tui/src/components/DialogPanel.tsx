@@ -21,6 +21,7 @@ import { isUpdaterDialog } from "../navigation"
 import { readLevel, writeLevel, markPrompted, type AnalyticsLevel } from "../../../common/analytics"
 import { APP_RELEASE_VERSION } from "../SplashScreen"
 import { ControlDialogContent, ControlCustomDialogContent, ControlStatusDialogContent, AdvancedDialogContent, CustomisationDialogContent, SplashStyleDialogContent, ImageProtocolDialogContent, IpPinningDialogContent, AdvancedControlDialogContent, AdvancedStunDialogContent, AdvancedControlIpDialogContent, AdvancedStunIpDialogContent } from "./dialogs/PreferenceDialogs"
+import { HoverHighlight } from "./HoverHighlight"
 
 type DialogPanelProps = {
   dialog: Dialog
@@ -227,7 +228,7 @@ function DeliveryDetailsDialogContent({ dialog, onRetryFile }: { dialog: Extract
       <text fg={statusColor[status]}><b>{status[0].toUpperCase() + status.slice(1)} ({deliveries.length})</b></text>
       {deliveries.map((delivery: GroupDelivery) => <box key={delivery.recipient_id} style={{ flexDirection: "row", gap: 2 }}>
         <text>  {delivery.display_name}</text>
-        {retryable(status, delivery.awaiting_ack_at) && dialog.fileId && onRetryFile ? <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile(dialog.fileId!, delivery.recipient_id) } }}><text fg={theme.text}><u>Retry</u></text></box> : null}
+        {retryable(status, delivery.awaiting_ack_at) && dialog.fileId && onRetryFile ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile(dialog.fileId!, delivery.recipient_id) } }}><text fg={theme.text}><u>Retry</u></text></HoverHighlight> : null}
       </box>)}
     </box>)}
   </scrollbox>
@@ -443,7 +444,7 @@ function FriendsDialogContent({ dialogHeight, peers, identity, friendRequests, l
     { id: "blocked" as const, label: `Blocked (${blocked.length})` },
   ]
   const tabBar = <box flexDirection="column" flexShrink={0}>
-    {tabs.map((entry, index) => <box key={entry.id} id={`friends-tab-${entry.id}`} height={1} overflow="hidden" onMouseDown={(event) => { if (event.button === 0) setTab(entry.id) }}><text fg={tab === entry.id ? theme.accent : theme.muted} wrapMode="none">{tab === entry.id ? `> [${index + 1}] ${entry.label}` : `  [${index + 1}] ${entry.label}`}</text></box>)}
+    {tabs.map((entry, index) => <HoverHighlight key={entry.id} id={`friends-tab-${entry.id}`} active={tab === entry.id} style={{ height: 1, overflow: "hidden", backgroundColor: tab === entry.id ? theme.selected : undefined }} onMouseDown={(event) => { if (event.button === 0) setTab(entry.id) }}><text fg={tab === entry.id ? theme.accent : theme.muted} wrapMode="none">{tab === entry.id ? `> [${index + 1}] ${entry.label}` : `  [${index + 1}] ${entry.label}`}</text></HoverHighlight>)}
   </box>
   const selectRequest = (option: { value?: string }) => {
     const value = option.value
@@ -617,9 +618,9 @@ function DebugEndpointsDialogContent({ debugInfo, dialogHeight, showDialog }: { 
           <text><span fg={theme.muted}>Peers</span></text>
           {sortedPeers.length === 0 && <text fg={theme.muted}>  No peers</text>}
           {sortedPeers.map((peer) => (
-            <box key={peer.peer_id} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
+             <HoverHighlight key={peer.peer_id} onMouseDown={() => showDialog({ kind: "debug-peer", peerId: peer.peer_id, displayName: peer.display_name })} style={{ width: "100%", flexDirection: "column", paddingLeft: 1, paddingRight: 1 }}>
               <text truncate fg={peer.is_online ? theme.success : theme.muted}>{"> "}{peer.display_name} ({peer.peer_id.slice(0, 12)})</text>
-            </box>
+             </HoverHighlight>
           ))}
         </scrollbox>
       )}
@@ -821,9 +822,9 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
       <text fg={theme.muted}>Files shared through MeshTalk</text>
     </box>
     <box style={{ flexDirection: "row", flexWrap: "wrap", gap: 1, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, flexShrink: 0, backgroundColor: theme.surface }}>
-      {chips.map((chip) => <box id={`file-filter-${chip.id}`} key={chip.id} onMouseDown={() => setFilter(chip.id)} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: filter === chip.id ? theme.selected : undefined }}>
+      {chips.map((chip) => <HoverHighlight id={`file-filter-${chip.id}`} key={chip.id} active={filter === chip.id} onMouseDown={() => setFilter(chip.id)} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: filter === chip.id ? theme.selected : undefined }}>
         <text fg={filter === chip.id ? theme.accent : theme.muted}>{filter === chip.id ? "> " : ""}{chip.label} {chip.count}</text>
-      </box>)}
+      </HoverHighlight>)}
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: wide ? "row" : "column", gap: wide ? 1 : 0 }}>
       <scrollbox id="file-manager-list" ref={scrollboxRef} focused style={{ width: wide ? "44%" : "100%", flexGrow: wide ? 0 : 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1 }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas }, arrowOptions: { foregroundColor: theme.line } }}>
@@ -834,7 +835,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
           const selected = f.file_id === selectedId
           const progress = f.total_chunks && f.received_chunks !== undefined ? Math.round(f.received_chunks / f.total_chunks * 100) : undefined
           const direction = transferDirection(f)
-          return <box key={f.file_id} id={f.file_id} onMouseDown={() => setSelectedId(f.file_id)} style={{ width: "100%", flexDirection: "column", paddingLeft: 2, paddingRight: 1, paddingTop: 1, paddingBottom: 1, backgroundColor: selected ? theme.selected : undefined }}>
+          return <HoverHighlight key={f.file_id} id={f.file_id} active={selected} onMouseDown={() => setSelectedId(f.file_id)} style={{ width: "100%", flexDirection: "column", paddingLeft: 2, paddingRight: 1, paddingTop: 1, paddingBottom: 1, backgroundColor: selected ? theme.selected : undefined }}>
             <box style={{ flexDirection: "row", justifyContent: "space-between", gap: 1 }}>
               <text fg={selected ? theme.accent : theme.text} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}<b>{f.filename}</b></text>
               <text fg={theme.muted} flexShrink={0}>{formatSize(f.file_size)}</text>
@@ -844,7 +845,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
             {progress !== undefined && !["completed", "sent"].includes(f.status) ? <box style={{ width: "100%", height: 1, backgroundColor: theme.surface }}><box style={{ width: `${Math.min(100, progress)}%`, height: 1, backgroundColor: theme.warning }} /></box> : null}
             {!wide && selected && f.file_path ? <text fg={theme.muted} wrapMode="word">  {f.file_path}</text> : null}
             {!wide && selected ? renderSelectedImage(f, Math.max(12, dialogWidth - 6)) : null}
-          </box>
+          </HoverHighlight>
         })}
       </scrollbox>
       {wide && <box id="file-manager-details" style={{ flexGrow: 1, flexShrink: 1, minWidth: 0, padding: 2, backgroundColor: theme.surface }}>
@@ -857,7 +858,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
             <text fg={theme.muted}>{transferDirection(selectedFile)}{selectedFile.group_id ? " / group" : ""}</text>
             {selectedFile.caption ? <text wrapMode="word">{selectedFile.caption}</text> : null}
             {batchPosition ? <text fg={theme.muted}>{batchPosition}</text> : null}
-            {canRetrySelected && onRetryFile ? <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile(selectedFile.file_id) } }}><text fg={theme.text}><u>Retry</u></text></box> : null}
+            {canRetrySelected && onRetryFile ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile(selectedFile.file_id) } }}><text fg={theme.text}><u>Retry</u></text></HoverHighlight> : null}
             <text fg={theme.muted}>Transfer {selectedFile.file_id.slice(0, 8)}</text>
             <box height={1} />
             <text fg={theme.muted}>Local file</text>
@@ -891,9 +892,9 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
 
 function FileManagerAction({ shortcut, label, onPress, disabled = false, danger = false }: { shortcut: string; label: string; onPress: () => void; disabled?: boolean; danger?: boolean }) {
   const color = disabled ? theme.line : danger ? theme.danger : theme.text
-  return <box onMouseDown={disabled ? undefined : onPress} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: disabled ? undefined : danger ? theme.dangerSurface : theme.selected }}>
+  return <HoverHighlight disabled={disabled} hoverBackgroundColor={danger ? theme.danger : theme.hover} onMouseDown={disabled ? undefined : onPress} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: disabled ? undefined : danger ? theme.dangerSurface : theme.selected }}>
     <text fg={color}><u>{shortcut}</u>{label}</text>
-  </box>
+  </HoverHighlight>
 }
 
 function FilesDirDialogContent({ dialog, dialogWidth, dialogDraft, setDialogDraft, setFilesDir, loadFiles }: { dialog: Extract<Dialog, { kind: "files-dir" }>; dialogWidth: number; dialogDraft: string; setDialogDraft: (v: string) => void; setFilesDir: (path: string) => void; loadFiles: () => void }) {
@@ -924,8 +925,8 @@ function FilesDirDialogContent({ dialog, dialogWidth, dialogDraft, setDialogDraf
       </box>
     </box>
     <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end", minHeight: 3, flexShrink: 0 }}>
-      <box onMouseDown={() => void setFilesDir(dialogDraft)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}>Save location</text></box>
-      <box onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>Back to files</text></box>
+      <HoverHighlight onMouseDown={() => void setFilesDir(dialogDraft)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}>Save location</text></HoverHighlight>
+      <HoverHighlight onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>Back to files</text></HoverHighlight>
     </box>
   </>
 }
@@ -961,8 +962,8 @@ function FileDownloadDialogContent({ dialog, dialogWidth, dialogHeight, dialogDr
       </box>
     </box>
     <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end", minHeight: 3, flexShrink: 0 }}>
-      <box onMouseDown={() => void downloadFile(dialog.fileId, dialogDraft || suggested)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}><u>S</u>ave</text></box>
-      <box onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>Back</text></box>
+      <HoverHighlight onMouseDown={() => void downloadFile(dialog.fileId, dialogDraft || suggested)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}><u>S</u>ave</text></HoverHighlight>
+      <HoverHighlight onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>Back</text></HoverHighlight>
     </box>
   </>
 }

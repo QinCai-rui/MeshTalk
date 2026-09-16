@@ -638,6 +638,38 @@ test("history selection and unread visibility retain their message IDs", async (
   } finally { await close(setup) }
 })
 
+test("history controls jump to the oldest unread message and back to latest", async () => {
+  const props = panelProps(80)
+  props.conversationItems = Array.from({ length: 24 }, (_, index) => ({
+    type: "message" as const,
+    createdAt: 1788580800 + index,
+    message: { message_id: `m${index}`, sender_id: "alex", content: `History entry ${index}`, created_at: 1788580800 + index },
+  }))
+  props.unreadMessageStates = {
+    m12: { conversationKey: "peer:alex", receivedAt: Date.now() },
+    m18: { conversationKey: "peer:alex", receivedAt: Date.now() },
+  }
+  let historyFocused = false
+  props.setScrollFocused = value => { historyFocused = value }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 20 })
+  try {
+    await settle(setup, "History entry 23")
+    const unread = setup.renderer.root.findDescendantById("jump-to-oldest-unread")!
+    expect(unread).toBeDefined()
+    await act(async () => { await setup.mockMouse.click(unread.screenX, unread.screenY); await setup.renderOnce() })
+    expect(historyFocused).toBe(true)
+    expect(props.scrollboxRef.current!.scrollTop).toBeGreaterThan(0)
+
+    props.scrollboxRef.current!.scrollTo(0)
+    await act(async () => { await setup.renderOnce() })
+    const latest = setup.renderer.root.findDescendantById("jump-to-latest")!
+    expect(latest).toBeDefined()
+    await act(async () => { await setup.mockMouse.click(latest.screenX, latest.screenY); await setup.renderOnce() })
+    expect(props.scrollboxRef.current!.scrollTop).toBeGreaterThan(0)
+    expect(historyFocused).toBe(false)
+  } finally { await close(setup) }
+})
+
 test("unread highlights animate through an OpenTUI overlay", async () => {
   const props = panelProps(80)
   props.unreadMessageStates = {

@@ -1,18 +1,19 @@
 import { DEFAULT_STATUS } from "../utils"
 import { chatTheme as theme } from "../chatTheme"
+import { HoverHighlight } from "./HoverHighlight"
 
 function SettingsShortcut({ openSettings, pinned }: { openSettings: () => void; pinned?: boolean }) {
   if (pinned) {
-    return <text id="settings-shortcut" fg={theme.accent} style={{ flexShrink: 0 }} wrapMode="none" onMouseDown={event => { if (event.button === 0) openSettings() }}><span>Ctrl+P </span><u>settings</u></text>
+    return <HoverHighlight id="settings-shortcut" style={{ flexShrink: 0 }} onMouseDown={event => { if (event.button === 0) openSettings() }}>{hovered => <text fg={hovered ? theme.text : theme.accent} wrapMode="none"><span>Ctrl+P </span><u>settings</u></text>}</HoverHighlight>
   }
-  return <text id="settings-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openSettings() }}><span>Ctrl+P </span><u>settings</u></text>
+  return <HoverHighlight id="settings-shortcut" onMouseDown={event => { if (event.button === 0) openSettings() }}>{hovered => <text fg={hovered ? theme.text : theme.accent} wrapMode="none"><span>Ctrl+P </span><u>settings</u></text>}</HoverHighlight>
 }
 
 function HelpShortcut({ openHelp, pinned }: { openHelp: () => void; pinned?: boolean }) {
   if (pinned) {
-    return <text id="help-shortcut" fg={theme.accent} style={{ flexShrink: 0 }} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+/ </span><u>help</u></text>
+    return <HoverHighlight id="help-shortcut" style={{ flexShrink: 0 }} onMouseDown={event => { if (event.button === 0) openHelp() }}>{hovered => <text fg={hovered ? theme.text : theme.accent} wrapMode="none"><span>Ctrl+/ </span><u>help</u></text>}</HoverHighlight>
   }
-  return <text id="help-shortcut" fg={theme.accent} wrapMode="none" onMouseDown={event => { if (event.button === 0) openHelp() }}><span>Ctrl+/ </span><u>help</u></text>
+  return <HoverHighlight id="help-shortcut" onMouseDown={event => { if (event.button === 0) openHelp() }}>{hovered => <text fg={hovered ? theme.text : theme.accent} wrapMode="none"><span>Ctrl+/ </span><u>help</u></text>}</HoverHighlight>
 }
 
 function ShortcutCluster({ openSettings, onOpenHelp, pinned }: { openSettings: () => void; onOpenHelp?: () => void; pinned?: boolean }) {
