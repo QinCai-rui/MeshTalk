@@ -1,4 +1,5 @@
 import { chatTheme as theme } from "../chatTheme"
+import { HoverHighlight } from "./HoverHighlight"
 
 export type EmptyStateAction = {
   id: string
@@ -26,7 +27,7 @@ export function EmptyState({ id, message, detail, actions, compact = false }: Em
     <text fg={theme.muted} wrapMode="word">{message}</text>
     {detail ? <text fg={theme.muted} wrapMode="word">{detail}</text> : null}
     {actions.length > 0 ? <box style={{ flexDirection: compact ? "column" : "row", flexWrap: "wrap" }} gap={compact ? 0 : 2}>
-      {actions.map(action => <box key={action.id} id={`${id}-${action.id}`} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); action.onSelect() } }}><text fg={theme.accent} wrapMode={compact ? "word" : "none"}>{action.hint ? `${action.hint} ` : ""}<u>{action.label}</u></text></box>)}
+      {actions.map(action => <HoverHighlight key={action.id} id={`${id}-${action.id}`} onMouseDown={event => { if (event.button === 0) { event.stopPropagation(); action.onSelect() } }}>{hovered => <text fg={hovered ? theme.text : theme.accent} wrapMode={compact ? "word" : "none"}>{action.hint ? `${action.hint} ` : ""}<u>{action.label}</u></text>}</HoverHighlight>)}
     </box> : null}
   </box>
 }

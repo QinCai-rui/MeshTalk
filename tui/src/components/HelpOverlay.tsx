@@ -1,5 +1,6 @@
 import { useKeyboard } from "@opentui/react";
 import { chatTheme as theme } from "../chatTheme";
+import { HoverHighlight } from "./HoverHighlight";
 
 export type HelpFocus = "composer" | "history" | "dialog" | "naming";
 
@@ -199,11 +200,11 @@ export function HelpOverlay({
           <text fg={theme.text} wrapMode="none">
             <span fg={theme.accent}>◆ </span><b>Keyboard shortcuts</b>
           </text>
-          <box id="help-close" onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onClose(); } }}>
-            <text fg={theme.link} wrapMode="none">
+          <HoverHighlight id="help-close" onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onClose(); } }}>
+            {hovered => <text fg={hovered ? theme.text : theme.link} wrapMode="none">
               <u>Close [Esc]</u>
-            </text>
-          </box>
+            </text>}
+          </HoverHighlight>
         </box>
         <box flexDirection="row" flexShrink={0} backgroundColor={theme.selected} paddingLeft={1} paddingRight={1}>
           <text fg={theme.success} wrapMode="none"><b>NOW</b></text>

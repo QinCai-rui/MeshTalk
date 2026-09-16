@@ -4,6 +4,7 @@ export const chatTheme = {
   surfaceRaised: "#111923",
   overlay: "#080b1099",
   selected: "#2b4050",
+  hover: "#334d60",
   text: "#e1e8ef",
   muted: "#a4b2c2",
   subdued: "#718096",
