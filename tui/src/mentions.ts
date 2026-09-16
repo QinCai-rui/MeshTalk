@@ -286,8 +286,6 @@ export function splitMentionBody(segments: MentionSegment[]): MentionBodyBlock[]
         if (index > 0) paragraphs.push([])
         if (part) paragraphs[paragraphs.length - 1]!.push({ type: "text", text: part })
       })
-    } else if (segment.type === "code") {
-      paragraphs[paragraphs.length - 1]!.push(segment)
     } else {
       paragraphs[paragraphs.length - 1]!.push(segment)
     }
