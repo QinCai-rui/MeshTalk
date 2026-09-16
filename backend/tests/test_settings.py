@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from meshtalk.__main__ import _is_valid_mute_timeout
 from meshtalk.settings import Room, Settings
 
 
@@ -209,6 +210,14 @@ class RoomInvitePersistenceTest(unittest.TestCase):
 
 
 class MutePeerPersistenceTest(unittest.TestCase):
+    def test_mute_timeout_validation_rejects_negative_and_non_finite_values(self):
+        for timeout in (None, 0, 1.5):
+            with self.subTest(timeout=timeout):
+                self.assertTrue(_is_valid_mute_timeout(timeout))
+        for timeout in (True, -1, float("inf"), float("nan"), "1"):
+            with self.subTest(timeout=timeout):
+                self.assertFalse(_is_valid_mute_timeout(timeout))
+
     def test_permanent_mute_survives_reload(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "settings.json"
@@ -264,6 +273,15 @@ class MutePeerPersistenceTest(unittest.TestCase):
 
             self.assertFalse(settings.is_peer_muted("peer5"))
             self.assertNotIn("peer5", settings.muted_peers)
+
+    def test_malformed_group_mutes_are_ignored_on_load(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            path.write_text(json.dumps({"version": 1, "muted_groups": []}))
+
+            settings = Settings(path)
+
+            self.assertEqual(settings.muted_groups, {})
 
 
 class DndPersistenceTest(unittest.TestCase):

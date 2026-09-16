@@ -33,6 +33,16 @@ from .analytics import Analytics
 
 logger = logging.getLogger("meshtalk")
 
+
+def _is_valid_mute_timeout(timeout: object) -> bool:
+    return timeout is None or (
+        isinstance(timeout, (int, float))
+        and not isinstance(timeout, bool)
+        and math.isfinite(float(timeout))
+        and timeout >= 0
+    )
+
+
 def _get_data_dir() -> Path:
     import os
     env = os.environ.get("MESHTALK_DATA_DIR")
@@ -724,14 +734,7 @@ async def main(debug: bool = False) -> None:
         peer_id = req.get("peer_id")
         group_id = req.get("group_id")
         timeout = req.get("timeout")
-        if (
-            timeout is not None
-            and (
-                isinstance(timeout, bool)
-                or not isinstance(timeout, (int, float))
-                or not math.isfinite(float(timeout))
-            )
-        ):
+        if not _is_valid_mute_timeout(timeout):
             return {"error": "timeout must be a number (seconds) or 0 for permanent"}
         if timeout is None:
             timeout = 0

@@ -284,6 +284,29 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(peer.dnd)
 
+    async def test_dnd_signature_cannot_be_spliced_into_a_new_profile(self):
+        await self._connect_peers()
+        initiator, local_identity, remote_manager = (
+            (self.manager_a, self.identity_a, self.manager_b)
+            if self.identity_a.peer_id < self.identity_b.peer_id
+            else (self.manager_b, self.identity_b, self.manager_a)
+        )
+        await initiator.set_dnd_enabled(True)
+        stale_dnd_signature = initiator._profile_payload().dnd_signature
+        await initiator.set_dnd_enabled(False)
+        await initiator.set_tui_active(True)
+        await asyncio.sleep(0.05)
+        peer = remote_manager.get_connected_peer(local_identity.peer_id)
+        self.assertIsNotNone(peer)
+        self.assertFalse(peer.dnd)
+        payload = initiator._profile_payload()
+        payload.dnd = True
+        payload.dnd_signature = stale_dnd_signature
+
+        await remote_manager._apply_profile_update(peer, Packet(PacketType.PROFILE, payload.encode()))
+
+        self.assertFalse(peer.dnd)
+
     async def test_dnd_broadcast_is_visible_to_remote_peer(self):
         await self._connect_peers()
         initiator, local_identity, remote_manager, remote_db = (

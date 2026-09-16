@@ -335,6 +335,7 @@ class ProfilePayload:
         return json.dumps({
             "peer_id": self.peer_id,
             "dnd": self.dnd,
+            "profile_signature": self.signature.hex(),
         }, separators=(",", ":"), sort_keys=True).encode()
 
     def encode(self) -> bytes:

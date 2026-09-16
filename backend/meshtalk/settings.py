@@ -646,11 +646,12 @@ class Settings:
             if until <= 0 or now < until:
                 self.muted_peers[peer_id] = float(until)
         raw_group_mutes = data.get("muted_groups", {})
-        for group_id, until in raw_group_mutes.items():
-            if not isinstance(group_id, str) or not isinstance(until, (int, float)):
-                continue
-            if until <= 0 or now < until:
-                self.muted_groups[group_id] = float(until)
+        if isinstance(raw_group_mutes, dict):
+            for group_id, until in raw_group_mutes.items():
+                if not isinstance(group_id, str) or not isinstance(until, (int, float)):
+                    continue
+                if until <= 0 or now < until:
+                    self.muted_groups[group_id] = float(until)
         files_dir = data.get("files_dir")
         if isinstance(files_dir, str) and files_dir.strip():
             # Validate but don't fail load if old path no longer exists - keep stored value
