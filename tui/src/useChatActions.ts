@@ -8,6 +8,7 @@ import { tmpdir } from "os"
 import { statSync } from "fs"
 import { stageFilesForConfirmation } from "./fileSendConfirm"
 import { groupFromResponse, sortPeersByInteraction } from "./utils"
+import { payloadMentions, spansToTokens, type MentionSpan } from "./mentions"
 import { runCommand as navigationRunCommand } from "./navigation"
 import { sendTestNotification } from "./notifications"
 import { DEFAULT_STATUS, groupDeliveryLabel, MAX_MESSAGE_BYTES, MIN_COMPOSER_HEIGHT } from "./utils"
@@ -71,12 +72,18 @@ type ChatActionsDeps = {
   setCopyToast: (b: boolean) => void
   mutedPeers: Record<string, number>
   setMutedPeers: React.Dispatch<React.SetStateAction<Record<string, number>>>
+  mutedGroups: Record<string, number>
+  setMutedGroups: React.Dispatch<React.SetStateAction<Record<string, number>>>
+  mentionSpans: Record<string, MentionSpan[]>
+  setMentionUnread: React.Dispatch<React.SetStateAction<Record<string, number>>>
   notificationPreferences: NotificationPreferences | null
   setNotificationPreferences: React.Dispatch<React.SetStateAction<NotificationPreferences | null>>
   notificationTestDelivery: Exclude<NotificationDelivery, "disabled"> | null
   setNotificationTestDelivery: React.Dispatch<React.SetStateAction<Exclude<NotificationDelivery, "disabled"> | null>>
   flashingEnabled: boolean
   setFlashingEnabled: (b: boolean) => void
+  dndEnabled: boolean
+  setDndEnabled: (b: boolean) => void
   setImageProtocol: (protocol: ImageProtocol) => void
   setSplashStyle: (style: SplashPreference) => void
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
@@ -108,9 +115,9 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { draftLength, setDraftLength, composerHeight, setComposerHeight, isSending, setIsSending } = deps
   const { nameDraft, setNameDraft, editingName, setEditingName, scrollFocused, setScrollFocused } = deps
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
-  const { mutedPeers, setMutedPeers, notificationPreferences, setNotificationPreferences } = deps
+  const { mutedPeers, setMutedPeers, mutedGroups, setMutedGroups, mentionSpans, setMentionUnread, notificationPreferences, setNotificationPreferences } = deps
   const { notificationTestDelivery, setNotificationTestDelivery } = deps
-  const { flashingEnabled, setFlashingEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
+  const { flashingEnabled, setFlashingEnabled, dndEnabled, setDndEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps
   const { statusResetRef, copyToastResetRef, dialogActionRef, dialogBusyRef, filePickerOpenRef, composerRef, selectionKey } = deps
@@ -159,6 +166,23 @@ export function useChatActions(deps: ChatActionsDeps) {
     const response = await ipc.send("groups")
     if (response.error) throw new Error(response.error)
     const next = (response.groups as Group[]).sort((a, b) => a.name.localeCompare(b.name))
+    setMentionUnread((current) => {
+      const updated = { ...current }
+      const groupIds = new Set(next.map((group) => group.group_id))
+      for (const groupId of Object.keys(updated)) {
+        if (!groupIds.has(groupId)) delete updated[groupId]
+      }
+      for (const group of next) {
+        if (group.group_id === selectedGroupId) {
+          delete updated[group.group_id]
+          continue
+        }
+        const count = Number(group.mention_unread_count)
+        if (Number.isFinite(count) && count > 0) updated[group.group_id] = count
+        else delete updated[group.group_id]
+      }
+      return updated
+    })
     setGroups((current) => sameResponse(current, next) ? current : next)
     setSelection((current) => {
       if (!current) return peers[0] ? { kind: "peer", id: peers[0].peer_id } : next[0] ? { kind: "group", id: next[0].group_id } : undefined
@@ -489,6 +513,14 @@ export function useChatActions(deps: ChatActionsDeps) {
     } catch (error) { setDialogError(error instanceof Error ? error.message : String(error)) }
   }
 
+  async function refreshMutes() {
+    const mutedResp = await ipc.send("muted_peers")
+    if (!mutedResp.error) {
+      setMutedPeers((mutedResp.muted_peers as Record<string, number>) ?? {})
+      setMutedGroups((mutedResp.muted_groups as Record<string, number>) ?? {})
+    }
+  }
+
   async function mutePeer(peerId: string, timeout: number) {
     const action = beginDialogAction()
     if (action === null) return
@@ -496,8 +528,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("mute", { peer_id: peerId, timeout })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      const mutedResp = await ipc.send("muted_peers")
-      if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
+      await refreshMutes()
       const until = response.until as number
       const label = until <= 0 ? "permanently" : `until ${new Date(until * 1000).toLocaleTimeString()}`
       const peer = peers.find((p) => p.peer_id === peerId)
@@ -514,10 +545,41 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("unmute", { peer_id: peerId })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      const mutedResp = await ipc.send("muted_peers")
-      if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
+      await refreshMutes()
       const peer = peers.find((p) => p.peer_id === peerId)
       showStatus(`Unmuted ${peer?.display_name ?? peerId}.`)
+      closeDialog()
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  async function muteGroup(groupId: string, timeout: number) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("mute", { group_id: groupId, timeout })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      await refreshMutes()
+      const until = response.until as number
+      const label = until <= 0 ? "permanently" : `until ${new Date(until * 1000).toLocaleTimeString()}`
+      const group = groups.find((g) => g.group_id === groupId)
+      showStatus(`Muted ${group?.name ?? groupId} ${label}.`)
+      closeDialog()
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  async function unmuteGroup(groupId: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("unmute", { group_id: groupId })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      await refreshMutes()
+      const group = groups.find((g) => g.group_id === groupId)
+      showStatus(`Unmuted ${group?.name ?? groupId}.`)
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -944,6 +1006,29 @@ export function useChatActions(deps: ChatActionsDeps) {
     finally { finishDialogAction(action) }
   }
 
+  async function saveDndEnabled(enabled: boolean) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("dnd", { enabled })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      setDndEnabled(response.dnd_enabled as boolean)
+      showStatus(
+        response.dnd_enabled
+          ? "Do Not Disturb on. All notifications are paused and peers see you as unavailable."
+          : "Do Not Disturb off. Notifications resumed.",
+      )
+      if (dialog && dialog.kind !== "settings" && dialog.kind.startsWith("notification"))
+        showDialog({ kind: "notifications" })
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  function toggleDnd() {
+    void saveDndEnabled(!dndEnabled)
+  }
+
   function notificationEventEnabled(event: NotificationEvent): boolean {
     return Boolean(notificationPreferences?.events[event])
   }
@@ -1006,7 +1091,10 @@ export function useChatActions(deps: ChatActionsDeps) {
 
   async function send(replyToMessageId?: string): Promise<boolean> {
     const composer = composerRef.current
-    const content = composer?.plainText.trim() ?? ""
+    // Picked mentions display as `@Display Name`; convert spans back to tokens.
+    const rawContent = composer?.plainText ?? ""
+    const spans = selectionKey ? (mentionSpans[selectionKey] ?? []) : []
+    const content = spansToTokens(rawContent, spans).trim()
     if (!content) { showStatus("Message is empty."); return false }
     if (!selection || !selectionKey || !identity) { showStatus("Select a peer or group before sending."); return false }
     if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) { showStatus("Message exceeds the 30 KiB limit."); return false }
@@ -1023,7 +1111,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       }
       setMessages((c) => [...c, {
         message_id: response.message_id as string, sender_id: identity.peer_id,
-        ...(selection.kind === "peer" ? { recipient_id: selection.id } : { group_id: selection.id, deliveries: response.deliveries as GroupDelivery[] }),
+        ...(selection.kind === "peer" ? { recipient_id: selection.id } : { group_id: selection.id, deliveries: response.deliveries as GroupDelivery[], mentions: payloadMentions(response.mentions) }),
         content, created_at: Date.now() / 1000, delivered: 0, queued: queued ? 1 : 0, reply_to_message_id: replyToMessageId,
       }])
       if (composer && composer === composerRef.current) { composer.selectAll(); composer.deleteSelection() }
@@ -1057,8 +1145,12 @@ export function useChatActions(deps: ChatActionsDeps) {
   }
 
   function runCommand(command: string) {
+    if (command === "dnd") {
+      toggleDnd()
+      return
+    }
     navigationRunCommand(command, {
-      groups, groupMembers, identity, mutedPeers, peers, selectedGroupId, selectedPeerId, selection,
+      groups, groupMembers, identity, mutedPeers, mutedGroups, peers, selectedGroupId, selectedPeerId, selection,
       showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft,
       setRenameDialog: () => showDialog({ kind: "rename" }),
        loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms,
@@ -1075,12 +1167,12 @@ export function useChatActions(deps: ChatActionsDeps) {
     loadAdvancedConfig, saveAdvancedConfig,
     loadRooms, createRoom, joinRoom, leaveRoom, loadRoomInvite,
     loadGroupDetails, leaveGroup, copyInvite,
-    mutePeer, unmutePeer,
+    mutePeer, unmutePeer, muteGroup, unmuteGroup, refreshMutes,
     loadFriendRequests, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer,
     loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest,
     reStun, loadDebugInfo, loadFiles,
     sendFile, sendFilesDirect, requestFileSend, requestImageSend, confirmPendingFileSend, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
-    saveDisplayName, setAccessibilityFlashing,
+    saveDisplayName, setAccessibilityFlashing, saveDndEnabled, toggleDnd,
     testNotificationDelivery, confirmNotificationDelivery, disableNotifications, toggleNotificationEvent,
     send, runCommand,
   }

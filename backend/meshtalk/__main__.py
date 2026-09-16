@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import signal
 import socket
@@ -16,7 +17,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .identity import Identity
-from .database import Database
+from .database import Database, extract_mentions
 from .discovery import DiscoveryService
 from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
@@ -31,6 +32,19 @@ from .settings import Settings
 from .analytics import Analytics
 
 logger = logging.getLogger("meshtalk")
+
+
+def _is_valid_mute_timeout(timeout: object) -> bool:
+    if timeout is None:
+        return True
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+        return False
+    try:
+        value = float(timeout)
+    except OverflowError:
+        return False
+    return value >= 0 and math.isfinite(value) and math.isfinite(time.time() + value)
+
 
 def _get_data_dir() -> Path:
     import os
@@ -60,6 +74,7 @@ async def main(debug: bool = False) -> None:
     analytics = Analytics(DATA_DIR / "settings.json")
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
+    peer_manager.dnd_enabled = settings.dnd_enabled
     friend_manager = FriendManager(identity, peer_manager, db)
     group_router = GroupRouter(identity, peer_manager, db, settings)
     router = MessageRouter(
@@ -252,6 +267,7 @@ async def main(debug: bool = False) -> None:
                 "last_interaction": interaction_times.get(peer["peer_id"], 0),
                 "is_online": int((connection := peer_manager.get_connected_peer(peer["peer_id"])) is not None),
                 "presence": "active" if connection and connection.tui_active else "away" if connection else "offline",
+                "dnd": bool(connection.dnd) if connection else bool(peer.get("dnd", 0)),
                 "unread_count": unread_counts.get(peer["peer_id"], 0),
                 "is_friend": peer["peer_id"] in friends,
                 "is_blocked": peer["peer_id"] in blocked,
@@ -417,7 +433,17 @@ async def main(debug: bool = False) -> None:
             "display_name": identity.display_name,
             "setup_dismissed": settings.identity_setup_dismissed or identity.display_name != "Anonymous",
             "flashing_enabled": settings.flashing_enabled,
+            "dnd_enabled": settings.dnd_enabled,
         }
+
+    async def handle_dnd(req: dict) -> dict:
+        enabled = req.get("enabled")
+        if enabled is not None:
+            if not isinstance(enabled, bool):
+                return {"error": "enabled must be boolean"}
+            settings.set_dnd_enabled(enabled)
+            await peer_manager.set_dnd_enabled(settings.dnd_enabled)
+        return {"dnd_enabled": settings.dnd_enabled}
 
     async def handle_accessibility(req: dict) -> dict:
         flashing_enabled = req.get("flashing_enabled")
@@ -645,7 +671,12 @@ async def main(debug: bool = False) -> None:
         return {"rooms": rendezvous.room_status()}
 
     async def handle_groups(req: dict) -> dict:
-        return {"groups": await db.get_groups(identity.peer_id)}
+        groups = await db.get_groups(identity.peer_id)
+        for group in groups:
+            group["mention_unread_count"] = await db.get_group_mention_unread_count(
+                group["group_id"], identity.peer_id
+            )
+        return {"groups": groups}
 
     async def handle_group_members(req: dict) -> dict:
         group_id = req.get("group_id")
@@ -677,7 +708,7 @@ async def main(debug: bool = False) -> None:
         ):
             return {"error": "reply_to_message_id must be a non-empty string up to 128 characters"}
         message_id, deliveries = await group_router.send_message(group_id, content.encode(), reply_to_message_id)
-        return {"message_id": message_id, "deliveries": deliveries}
+        return {"message_id": message_id, "deliveries": deliveries, "mentions": extract_mentions(content)}
 
     async def handle_delete_message(req: dict) -> dict:
         message_id = req.get("message_id")
@@ -709,19 +740,39 @@ async def main(debug: bool = False) -> None:
 
     async def handle_mute(req: dict) -> dict:
         peer_id = req.get("peer_id")
-        if not isinstance(peer_id, str) or not peer_id:
-            return {"error": "peer_id required"}
+        group_id = req.get("group_id")
         timeout = req.get("timeout")
-        if timeout is not None and not isinstance(timeout, (int, float)):
+        if not _is_valid_mute_timeout(timeout):
             return {"error": "timeout must be a number (seconds) or 0 for permanent"}
         if timeout is None:
             timeout = 0
         until = time.time() + float(timeout) if float(timeout) > 0 else 0
+        if group_id is not None and peer_id is not None:
+            return {"error": "Specify either peer_id or group_id"}
+        if group_id is not None:
+            if not isinstance(group_id, str):
+                return {"error": "group_id must be a string"}
+            if not group_id:
+                return {"error": "group_id required"}
+            settings.mute_group(group_id, until)
+            return {"group_id": group_id, "until": until}
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
         settings.mute_peer(peer_id, until)
         return {"peer_id": peer_id, "until": until}
 
     async def handle_unmute(req: dict) -> dict:
         peer_id = req.get("peer_id")
+        group_id = req.get("group_id")
+        if group_id is not None and peer_id is not None:
+            return {"error": "Specify either peer_id or group_id"}
+        if group_id is not None:
+            if not isinstance(group_id, str):
+                return {"error": "group_id must be a string"}
+            if not group_id:
+                return {"error": "group_id required"}
+            settings.unmute_group(group_id)
+            return {"group_id": group_id}
         if not isinstance(peer_id, str) or not peer_id:
             return {"error": "peer_id required"}
         settings.unmute_peer(peer_id)
@@ -733,7 +784,11 @@ async def main(debug: bool = False) -> None:
         for peer_id, until in settings.muted_peers.items():
             if until <= 0 or now < until:
                 muted[peer_id] = until
-        return {"muted_peers": muted}
+        muted_groups = {}
+        for group_id, until in settings.muted_groups.items():
+            if until <= 0 or now < until:
+                muted_groups[group_id] = until
+        return {"muted_peers": muted, "muted_groups": muted_groups}
 
     async def handle_notifications(req: dict) -> dict:
         setup_dismissed = req.get("setup_dismissed")
@@ -956,6 +1011,7 @@ async def main(debug: bool = False) -> None:
         "typing": handle_typing,
         "identity": handle_identity,
         "accessibility": handle_accessibility,
+        "dnd": handle_dnd,
         "status": handle_status,
         "messages": handle_messages,
         "set_display_name": handle_set_display_name,

@@ -8,6 +8,10 @@ export const MAX_MESSAGE_BYTES = 30 * 1024
 export const UNREAD_MESSAGE_FADE_MS = 3_000
 export const DEFAULT_STATUS = "Ctrl+P: Settings  Ctrl+U: upload  Ctrl+V: paste image  Ctrl+Up/Down: switch chats  PgUp: history  Ctrl+C: quit"
 
+export function isMuteActive(until: number | undefined, now = Date.now() / 1000): boolean {
+  return until !== undefined && (until <= 0 || now < until)
+}
+
 export function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
   return Math.min(MAX_COMPOSER_HEIGHT, Math.max(MIN_COMPOSER_HEIGHT, lines))

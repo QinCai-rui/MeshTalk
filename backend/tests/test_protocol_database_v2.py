@@ -10,6 +10,7 @@ from meshtalk.protocol import (
     FileChunkV2Payload,
     FileOfferV2Payload,
     PacketType,
+    ProfilePayload,
     capability_for_packet,
 )
 
@@ -71,6 +72,24 @@ class FileProtocolV2Tests(unittest.TestCase):
                 FileAckV2Payload(FILE_ID, "recipient", "missing", b"s" * 64, ranges).encode()
         valid = FileAckV2Payload(FILE_ID, "recipient", "missing", b"s" * 64, [(0, 1), (3, 4)])
         self.assertEqual(FileAckV2Payload.decode(valid.encode()), valid)
+
+
+class ProfilePayloadTests(unittest.TestCase):
+    def test_dnd_signature_must_be_a_hex_string_of_valid_length(self):
+        profile = ProfilePayload("peer", "Peer", False, b"s" * 64)
+        raw = json.loads(profile.encode())
+        for dnd_signature in (123, "00" * 63):
+            with self.subTest(dnd_signature=dnd_signature), self.assertRaisesRegex(ValueError, "Invalid profile payload"):
+                raw["dnd_signature"] = dnd_signature
+                ProfilePayload.decode(json.dumps(raw).encode())
+
+        raw.pop("dnd_signature")
+        self.assertEqual(ProfilePayload.decode(json.dumps(raw).encode()).dnd_signature, b"")
+
+    def test_malformed_profile_fields_raise_value_error(self):
+        for raw in (b"{}", b"[]", b'{"peer_id": "peer", "display_name": "Peer", "tui_active": false, "signature": 123}'):
+            with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, "Invalid profile payload"):
+                ProfilePayload.decode(raw)
 
 
 class FileDatabaseV2Tests(unittest.IsolatedAsyncioTestCase):

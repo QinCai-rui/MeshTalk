@@ -287,6 +287,11 @@ Mute is a per-peer preference stored in settings (`muted_peers`): a muted peer's
 desktop notifications are suppressed while delivery and history are unaffected.
 `mute` / `unmute` toggle it and `muted_peers` returns the current set.
 
+Do Not Disturb is a global switch stored in settings (`dnd_enabled`): while on,
+all desktop notifications are paused. The state is broadcast to connected peers
+inside the signed PROFILE payload, and peers render a DND peer with a red
+presence circle. `dnd` toggles it and `identity` reports the local state.
+
 ## Display Name
 
 Each installation has a persistent, user-chosen display name (maximum 48

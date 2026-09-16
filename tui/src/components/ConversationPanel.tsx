@@ -3,10 +3,11 @@ import { EmptyState } from "./EmptyState"
 import { TypingDots } from "./TypingDots"
 import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useTimeline } from "@opentui/react"
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
-import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, inlineFriendActions, isImageFile, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
+import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, inlineFriendActions, isImageFile, isMuteActive, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
+import { renderMentionedContent, payloadMentions, segmentMentionedContent, splitMentionBody, parseInlineMarkdown, type MentionCandidate, type MentionBodyBlock } from "../mentions"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
 import { updateBoundedEntry } from "../stateRetention"
 
@@ -32,6 +33,7 @@ type ConversationPanelProps = {
   isSending: boolean
   limitColor: string | undefined
   mutedPeers: Record<string, number>
+  mutedGroups?: Record<string, number>
   peers: Peer[]
   selected: Peer | undefined
   selectedGroup: Group | undefined
@@ -41,8 +43,14 @@ type ConversationPanelProps = {
   replyTo: ReplyTarget | undefined
   selectionKey: string | undefined
   unreadMessageStates: Record<string, UnreadMessageState>
+  unreadNow?: number
   markUnreadMessageVisible: (messageId: string) => void
   openSettings: () => void
+  onToggleMute?: () => void
+  mentionOpen?: boolean
+  mentionCandidates?: MentionCandidate[]
+  mentionSelected?: number
+  onMentionPick?: (peerId: string) => void
   openImage: (file: FileTransfer) => void
   openDeliveryDetails: (deliveries: GroupDelivery[], fileId?: string) => void
   typingNames: string[]
@@ -228,6 +236,8 @@ type MessageRowProps = {
   isSystem: boolean
   senderName: string
   renderedContent: string
+  bodyBlocks?: MentionBodyBlock[] | null
+  mentioned?: boolean
   replyTarget: ConversationItem | undefined
   replySender: string | undefined
   replyContent: string | undefined
@@ -247,10 +257,11 @@ type MessageRowProps = {
   handlers: ConversationRowHandlersRef
 }
 
-const ConversationMessageRow = memo(function ConversationMessageRow({ message, isLocal, isSystem, senderName, renderedContent, replyTarget, replySender, replyContent, replySnippet, selectedRow, unreadHighlightStartedAt, replyHighlightStartedAt, replyHighlightGeneration, selectedGroup, delivered, blocked, queued, failed, showReceived, messageSyntaxStyle, messageRefs, handlers }: MessageRowProps) {
+const ConversationMessageRow = memo(function ConversationMessageRow({ message, isLocal, isSystem, senderName, renderedContent, bodyBlocks, mentioned, replyTarget, replySender, replyContent, replySnippet, selectedRow, unreadHighlightStartedAt, replyHighlightStartedAt, replyHighlightGeneration, selectedGroup, delivered, blocked, queued, failed, showReceived, messageSyntaxStyle, messageRefs, handlers }: MessageRowProps) {
   const markdown = useMemo(() => <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />, [messageSyntaxStyle, renderedContent])
+  const rowBackground = replyHighlightStartedAt ? undefined : selectedRow ? theme.selected : mentioned ? theme.mention : undefined
   return (
-    <box id={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "message", createdAt: message.created_at, message }))} style={{ position: "relative", width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: selectedRow && !replyHighlightStartedAt ? theme.selected : undefined }}>
+    <box id={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "message", createdAt: message.created_at, message }))} style={{ position: "relative", width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: rowBackground }}>
       {replyHighlightStartedAt && <HighlightOverlay key={replyHighlightGeneration} id={`reply-highlight-${message.message_id}`} startedAt={replyHighlightStartedAt} />}
       {unreadHighlightStartedAt && <HighlightOverlay key={unreadHighlightStartedAt} id={`unread-highlight-${message.message_id}`} startedAt={unreadHighlightStartedAt} />}
       <box style={{ position: "relative", zIndex: 1, width: "100%", flexDirection: "column" }}>
@@ -262,7 +273,43 @@ const ConversationMessageRow = memo(function ConversationMessageRow({ message, i
         </text>
         {isLocal && !isSystem && selectedGroup && <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></box>}
         {message.reply_to_message_id && <box onMouseDown={replyTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); const target = replyTargetForItem(replyTarget); handlers.current.clearReplyTarget(); handlers.current.highlightReplyTarget(target.id); handlers.current.setScrollFocused(true); handlers.current.scrollboxRef.current?.scrollChildIntoView(target.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></box>}
-        {markdown}
+        {!bodyBlocks ? (
+          markdown
+        ) : (
+          <box flexDirection="column" style={{ width: "100%" }}>
+            {bodyBlocks.map((block, blockIndex) => (
+              <box key={`${message.message_id}-block-${blockIndex}`} flexDirection="column">
+                {blockIndex > 0 ? <box height={1} /> : null}
+                {block.kind === "plain" ? (
+                  <markdown content={block.text} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
+                ) : (
+                  <text wrapMode="word">
+                    {block.segments.flatMap((segment, segmentIndex) =>
+                      segment.type === "mention" ? (
+                        [<span key={`${segmentIndex}-m`} fg={theme.text} bg={theme.mentionBg}>@{segment.name}</span>]
+                      ) : segment.type === "code" ? (
+                        [<span key={`${segmentIndex}-c`} fg={theme.markdown.raw}>{/^ {0,3}[`~]{3,}/.test(segment.text) ? segment.text : segment.text.match(/^(`+)([\s\S]*)\1$/)?.[2] ?? segment.text}</span>]
+                      ) : (
+                        parseInlineMarkdown(segment.text).map((frag, fragIndex) => {
+                          const key = `${segmentIndex}-${fragIndex}`
+                          if (frag.type === "code") return <span key={key} fg={theme.markdown.raw}>{frag.text}</span>
+                          if (frag.type === "heading") return <span key={key} fg={theme.markdown.heading}><b>{frag.text}</b></span>
+                          if (frag.type === "list") return <Fragment key={key}><span fg={theme.markdown.list}>{frag.marker} </span><span fg={theme.markdown.default}>{frag.text}</span></Fragment>
+                          if (frag.type === "quote") return <span key={key} fg={theme.markdown.comment}>{frag.text}</span>
+                          if (frag.type === "strong") return <span key={key} fg={theme.markdown.default}><b>{frag.text}</b></span>
+                          if (frag.type === "em") return <span key={key} fg={theme.markdown.default}><i>{frag.text}</i></span>
+                          if (frag.type === "link") return <span key={key} fg={theme.markdown.heading}><u>{frag.label}</u></span>
+                          if (frag.type === "strike") return <span key={key} fg={theme.markdown.default}>{frag.text}</span>
+                          return <span key={key} fg={theme.markdown.default}>{frag.text}</span>
+                        })
+                      ),
+                    )}
+                  </text>
+                )}
+              </box>
+            ))}
+          </box>
+        )}
       </box>
     </box>
   )
@@ -293,13 +340,16 @@ const MESSAGE_MARKDOWN_STYLES = {
   punctuation: { fg: theme.markdown.punctuation },
 } as const
 
+const MENTION_POPUP_ROWS = 5
+
 export function ConversationPanel(props: ConversationPanelProps) {
-  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, markUnreadMessageVisible, openSettings, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction, onOpenConnection, onAttachFile, onAddFriend,   onCreateGroup, onJoinGroup, onRetryFile, onOpenHelp } = props
+  const { compact, controlStatus, hasRooms, conversationItems, conversationLoading = false, deliveredMessageIds, dialogOpen, draftLength, drafts, flashingEnabled, blinkOn, composerHeight, composerRef, groupMembers, identity, imageProtocol, limitedGroupMembers, capabilityGapMessage, isSending, limitColor, mutedPeers, mutedGroups = {}, peers, selected, selectedGroup, selectedGroupId, selectedHasCapabilityGap, selectedReplyTargetId, replyTo, selectionKey, unreadMessageStates, markUnreadMessageVisible, openSettings, onToggleMute, mentionOpen = false, mentionCandidates = [], mentionSelected = 0, onMentionPick, openImage, openDeliveryDetails, typingNames, editingName, scrollFocused, scrollboxRef, status, width, setComposerHeight, setDraftLength, setScrollFocused, selectReplyTarget, clearReplyTarget, onComposerChange, send, inboxCount = 0, onFriendAction, onOpenConnection, onAttachFile, onAddFriend, onCreateGroup, onJoinGroup, onRetryFile, onOpenHelp } = props
   const [dismissedEmpty, setDismissedEmpty] = useState<Record<string, boolean>>({})
   const [showConversationTips, setShowConversationTips] = useState<Record<string, boolean>>({})
   const openConnection = onOpenConnection ?? openSettings
   const dismissKey = selectionKey ?? "no-selection"
   const messageRefs = useRef<Record<string, BoxRenderable | null>>({})
+  const mentionListRef = useRef<ScrollBoxRenderable | null>(null)
   const visibleUnreadCheck = useRef<() => void>(() => {})
   const replyHighlightGeneration = useRef(0)
   const [replyHighlight, setReplyHighlight] = useState<{ id: string; startedAt: number; generation: number }>()
@@ -318,9 +368,23 @@ export function ConversationPanel(props: ConversationPanelProps) {
   // Keep warning text readable during the accessibility pulse. The prior UI faded
   // it almost away; the calmer shell shifts between two amber tones instead.
   const flashingWarningColor = !flashingEnabled || blinkOn ? theme.warning : theme.warningPulse
+  const resolveMentionName = (peerId: string): string | undefined => {
+    if (peerId === "everyone") return "everyone"
+    if (peerId === identity?.peer_id) return identity.display_name
+    return groupMembers[selectedGroupId ?? ""]?.find(
+      (member) => (member.peer_id ?? member.member_id) === peerId,
+    )?.display_name ?? peers.find((peer) => peer.peer_id === peerId)?.display_name
+  }
 
 
   useEffect(() => () => messageSyntaxStyle.destroy(), [messageSyntaxStyle])
+
+  // Keep the keyboard-highlighted mention visible while navigating a long list.
+  useEffect(() => {
+    if (!mentionOpen || !mentionCandidates.length) return
+    const peerId = mentionCandidates[Math.min(mentionSelected, mentionCandidates.length - 1)]?.peerId
+    if (peerId) mentionListRef.current?.scrollChildIntoView(`mention-pick-${peerId}`)
+  }, [mentionOpen, mentionSelected, mentionCandidates])
 
   useEffect(() => {
     if (!replyHighlight) return
@@ -455,9 +519,12 @@ export function ConversationPanel(props: ConversationPanelProps) {
   }, [conversationItems, groupMemberNames, peerNames])
 
   return <box style={{ width, flexBasis: 0, flexGrow: 1, flexShrink: 1, minWidth: 0, minHeight: 0, flexDirection: "column", backgroundColor: theme.canvas }}>
-    <box style={{ flexShrink: 0, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, backgroundColor: theme.surface }}>
-      <text fg={theme.text} wrapMode="word"><b>{selectedGroup?.name ?? selected?.display_name ?? "Your conversations"}</b></text>
-      <text fg={theme.muted} wrapMode="word">{selectedGroup ? `Group / ${selectedGroup.member_count} members` : selected ? `${peerState}${selected.is_online ? ` / ${compact && selected.active_transport === "remote_derp" ? "Relay" : transportName(selected.active_transport)}` : ""}${!compact && selected.active_endpoint && selected.active_transport !== "remote_derp" ? ` / ${selected.active_endpoint}` : ""}${selected.is_friend ? " / Friend" : ""}${selected.peer_id in mutedPeers ? " / Muted" : ""}${selectedHasCapabilityGap ? " / Limited" : ""}${selected.friend_request === "incoming" ? " / Request received" : selected.friend_request === "outgoing" ? " / Request sent" : selected.friend_request === "both" ? " / Requests exchanged" : ""}` : "Choose a peer or group to get started"}</text>
+    <box style={{ flexShrink: 0, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, backgroundColor: theme.surface, flexDirection: "row" }}>
+      <box style={{ flexGrow: 1, flexShrink: 1, minWidth: 0, flexDirection: "column" }}>
+        <text fg={theme.text} wrapMode="word"><b>{selectedGroup?.name ?? selected?.display_name ?? "Your conversations"}</b></text>
+        <text fg={theme.muted} wrapMode="word">{selectedGroup ? `Group / ${selectedGroup.member_count} members${isMuteActive(mutedGroups[selectedGroup.group_id]) ? " / Muted" : ""}` : selected ? `${peerState}${selected.dnd && selected.is_online ? " / DND" : ""}${selected.is_online ? ` / ${compact && selected.active_transport === "remote_derp" ? "Relay" : transportName(selected.active_transport)}` : ""}${!compact && selected.active_endpoint && selected.active_transport !== "remote_derp" ? ` / ${selected.active_endpoint}` : ""}${selected.is_friend ? " / Friend" : ""}${isMuteActive(mutedPeers[selected.peer_id]) ? " / Muted" : ""}${selectedHasCapabilityGap ? " / Limited" : ""}${selected.friend_request === "incoming" ? " / Request received" : selected.friend_request === "outgoing" ? " / Request sent" : selected.friend_request === "both" ? " / Requests exchanged" : ""}` : "Choose a peer or group to get started"}</text>
+      </box>
+      {hasConversation ? <box id="mute-toggle" flexShrink={0} alignItems="center" justifyContent="center" paddingLeft={1} onMouseDown={() => onToggleMute?.()}><text fg={(selected && isMuteActive(mutedPeers[selected.peer_id])) || (selectedGroup && isMuteActive(mutedGroups[selectedGroup.group_id])) ? theme.warning : theme.muted}>{(selected && isMuteActive(mutedPeers[selected.peer_id])) || (selectedGroup && isMuteActive(mutedGroups[selectedGroup.group_id])) ? "🔕 Unmute" : "🔔 Mute"}</text></box> : null}
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column" }}>
       <box paddingLeft={2} paddingRight={1} flexShrink={0} flexDirection="column">
@@ -561,15 +628,34 @@ const senderName = selectedGroup ? groupMemberNames.get(message.sender_id) ?? pe
           const replySenderId = replyTarget?.type === "message" ? replyTarget.message.sender_id : replyTarget?.file.sender_id
 const replySender = replySenderId === identity?.peer_id ? "You"
             : replySenderId ? (selectedGroup ? groupMemberNames.get(replySenderId) ?? peerNames.get(replySenderId) : selected?.display_name) ?? "Unknown member" : undefined
-          const replyContent = replyTarget?.type === "message" ? replyTarget.message.content : replyTarget ? `Attachment: ${replyTarget.file.filename}` : undefined
-          const replySnippet = replyContent?.replace(/\s+/g, " ").trim().slice(0, 60)
           const renderedContent = isSystem
             ? message.kind === "join"
               ? `${isLocal ? "You" : senderName} joined the group`
               : message.kind === "leave"
                 ? `${isLocal ? "You" : senderName} left the group`
                 : message.content
-            : message.content
+            : selectedGroup
+              ? renderMentionedContent(message.content, resolveMentionName)
+              : message.content
+          // Mention pills render as native blue blocks (markdown styles are
+          // global per token, so backticks/code spans stay untouched).
+          const bodySegments = selectedGroup && !isSystem
+            ? segmentMentionedContent(message.content, resolveMentionName)
+            : null
+          const hasMentionPills = bodySegments?.some((segment) => segment.type === "mention") ?? false
+          const bodyBlocks = hasMentionPills && bodySegments ? splitMentionBody(bodySegments) : null
+          const mentioned =
+            Boolean(selectedGroup) &&
+            identity !== undefined &&
+            (() => {
+              const mentions = payloadMentions(message.mentions);
+              return mentions.includes(identity.peer_id) || mentions.includes("everyone");
+            })()
+          const replyContentRaw = replyTarget?.type === "message" ? replyTarget.message.content : replyTarget ? `Attachment: ${replyTarget.file.filename}` : undefined
+          const mentionAwareReplyContent = replyContentRaw !== undefined && selectedGroup && replyTarget?.type === "message"
+            ? renderMentionedContent(replyContentRaw, resolveMentionName)
+            : replyContentRaw
+          const mentionAwareReplySnippet = mentionAwareReplyContent?.replace(/\s+/g, " ").trim().slice(0, 60)
           rows.push(
             <ConversationMessageRow
               key={message.message_id}
@@ -578,10 +664,12 @@ const replySender = replySenderId === identity?.peer_id ? "You"
               isSystem={isSystem}
               senderName={senderName}
               renderedContent={renderedContent}
+              bodyBlocks={bodyBlocks}
+              mentioned={mentioned}
               replyTarget={replyTarget}
               replySender={replySender}
-              replyContent={replyContent}
-              replySnippet={replySnippet}
+              replyContent={mentionAwareReplyContent}
+              replySnippet={mentionAwareReplySnippet}
               selectedRow={selectedRow}
               unreadHighlightStartedAt={unreadHighlightStartedAt}
               replyHighlightStartedAt={replyHighlightStartedAt}
@@ -603,8 +691,33 @@ const replySender = replySenderId === identity?.peer_id ? "You"
     </box>
     <box paddingLeft={2} paddingRight={1} flexShrink={0} height={1} overflow="hidden" flexDirection="row" gap={1}><text fg={theme.accent} wrapMode="none">{typingText ?? (scrollFocused ? "Reading history" : "")}</text>{typingText && <TypingDots />}</box>
     <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, backgroundColor: theme.surface }}>
+      {mentionOpen && mentionCandidates.length > 0 && (
+      <box id="mention-popup" position="absolute" bottom="100%" left={1} right={1} zIndex={10} border borderColor={theme.line} backgroundColor={theme.surface} paddingX={1} flexDirection="column" onMouseDown={(event) => event.preventDefault()}>
+        <text fg={theme.muted}>Mention a member (Tab/Enter picks, Esc cancels)</text>
+        <scrollbox
+          id="mention-list"
+          ref={mentionListRef}
+          style={{ height: Math.min(mentionCandidates.length, MENTION_POPUP_ROWS) }}
+          contentOptions={{ flexDirection: "column" }}
+          verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}
+        >
+        {mentionCandidates.map((candidate, index) => (
+          <box
+            id={`mention-pick-${candidate.peerId}`}
+            key={candidate.peerId}
+            onMouseDown={(event) => { event.preventDefault(); onMentionPick?.(candidate.peerId); }}
+            style={{ width: "100%", paddingLeft: 1, paddingRight: 1, backgroundColor: index === mentionSelected ? theme.selected : undefined }}
+          >
+            <text fg={index === mentionSelected ? theme.text : theme.muted} wrapMode="none">
+              {index === mentionSelected ? "> " : "  "}@{candidate.displayName}{candidate.isSelf ? " (you)" : ""}
+            </text>
+          </box>
+        ))}
+        </scrollbox>
+      </box>
+      )}
       <text fg={limitColor ?? theme.accent}><b>{!scrollFocused && !editingName && hasConversation ? "> " : ""}{composerTitle}</b></text>
-      {replyTo && <text fg={theme.accent}>Replying to {replyTo.senderId === identity?.peer_id ? "You" : selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replyTo.senderId)?.display_name ?? "Unknown member" : selected?.display_name ?? "Unknown peer"}: {replyTo.label.replace(/\s+/g, " ").trim().slice(0, 60)}{replyTo.label.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""} (Esc cancels)</text>}
+      {replyTo && <text fg={theme.accent}>Replying to {replyTo.senderId === identity?.peer_id ? "You" : selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replyTo.senderId)?.display_name ?? "Unknown member" : selected?.display_name ?? "Unknown peer"}: {(selectedGroup && replyTo.kind === "message" ? renderMentionedContent(replyTo.label, resolveMentionName) : replyTo.label).replace(/\s+/g, " ").trim().slice(0, 60)}{replyTo.label.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""} (Esc cancels)</text>}
       <textarea key={selectionKey ?? "no-conversation"} ref={composerRef} initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""} placeholder={hasConversation ? "Write a message..." : "Select a peer or group"} focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !isSending && !dialogOpen} onMouseDown={() => setScrollFocused(false)} onContentChange={() => {
         const composer = composerRef.current
         const content = composer?.plainText ?? ""

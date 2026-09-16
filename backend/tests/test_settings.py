@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from meshtalk.__main__ import _is_valid_mute_timeout
 from meshtalk.settings import Room, Settings
 
 
@@ -209,6 +210,16 @@ class RoomInvitePersistenceTest(unittest.TestCase):
 
 
 class MutePeerPersistenceTest(unittest.TestCase):
+    def test_mute_timeout_validation_rejects_negative_and_non_finite_values(self):
+        for timeout in (None, 0, 1.5):
+            with self.subTest(timeout=timeout):
+                self.assertTrue(_is_valid_mute_timeout(timeout))
+        for timeout in (True, -1, float("inf"), float("nan"), "1"):
+            with self.subTest(timeout=timeout):
+                self.assertFalse(_is_valid_mute_timeout(timeout))
+        with patch("meshtalk.__main__.time.time", return_value=float("inf")):
+            self.assertFalse(_is_valid_mute_timeout(1))
+
     def test_permanent_mute_survives_reload(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "settings.json"
@@ -264,3 +275,43 @@ class MutePeerPersistenceTest(unittest.TestCase):
 
             self.assertFalse(settings.is_peer_muted("peer5"))
             self.assertNotIn("peer5", settings.muted_peers)
+
+    def test_malformed_group_mutes_are_ignored_on_load(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            path.write_text(json.dumps({"version": 1, "muted_groups": []}))
+
+            settings = Settings(path)
+
+            self.assertEqual(settings.muted_groups, {})
+
+    def test_non_finite_and_boolean_mutes_are_ignored_on_load(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            path.write_text(json.dumps({
+                "version": 1,
+                "muted_peers": {"permanent": 0, "boolean": True, "infinite": float("inf")},
+                "muted_groups": {"permanent": 0, "boolean": False, "not-a-number": float("nan")},
+            }))
+
+            settings = Settings(path)
+
+            self.assertEqual(settings.muted_peers, {"permanent": 0.0})
+            self.assertEqual(settings.muted_groups, {"permanent": 0.0})
+
+
+class DndPersistenceTest(unittest.TestCase):
+    def test_dnd_defaults_off_and_survives_reload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            settings = Settings(path)
+            self.assertFalse(settings.dnd_enabled)
+
+            settings.set_dnd_enabled(True)
+            self.assertTrue(settings.dnd_enabled)
+
+            loaded = Settings(path)
+            self.assertTrue(loaded.dnd_enabled)
+
+            loaded.set_dnd_enabled(False)
+            self.assertFalse(Settings(path).dnd_enabled)

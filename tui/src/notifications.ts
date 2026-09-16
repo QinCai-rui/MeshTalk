@@ -77,7 +77,9 @@ export async function notify(
   event: NotificationEvent,
   renderer: TerminalRenderer,
   message: string,
+  dndEnabled = false,
 ): Promise<void> {
+  if (dndEnabled) return
   if (!preferences?.events[event] || preferences.delivery === "disabled") return
   if (preferences.delivery === "native") {
     await sendNativeNotification(message)
