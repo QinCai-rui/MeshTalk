@@ -1579,6 +1579,11 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     }
     if (dialog) {
       if (key.name === "escape" || (key.name === "backspace" && !dialogUsesTextInput(dialog))) {
+        if (dialog.kind === "file-list") {
+          key.preventDefault();
+          void actions.loadFilesSettings();
+          return;
+        }
         key.preventDefault();
         actions.goBack();
       }
@@ -1916,7 +1921,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       : Math.min(32, Math.max(1, height - 4));
   function dialogWidthFor(kind: Dialog["kind"]): number {    if (kind === "image-view" || kind === "file-list") return Math.max(1, width - 2);
     if (kind === "file-confirm") return fileConfirmDialogWidth(width);
-    if (kind === "files-dir" || kind === "file-download") return Math.min(118, Math.max(1, width - 6));
+    if (kind === "files-dir" || kind === "storage-dir" || kind === "file-download") return Math.min(118, Math.max(1, width - 6));
     if (kind === "group-detail")
       return Math.min(78, Math.max(1, width - 2));
     return dialogWidth;
@@ -2167,7 +2172,13 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           loadDebugInfo={actions.loadDebugInfo}
           loadFiles={actions.loadFiles}
           loadFilesDir={actions.loadFilesDir}
+          loadStorageDir={actions.loadStorageDir}
+          loadFilesSettings={actions.loadFilesSettings}
+          openPath={actions.openPath}
           setFilesDir={actions.setFilesDir}
+          setStorageDir={actions.setStorageDir}
+          clearFilesDir={actions.clearFilesDir}
+          clearStorageDir={actions.clearStorageDir}
           sendFile={actions.sendFile}
           confirmPendingFileSend={actions.confirmPendingFileSend}
           downloadFile={actions.downloadFile}

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import signal
 import socket
 import sys
@@ -29,6 +30,18 @@ from .protocol import Packet, PacketType, capability_for_packet
 from .rendezvous import RendezvousService
 from .settings import Settings
 from .analytics import Analytics
+from .storage import (
+    DB_FILENAME,
+    STORAGE_ENV_VAR,
+    copy_tree_merge,
+    delete_tree_contents,
+    dir_has_content,
+    migrate_files_location,
+    same_location,
+    switch_storage_location,
+    validate_target_dir,
+    verify_tree_copy,
+)
 
 logger = logging.getLogger("meshtalk")
 
@@ -50,14 +63,37 @@ async def main(debug: bool = False) -> None:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    identity = Identity.load_or_generate(DATA_DIR)
-    logger.info("Peer ID: %s (%s)", identity.peer_id, identity.display_name)
-    stop_event = asyncio.Event()
-
-    db = Database(DATA_DIR / "meshtalk.db", identity.storage_key())
-    await db.connect()
     settings = Settings(DATA_DIR / "settings.json")
     analytics = Analytics(DATA_DIR / "settings.json")
+
+    # Storage directory holds the messages database, file transfers, and
+    # identity. settings.json and runtime files (socket/token/pid/logs) stay
+    # in DATA_DIR so the IPC endpoint never moves under a running backend.
+    storage_base = settings.storage_dir
+    storage_base.mkdir(parents=True, exist_ok=True)
+
+    def _load_identity() -> Identity:
+        existing = Identity.load(storage_base)
+        if existing is not None:
+            return existing
+        if not same_location(storage_base, DATA_DIR):
+            # Pre-migration installs keep identity.json in DATA_DIR: adopt a
+            # copy so the peer ID (and DB key) survives the storage switch.
+            legacy = Identity.load(DATA_DIR)
+            if legacy is not None:
+                legacy.save(storage_base)
+                reloaded = Identity.load(storage_base)
+                if reloaded is not None:
+                    return reloaded
+        return Identity.load_or_generate(storage_base)
+
+    identity = _load_identity()
+    logger.info("Peer ID: %s (%s)", identity.peer_id, identity.display_name)
+    logger.info("Storage dir: %s", storage_base)
+    stop_event = asyncio.Event()
+
+    db = Database(storage_base / DB_FILENAME, identity.storage_key())
+    await db.connect()
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
     friend_manager = FriendManager(identity, peer_manager, db)
@@ -66,7 +102,7 @@ async def main(debug: bool = False) -> None:
         identity, peer_manager, db, friend_manager=friend_manager, group_router=group_router, analytics=analytics
     )
     typing_router = TypingRouter(identity, peer_manager, db, settings, friend_manager)
-    file_manager = FileTransferManager(identity, peer_manager, db, DATA_DIR, settings=settings, analytics=analytics)
+    file_manager = FileTransferManager(identity, peer_manager, db, storage_base, settings=settings, analytics=analytics)
     tui_clients: set[str] = set()
     typing_clients: dict[tuple[str, str], set[str]] = {}
 
@@ -464,7 +500,7 @@ async def main(debug: bool = False) -> None:
     async def handle_set_display_name(req: dict) -> dict:
         display_name = Identity.normalize_display_name(req.get("display_name"))
         identity.display_name = display_name
-        identity.save(DATA_DIR)
+        identity.save(settings.storage_dir)
         settings.dismiss_identity_setup()
         await peer_manager.broadcast_profile_update()
         return {"display_name": display_name}
@@ -882,22 +918,233 @@ async def main(debug: bool = False) -> None:
             return {"error": str(exc)}
         return {"file_id": file_id, "dest_path": final}
 
+    def _storage_payload() -> dict:
+        storage = settings.storage_dir
+        files_base = settings.files_dir
+        return {
+            "storage_dir": str(storage),
+            "storage_configured": settings._storage_dir,
+            "storage_env": os.environ.get(STORAGE_ENV_VAR),
+            "data_dir": str(DATA_DIR),
+            "files_dir": str(files_base),
+            "files_configured": settings._files_dir,
+            "files_env": os.environ.get("MESHTALK_FILES_DIR"),
+            "db_path": str(storage / DB_FILENAME),
+            "storage_has_content": dir_has_content(storage),
+            "files_has_content": dir_has_content(files_base),
+            # Back-compat aliases for older clients.
+            "configured": settings._files_dir,
+            "env": os.environ.get("MESHTALK_FILES_DIR"),
+        }
+
+    def _wants_migrate(req: dict) -> bool:
+        value = req.get("migrate")
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "y", "migrate")
+        return bool(value)
+
     async def handle_files_dir(req: dict) -> dict:
         # Get or set files storage directory (cross-platform: supports E:\, /mnt/e, etc.)
+        # Pass migrate=true to also transfer existing files: they are copied,
+        # verified, and only then deleted from the old location. Any failure
+        # aborts the change and the old location stays active.
         new_path = req.get("path") or req.get("files_dir") or req.get("dir")
-        if new_path is not None:
-            if not isinstance(new_path, str) or not new_path.strip():
-                return {"error": "path must be a non-empty string"}
-            # Allow clearing to default via empty or "default"
-            if new_path.strip().lower() in ("default", "clear", "reset"):
+        if new_path is None:
+            payload = _storage_payload()
+            payload["configured"] = settings._files_dir
+            payload["env"] = os.environ.get("MESHTALK_FILES_DIR")
+            return payload
+        if not isinstance(new_path, str) or not new_path.strip():
+            return {"error": "path must be a non-empty string"}
+        # Allow clearing to default via empty or "default"
+        if new_path.strip().lower() in ("default", "clear", "reset"):
+            if not settings._files_dir:
+                payload = _storage_payload()
+                payload["note"] = "Files location is already set to default."
+                return payload
+            migrate = _wants_migrate(req)
+            if not migrate:
                 settings.clear_files_dir()
-                return {"files_dir": str(settings.files_dir), "configured": None, "env": os.environ.get("MESHTALK_FILES_DIR")}
+                payload = _storage_payload()
+                payload["note"] = "Files location reset to default. Existing files stay in the old location."
+                return payload
+            old_base = Path(settings._files_dir)
+            target = settings.storage_dir / "files"
+            if same_location(old_base, target):
+                settings.clear_files_dir()
+                return _storage_payload()
+            if dir_has_content(old_base):
+                if await db.has_active_file_transfers():
+                    return {"error": "A file transfer is in progress; wait for it to finish before resetting."}
+                try:
+                    copied = copy_tree_merge(old_base, target)
+                except Exception as exc:
+                    return {"error": f"Could not copy files to '{target}': {exc}. Location unchanged."}
+                problems = verify_tree_copy(old_base, target, copied)
+                if problems:
+                    for rel in reversed(copied):
+                        try:
+                            (target / rel).unlink()
+                        except OSError:
+                            pass
+                    detail = "; ".join(problems[:5])
+                    return {"error": f"Verification failed ({detail}). Location unchanged."}
+            settings.clear_files_dir()
+            # Files are now at default location; remove old after successful copy
+            if dir_has_content(old_base):
+                problems = delete_tree_contents(old_base)
+                payload = _storage_payload()
+                payload["migrated"] = True
+                if problems:
+                    payload["cleanup_warning"] = f"Location reset, but some old files could not be deleted: {'; '.join(problems[:5])}"
+                return payload
+            return _storage_payload()
+        migrate = _wants_migrate(req)
+        try:
+            target = validate_target_dir(new_path, base=settings.path.parent)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        try:
+            result = await migrate_files_location(db=db, settings=settings, target=target) if migrate else None
+        except RuntimeError as exc:
+            return {"error": str(exc)}
+        if not migrate:
+            if same_location(settings.files_dir, target):
+                payload = _storage_payload()
+                payload["note"] = f"Files storage is already set to '{payload['files_dir']}'."
+                return payload
             try:
-                final = settings.set_files_dir(new_path)
+                settings.set_files_dir(new_path)
             except ValueError as exc:
                 return {"error": str(exc)}
-            return {"files_dir": str(final), "configured": settings._files_dir, "env": os.environ.get("MESHTALK_FILES_DIR")}
-        return {"files_dir": str(settings.files_dir), "configured": settings._files_dir, "env": os.environ.get("MESHTALK_FILES_DIR"), "data_dir": str(DATA_DIR)}
+            payload = _storage_payload()
+            payload["note"] = "Existing files stay in the old location; pass migrate=true to transfer them."
+            return payload
+        assert result is not None
+        payload = _storage_payload()
+        payload["migrated"] = result["migrated"]
+        if result["cleanup_warning"]:
+            payload["cleanup_warning"] = (
+                f"Location changed, but some old files could not be deleted: {result['cleanup_warning']}"
+            )
+        return payload
+
+    async def handle_storage(req: dict) -> dict:
+        """Get or change the storage directory (messages DB, files, identity).
+
+        Pass migrate=true to transfer existing data: the database snapshot,
+        identity, and (default-located) files are copied, verified, and only
+        then deleted from the old location. Any failure aborts the change and
+        the old location stays active. settings.json and backend runtime files
+        (socket/token/pid/logs) always remain in the data directory.
+        """
+        new_path = req.get("path") or req.get("storage_dir") or req.get("dir")
+        if new_path is None:
+            return _storage_payload()
+        if not isinstance(new_path, str) or not new_path.strip():
+            return {"error": "path must be a non-empty string"}
+        if new_path.strip().lower() in ("default", "clear", "reset"):
+            if not settings._storage_dir:
+                payload = _storage_payload()
+                payload["note"] = "Storage location is already set to default."
+                return payload
+            migrate = _wants_migrate(req)
+            if not migrate:
+                settings.clear_storage_dir()
+                payload = _storage_payload()
+                payload["note"] = "Storage location reset to default. Existing data stays in the old location."
+                return payload
+            target = settings.path.parent
+            if same_location(settings.storage_dir, target):
+                settings.clear_storage_dir()
+                return _storage_payload()
+            try:
+                summary = await switch_storage_location(db=db, settings=settings, file_manager=file_manager, target=target, migrate=True)
+            except RuntimeError as exc:
+                return {"error": str(exc)}
+            except Exception as exc:
+                logger.exception("storage change failed")
+                return {"error": f"Could not reset storage location: {exc}. Location unchanged."}
+            settings.clear_storage_dir()
+            payload = _storage_payload()
+            payload["migrated"] = True
+            payload["files_migrated"] = summary.get("files_migrated", False)
+            if summary.get("cleanup_warning"):
+                payload["cleanup_warning"] = summary["cleanup_warning"]
+            return payload
+        if os.environ.get(STORAGE_ENV_VAR, "").strip():
+            return {
+                "error": f"{STORAGE_ENV_VAR} is set and takes precedence over this setting; "
+                "unset it before changing the storage location."
+            }
+        migrate = _wants_migrate(req)
+        try:
+            target = validate_target_dir(new_path, base=settings.path.parent)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        try:
+            summary = await switch_storage_location(
+                db=db, settings=settings, file_manager=file_manager, target=target, migrate=migrate
+            )
+        except RuntimeError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            logger.exception("storage change failed")
+            return {"error": f"Could not change the storage location: {exc}. Location unchanged."}
+        payload = _storage_payload()
+        payload["migrated"] = summary["migrated"]
+        payload["files_migrated"] = summary["files_migrated"]
+        if summary.get("noop"):
+            payload["note"] = f"Storage is already set to '{payload['storage_dir']}'."
+        if summary.get("files_note"):
+            payload["files_note"] = summary["files_note"]
+        if summary.get("note"):
+            payload["note"] = summary["note"]
+        if summary.get("cleanup_warning"):
+            payload["cleanup_warning"] = summary["cleanup_warning"]
+        return payload
+
+    async def handle_open_path(req: dict) -> dict:
+        raw = req.get("path") or req.get("dir") or req.get("location")
+        if not isinstance(raw, str) or not raw.strip():
+            return {"error": "path required"}
+        target = Path(raw.strip()).expanduser()
+        # Allow opening the file itself or its directory; resolve to directory
+        if not target.exists():
+            return {"error": f"Path does not exist: {target}"}
+        directory = target if target.is_dir() else target.parent
+        if sys.platform == "win32":
+            try:
+                os.startfile(str(directory))  # type: ignore[attr-defined]
+            except Exception as exc:
+                return {"error": f"Could not open {directory}: {exc}", "path": str(directory)}
+            return {"opened": str(directory)}
+        # Graphical opener varies by platform; try each candidate so headless
+        # machines (no xdg-open/open binary, no display server) get a clear
+        # no_opener signal instead of a generic spawn error. The TUI falls
+        # back to copying the path to the clipboard in that case.
+        candidates = [["open"]] if sys.platform == "darwin" else [
+            ["xdg-open"], ["gio", "open"], ["gnome-open"], ["kde-open"],
+        ]
+        available = [cmd for cmd in candidates if shutil.which(cmd[0])]
+        if not available:
+            return {
+                "error": f"No graphical file manager found to open {directory}",
+                "path": str(directory),
+                "no_opener": True,
+            }
+        last_exc: Exception | None = None
+        for cmd in available:
+            try:
+                await asyncio.create_subprocess_exec(*cmd, str(directory))
+                return {"opened": str(directory)}
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+        return {
+            "error": f"Could not open {directory}: {last_exc}",
+            "path": str(directory),
+            "no_opener": last_exc is not None and isinstance(last_exc, FileNotFoundError),
+        }
 
     ipc_handlers = {
         "send": handle_send,
@@ -947,6 +1194,9 @@ async def main(debug: bool = False) -> None:
         "file_download": handle_file_download,
         "files_dir": handle_files_dir,
         "set_files_dir": handle_files_dir,
+        "storage": handle_storage,
+        "set_storage_dir": handle_storage,
+        "open_path": handle_open_path,
         "shutdown": handle_shutdown,
     }
     ipc = IPCServer(

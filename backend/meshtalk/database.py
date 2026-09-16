@@ -987,6 +987,27 @@ class Database:
         async with self._db.execute("SELECT * FROM file_transfers WHERE status IN ('pending','transferring')") as cursor:
             return [dict(row) async for row in cursor]
 
+    async def has_active_file_transfers(self) -> bool:
+        """Return True when any transfer is pending, transferring, or queued.
+
+        Storage migration refuses to run while this is true: in-flight
+        transfers resolve their paths up front and would otherwise complete
+        into the old location (or be deleted with it).
+        """
+        async with self._db.execute(
+            "SELECT 1 FROM file_transfers WHERE status = 'transferring' LIMIT 1"
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def vacuum_into(self, dest: Path) -> None:
+        """Write a transaction-consistent snapshot of the database to dest.
+
+        Used by storage migration while the live connection stays open; the
+        caller verifies the snapshot before switching over to it.
+        """
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        await self._db.execute("VACUUM INTO ?", (str(dest),))
+
     async def is_file_chunk_received(self, file_id: str, chunk_index: int) -> bool:
         """Check if a specific file chunk has been received."""
         async with self._db.execute(

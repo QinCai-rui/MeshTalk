@@ -87,7 +87,13 @@ type DialogPanelProps = {
   loadDebugInfo: () => void
   loadFiles: () => void
   loadFilesDir: () => void
-  setFilesDir: (path: string) => void
+  loadStorageDir: () => void
+  loadFilesSettings?: () => void
+  openPath?: (path: string) => void
+  setFilesDir: (path: string, migrate?: boolean) => void
+  setStorageDir: (path: string, migrate?: boolean) => void
+  clearFilesDir: (migrate?: boolean) => void
+  clearStorageDir: (migrate?: boolean) => void
   sendFile: (filePath: string) => void
   confirmPendingFileSend: () => void
   downloadFile: (fileId: string, destPath: string) => void
@@ -113,7 +119,7 @@ export function DialogPanel(props: DialogPanelProps) {
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
   const { mutePeer, unmutePeer, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
-  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, setFilesDir, sendFile, confirmPendingFileSend, downloadFile, defaultDownloadPath, onDeleteFile } = props
+  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, loadStorageDir, loadFilesSettings, openPath, setFilesDir, setStorageDir, clearFilesDir, clearStorageDir, sendFile, confirmPendingFileSend, downloadFile, defaultDownloadPath, onDeleteFile } = props
   const { testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent } = props
   const { saveDisplayName, checkForUpdatesFromAbout, saveUpdateChannel, installUpdate, saveUpdateToken, restartUpdate } = props
 
@@ -168,8 +174,10 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "debug-peer" && <DebugPeerDialogContent dialog={dialog} debugInfo={debugInfo} dialogHeight={dialogHeight} />}
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
       {dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} screenWidth={dialogWidthFor("file-list") + 2} screenHeight={dialogHeight + 4} imageProtocol={imageProtocol} peers={peers} groups={groups} selection={selection} closeDialog={closeDialog} showDialog={showDialog} confirmPendingFileSend={confirmPendingFileSend} />}
-      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
-      {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
+      {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesSettings={loadFilesSettings} openPath={openPath} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} />}
+      {dialog.kind === "files-settings" && <FilesSettingsContent dialog={dialog} dialogHeight={dialogHeight} dialogBusy={dialogBusy} loadFiles={loadFiles} setFilesDir={setFilesDir} setStorageDir={setStorageDir} clearFilesDir={clearFilesDir} clearStorageDir={clearStorageDir} openPath={openPath} />}
+      {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} setStorageDir={setStorageDir} loadFiles={loadFiles} />}
+      {dialog.kind === "storage-dir" && <FilesDirDialogContent dialog={dialog} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} setStorageDir={setStorageDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
       {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} bytes={dialog.bytes} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} />}
@@ -710,7 +718,7 @@ function FileSendDialogContent({ dialog, dialogWidth, selection, peers, groups, 
   )
 }
 
-export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, peers, groups, loadFiles, loadFilesDir, setDialogDraft, showDialog, closeDialog, defaultDownloadPath, onDeleteFile }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; loadFiles: () => void; loadFilesDir: () => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; closeDialog: () => void; defaultDownloadPath: (filename: string) => string; onDeleteFile?: (file: FileTransfer) => void }) {
+export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, imageProtocol, peers, groups, loadFiles, loadFilesSettings, openPath: _openPath, setDialogDraft, showDialog, closeDialog, defaultDownloadPath, onDeleteFile }: { dialog: Extract<Dialog, { kind: "file-list" }>; dialogHeight: number; dialogWidth: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; loadFiles: () => void; loadFilesSettings?: () => void; openPath?: (path: string) => void; setDialogDraft: (v: string) => void; showDialog: (d: Dialog) => void; closeDialog: () => void; defaultDownloadPath: (filename: string) => string; onDeleteFile?: (file: FileTransfer) => void }) {
   const [filter, setFilter] = useState<"all" | "inbound" | "outbound" | "images" | "other">("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<FileTransfer | null>(null)
@@ -759,18 +767,22 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
     if (onDeleteFile) onDeleteFile(target)
     else loadFiles()
   }
+  const backToSettings = () => {
+    if (loadFilesSettings) void loadFilesSettings()
+    else showDialog({ kind: "files-settings", filesDir: "", dataDir: "" } as any)
+  }
   useKeyboard((key) => {
     if (pendingDelete) {
       if (key.name === "escape") setPendingDelete(null)
       else if (key.name === "return" || key.name === "enter") void confirmDelete()
       return
     }
+    if (key.name === "escape") { key.preventDefault(); backToSettings(); return }
     const index = filtered.findIndex((f) => f.file_id === selectedId)
     if (key.name === "up" || key.name === "k") { if (index > 0) setSelectedId(filtered[index - 1].file_id) }
     else if (key.name === "down" || key.name === "j") { if (index >= 0 && index < filtered.length - 1) setSelectedId(filtered[index + 1].file_id) }
     else if (key.name === "return" || key.name === "enter" || key.name === "s") saveSelected()
     else if (key.name === "r") loadFiles()
-    else if (key.name === "l") loadFilesDir()
     else if (key.name === "d") requestDelete()
   })
   const formatSize = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
@@ -796,16 +808,20 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
     ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage lazy={false} maxWidth={maxWidth} maxHeight={Math.max(4, Math.min(14, dialogHeight - 14))} onOpen={() => showDialog({ kind: "image-view", filePath: file.file_path!, filename: file.filename, version: file.completed_at, returnTo: "files" })} />
     : null
   return <box style={{ width: "100%", height: "100%", minHeight: 0, flexDirection: "column", backgroundColor: theme.canvas }}>
-    <box style={{ flexShrink: 0, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, backgroundColor: theme.surface }}>
-      <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
-        <text fg={theme.text}><b>File Manager</b></text>
+    <box style={{ flexShrink: 0, paddingLeft: 2, paddingRight: 2, backgroundColor: theme.surface }}>
+      <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+        <box style={{ flexDirection: "row", gap: 1, alignItems: "center" }}>
+          <box id="file-manager-back" onMouseDown={backToSettings} style={{ height: 1, width: 5, alignItems: "center", justifyContent: "center", backgroundColor: theme.link }}><text fg={theme.surfaceRaised}><b>{"<"}</b></text></box>
+          <text fg={theme.text}><b>File Manager</b></text>
+        </box>
         <text fg={theme.muted}>{counts.all} transfer{counts.all === 1 ? "" : "s"}</text>
       </box>
+      <box height={1} />
       <text fg={theme.muted}>Files shared through MeshTalk</text>
     </box>
     <box style={{ flexDirection: "row", flexWrap: "wrap", gap: 1, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, flexShrink: 0, backgroundColor: theme.surface }}>
-      {chips.map((chip) => <box id={`file-filter-${chip.id}`} key={chip.id} onMouseDown={() => setFilter(chip.id)} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: filter === chip.id ? theme.selected : undefined }}>
-        <text fg={filter === chip.id ? theme.accent : theme.muted}>{filter === chip.id ? "> " : ""}{chip.label} {chip.count}</text>
+      {chips.map((chip) => <box id={`file-filter-${chip.id}`} key={chip.id} onMouseDown={() => setFilter(chip.id)} ref={unselectableRef} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: filter === chip.id ? theme.selected : undefined }}>
+        <text ref={unselectableRef} fg={filter === chip.id ? theme.accent : theme.muted}>{filter === chip.id ? "> " : ""}{chip.label} {chip.count}</text>
       </box>)}
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: wide ? "row" : "column", gap: wide ? 1 : 0 }}>
@@ -853,9 +869,8 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
     <box style={{ flexDirection: "row", flexWrap: "wrap", gap: 1, paddingLeft: 1, paddingRight: 1, paddingTop: 1, paddingBottom: 1, flexShrink: 0, backgroundColor: theme.surface }}>
       <FileManagerAction shortcut="S" label="ave" onPress={saveSelected} disabled={!canSaveSelected} />
       <FileManagerAction shortcut="D" label="elete" onPress={requestDelete} danger />
-      <FileManagerAction shortcut="L" label="ocation" onPress={() => void loadFilesDir()} />
       <FileManagerAction shortcut="R" label="efresh" onPress={() => void loadFiles()} />
-      <FileManagerAction shortcut="Esc" label=" Close" onPress={() => closeDialog()} />
+      <FileManagerAction shortcut="Esc" label=" Back" onPress={() => backToSettings()} />
       <text fg={theme.muted}>Up/Down or J/K select</text>
     </box>
     {pendingDelete ? <box style={{ position: "absolute", left: 2, right: 2, top: Math.max(1, Math.floor(dialogHeight / 2) - 3), border: true, borderColor: theme.danger, backgroundColor: theme.dangerSurface, padding: 1, flexDirection: "column", gap: 1 }}>
@@ -869,6 +884,10 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
   </box>
 }
 
+function unselectableRef(node: { selectable: boolean } | null) {
+  if (node) node.selectable = false
+}
+
 function FileManagerAction({ shortcut, label, onPress, disabled = false, danger = false }: { shortcut: string; label: string; onPress: () => void; disabled?: boolean; danger?: boolean }) {
   const color = disabled ? theme.line : danger ? theme.danger : theme.text
   return <box onMouseDown={disabled ? undefined : onPress} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: disabled ? undefined : danger ? theme.dangerSurface : theme.selected }}>
@@ -876,35 +895,215 @@ function FileManagerAction({ shortcut, label, onPress, disabled = false, danger 
   </box>
 }
 
-function FilesDirDialogContent({ dialog, dialogWidth, dialogDraft, setDialogDraft, setFilesDir, loadFiles }: { dialog: Extract<Dialog, { kind: "files-dir" }>; dialogWidth: number; dialogDraft: string; setDialogDraft: (v: string) => void; setFilesDir: (path: string) => void; loadFiles: () => void }) {
-  const isEnv = !!dialog.env
-  const isCustom = !!dialog.configured && !isEnv
+export function FilesSettingsContent({ dialog, dialogHeight, dialogBusy, loadFiles, setFilesDir, setStorageDir, clearFilesDir, clearStorageDir, openPath, initialEditingFiles, initialEditingStorage }: { dialog: Extract<Dialog, { kind: "files-settings" }>; dialogHeight: number; dialogBusy: boolean; loadFiles: () => void; setFilesDir: (path: string, migrate?: boolean) => void; setStorageDir: (path: string, migrate?: boolean) => void; clearFilesDir?: (migrate?: boolean) => void; clearStorageDir?: (migrate?: boolean) => void; openPath?: (path: string) => void; initialEditingFiles?: boolean; initialEditingStorage?: boolean }) {
+  const filesCurrent = dialog.filesDir ?? ""
+  const storageCurrent = dialog.storageDir ?? dialog.dataDir ?? ""
+  const filesIsEnv = !!dialog.env
+  const filesIsCustom = !!dialog.configured && !filesIsEnv
+  const filesState = filesIsEnv ? { label: "env override", color: theme.warning, background: theme.dangerSurface } : filesIsCustom ? { label: "custom", color: theme.success, background: theme.successSurface } : { label: "default", color: theme.muted, background: theme.surface }
+  const storageIsEnv = !!dialog.storageEnv
+  const storageIsCustom = !!dialog.storageConfigured && !storageIsEnv
+  const storageState = storageIsEnv ? { label: "env override", color: theme.warning, background: theme.dangerSurface } : storageIsCustom ? { label: "custom", color: theme.success, background: theme.successSurface } : { label: "default", color: theme.muted, background: theme.surface }
+  const [editingFiles, setEditingFiles] = useState(!!initialEditingFiles)
+  const [editingStorage, setEditingStorage] = useState(!!initialEditingStorage)
+  const [filesDraft, setFilesDraft] = useState(filesCurrent)
+  const [storageDraft, setStorageDraft] = useState(storageCurrent)
+  const [pendingMigrate, setPendingMigrate] = useState<{ scope: "files" | "storage"; path: string; isDefault?: boolean } | null>(null)
+  useEffect(() => { setFilesDraft(filesCurrent) }, [filesCurrent])
+  useEffect(() => { setStorageDraft(storageCurrent) }, [storageCurrent])
+  useEffect(() => { setPendingMigrate(null) }, [dialog.filesDir, dialog.storageDir])
+  const requestFilesSave = (path: string) => {
+    const trimmed = path.trim()
+    if (!trimmed) return
+    if (trimmed !== filesCurrent) setPendingMigrate({ scope: "files", path: trimmed })
+    else setEditingFiles(false)
+  }
+  const requestStorageSave = (path: string) => {
+    const trimmed = path.trim()
+    if (!trimmed) return
+    if (trimmed !== storageCurrent) setPendingMigrate({ scope: "storage", path: trimmed })
+    else setEditingStorage(false)
+  }
+  const confirmMigrate = (migrate: boolean) => {
+    const pending = pendingMigrate
+    setPendingMigrate(null)
+    if (!pending) return
+    if (pending.isDefault) {
+      if (pending.scope === "files") {
+        if (clearFilesDir) void clearFilesDir(migrate)
+        else void setFilesDir(pending.path, migrate)
+      } else {
+        if (clearStorageDir) void clearStorageDir(migrate)
+        else void setStorageDir(pending.path, migrate)
+      }
+      return
+    }
+    if (pending.scope === "files") { setEditingFiles(false); void setFilesDir(pending.path, migrate) }
+    else { setEditingStorage(false); void setStorageDir(pending.path, migrate) }
+  }
+  useKeyboard((key) => {
+    if (!pendingMigrate || key.ctrl || key.meta) return
+    if (key.name === "y") confirmMigrate(true)
+    else if (key.name === "n") confirmMigrate(false)
+    else if (key.name === "escape") setPendingMigrate(null)
+  })
+  const openManager = () => { if (!dialogBusy) void loadFiles() }
+  const defaultFilesPath = dialog.dataDir ? `${dialog.dataDir}/files` : ""
+  const defaultStoragePath = dialog.dataDir ?? ""
+  const canDefaultFiles = filesIsCustom && !filesIsEnv
+  const canDefaultStorage = storageIsCustom && !storageIsEnv
+  const requestFilesDefault = () => {
+    if (!canDefaultFiles || dialogBusy) return
+    setPendingMigrate({ scope: "files", path: defaultFilesPath, isDefault: true })
+  }
+  const requestStorageDefault = () => {
+    if (!canDefaultStorage || dialogBusy) return
+    setPendingMigrate({ scope: "storage", path: defaultStoragePath, isDefault: true })
+  }
+  return <SettingsScreen breadcrumb={["Files & transfers"]} description="View transfers, and change where files and app data are stored." dialogHeight={dialogHeight}>
+    <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", gap: 1 }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface } }}>
+      <box style={{ width: "100%", flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: theme.link, backgroundColor: theme.surface }}>
+        <text fg={theme.text} wrapMode="word"><b>File manager</b> — browse, preview, and download your transfers.</text>
+        <box id="open-file-manager" onMouseDown={openManager} style={{ width: "100%", height: 3, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: dialogBusy ? theme.surface : theme.link, border: true, borderColor: theme.link }}>
+          <text fg={dialogBusy ? theme.muted : theme.surfaceRaised}><b>⧉ Open file manager</b></text>
+        </box>
+      </box>
+      <box style={{ width: "100%", flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: theme.surface, backgroundColor: theme.canvas }}>
+        <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <text fg={theme.text}><b>File location</b></text>
+          <box style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: filesState.background, border: true, borderColor: theme.surface }}><text fg={filesState.color}>{filesState.label}</text></box>
+        </box>
+        <box style={{ minHeight: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", border: true, borderColor: theme.selected, backgroundColor: theme.surfaceRaised }}>
+          <text fg={theme.text} wrapMode="word"><b>{filesCurrent || "—"}</b></text>
+        </box>
+        {filesIsEnv ? <text fg={theme.warning} wrapMode="word">MESHTALK_FILES_DIR={dialog.env} takes precedence over this setting.</text> : filesIsCustom ? <text fg={theme.muted} wrapMode="word">Custom path saved in settings.json.</text> : <text fg={theme.muted} wrapMode="word">Default: {dialog.dataDir ?? ""}/files</text>}
+        {!editingFiles ? <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end" }}>
+          <box id="files-open" onMouseDown={() => { if (!dialogBusy && filesCurrent && openPath) openPath(filesCurrent) }} style={{ height: 3, paddingLeft: 2, paddingRight: 2, alignItems: "center", justifyContent: "center", backgroundColor: dialogBusy || !openPath ? theme.surface : theme.surfaceRaised, border: true, borderColor: dialogBusy || !openPath ? theme.surface : theme.line }}><text fg={dialogBusy || !openPath ? theme.muted : theme.text}>Open</text></box>
+          <box id="files-edit" onMouseDown={() => { if (!dialogBusy) { setEditingFiles(true); setFilesDraft(filesCurrent) } }} style={{ height: 3, paddingLeft: 2, paddingRight: 2, alignItems: "center", justifyContent: "center", backgroundColor: dialogBusy ? theme.surface : theme.selected, border: true, borderColor: theme.line }}><text fg={dialogBusy ? theme.muted : theme.text}>Edit</text></box>
+          <box id="files-default" onMouseDown={requestFilesDefault} style={{ height: 3, paddingLeft: 2, paddingRight: 2, alignItems: "center", justifyContent: "center", backgroundColor: !canDefaultFiles || dialogBusy ? theme.surface : theme.surfaceRaised, border: true, borderColor: !canDefaultFiles || dialogBusy ? theme.surface : theme.line }}><text fg={!canDefaultFiles || dialogBusy ? theme.muted : theme.text}>Set to default</text></box>
+        </box> : <box style={{ flexDirection: "column", gap: 1 }}>
+          <input focused value={filesDraft} placeholder={filesCurrent} onInput={setFilesDraft} onSubmit={(v) => requestFilesSave(typeof v === "string" ? v : filesDraft)} maxLength={4096} />
+          <text fg={theme.subdued} wrapMode="word">Examples: E:\MeshTalkFiles · /mnt/e/MeshTalkFiles</text>
+          <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end" }}>
+            <box id="files-save" onMouseDown={() => requestFilesSave(filesDraft)} style={{ height: 3, paddingLeft: 2, paddingRight: 2, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}>Save</text></box>
+            <box id="files-cancel" onMouseDown={() => setEditingFiles(false)} style={{ height: 3, paddingLeft: 2, paddingRight: 2, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>Cancel</text></box>
+          </box>
+        </box>}
+      </box>
+      <box style={{ width: "100%", flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: theme.surface, backgroundColor: theme.canvas }}>
+        <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <text fg={theme.text}><b>Storage location</b></text>
+          <box style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: storageState.background, border: true, borderColor: theme.surface }}><text fg={storageState.color}>{storageState.label}</text></box>
+        </box>
+        <box style={{ minHeight: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", border: true, borderColor: theme.selected, backgroundColor: theme.surfaceRaised }}>
+          <text fg={theme.text} wrapMode="word"><b>{storageCurrent || "—"}</b></text>
+        </box>
+        {dialog.dbPath ? <text fg={theme.muted} wrapMode="word">Messages database: {dialog.dbPath}</text> : null}
+        {storageIsEnv ? <text fg={theme.warning} wrapMode="word">MESHTALK_STORAGE_DIR={dialog.storageEnv} takes precedence over this setting.</text> : storageIsCustom ? <text fg={theme.muted} wrapMode="word">Custom path saved in settings.json. Settings and runtime files stay in {dialog.dataDir ?? ""}.</text> : <text fg={theme.muted} wrapMode="word">Default: {dialog.dataDir ?? ""} (database, files, identity).</text>}
+        {!editingStorage ? <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end" }}>
+          <box id="storage-open" onMouseDown={() => { if (!dialogBusy && storageCurrent && openPath) openPath(storageCurrent) }} style={{ height: 3, paddingLeft: 2, paddingRight: 2, alignItems: "center", justifyContent: "center", backgroundColor: dialogBusy || !openPath ? theme.surface : theme.surfaceRaised, border: true, borderColor: dialogBusy || !openPath ? theme.surface : theme.line }}><text fg={dialogBusy || !openPath ? theme.muted : theme.text}>Open</text></box>
+          <box id="storage-edit" onMouseDown={() => { if (!dialogBusy) { setEditingStorage(true); setStorageDraft(storageCurrent) } }} style={{ height: 3, paddingLeft: 2, paddingRight: 2, alignItems: "center", justifyContent: "center", backgroundColor: dialogBusy ? theme.surface : theme.selected, border: true, borderColor: theme.line }}><text fg={dialogBusy ? theme.muted : theme.text}>Edit</text></box>
+          <box id="storage-default" onMouseDown={requestStorageDefault} style={{ height: 3, paddingLeft: 2, paddingRight: 2, alignItems: "center", justifyContent: "center", backgroundColor: !canDefaultStorage || dialogBusy ? theme.surface : theme.surfaceRaised, border: true, borderColor: !canDefaultStorage || dialogBusy ? theme.surface : theme.line }}><text fg={!canDefaultStorage || dialogBusy ? theme.muted : theme.text}>Set to default</text></box>
+        </box> : <box style={{ flexDirection: "column", gap: 1 }}>
+          <input focused value={storageDraft} placeholder={storageCurrent} onInput={setStorageDraft} onSubmit={(v) => requestStorageSave(typeof v === "string" ? v : storageDraft)} maxLength={4096} />
+          <text fg={theme.subdued} wrapMode="word">Examples: E:\MeshTalkFiles · /mnt/e/MeshTalkStorage</text>
+          <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end" }}>
+            <box id="storage-save" onMouseDown={() => requestStorageSave(storageDraft)} style={{ height: 3, paddingLeft: 2, paddingRight: 2, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}>Save</text></box>
+            <box id="storage-cancel" onMouseDown={() => setEditingStorage(false)} style={{ height: 3, paddingLeft: 2, paddingRight: 2, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>Cancel</text></box>
+          </box>
+        </box>}
+      </box>
+    </scrollbox>
+    {pendingMigrate ? <box style={{ position: "absolute", left: 2, right: 2, top: 1, border: true, borderColor: theme.link, backgroundColor: theme.surfaceRaised, padding: 1, flexDirection: "column", gap: 1 }}>
+      <text fg={theme.text}><b>Transfer existing {pendingMigrate.scope === "files" ? "files" : "data"} to the new location?</b></text>
+      <text fg={theme.muted} wrapMode="word">{pendingMigrate.path || "(default)"}</text>
+      <text fg={theme.muted} wrapMode="word">Yes copies and verifies everything, then removes the old files. No keeps the old files where they are. A failed copy aborts the change. [Y]es / [N]o · Esc cancels</text>
+      <box style={{ flexDirection: "row", gap: 1 }}>
+        <box id="migrate-yes" onMouseDown={() => confirmMigrate(true)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}>Yes, transfer</text></box>
+        <box id="migrate-no" onMouseDown={() => confirmMigrate(false)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>No, keep old</text></box>
+      </box>
+    </box> : null}
+  </SettingsScreen>
+}
+
+export function FilesDirDialogContent({ dialog, dialogDraft, setDialogDraft, setFilesDir, setStorageDir, loadFiles }: { dialog: Extract<Dialog, { kind: "files-dir" } | { kind: "storage-dir" }>; dialogDraft: string; setDialogDraft: (v: string) => void; setFilesDir: (path: string, migrate?: boolean) => void; setStorageDir: (path: string, migrate?: boolean) => void; loadFiles: () => void }) {
+  const [scope, setScope] = useState<"files" | "storage">(dialog.kind === "storage-dir" ? "storage" : "files")
+  const filesCurrent = dialog.filesDir
+  const storageCurrent = dialog.storageDir ?? dialog.dataDir ?? ""
+  const current = scope === "files" ? filesCurrent : storageCurrent
+  const isEnv = scope === "files" ? !!dialog.env : !!dialog.storageEnv
+  const isCustom = scope === "files" ? (!!dialog.configured && !isEnv) : (!!dialog.storageConfigured && !isEnv)
   const state = isEnv ? { label: "env override", color: theme.warning, background: theme.dangerSurface } : isCustom ? { label: "custom", color: theme.success, background: theme.successSurface } : { label: "default", color: theme.muted, background: theme.surface }
+  const [pendingMigrate, setPendingMigrate] = useState<{ scope: "files" | "storage"; path: string } | null>(null)
+  useEffect(() => { setPendingMigrate(null); setDialogDraft(current) }, [scope, dialog.filesDir, dialog.storageDir])
+  const selectScope = (next: "files" | "storage") => { if (next !== scope) setScope(next) }
+  const requestSave = (path: string) => {
+    const trimmed = path.trim()
+    if (!trimmed) return
+    // Always ask when the location changes: the backend treats an empty old
+    // location as a no-op move, so asking unconditionally is safe.
+    if (trimmed !== current) setPendingMigrate({ scope, path: trimmed })
+    else if (scope === "files") void setFilesDir(trimmed)
+    else void setStorageDir(trimmed)
+  }
+  const confirmMigrate = (migrate: boolean) => {
+    const pending = pendingMigrate
+    setPendingMigrate(null)
+    if (!pending) return
+    if (pending.scope === "files") void setFilesDir(pending.path, migrate)
+    else void setStorageDir(pending.path, migrate)
+  }
+  useKeyboard((key) => {
+    if (!pendingMigrate || key.ctrl || key.meta) return
+    if (key.name === "y") confirmMigrate(true)
+    else if (key.name === "n") confirmMigrate(false)
+  })
+  const tabs = [{ id: "files", label: "Files location" }, { id: "storage", label: "Storage location" }] as const
   return <>
     <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingBottom: 1, flexShrink: 0 }}>
-      <text><span fg={theme.link}><b>File storage</b></span> <span fg={theme.muted}>· received files</span></text>
+      <text><span fg={theme.link}><b>Storage locations</b></span> <span fg={theme.muted}>· files &amp; data</span></text>
       <text fg={theme.subdued}>Enter saves · Esc returns</text>
+    </box>
+    <box style={{ flexDirection: "row", gap: 1, flexShrink: 0 }}>
+      {tabs.map((entry) => <box key={entry.id} onMouseDown={() => selectScope(entry.id)} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: scope === entry.id ? theme.selected : undefined }}>
+        <text fg={scope === entry.id ? theme.accent : theme.muted}>{scope === entry.id ? `> ${entry.label}` : `  ${entry.label}`}</text>
+      </box>)}
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
       <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: theme.surface, backgroundColor: theme.canvas }}>
         <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-          <text fg={theme.text}><b>Current location</b></text>
+          <text fg={theme.text}><b>{scope === "files" ? "Received files" : "Messages, files & identity"}</b></text>
           <box style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: state.background, border: true, borderColor: theme.surface }}><text fg={state.color}>{state.label}</text></box>
         </box>
         <box style={{ minHeight: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", border: true, borderColor: theme.selected, backgroundColor: theme.surfaceRaised }}>
-          <text fg={theme.text} wrapMode="word"><b>{dialog.filesDir}</b></text>
+          <text fg={theme.text} wrapMode="word"><b>{current}</b></text>
         </box>
-        {isEnv ? <text fg={theme.warning}>MESHTALK_FILES_DIR={dialog.env} takes precedence over this setting.</text> : isCustom ? <text fg={theme.muted}>Custom path saved in settings.json.</text> : <text fg={theme.muted}>Default location: {dialog.dataDir}/files</text>}
+        {scope === "files"
+          ? (isEnv ? <text fg={theme.warning}>MESHTALK_FILES_DIR={dialog.env} takes precedence over this setting.</text> : isCustom ? <text fg={theme.muted}>Custom path saved in settings.json.</text> : <text fg={theme.muted}>Default location: {dialog.dataDir}/files</text>)
+          : <>
+            {dialog.dbPath ? <text fg={theme.muted} wrapMode="word">Messages database: {dialog.dbPath}</text> : null}
+            {isEnv ? <text fg={theme.warning}>MESHTALK_STORAGE_DIR={dialog.storageEnv} takes precedence over this setting.</text> : isCustom ? <text fg={theme.muted}>Custom path saved in settings.json. Settings and runtime files stay in {dialog.dataDir}.</text> : <text fg={theme.muted}>Default location: {dialog.dataDir} (database, files, identity).</text>}
+          </>}
+        <text fg={theme.subdued} wrapMode="word">{scope === "files" ? `Storage location: ${storageCurrent}` : `Files location: ${filesCurrent}`} · independent settings</text>
       </box>
       <box style={{ flexDirection: "column", gap: 1, padding: 1, border: true, borderColor: theme.surface, backgroundColor: theme.surfaceRaised }}>
-        <text fg={theme.text}><b>Change location</b></text>
-        <text fg={theme.muted}>New incoming files will be saved here. Existing files stay where they are.</text>
-        <input focused value={dialogDraft} placeholder={dialog.filesDir} onInput={setDialogDraft} onSubmit={(value) => void setFilesDir(typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
+        <text fg={theme.text}><b>Change {scope === "files" ? "files location" : "storage location"}</b></text>
+        <text fg={theme.muted}>You will be asked whether to transfer the existing {scope === "files" ? "files" : "data"}.</text>
+        <input focused value={dialogDraft} placeholder={current} onInput={setDialogDraft} onSubmit={(value) => requestSave(typeof value === "string" ? value : dialogDraft)} maxLength={4096} />
         <text fg={theme.subdued}>Examples: E:\MeshTalkFiles · /mnt/e/MeshTalkFiles · /Volumes/E/MeshTalkFiles</text>
       </box>
     </box>
+    {pendingMigrate ? <box style={{ position: "absolute", left: 2, right: 2, top: 1, border: true, borderColor: theme.link, backgroundColor: theme.surfaceRaised, padding: 1, flexDirection: "column", gap: 1 }}>
+      <text fg={theme.text}><b>Transfer existing {pendingMigrate.scope === "files" ? "files" : "data"} to the new location?</b></text>
+      <text fg={theme.muted} wrapMode="word">{pendingMigrate.path}</text>
+      <text fg={theme.muted}>Yes copies and verifies everything, then removes the old files. No keeps the old files where they are. A failed copy aborts the change. [Y]es / [N]o</text>
+      <box style={{ flexDirection: "row", gap: 1 }}>
+        <box onMouseDown={() => confirmMigrate(true)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}>Yes, transfer</text></box>
+        <box onMouseDown={() => confirmMigrate(false)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>No, keep old</text></box>
+      </box>
+    </box> : null}
     <box style={{ flexDirection: "row", gap: 1, justifyContent: "flex-end", minHeight: 3, flexShrink: 0 }}>
-      <box onMouseDown={() => void setFilesDir(dialogDraft)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}>Save location</text></box>
+      <box onMouseDown={() => requestSave(dialogDraft)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}>Save {scope === "files" ? "files location" : "storage location"}</text></box>
       <box onMouseDown={() => void loadFiles()} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>Back to files</text></box>
     </box>
   </>

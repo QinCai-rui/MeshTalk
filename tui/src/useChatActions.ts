@@ -859,26 +859,149 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("files_dir")
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showDialog({ kind: "files-dir", filesDir: response.files_dir as string, env: response.env as string | undefined, configured: response.configured as string | undefined, dataDir: response.data_dir as string | undefined })
+      showDialog({ kind: "files-dir", filesDir: response.files_dir as string, env: response.env as string | undefined, configured: response.configured as string | undefined, dataDir: response.data_dir as string | undefined, storageDir: response.storage_dir as string | undefined, storageConfigured: response.storage_configured as string | undefined, storageEnv: response.storage_env as string | undefined, dbPath: response.db_path as string | undefined, storageHasContent: response.storage_has_content as boolean | undefined, filesHasContent: response.files_has_content as boolean | undefined })
       setDialogDraft(response.files_dir as string)
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
   }
 
-  async function setFilesDir(path: string) {
+  async function loadFilesSettings() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("files_dir")
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      showDialog({ kind: "files-settings", filesDir: response.files_dir as string, env: response.env as string | undefined, configured: response.configured as string | undefined, dataDir: response.data_dir as string | undefined, storageDir: response.storage_dir as string | undefined, storageConfigured: response.storage_configured as string | undefined, storageEnv: response.storage_env as string | undefined, dbPath: response.db_path as string | undefined, storageHasContent: response.storage_has_content as boolean | undefined, filesHasContent: response.files_has_content as boolean | undefined })
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  function filesDirDialogFrom(response: unknown): Extract<Dialog, { kind: "files-dir" } | { kind: "storage-dir" } | { kind: "files-settings" }> {
+    const r = response as Record<string, unknown>
+    const base = { filesDir: r.files_dir as string, env: r.env as string | undefined, configured: r.configured as string | undefined, dataDir: r.data_dir as string | undefined, storageDir: r.storage_dir as string | undefined, storageConfigured: r.storage_configured as string | undefined, storageEnv: r.storage_env as string | undefined, dbPath: r.db_path as string | undefined, storageHasContent: r.storage_has_content as boolean | undefined, filesHasContent: r.files_has_content as boolean | undefined }
+    if (dialog?.kind === "storage-dir") return { kind: "storage-dir", ...base }
+    if (dialog?.kind === "files-settings") return { kind: "files-settings", ...base }
+    return { kind: "files-dir", ...base }
+  }
+
+  function storageDialogFrom(response: unknown): Extract<Dialog, { kind: "files-settings" } | { kind: "storage-dir" } | { kind: "files-dir" }> {
+    const r = response as Record<string, unknown>
+    const base = { filesDir: r.files_dir as string, env: r.env as string | undefined, configured: r.configured as string | undefined, dataDir: r.data_dir as string | undefined, storageDir: r.storage_dir as string | undefined, storageConfigured: r.storage_configured as string | undefined, storageEnv: r.storage_env as string | undefined, dbPath: r.db_path as string | undefined, storageHasContent: r.storage_has_content as boolean | undefined, filesHasContent: r.files_has_content as boolean | undefined }
+    if (dialog?.kind === "files-settings") return { kind: "files-settings", ...base }
+    if (dialog?.kind === "files-dir") return { kind: "files-dir", ...base }
+    return { kind: "storage-dir", ...base }
+  }
+
+  async function loadStorageDir() {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("files_dir")
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      showDialog({ kind: "storage-dir", filesDir: response.files_dir as string, env: response.env as string | undefined, configured: response.configured as string | undefined, dataDir: response.data_dir as string | undefined, storageDir: response.storage_dir as string | undefined, storageConfigured: response.storage_configured as string | undefined, storageEnv: response.storage_env as string | undefined, dbPath: response.db_path as string | undefined, storageHasContent: response.storage_has_content as boolean | undefined, filesHasContent: response.files_has_content as boolean | undefined })
+      setDialogDraft(response.storage_dir as string ?? response.data_dir as string)
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  async function setFilesDir(path: string, migrate?: boolean) {
     const action = beginDialogAction()
     if (action === null) return
     try {
       const trimmed = path.trim()
       if (!trimmed) throw new Error("Path required")
-      const response = await ipc.send("files_dir", { path: trimmed })
+      const response = await ipc.send("files_dir", { path: trimmed, ...(migrate ? { migrate: true } : {}) })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      showStatus(`Files storage set to ${response.files_dir as string}. New files will go there.`)
-      showDialog({ kind: "files-dir", filesDir: response.files_dir as string, env: response.env as string | undefined, configured: response.configured as string | undefined, dataDir: response.data_dir as string | undefined })
+      if (response.migrated) showStatus(`Files storage moved to ${response.files_dir as string}. Old files transferred and removed.`)
+      else if (typeof response.note === "string") showStatus(response.note)
+      else showStatus(`Files storage set to ${response.files_dir as string}. New files will go there.`)
+      if (typeof response.cleanup_warning === "string") showStatus(response.cleanup_warning as string)
+      showDialog(filesDirDialogFrom(response))
       setDialogDraft(response.files_dir as string)
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
+  }
+
+  async function setStorageDir(path: string, migrate?: boolean) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const trimmed = path.trim()
+      if (!trimmed) throw new Error("Path required")
+      const response = await ipc.send("storage", { path: trimmed, ...(migrate ? { migrate: true } : {}) })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      if (response.migrated) showStatus(`Storage moved to ${response.storage_dir as string}. Old data transferred and removed.`)
+      else if (typeof response.note === "string") showStatus(response.note)
+      else showStatus(`Storage set to ${response.storage_dir as string}.`)
+      if (typeof response.files_note === "string") showStatus(response.files_note as string)
+      if (typeof response.cleanup_warning === "string") showStatus(response.cleanup_warning as string)
+      showDialog(storageDialogFrom(response))
+      if (dialog?.kind === "files-settings") setDialogDraft("")
+      else setDialogDraft(response.files_dir as string)
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  async function clearFilesDir(migrate?: boolean) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("files_dir", { path: "default", ...(migrate ? { migrate: true } : {}) })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      if (response.migrated) showStatus(`Files location reset to default and files transferred.`)
+      else if (typeof response.note === "string") showStatus(response.note)
+      else showStatus(`Files location reset to default.`)
+      if (typeof response.cleanup_warning === "string") showStatus(response.cleanup_warning as string)
+      // Stay on files-settings if we came from there
+      if (dialog?.kind === "files-settings") showDialog({ kind: "files-settings", filesDir: response.files_dir as string, env: response.env as string | undefined, configured: response.configured as string | undefined, dataDir: response.data_dir as string | undefined, storageDir: response.storage_dir as string | undefined, storageConfigured: response.storage_configured as string | undefined, storageEnv: response.storage_env as string | undefined, dbPath: response.db_path as string | undefined, storageHasContent: response.storage_has_content as boolean | undefined, filesHasContent: response.files_has_content as boolean | undefined })
+      else showDialog(filesDirDialogFrom(response))
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  async function clearStorageDir(migrate?: boolean) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("storage", { path: "default", ...(migrate ? { migrate: true } : {}) })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      if (response.migrated) showStatus(`Storage location reset to default and data transferred.`)
+      else if (typeof response.note === "string") showStatus(response.note)
+      else showStatus(`Storage location reset to default.`)
+      if (typeof response.cleanup_warning === "string") showStatus(response.cleanup_warning as string)
+      if (dialog?.kind === "files-settings") showDialog({ kind: "files-settings", filesDir: response.files_dir as string, env: response.env as string | undefined, configured: response.configured as string | undefined, dataDir: response.data_dir as string | undefined, storageDir: response.storage_dir as string | undefined, storageConfigured: response.storage_configured as string | undefined, storageEnv: response.storage_env as string | undefined, dbPath: response.db_path as string | undefined, storageHasContent: response.storage_has_content as boolean | undefined, filesHasContent: response.files_has_content as boolean | undefined })
+      else showDialog(storageDialogFrom(response))
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  async function openPath(path: string) {
+    try {
+      const response = await ipc.send("open_path", { path })
+      if (!response.error) {
+        showStatus(`Opened ${response.opened as string}`)
+        return
+      }
+      // Fallback when no graphical file manager exists (e.g. headless
+      // server): copy the path so it can be pasted elsewhere instead.
+      const fallbackPath = typeof response.path === "string" ? response.path as string : path
+      try {
+        const result = await clipboardRef.current?.writeText(fallbackPath, { destination: "best-available" })
+        const written = result?.host.status === "written" || result?.terminal.status === "attempted"
+        if (written) showStatus(`No file manager found — path copied to clipboard: ${fallbackPath}`)
+        else showStatus(`No file manager found. Path: ${fallbackPath}`)
+      } catch {
+        showStatus(`No file manager found. Path: ${fallbackPath}`)
+      }
+    } catch (error) {
+      showStatus(`Could not open location: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   async function saveDisplayName(value?: string) {
@@ -1040,7 +1163,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       groups, groupMembers, identity, mutedPeers, peers, selectedGroupId, selectedPeerId, selection,
       showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft,
       setRenameDialog: () => showDialog({ kind: "rename" }),
-       loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms,
+       loadAdvancedConfig, loadDebugInfo, loadFiles, loadFilesSettings, loadFriendRequests, loadGroupDetails, loadRooms,
        openFriendsInbox,
     })
   }
@@ -1057,8 +1180,8 @@ export function useChatActions(deps: ChatActionsDeps) {
     mutePeer, unmutePeer,
     loadFriendRequests, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer,
     loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest,
-    reStun, loadDebugInfo, loadFiles,
-    sendFile, sendFilesDirect, sendImage, requestFileSend, requestImageSend, confirmPendingFileSend, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
+    reStun, loadDebugInfo, loadFiles, loadFilesSettings, openPath,
+    sendFile, sendFilesDirect, sendImage, requestFileSend, requestImageSend, confirmPendingFileSend, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, loadStorageDir, setFilesDir, setStorageDir, clearFilesDir, clearStorageDir,
     saveDisplayName, setAccessibilityFlashing,
     testNotificationDelivery, confirmNotificationDelivery, disableNotifications, toggleNotificationEvent,
     send, runCommand,

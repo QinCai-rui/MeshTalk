@@ -17,6 +17,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from .storage import STORAGE_ENV_VAR, validate_target_dir
+
 DEFAULT_STUN_HOST = "stun.l.google.com"
 DEFAULT_STUN_PORT = 19302
 DEFAULT_SPLASH_DURATION_MS = 3000
@@ -148,6 +150,7 @@ class Settings:
         self.rooms: dict[str, Room] = {}
         self.muted_peers: dict[str, float] = {}
         self._files_dir: str | None = None
+        self._storage_dir: str | None = None
         self._image_protocol = "auto"
         self._confirm_file_send = True
         self._splash_style = "card"
@@ -162,6 +165,28 @@ class Settings:
         self._load()
 
     @property
+    def storage_dir(self) -> Path:
+        """Return the storage directory for the database, files, and identity.
+
+        Checks the MESHTALK_STORAGE_DIR environment variable first, then the
+        persisted setting, defaulting to the settings file's parent (DATA_DIR).
+        settings.json itself and backend runtime files always stay in DATA_DIR.
+        """
+        env = os.environ.get(STORAGE_ENV_VAR)
+        if env and env.strip():
+            return Path(env.strip()).expanduser()
+        if self._storage_dir:
+            return Path(self._storage_dir).expanduser()
+        return self.path.parent
+
+    def set_storage_dir(self, path_str: str) -> Path:
+        """Validate, persist, and return the storage directory (does not move data)."""
+        final = validate_target_dir(path_str, base=self.path.parent)
+        self._storage_dir = str(final)
+        self.save()
+        return final
+
+    @property
     def files_dir(self) -> Path:
         """Return the files storage directory, checking environment variable first."""
         # Env var takes precedence (cross-platform: C:\, E:\, /mnt/e, ~/ )
@@ -170,8 +195,9 @@ class Settings:
             return Path(env.strip()).expanduser()
         if self._files_dir:
             return Path(self._files_dir).expanduser()
-        # Default: alongside settings.json (DATA_DIR/files) - respects MESHTALK_DATA_DIR if used
-        return self.path.parent / "files"
+        # Default: alongside the database under the storage directory - respects
+        # MESHTALK_STORAGE_DIR / the storage_dir setting (== DATA_DIR by default).
+        return self.storage_dir / "files"
 
     def set_files_dir(self, path_str: str) -> Path:
         """Set the files storage directory after validation."""
@@ -197,6 +223,11 @@ class Settings:
     def clear_files_dir(self) -> None:
         """Reset files directory to default."""
         self._files_dir = None
+        self.save()
+
+    def clear_storage_dir(self) -> None:
+        """Reset storage directory to default (DATA_DIR)."""
+        self._storage_dir = None
         self.save()
 
     @property
@@ -524,6 +555,7 @@ class Settings:
             ],
             "muted_peers": self.muted_peers,
             "files_dir": self._files_dir,
+            "storage_dir": self._storage_dir,
             "image_protocol": self._image_protocol,
             "confirm_file_send": self._confirm_file_send,
             "splash_style": self._splash_style,
@@ -613,6 +645,11 @@ class Settings:
         if isinstance(files_dir, str) and files_dir.strip():
             # Validate but don't fail load if old path no longer exists - keep stored value
             self._files_dir = files_dir.strip()
+        storage_dir = data.get("storage_dir")
+        if isinstance(storage_dir, str) and storage_dir.strip():
+            # Same tolerance as files_dir: keep the stored value, resolution
+            # failures surface when the storage location is actually used.
+            self._storage_dir = storage_dir.strip()
         image_protocol = data.get("image_protocol", "auto")
         if isinstance(image_protocol, str) and image_protocol in {"auto", "kitty", "sixel", "blocks"}:
             self._image_protocol = image_protocol

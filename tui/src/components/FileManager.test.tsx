@@ -21,7 +21,6 @@ function props(files: FileTransfer[]): ComponentProps<typeof FileListDialogConte
     peers,
     groups: [{ group_id: "studio", name: "Design studio", member_count: 4, unread_count: 0 }],
     loadFiles: noop,
-    loadFilesDir: noop,
     setDialogDraft: noop,
     showDialog: noop,
     closeDialog: noop,
@@ -53,14 +52,13 @@ test("file manager uses peer names, keeps ID fallbacks, and exposes a wide detai
   }
 })
 
-test("file manager remains usable when narrow and preserves refresh, location, save, and delete keys", async () => {
+test("file manager remains usable when narrow and preserves refresh, save, and delete keys", async () => {
   const directory = join(tmpdir(), `meshtalk-file-manager-${crypto.randomUUID()}`)
   const filePath = join(directory, "notes.txt")
   await mkdir(directory)
   await Bun.write(filePath, "notes")
   const transfer: FileTransfer = { file_id: "local-file", filename: "notes.txt", file_size: 5, sender_id: "peer-alex-long-id", recipient_id: "me", direction: "inbound", status: "completed", file_path: filePath, created_at: 20, completed_at: 21 }
   let refreshed = 0
-  let locations = 0
   let draft = ""
   let shown: Dialog | undefined
   let deleted: FileTransfer | undefined
@@ -68,7 +66,6 @@ test("file manager remains usable when narrow and preserves refresh, location, s
   Object.assign(narrowProps, {
     dialogWidth: 56,
     loadFiles: () => { refreshed += 1 },
-    loadFilesDir: () => { locations += 1 },
     setDialogDraft: (value: string) => { draft = value },
     showDialog: (dialog: Dialog) => { shown = dialog },
     onDeleteFile: (file: FileTransfer) => { deleted = file },
@@ -78,15 +75,20 @@ test("file manager remains usable when narrow and preserves refresh, location, s
     let frame = await settle(setup)
     expect(setup.renderer.root.findDescendantById("file-manager-details")).toBeUndefined()
     expect(frame).toContain("Received from Alex Morgan")
-    expect(frame).toContain("meshtalk-file-manager-")
+    expect(frame).toContain("meshtalk-file-")
     expect(frame).toContain("notes.txt")
+    expect(frame).toContain("<")
+    expect(frame).toContain("File Manager")
 
-    await act(async () => { setup.mockInput.pressKey("r"); setup.mockInput.pressKey("l"); setup.mockInput.pressKey("s") })
+    await act(async () => { setup.mockInput.pressKey("r"); setup.mockInput.pressKey("s") })
     await settle(setup)
     expect(refreshed).toBe(1)
-    expect(locations).toBe(1)
     expect(draft).toContain("copy-notes.txt")
     expect(shown).toMatchObject({ kind: "file-download", fileId: "local-file" })
+    // Back button at top returns to settings, Location/G storage removed
+    expect(frame).toContain("<")
+    expect(frame).not.toContain("ocation")
+    expect(frame).not.toContain("storage")
 
     await act(async () => setup.mockInput.pressKey("d"))
     frame = await settle(setup)

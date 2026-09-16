@@ -43,6 +43,11 @@ export type PendingImage = { bytes: Uint8Array; mimeType: string }
 export type FileConfirmDialog = { kind: "file-confirm"; paths: string[]; source: FileConfirmSource; image?: PendingImage }
 export type DebugInfo = { public_endpoint?: [string, number] | null; stun_server: string; local_tcp_port: number; rooms: RoomStatus[]; peers: Peer[] }
 export type FileTransfer = { file_id: string; filename: string; file_size: number; sender_id: string; recipient_id: string; group_id?: string | null; direction: string; status: string; file_path?: string | null; created_at: number; completed_at?: number | null; received_chunks?: number; total_chunks?: number }
+export type LocationPayload = {
+  filesDir: string; env?: string; configured?: string; dataDir?: string
+  storageDir?: string; storageConfigured?: string; storageEnv?: string; dbPath?: string
+  storageHasContent?: boolean; filesHasContent?: boolean
+}
 export type ConversationItem = { type: "message"; createdAt: number; message: Message } | { type: "file"; createdAt: number; file: FileTransfer; allFiles: FileTransfer[] }
 export type ReplyTarget = { id: string; senderId: string; label: string; groupId?: string; kind: "message" | "file" }
 
@@ -68,7 +73,7 @@ export type Dialog =
   | { kind: "file-send" } | FileConfirmDialog | { kind: "file-list"; files: FileTransfer[] } | { kind: "file-download"; fileId: string; filename: string; filePath: string }
   | { kind: "image-view"; filePath?: string; bytes?: Uint8Array; filename: string; version?: number | null; returnTo?: "files" | "file-confirm"; returnDialog?: FileConfirmDialog }
   | { kind: "delivery-details"; deliveries: GroupDelivery[] }
-  | { kind: "files-dir"; filesDir: string; env?: string; configured?: string; dataDir?: string } | { kind: "group-file-send" }
+  | ({ kind: "files-dir" } & LocationPayload) | ({ kind: "storage-dir" } & LocationPayload) | ({ kind: "files-settings" } & LocationPayload) | { kind: "group-file-send" }
   | { kind: "update"; release: import("../../common/updater").Release; installed?: boolean; installDir?: string; progress?: import("../../common/updater").UpdateProgress }
   | { kind: "update-directory"; release: import("../../common/updater").Release }
   | { kind: "update-token"; release?: import("../../common/updater").Release; destination?: string }
