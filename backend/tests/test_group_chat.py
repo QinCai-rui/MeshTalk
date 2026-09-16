@@ -115,11 +115,12 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(messages[message_id]["mentions"], [bob_id])
         self.assertEqual(messages[plain_id]["mentions"], [])
-        group = next(
-            group for group in await self.databases[1].get_groups(self.identities[1].peer_id)
-            if group["group_id"] == self.group_id
+        self.assertEqual(
+            await self.databases[1].get_group_mention_unread_count(
+                self.group_id, self.identities[1].peer_id
+            ),
+            1,
         )
-        self.assertEqual(group["mention_unread_count"], 1)
 
     async def test_group_message_renders_mentions_for_legacy_recipient(self):
         modern_id = self.identities[1].peer_id

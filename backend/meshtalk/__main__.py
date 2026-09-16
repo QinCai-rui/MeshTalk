@@ -671,7 +671,12 @@ async def main(debug: bool = False) -> None:
         return {"rooms": rendezvous.room_status()}
 
     async def handle_groups(req: dict) -> dict:
-        return {"groups": await db.get_groups(identity.peer_id)}
+        groups = await db.get_groups(identity.peer_id)
+        for group in groups:
+            group["mention_unread_count"] = await db.get_group_mention_unread_count(
+                group["group_id"], identity.peer_id
+            )
+        return {"groups": groups}
 
     async def handle_group_members(req: dict) -> dict:
         group_id = req.get("group_id")

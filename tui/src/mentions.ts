@@ -134,6 +134,7 @@ function scanMentionContent(
   content: string,
   onText: (text: string) => void,
   onMention: (peerId: string) => void,
+  onCode: (text: string) => void = onText,
 ): void {
   let i = 0
   while (i < content.length) {
@@ -162,7 +163,7 @@ function scanMentionContent(
           }
           cursor = nextLineEnd < 0 ? content.length : nextLineEnd + 1
         }
-        onText(content.slice(i, end))
+        onCode(content.slice(i, end))
         i = end
         continue
       }
@@ -173,7 +174,7 @@ function scanMentionContent(
       const marker = "`".repeat(markerLength)
       const closing = content.indexOf(marker, i + markerLength)
       if (closing >= 0) {
-        onText(content.slice(i, closing + markerLength))
+        onCode(content.slice(i, closing + markerLength))
         i = closing + markerLength
         continue
       }
@@ -224,12 +225,16 @@ export function renderMentionedContent(
     (peerId) => {
       result += `@${resolveName(peerId) ?? "unknown"}`
     },
+    (text) => {
+      result += text
+    },
   )
   return result
 }
 
 export type MentionSegment =
   | { type: "text"; text: string }
+  | { type: "code"; text: string }
   | { type: "mention"; peerId: string; name: string }
 
 /** Split content into plain runs and mention tokens for pill rendering. */
@@ -254,6 +259,10 @@ export function segmentMentionedContent(
       flushText()
       segments.push({ type: "mention", peerId, name: resolveName(peerId) ?? "unknown" })
     },
+    (text) => {
+      flushText()
+      segments.push({ type: "code", text })
+    },
   )
   flushText()
   return segments
@@ -277,6 +286,8 @@ export function splitMentionBody(segments: MentionSegment[]): MentionBodyBlock[]
         if (index > 0) paragraphs.push([])
         if (part) paragraphs[paragraphs.length - 1]!.push({ type: "text", text: part })
       })
+    } else if (segment.type === "code") {
+      paragraphs[paragraphs.length - 1]!.push(segment)
     } else {
       paragraphs[paragraphs.length - 1]!.push(segment)
     }
@@ -288,7 +299,7 @@ export function splitMentionBody(segments: MentionSegment[]): MentionBodyBlock[]
       blocks.push({ kind: "rich", segments: paragraph })
     } else {
       const text = paragraph
-        .filter((segment): segment is Extract<MentionSegment, { type: "text" }> => segment.type === "text")
+        .filter((segment): segment is Extract<MentionSegment, { type: "text" | "code" }> => segment.type !== "mention")
         .map((segment) => segment.text)
         .join("")
       blocks.push({ kind: "plain", text })

@@ -287,6 +287,8 @@ const ConversationMessageRow = memo(function ConversationMessageRow({ message, i
                     {block.segments.flatMap((segment, segmentIndex) =>
                       segment.type === "mention" ? (
                         [<span key={`${segmentIndex}-m`} fg={theme.text} bg={theme.mentionBg}>@{segment.name}</span>]
+                      ) : segment.type === "code" ? (
+                        [<span key={`${segmentIndex}-c`} fg={theme.markdown.raw}>{/^ {0,3}[`~]{3,}/.test(segment.text) ? segment.text : segment.text.match(/^(`+)([\s\S]*)\1$/)?.[2] ?? segment.text}</span>]
                       ) : (
                         parseInlineMarkdown(segment.text).map((frag, fragIndex) => {
                           const key = `${segmentIndex}-${fragIndex}`

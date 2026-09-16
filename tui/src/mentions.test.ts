@@ -126,7 +126,8 @@ test("segmentMentionedContent splits text runs and mention tokens", () => {
 
 test("mentions remain literal inside Markdown code", () => {
   expect(segmentMentionedContent("`<@a>` and <@b>", (id) => ({ a: "Alex", b: "Bo" }[id]))).toEqual([
-    { type: "text", text: "`<@a>` and " },
+    { type: "code", text: "`<@a>`" },
+    { type: "text", text: " and " },
     { type: "mention", peerId: "b", name: "Bo" },
   ])
   expect(renderMentionedContent("```\n<@a>\n```\n and <@b>", (id) => ({ a: "Alex", b: "Bo" }[id]))).toBe(

@@ -168,6 +168,10 @@ export function useChatActions(deps: ChatActionsDeps) {
     const next = (response.groups as Group[]).sort((a, b) => a.name.localeCompare(b.name))
     setMentionUnread((current) => {
       const updated = { ...current }
+      const groupIds = new Set(next.map((group) => group.group_id))
+      for (const groupId of Object.keys(updated)) {
+        if (!groupIds.has(groupId)) delete updated[groupId]
+      }
       for (const group of next) {
         if (group.group_id === selectedGroupId) {
           delete updated[group.group_id]
