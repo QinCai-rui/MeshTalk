@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import aiosqlite
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 MENTION_TOKEN_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
@@ -784,7 +785,12 @@ class Database:
         ) as cursor:
             mention_count = 0
             async for row in cursor:
-                content = self._decrypt_content(row["content"]) or ""
+                try:
+                    content = self._decrypt_content(row["content"]) or ""
+                except (InvalidTag, ValueError, UnicodeDecodeError):
+                    # A corrupt message must not hide mention counts for the
+                    # other rows in this group.
+                    continue
                 mentions = extract_mentions(content)
                 if local_peer_id in mentions or "everyone" in mentions:
                     mention_count += 1

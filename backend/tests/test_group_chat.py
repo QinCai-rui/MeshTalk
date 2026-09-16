@@ -121,6 +121,19 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
             ),
             1,
         )
+        await self.databases[1]._db.execute(
+            """INSERT INTO group_messages
+               (message_id, group_id, sender_id, content, created_at, received_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("corrupt", self.group_id, self.identities[2].peer_id, b"bad", 1, 1),
+        )
+        await self.databases[1]._db.commit()
+        self.assertEqual(
+            await self.databases[1].get_group_mention_unread_count(
+                self.group_id, self.identities[1].peer_id
+            ),
+            1,
+        )
 
     async def test_group_message_renders_mentions_for_legacy_recipient(self):
         modern_id = self.identities[1].peer_id
