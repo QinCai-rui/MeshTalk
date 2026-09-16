@@ -26,6 +26,6 @@ export function HoverHighlight({ active = false, disabled = false, hoverBackgrou
     onMouseMove={(event) => { if (!disabled) setHovered(true); onMouseMove?.call(event.currentTarget as BoxRenderable, event) }}
     onMouseOut={(event) => { setHovered(false); onMouseOut?.call(event.currentTarget as BoxRenderable, event) }}
   >
-    {typeof children === "function" ? children(highlighted) : children}
+    {typeof children === "function" ? children(highlighted && !active) : children}
   </box>
 }
