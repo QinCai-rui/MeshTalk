@@ -126,7 +126,7 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
           rail.current?.scrollChildIntoView("settings-category-" + next)
         }}>
         {categories.map(([id, label], index) => <box id={"settings-category-" + index} key={id} height={2} flexShrink={0} paddingLeft={1} paddingRight={1}
-          backgroundColor={hoveredCategory === index ? theme.hover : (railFocused ? railIndex === index : category === id) ? theme.selected : theme.surface}
+          backgroundColor={(railFocused ? railIndex === index : category === id) ? theme.selected : hoveredCategory === index ? theme.hover : theme.surface}
           onMouseMove={() => setHoveredCategory(index)} onMouseOut={() => setHoveredCategory(null)}
           onMouseDown={event => { if (event.button === 0) selectCategory(index) }}>
           <text fg={category === id ? theme.accent : theme.text}>{railFocused && railIndex === index ? "> " : category === id ? "• " : "  "}{label}</text>

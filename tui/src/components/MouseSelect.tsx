@@ -139,7 +139,7 @@ export function MouseSelect(props: MouseSelectProps) {
       }
       const sectionChanged = option.section && option.section !== options[index - 1]?.section
       const rowHeight = (descriptionMode === "row" ? 2 : 1) + (sectionChanged ? 1 : 0)
-      return <box id={`${menuId}-${index}`} key={index} width="100%" height={rowHeight} flexShrink={0} overflow="hidden" backgroundColor={index === selectedIndex ? props.selectedBackgroundColor ?? theme.selected : index === hoveredIndex ? theme.hover : undefined} onMouseMove={() => setHoveredIndex(index)} onMouseOut={() => setHoveredIndex(null)} onMouseDown={(event) => { if (event.button === 0) { selectOption(index); event.stopPropagation() } }}>
+      return <box id={`${menuId}-${index}`} key={index} width="100%" height={rowHeight} flexShrink={0} overflow="hidden" backgroundColor={highlighted ? props.selectedBackgroundColor ?? theme.selected : undefined} onMouseMove={() => setHoveredIndex(index)} onMouseOut={() => setHoveredIndex(null)} onMouseDown={(event) => { if (event.button === 0) { selectOption(index); event.stopPropagation() } }}>
         {sectionChanged ? <text fg={theme.subdued}><b>{option.section!.toUpperCase()}</b></text> : null}
         {props.marqueeNames ? <box style={{ flexDirection: "row", width: "100%", height: 1, overflow: "hidden" }}>
           <box width={showSelectionIndicator ? 3 : 1} height={1} overflow="hidden"><text wrapMode="none" fg={nameColor}>{showSelectionIndicator ? highlighted ? " ▶" : "  " : ""}</text></box>
