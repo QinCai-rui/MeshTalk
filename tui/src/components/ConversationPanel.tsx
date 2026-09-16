@@ -380,10 +380,13 @@ export function ConversationPanel(props: ConversationPanelProps) {
 
   const oldestUnreadId = useMemo(() => {
     if (!selectionKey) return undefined
-    const item = conversationItems.find((item) =>
-      item.type === "message" && unreadMessageStates[item.message.message_id]?.conversationKey === selectionKey,
-    )
-    return item?.type === "message" ? item.message.message_id : undefined
+    const item = conversationItems.find((item) => {
+      if (item.type !== "message") return false
+      const unread = unreadMessageStates[item.message.message_id]
+      return unread?.conversationKey === selectionKey && unread.visibleAt === undefined
+    })
+    if (!item || item.type !== "message") return undefined
+    return item.message.message_id
   }, [conversationItems, selectionKey, unreadMessageStates])
 
   const updateLatestPosition = () => {
@@ -409,6 +412,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
     if (!oldestUnreadId) return
     setScrollFocused(true)
     scrollboxRef.current?.scrollChildIntoView(oldestUnreadId)
+    updateLatestPosition()
   }
 
 
