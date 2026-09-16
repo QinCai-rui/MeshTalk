@@ -142,8 +142,8 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
         const label = nameLabel(group.name, 0, terminalWidth(memberLabel))
         const isMuted = isMuteActive(mutedGroups[group.group_id])
         const nameColor = selected ? theme.accent : theme.text
-        const showUnread = group.unread_count > 0 && !isMuted
-        const mentionCount = !isMuted ? (mentionCounts[group.group_id] ?? 0) : 0
+        const mentionCount = mentionCounts[group.group_id] ?? 0
+        const showUnread = group.unread_count > 0 && (!isMuted || mentionCount > 0)
         return <box id={`nav-group-${group.group_id}`} key={group.group_id} onMouseDown={() => pick({ kind: "group", id: group.group_id })} opacity={isMuted ? 0.30 : undefined} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
             <text fg={nameColor} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{selected || showUnread || mentionCount > 0 ? <b>{label}</b> : label}<span fg={theme.muted}>{memberLabel}</span></text>

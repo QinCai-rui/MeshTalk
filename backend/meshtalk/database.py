@@ -770,7 +770,24 @@ class Database:
                ORDER BY g.name""",
             (local_peer_id,),
         ) as cursor:
-            return [dict(row) async for row in cursor]
+            groups = [dict(row) async for row in cursor]
+        for group in groups:
+            async with self._db.execute(
+                """SELECT content FROM group_messages
+                   WHERE group_id = ? AND sender_id != ?
+                     AND received_at > COALESCE(
+                       (SELECT read_at FROM groups WHERE group_id = ?), 0
+                     )""",
+                (group["group_id"], local_peer_id, group["group_id"]),
+            ) as cursor:
+                mention_count = 0
+                async for row in cursor:
+                    content = self._decrypt_content(row["content"]) or ""
+                    mentions = extract_mentions(content)
+                    if local_peer_id in mentions or "everyone" in mentions:
+                        mention_count += 1
+            group["mention_unread_count"] = mention_count
+        return groups
 
     async def upsert_group_member(
         self,

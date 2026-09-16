@@ -30,7 +30,7 @@ export type Message = {
   mentions?: string[]
 }
 export type UnreadMessageState = { conversationKey: string; receivedAt: number; visibleAt?: number }
-export type Group = { group_id: string; name: string; member_count: number; unread_count: number }
+export type Group = { group_id: string; name: string; member_count: number; unread_count: number; mention_unread_count?: number }
 export type GroupMember = { peer_id?: string; member_id?: string; display_name: string; is_online?: boolean; is_limited?: boolean }
 export type Conversation = { kind: "peer" | "group"; id: string }
 export type TypingPeer = { displayName: string; createdAt: number; expiresAt: number; isTyping: boolean }

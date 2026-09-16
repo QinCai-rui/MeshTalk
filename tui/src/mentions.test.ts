@@ -3,6 +3,7 @@ import {
   filterMentionCandidates,
   mentionQueryAt,
   mentionsPeer,
+  parseInlineMarkdown,
   parseMentions,
   payloadMentions,
   renderMentionedContent,
@@ -120,6 +121,24 @@ test("segmentMentionedContent splits text runs and mention tokens", () => {
   ])
   expect(segmentMentionedContent("<@gone>", () => undefined)).toEqual([
     { type: "mention", peerId: "gone", name: "unknown" },
+  ])
+})
+
+test("mentions remain literal inside Markdown code", () => {
+  expect(segmentMentionedContent("`<@a>` and <@b>", (id) => ({ a: "Alex", b: "Bo" }[id]))).toEqual([
+    { type: "text", text: "`<@a>` and " },
+    { type: "mention", peerId: "b", name: "Bo" },
+  ])
+  expect(renderMentionedContent("```\n<@a>\n```\n and <@b>", (id) => ({ a: "Alex", b: "Bo" }[id]))).toBe(
+    "```\n<@a>\n```\n and @Bo",
+  )
+})
+
+test("rich mention paragraphs retain common Markdown blocks", () => {
+  expect(parseInlineMarkdown("# Heading\n- item")).toEqual([
+    { type: "heading", level: 1, text: "Heading" },
+    { type: "text", text: "\n" },
+    { type: "list", marker: "-", text: "item" },
   ])
 })
 

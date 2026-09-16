@@ -952,7 +952,7 @@ over IPC.
 | room_leave | room_id | room_id |
 | room_invite | room_id | Re-export the invite. |
 | rooms | - | Room membership counts. |
-| groups | - | Named groups with cached active-member and unread counts. |
+| groups | - | Named groups with cached active-member, unread, and mention-unread counts. |
 | group_members | group_id | Cached active roster with online state. |
 | group_messages | group_id | Last 200 local messages/system events, per-message `mentions`, and per-recipient deliveries; marks read. |
 | group_send | group_id, content, reply_to_message_id? | message_id, per-recipient `sent`, `delivered`, `queued`, or `unavailable` status, and `mentions`. |
@@ -963,8 +963,8 @@ over IPC.
 | file_info | file_id | Detailed metadata for one transfer. |
 | file_download | file_id, dest_path? | dest_path — save a received file to a user-chosen location. |
 | files_dir | path? | Get or set the files storage directory (`~/.meshtalk/files` by default). |
-| mute / unmute | peer_id, timeout? | Mute state. |
-| muted_peers | - | Current mutes. |
+| mute / unmute | peer_id or group_id, timeout? | Mute state. |
+| muted_peers | - | Current peer and group mutes (`muted_peers`, `muted_groups`). |
 | dnd | enabled? | Global Do Not Disturb state; pauses all notifications and broadcasts DND presence to peers. |
 | notifications | setup_dismissed?, delivery?, events? | Global notification preferences. Delivery is `terminal`, `native`, or `disabled`; events controls messages, friend requests, file offers, and completed files. |
 | debug_re_stun | - | Re-run STUN + re-announce. |

@@ -75,6 +75,7 @@ type ChatActionsDeps = {
   mutedGroups: Record<string, number>
   setMutedGroups: React.Dispatch<React.SetStateAction<Record<string, number>>>
   mentionSpans: Record<string, MentionSpan[]>
+  setMentionUnread: React.Dispatch<React.SetStateAction<Record<string, number>>>
   notificationPreferences: NotificationPreferences | null
   setNotificationPreferences: React.Dispatch<React.SetStateAction<NotificationPreferences | null>>
   notificationTestDelivery: Exclude<NotificationDelivery, "disabled"> | null
@@ -114,7 +115,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { draftLength, setDraftLength, composerHeight, setComposerHeight, isSending, setIsSending } = deps
   const { nameDraft, setNameDraft, editingName, setEditingName, scrollFocused, setScrollFocused } = deps
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
-  const { mutedPeers, setMutedPeers, mutedGroups, setMutedGroups, mentionSpans, notificationPreferences, setNotificationPreferences } = deps
+  const { mutedPeers, setMutedPeers, mutedGroups, setMutedGroups, mentionSpans, setMentionUnread, notificationPreferences, setNotificationPreferences } = deps
   const { notificationTestDelivery, setNotificationTestDelivery } = deps
   const { flashingEnabled, setFlashingEnabled, dndEnabled, setDndEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
@@ -165,6 +166,19 @@ export function useChatActions(deps: ChatActionsDeps) {
     const response = await ipc.send("groups")
     if (response.error) throw new Error(response.error)
     const next = (response.groups as Group[]).sort((a, b) => a.name.localeCompare(b.name))
+    setMentionUnread((current) => {
+      const updated = { ...current }
+      for (const group of next) {
+        if (group.group_id === selectedGroupId) {
+          delete updated[group.group_id]
+          continue
+        }
+        const count = Number(group.mention_unread_count)
+        if (Number.isFinite(count) && count > 0) updated[group.group_id] = count
+        else delete updated[group.group_id]
+      }
+      return updated
+    })
     setGroups((current) => sameResponse(current, next) ? current : next)
     setSelection((current) => {
       if (!current) return peers[0] ? { kind: "peer", id: peers[0].peer_id } : next[0] ? { kind: "group", id: next[0].group_id } : undefined
@@ -1153,7 +1167,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     loadFriendRequests, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer,
     loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest,
     reStun, loadDebugInfo, loadFiles,
-    sendFile, sendFilesDirect, sendImage, requestFileSend, requestImageSend, confirmPendingFileSend, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
+    sendFile, sendFilesDirect, requestFileSend, requestImageSend, confirmPendingFileSend, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
     saveDisplayName, setAccessibilityFlashing, saveDndEnabled, toggleDnd,
     testNotificationDelivery, confirmNotificationDelivery, disableNotifications, toggleNotificationEvent,
     send, runCommand,

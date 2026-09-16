@@ -499,6 +499,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     mutedGroups,
     setMutedGroups,
     mentionSpans,
+    setMentionUnread,
     notificationPreferences,
     setNotificationPreferences,
     notificationTestDelivery,
@@ -972,8 +973,8 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
             )?.display_name ??
             "a member";
           const isGroupMuted = isMuteActive(mutedGroups[groupId]);
-          // Muted groups still move to the top via recency, but show no
-          // notification, unread badge, or highlight.
+          // Muted groups still move to the top via recency. Mentions are the
+          // exception: they remain visible and notify even when the group is muted.
           setGroupActivity((current) => ({ ...current, [groupId]: Date.now() }));
           const mentionedMe =
             event.event === "group_message" &&
@@ -1002,17 +1003,17 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
               dndEnabled,
             );
           if (groupId !== selectedGroupId) {
-            if (event.event === "group_message" && !isGroupMuted)
+            if (event.event === "group_message" && (!isGroupMuted || mentionedMe))
               rememberUnreadMessage(
                 `group:${groupId}`,
                 event.message_id as string | undefined,
               );
-            if (event.event === "group_message" && mentionedMe && !isGroupMuted)
+            if (event.event === "group_message" && mentionedMe)
               setMentionUnread((current) => ({
                 ...current,
                 [groupId]: (current[groupId] ?? 0) + 1,
               }));
-            if (!isGroupMuted)
+            if (!isGroupMuted || mentionedMe)
               setGroups((current) =>
                 current.map((item) =>
                   item.group_id === groupId

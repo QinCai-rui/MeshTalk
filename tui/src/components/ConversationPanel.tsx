@@ -3,7 +3,7 @@ import { EmptyState } from "./EmptyState"
 import { TypingDots } from "./TypingDots"
 import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
 import { useTimeline } from "@opentui/react"
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
 import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, inlineFriendActions, isImageFile, isMuteActive, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
@@ -291,6 +291,9 @@ const ConversationMessageRow = memo(function ConversationMessageRow({ message, i
                         parseInlineMarkdown(segment.text).map((frag, fragIndex) => {
                           const key = `${segmentIndex}-${fragIndex}`
                           if (frag.type === "code") return <span key={key} fg={theme.markdown.raw}>{frag.text}</span>
+                          if (frag.type === "heading") return <span key={key} fg={theme.markdown.heading}><b>{frag.text}</b></span>
+                          if (frag.type === "list") return <Fragment key={key}><span fg={theme.markdown.list}>{frag.marker} </span><span fg={theme.markdown.default}>{frag.text}</span></Fragment>
+                          if (frag.type === "quote") return <span key={key} fg={theme.markdown.comment}>{frag.text}</span>
                           if (frag.type === "strong") return <span key={key} fg={theme.markdown.default}><b>{frag.text}</b></span>
                           if (frag.type === "em") return <span key={key} fg={theme.markdown.default}><i>{frag.text}</i></span>
                           if (frag.type === "link") return <span key={key} fg={theme.markdown.heading}><u>{frag.label}</u></span>

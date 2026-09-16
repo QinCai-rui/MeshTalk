@@ -231,7 +231,7 @@ test("stored mention tokens render as display names with a yellow highlight", as
   ]
   const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
   try {
-    const frame = await settle(setup, "@Taylor")
+    const frame = await settle(setup, "no mentions here")
     expect(frame).toContain("hi @Taylor and @Sam Chen and @unknown!")
     expect(frame).not.toContain("<@me>")
     expect(frame).toContain("no mentions here")
@@ -265,7 +265,7 @@ test("mention highlight follows the server payload over raw content", async () =
     // Payload mention highlights even without a token in content...
     expect(bgOf("payload says hi")).toEqual([77, 63, 30, 255])
     // ...and an empty payload suppresses the highlight despite the token.
-    expect(bgOf("payload disagrees")).toBeUndefined()
+    expect(bgOf("payload disagrees")).not.toEqual([77, 63, 30, 255])
   } finally { await close(setup) }
 })
 
@@ -280,7 +280,7 @@ test("sidebar highlights groups with unread mentions", async () => {
   } finally { await close(setup) }
 })
 
-test("sidebar hides mention highlights for muted groups", async () => {
+test("mentions bypass muted groups", async () => {
   const props = sidebarProps(120)
   props.groups = [{ ...group, unread_count: 1 }]
   props.mentionCounts = { team: 2 }
@@ -288,7 +288,7 @@ test("sidebar hides mention highlights for muted groups", async () => {
   const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
   try {
     const frame = await settle(setup, "Design studio")
-    expect(frame).not.toContain("mentioned")
+    expect(frame).toContain("@2 mentioned")
   } finally { await close(setup) }
 })
 

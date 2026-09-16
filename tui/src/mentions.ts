@@ -137,6 +137,47 @@ function scanMentionContent(
 ): void {
   let i = 0
   while (i < content.length) {
+    // Markdown code spans and fenced blocks are literal. Keep each complete
+    // code region together so mention replacement never runs inside it; the
+    // inline renderer below can then apply the normal code styling.
+    const lineStart = i === 0 || content[i - 1] === "\n"
+    if (lineStart) {
+      const lineEnd = content.indexOf("\n", i)
+      const endOfLine = lineEnd < 0 ? content.length : lineEnd
+      const fence = /^ {0,3}(`{3,}|~{3,})/.exec(content.slice(i, endOfLine))
+      if (fence) {
+        const marker = fence[1]![0]!
+        const markerLength = fence[1]!.length
+        let cursor = lineEnd < 0 ? content.length : lineEnd + 1
+        let end = content.length
+        while (cursor < content.length) {
+          const nextLineEnd = content.indexOf("\n", cursor)
+          const nextEndOfLine = nextLineEnd < 0 ? content.length : nextLineEnd
+          const closing = new RegExp(`^ {0,3}${marker}{${markerLength},}\\s*$`).test(
+            content.slice(cursor, nextEndOfLine),
+          )
+          if (closing) {
+            end = nextLineEnd < 0 ? content.length : nextLineEnd + 1
+            break
+          }
+          cursor = nextLineEnd < 0 ? content.length : nextLineEnd + 1
+        }
+        onText(content.slice(i, end))
+        i = end
+        continue
+      }
+    }
+    if (content[i] === "`" && !isEscapedAt(content, i)) {
+      let markerLength = 1
+      while (content[i + markerLength] === "`") markerLength++
+      const marker = "`".repeat(markerLength)
+      const closing = content.indexOf(marker, i + markerLength)
+      if (closing >= 0) {
+        onText(content.slice(i, closing + markerLength))
+        i = closing + markerLength
+        continue
+      }
+    }
     const ch = content[i]!
     if (ch === "\\" && content[i + 1] === "\\") {
       onText("\\")
@@ -263,16 +304,26 @@ export type InlineFragment =
   | { type: "em"; text: string }
   | { type: "link"; label: string; url: string }
   | { type: "strike"; text: string }
+  | { type: "heading"; level: number; text: string }
+  | { type: "list"; marker: string; text: string }
+  | { type: "quote"; text: string }
 
 /**
- * Minimal inline markdown parser for rich mention paragraphs.
- * Handles code, links, strong, emphasis, and strikethrough; everything
- * else stays as plain text. Code spans are excluded from inner parsing.
+ * Lightweight Markdown parser for rich mention paragraphs.
+ * Handles common block and inline constructs; everything else stays as plain
+ * text. Code spans are excluded from inner parsing.
  */
 export function parseInlineMarkdown(text: string): InlineFragment[] {
+  // A fenced block is intentionally left completely literal. This also
+  // prevents block markers inside it from being mistaken for list/heading
+  // syntax by the lightweight renderer.
+  if (/(^|\n) {0,3}(`{3,}|~{3,})/.test(text)) return [{ type: "text", text }]
   const fragments: InlineFragment[] = []
   let pos = 0
   const patterns: Array<{ re: RegExp; type: InlineFragment["type"] }> = [
+    { re: /^ {0,3}(#{1,6})[ \t]+([^\n]+)$/gm, type: "heading" },
+    { re: /^([ \t]*(?:[-+*]|\d+[.)]))[ \t]+([^\n]+)$/gm, type: "list" },
+    { re: /^([ \t]*>[ \t]?)([^\n]+)$/gm, type: "quote" },
     { re: /`([^`]+)`/g, type: "code" },
     { re: /\[([^\]]+)\]\(([^)]+)\)/g, type: "link" },
     { re: /\*\*([^*]+?)\*\*/g, type: "strong" },
@@ -302,7 +353,13 @@ export function parseInlineMarkdown(text: string): InlineFragment[] {
       fragments.push({ type: "text", text: text.slice(pos, best.index) })
     }
     const raw = best[0]
-    if (bestType === "code") {
+    if (bestType === "heading") {
+      fragments.push({ type: "heading", level: best[1]!.length, text: best[2]! })
+    } else if (bestType === "list") {
+      fragments.push({ type: "list", marker: best[1]!, text: best[2]! })
+    } else if (bestType === "quote") {
+      fragments.push({ type: "quote", text: best[0]! })
+    } else if (bestType === "code") {
       fragments.push({ type: "code", text: best[1]! })
     } else if (bestType === "link") {
       fragments.push({ type: "link", label: best[1]!, url: best[2]! })
