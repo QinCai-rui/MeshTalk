@@ -1,6 +1,7 @@
 import type { MouseSelectOption } from "../MouseSelect"
 import type { Conversation, Dialog, Peer } from "../../types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "../../notifications"
+import { isMuteActive } from "../../utils"
 import { SettingsMenu, SettingsNotice, SettingsScreen } from "./SettingsPrimitives"
 
 type Props = {
@@ -56,7 +57,7 @@ export function NotificationDialogs(props: Props) {
 
 function NotificationMenu({ dialogHeight, peers, selectedPeerId, identity, mutedPeers, dndEnabled = false, showDialog, runCommand }: Pick<Props, "dialogHeight" | "peers" | "selectedPeerId" | "identity" | "mutedPeers" | "dndEnabled" | "showDialog" | "runCommand">) {
   const peer = peers.find((item) => item.peer_id === selectedPeerId)
-  const isMuted = peer ? !!mutedPeers[peer.peer_id] : false
+  const isMuted = peer ? isMuteActive(mutedPeers[peer.peer_id]) : false
   const peerStatus = !peer ? "No peer selected" : peer.peer_id === identity?.peer_id ? "This is you" : isMuted ? "Muted" : peer.is_online ? "Alerts allowed" : "Offline"
   return <SettingsScreen breadcrumb={["Notifications"]} description="Manage desktop delivery and alerts from the selected peer." dialogHeight={dialogHeight}>
     <SettingsMenu dialogHeight={dialogHeight} options={[
@@ -86,7 +87,7 @@ function NotificationSettings({ dialogBusy, dialogHeight, dialogWidth, notificat
 
 function NotificationPeer({ dialogHeight, peers, selectedPeerId, identity, mutedPeers, runCommand }: Pick<Props, "dialogHeight" | "peers" | "selectedPeerId" | "identity" | "mutedPeers" | "runCommand">) {
   const peer = peers.find((item) => item.peer_id === selectedPeerId)
-  const muted = peer ? !!mutedPeers[peer.peer_id] : false
+  const muted = peer ? isMuteActive(mutedPeers[peer.peer_id]) : false
   const options: MouseSelectOption[] = []
   if (peer && !muted && peer.is_online && peer.peer_id !== identity?.peer_id) options.push({ section: "Selected peer", name: "Notifications from this peer", description: `Mute notifications from ${peer.display_name}.`, value: "mute", status: "On", tone: "success" as const })
   if (peer && muted) options.push({ section: "Selected peer", name: "Notifications from this peer", description: `Resume notifications from ${peer.display_name}.`, value: "unmute", status: "Muted", tone: "warning" as const })

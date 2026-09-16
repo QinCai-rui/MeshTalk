@@ -5,7 +5,7 @@ import { useRenderer } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { chatTheme as theme, presenceIndicator } from "../chatTheme"
 import type { Conversation, Group, GroupMember, Peer } from "../types"
-import { clipTextToWidth, friendMarkers, peerPresence, terminalWidth } from "../utils"
+import { clipTextToWidth, friendMarkers, isMuteActive, peerPresence, terminalWidth } from "../utils"
 
 const presenceColor = (presence: "active" | "away" | "offline", dnd = false) =>
   dnd && presence !== "offline" ? theme.presence.dnd : theme.presence[presence]
@@ -95,7 +95,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
         const markers = friendMarkers(peer)
         const typing = typingConversationKeys.has(`peer:${peer.peer_id}`)
         const label = nameLabel(peer.display_name, 0, terminalWidth(markers))
-        const isMuted = peer.peer_id in mutedPeers
+        const isMuted = isMuteActive(mutedPeers[peer.peer_id])
         // Muted rows keep their normal colors; transparency comes from row
         // opacity only. Unread badges and bold emphasis are suppressed so
         // muted chats only move to the top.
@@ -140,7 +140,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
         const onlyYouOnline = Boolean(members && visibleMembers.some(member => (member.peer_id ?? member.member_id) === identity?.peer_id) && !otherOnline)
         const memberLabel = ` (${group.member_count} members)`
         const label = nameLabel(group.name, 0, terminalWidth(memberLabel))
-        const isMuted = group.group_id in mutedGroups
+        const isMuted = isMuteActive(mutedGroups[group.group_id])
         const nameColor = selected ? theme.accent : theme.text
         const showUnread = group.unread_count > 0 && !isMuted
         const mentionCount = !isMuted ? (mentionCounts[group.group_id] ?? 0) : 0

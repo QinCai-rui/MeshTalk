@@ -1,4 +1,5 @@
 import type { Conversation, Dialog, FileTransfer, Group, GroupMember, Peer } from "./types"
+import { isMuteActive } from "./utils"
 
 type NavigationDependencies = {
   dialog: Dialog | null
@@ -166,7 +167,7 @@ export function runCommand(command: string, dependencies: CommandDependencies) {
     if (selection?.kind === "group" || (!selectedPeerId && selectedGroupId)) {
       const group = groups.find((item) => item.group_id === selectedGroupId)
       if (!group) { showStatus(`Select a group to ${command}.`); return }
-      const isMuted = group.group_id in mutedGroups
+      const isMuted = isMuteActive(mutedGroups[group.group_id])
       if (command === "mute" && isMuted) { showStatus(`${group.name} is already muted.`); return }
       if (command === "unmute" && !isMuted) { showStatus(`${group.name} is not muted.`); return }
       showDialog(command === "mute" ? { kind: "mute-timeout", groupId: group.group_id, displayName: group.name } : { kind: "unmute-confirm", groupId: group.group_id, displayName: group.name })
@@ -176,8 +177,9 @@ export function runCommand(command: string, dependencies: CommandDependencies) {
     if (!peer) { showStatus(`Select a peer to ${command}.`); return }
     if (command === "mute" && peer.peer_id === identity?.peer_id) { showStatus("You cannot mute yourself."); return }
     if (command === "mute" && !peer.is_online) { showStatus(`${peer.display_name} is not online.`); return }
-    if (command === "mute" && peer.peer_id in mutedPeers) { showStatus(`${peer.display_name} is already muted.`); return }
-    if (command === "unmute" && !(peer.peer_id in mutedPeers)) { showStatus(`${peer.display_name} is not muted.`); return }
+    const isMuted = isMuteActive(mutedPeers[peer.peer_id])
+    if (command === "mute" && isMuted) { showStatus(`${peer.display_name} is already muted.`); return }
+    if (command === "unmute" && !isMuted) { showStatus(`${peer.display_name} is not muted.`); return }
     showDialog(command === "mute" ? { kind: "mute-timeout", peerId: peer.peer_id, displayName: peer.display_name } : { kind: "unmute-confirm", peerId: peer.peer_id, displayName: peer.display_name })
   } else if (command === "add-friend" || command === "remove-friend") {
     const peer = peers.find((peer) => peer.peer_id === selectedPeerId)

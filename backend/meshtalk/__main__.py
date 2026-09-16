@@ -723,14 +723,18 @@ async def main(debug: bool = False) -> None:
         peer_id = req.get("peer_id")
         group_id = req.get("group_id")
         timeout = req.get("timeout")
-        if timeout is not None and not isinstance(timeout, (int, float)):
+        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))):
             return {"error": "timeout must be a number (seconds) or 0 for permanent"}
         if timeout is None:
             timeout = 0
         until = time.time() + float(timeout) if float(timeout) > 0 else 0
-        if isinstance(group_id, str) and group_id:
-            if isinstance(peer_id, str) and peer_id:
-                return {"error": "Specify either peer_id or group_id"}
+        if group_id is not None and peer_id is not None:
+            return {"error": "Specify either peer_id or group_id"}
+        if group_id is not None:
+            if not isinstance(group_id, str):
+                return {"error": "group_id must be a string"}
+            if not group_id:
+                return {"error": "group_id required"}
             settings.mute_group(group_id, until)
             return {"group_id": group_id, "until": until}
         if not isinstance(peer_id, str) or not peer_id:
@@ -741,9 +745,13 @@ async def main(debug: bool = False) -> None:
     async def handle_unmute(req: dict) -> dict:
         peer_id = req.get("peer_id")
         group_id = req.get("group_id")
-        if isinstance(group_id, str) and group_id:
-            if isinstance(peer_id, str) and peer_id:
-                return {"error": "Specify either peer_id or group_id"}
+        if group_id is not None and peer_id is not None:
+            return {"error": "Specify either peer_id or group_id"}
+        if group_id is not None:
+            if not isinstance(group_id, str):
+                return {"error": "group_id must be a string"}
+            if not group_id:
+                return {"error": "group_id required"}
             settings.unmute_group(group_id)
             return {"group_id": group_id}
         if not isinstance(peer_id, str) or not peer_id:

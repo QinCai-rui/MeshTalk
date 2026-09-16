@@ -48,6 +48,7 @@ import {
   getComposerHeight,
   inlineFriendActions,
   isImageFile,
+  isMuteActive,
   MIN_COMPOSER_HEIGHT,
   peerPresence,
   sortPeersByInteraction,
@@ -970,10 +971,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
               (member) => (member.peer_id ?? member.member_id) === senderId,
             )?.display_name ??
             "a member";
-          const groupMutedUntil = mutedGroups[groupId];
-          const isGroupMuted =
-            groupMutedUntil !== undefined &&
-            (groupMutedUntil <= 0 || Date.now() / 1000 < groupMutedUntil);
+          const isGroupMuted = isMuteActive(mutedGroups[groupId]);
           // Muted groups still move to the top via recency, but show no
           // notification, unread badge, or highlight.
           setGroupActivity((current) => ({ ...current, [groupId]: Date.now() }));
@@ -1219,8 +1217,8 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
             `Incoming file: ${filename} (${event.file_size} bytes) from ${sender}`,
           );
           const offerMuted = offerGroupId
-            ? offerGroupId in mutedGroups
-            : offerSenderId !== undefined && offerSenderId in mutedPeers;
+            ? isMuteActive(mutedGroups[offerGroupId])
+            : isMuteActive(offerSenderId === undefined ? undefined : mutedPeers[offerSenderId]);
           if (!offerMuted)
             void notify(
               notificationPreferences,
@@ -1257,8 +1255,8 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           else setGroupActivity((current) => ({ ...current, [completedGroupId]: Date.now() }));
           actions.showStatus(`File received: ${filename} -> ${fpath}`);
           const completedMuted = completedGroupId
-            ? completedGroupId in mutedGroups
-            : completedSenderId !== undefined && completedSenderId in mutedPeers;
+            ? isMuteActive(mutedGroups[completedGroupId])
+            : isMuteActive(completedSenderId === undefined ? undefined : mutedPeers[completedSenderId]);
           if (!completedMuted)
             void notify(
               notificationPreferences,
@@ -1324,11 +1322,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         const sender =
           peers.find((peer) => peer.peer_id === senderId)?.display_name ??
           "a peer";
-        const mutedUntil = mutedPeers[senderId];
-        const isMuted =
-          mutedUntil === undefined
-            ? false
-            : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil;
+        const isMuted = isMuteActive(mutedPeers[senderId]);
         if (!isMuted)
           void notify(
             notificationPreferences,
@@ -2364,8 +2358,8 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         markUnreadMessageVisible={markUnreadMessageVisible}
         openSettings={() => actions.showDialog({ kind: "settings" })}
         onToggleMute={() => actions.runCommand(
-          (selectedPeerId != null && selectedPeerId in mutedPeers) ||
-          (selectedGroupId != null && selectedGroupId in mutedGroups)
+          (selectedPeerId != null && isMuteActive(mutedPeers[selectedPeerId])) ||
+          (selectedGroupId != null && isMuteActive(mutedGroups[selectedGroupId]))
             ? "unmute"
             : "mute",
         )}

@@ -353,6 +353,8 @@ class ProfilePayload:
         """Decode profile from JSON bytes."""
         obj = json.loads(data)
         dnd_signature = obj.get("dnd_signature", "")
+        if not isinstance(dnd_signature, str):
+            raise ValueError("Invalid profile signature")
         try:
             dnd_signature_bytes = bytes.fromhex(dnd_signature) if dnd_signature else b""
         except ValueError as exc:
@@ -368,6 +370,8 @@ class ProfilePayload:
         if not isinstance(payload.tui_active, bool) or len(payload.signature) != 64:
             raise ValueError("Invalid profile signature")
         if not isinstance(payload.dnd, bool):
+            raise ValueError("Invalid profile signature")
+        if len(payload.dnd_signature) not in (0, 64):
             raise ValueError("Invalid profile signature")
         return payload
 

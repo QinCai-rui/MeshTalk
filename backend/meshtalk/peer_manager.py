@@ -705,7 +705,7 @@ class PeerManager:
                 payload.dnd_signature, payload.dnd_signed_bytes()
             )
             peer.dnd = payload.dnd
-        except InvalidSignature:
+        except (InvalidSignature, ValueError):
             # Senders without DND support sign no DND state; treat them as available.
             peer.dnd = False
         active = self.peers.get(peer.peer_id)

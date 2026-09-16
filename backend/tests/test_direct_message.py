@@ -8,7 +8,7 @@ from meshtalk.identity import Identity
 from meshtalk.friends import FriendManager
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerManager
-from meshtalk.protocol import HEADER_SIZE, Packet, PacketType
+from meshtalk.protocol import HEADER_SIZE, Packet, PacketType, ProfilePayload
 
 
 class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
@@ -237,6 +237,27 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored_peer["display_name"], "Updated Name")
         self.assertEqual(stored_peer["tui_active"], 1)
 
+    async def test_legacy_profile_update_without_dnd_signature_is_accepted(self):
+        await self._connect_peers()
+        local_identity, remote_manager = (
+            (self.identity_a, self.manager_b)
+            if self.identity_a.peer_id < self.identity_b.peer_id
+            else (self.identity_b, self.manager_a)
+        )
+        peer = remote_manager.get_connected_peer(local_identity.peer_id)
+        self.assertIsNotNone(peer)
+        payload = ProfilePayload(
+            local_identity.peer_id,
+            local_identity.display_name,
+            False,
+            b"",
+        )
+        payload.signature = local_identity.signing_private_key.sign(payload.signed_bytes())
+
+        await remote_manager._apply_profile_update(peer, Packet(PacketType.PROFILE, payload.encode()))
+
+        self.assertFalse(peer.dnd)
+
     async def test_dnd_broadcast_is_visible_to_remote_peer(self):
         await self._connect_peers()
         initiator, local_identity, remote_manager, remote_db = (
@@ -256,6 +277,20 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         await initiator.set_dnd_enabled(False)
         await asyncio.sleep(0.05)
         self.assertFalse(remote_manager.get_connected_peer(local_identity.peer_id).dnd)
+
+    async def test_handshake_upsert_preserves_existing_dnd(self):
+        args = (
+            self.identity_b.peer_id,
+            self.identity_b.display_name,
+            self.identity_b.encryption_public_key_bytes(),
+            self.identity_b.signing_public_key_bytes(),
+        )
+        await self.db_a.upsert_peer(*args, dnd=True)
+        await self.db_a.upsert_peer(*args, capabilities=["at_mentions"])
+
+        peer = await self.db_a.get_peer(self.identity_b.peer_id)
+        self.assertEqual(peer["dnd"], 1)
+        self.assertTrue(await self.db_a.peer_supports(self.identity_b.peer_id, "at_mentions"))
 
     async def test_lan_peer_is_not_connected_before_challenge_confirmation(self):
         reader, writer = await asyncio.open_connection("127.0.0.1", 34992)

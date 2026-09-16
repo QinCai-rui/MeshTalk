@@ -404,7 +404,7 @@ class Database:
     async def upsert_peer(
         self, peer_id: str, display_name: str, public_key: bytes, signing_public_key: bytes,
         tui_active: bool = False, capabilities: list[str] | None = None,
-        dnd: bool = False,
+        dnd: bool | None = None,
     ) -> None:
         """Insert or update peer information including keys and online status."""
         await self._db.execute(
@@ -415,11 +415,15 @@ class Database:
                  public_key = excluded.public_key,
                  signing_public_key = excluded.signing_public_key,
                  last_seen = excluded.last_seen,
-                   is_online = 1,
-                   tui_active = excluded.tui_active,
-                   dnd = excluded.dnd,
-                   capabilities = COALESCE(excluded.capabilities, peers.capabilities)""",
-            (peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active), json.dumps(sorted(set(capabilities))) if capabilities is not None else None, int(dnd)),
+                  is_online = 1,
+                  tui_active = excluded.tui_active,
+                  dnd = CASE WHEN ? IS NULL THEN peers.dnd ELSE excluded.dnd END,
+                  capabilities = COALESCE(excluded.capabilities, peers.capabilities)""",
+            (
+                peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active),
+                json.dumps(sorted(set(capabilities))) if capabilities is not None else None,
+                int(dnd) if dnd is not None else 0, dnd,
+            ),
         )
         await self._db.commit()
 
