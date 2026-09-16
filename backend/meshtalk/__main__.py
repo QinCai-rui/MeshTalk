@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import signal
 import socket
@@ -723,7 +724,14 @@ async def main(debug: bool = False) -> None:
         peer_id = req.get("peer_id")
         group_id = req.get("group_id")
         timeout = req.get("timeout")
-        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))):
+        if (
+            timeout is not None
+            and (
+                isinstance(timeout, bool)
+                or not isinstance(timeout, (int, float))
+                or not math.isfinite(float(timeout))
+            )
+        ):
             return {"error": "timeout must be a number (seconds) or 0 for permanent"}
         if timeout is None:
             timeout = 0

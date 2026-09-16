@@ -706,8 +706,9 @@ class PeerManager:
             )
             peer.dnd = payload.dnd
         except (InvalidSignature, ValueError):
-            # Senders without DND support sign no DND state; treat them as available.
-            peer.dnd = False
+            # Preserve the last verified DND state when a legacy or malformed
+            # profile omits a valid DND signature.
+            pass
         active = self.peers.get(peer.peer_id)
         if active:
             active.display_name = peer.display_name

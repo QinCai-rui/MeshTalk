@@ -79,12 +79,17 @@ class ProfilePayloadTests(unittest.TestCase):
         profile = ProfilePayload("peer", "Peer", False, b"s" * 64)
         raw = json.loads(profile.encode())
         for dnd_signature in (123, "00" * 63):
-            with self.subTest(dnd_signature=dnd_signature), self.assertRaisesRegex(ValueError, "Invalid profile signature"):
+            with self.subTest(dnd_signature=dnd_signature), self.assertRaisesRegex(ValueError, "Invalid profile payload"):
                 raw["dnd_signature"] = dnd_signature
                 ProfilePayload.decode(json.dumps(raw).encode())
 
         raw.pop("dnd_signature")
         self.assertEqual(ProfilePayload.decode(json.dumps(raw).encode()).dnd_signature, b"")
+
+    def test_malformed_profile_fields_raise_value_error(self):
+        for raw in (b"{}", b"[]", b'{"peer_id": "peer", "display_name": "Peer", "tui_active": false, "signature": 123}'):
+            with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, "Invalid profile payload"):
+                ProfilePayload.decode(raw)
 
 
 class FileDatabaseV2Tests(unittest.IsolatedAsyncioTestCase):

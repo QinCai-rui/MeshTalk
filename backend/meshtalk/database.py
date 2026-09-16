@@ -58,8 +58,9 @@ def render_mentions_plain(content: str, names: dict[str, str]) -> str:
 
     Used for recipients without mention support so mentions stay readable
     instead of arriving as raw tokens. Escape rules mirror the rich client:
-    `\\` becomes `\`, `\\<@id>` renders the literal `<@id>`, and a lone
-    `\` before any other character is left untouched.
+    `\\` becomes `\`, `\<@id>` renders the literal `<@id>`, and `\\<@id>`
+    is a mention preceded by a literal `\`. A lone `\` before any other
+    character is left untouched.
     """
     parts: list[str] = []
     i = 0
