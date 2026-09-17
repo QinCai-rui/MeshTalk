@@ -41,6 +41,8 @@ test("shows send errors in the confirmation dialog", async () => {
   try {
     const frame = await settle(setup)
     expect(frame).toContain("Recipient does not support file_transfer_v2")
+    expect(frame).toContain("> Send")
+    expect(frame).toContain("Cancel")
   } finally {
     await act(async () => setup.renderer.destroy())
   }

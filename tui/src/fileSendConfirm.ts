@@ -37,12 +37,12 @@ export function fileConfirmDialogHeight(screenHeight: number, hasImage: boolean)
   return Math.max(1, Math.min(hasImage ? 22 : 12, Math.floor(screenHeight) - (hasImage ? 2 : 6)))
 }
 
-export function fileConfirmImageBounds(screenWidth: number, screenHeight: number, popupWidth: number, popupHeight: number): { maxWidth: number; maxHeight: number } {
+export function fileConfirmImageBounds(screenWidth: number, screenHeight: number, popupWidth: number, popupHeight: number, reservedRows = 0): { maxWidth: number; maxHeight: number } {
   const conversationWidth = Math.max(1, Math.floor(screenWidth) - 5)
   const conversationHeight = Math.min(16, Math.max(4, Math.floor(screenHeight) - 4))
   return {
     maxWidth: Math.max(1, Math.min(Math.floor(popupWidth) - 4, Math.floor(conversationWidth * Math.SQRT1_2))),
-    maxHeight: Math.max(1, Math.min(Math.floor(popupHeight) - 11, Math.floor(conversationHeight * Math.SQRT1_2))),
+    maxHeight: Math.max(1, Math.min(Math.floor(popupHeight) - 11 - Math.max(0, reservedRows), Math.floor(conversationHeight * Math.SQRT1_2))),
   }
 }
 
