@@ -54,7 +54,7 @@ export function AboutDialog({ appReleaseVersion, dialog, dialogError, dialogHeig
   return <SettingsScreen breadcrumb={["About & updates"]} description="MeshTalk terminal messenger." dialogHeight={dialogHeight}>
   <box style={{ flexDirection: "column", gap: 1, width: "100%" }}>
     <text><span fg={theme.link}>Version </span><span fg={theme.success}><b>{appReleaseVersion}</b></span></text>
-    <MarqueeText width={dialogWidth - 4} animateInSettings segments={[
+    <MarqueeText width={dialogWidth - 4} animateInSettings animateOnHover segments={[
       { text: "Made with love by ", fg: theme.muted },
       { text: "Raymont", fg: theme.accent },
       { text: ", ", fg: theme.muted },

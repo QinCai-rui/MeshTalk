@@ -67,7 +67,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
   return <box style={{ width: sidebarWidth, height: stacked ? 8 : "100%", flexShrink: 0, flexDirection: "column", backgroundColor: theme.surface }}>
     <HoverHighlight style={{ paddingLeft: 1, paddingRight: 1, paddingTop: stacked ? 0 : 1, paddingBottom: stacked ? 0 : 1, flexShrink: 0 }} active={editingName} onMouseDown={() => setEditingName(true)}>
       <text fg={theme.accent}><b>MeshTalk</b><span fg={theme.muted}> {appVersion}</span></text>
-      {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <MarqueeText width={Math.max(1, sidebarWidth - 2)} fg={theme.text} text={`You: ${identity?.display_name ?? "Connecting..."}`} />}
+      {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <MarqueeText width={Math.max(1, sidebarWidth - 2)} fg={theme.text} text={`You: ${identity?.display_name ?? "Connecting..."}`} animateOnHover />}
       {dndEnabled && !editingName && <text fg={theme.presence.dnd} wrapMode="none">● Do Not Disturb on</text>}
       {!stacked && <text fg={theme.muted}>Ctrl+Up/Down switch chats</text>}
     </HoverHighlight>

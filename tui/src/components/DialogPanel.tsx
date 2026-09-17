@@ -207,7 +207,7 @@ export function imageViewerPropsEqual(previous: ImageViewerDialogContentProps, n
 const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePath, bytes, filename, dialogWidth, dialogHeight, imageProtocol }: ImageViewerDialogContentProps) {
   return (
     <>
-      <MarqueeText width={Math.max(1, dialogWidth - 4)} fg={theme.success} text={filename} />
+      <MarqueeText width={Math.max(1, dialogWidth - 4)} fg={theme.success} text={filename} animateOnHover />
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, alignItems: "center", justifyContent: "center" }}>
         <ImageAttachment filePath={filePath} bytes={bytes} filename={filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} />
       </box>
@@ -696,7 +696,7 @@ export function FileConfirmDialogContent({ dialog, dialogError, dialogWidth, dia
             : showDialog({ kind: "image-view", filePath: imagePath!, filename: previewFilename, returnTo: "file-confirm", returnDialog: dialog })} />
         </box>
         <box style={{ height: 1, minHeight: 1, flexShrink: 0 }}>
-          <MarqueeText width={Math.max(1, dialogWidth - 4)} text={`${previewFilename} / ${fileTypeLabel(previewFilename, dialog.image?.mimeType)} / ${previewSize == null ? "size unavailable" : formatFileSize(previewSize)}`} />
+          <MarqueeText width={Math.max(1, dialogWidth - 4)} text={`${previewFilename} / ${fileTypeLabel(previewFilename, dialog.image?.mimeType)} / ${previewSize == null ? "size unavailable" : formatFileSize(previewSize)}`} animateOnHover />
         </box>
         <box style={{ height: 1, minHeight: 1, flexShrink: 0 }}><text fg={theme.muted}>Click preview to fullscreen · Esc returns</text></box>
       </> : <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
@@ -842,7 +842,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
           const direction = transferDirection(f)
           return <HoverHighlight key={f.file_id} id={f.file_id} active={selected} onMouseDown={() => setSelectedId(f.file_id)} style={{ width: "100%", flexDirection: "column", paddingLeft: 2, paddingRight: 1, paddingTop: 1, paddingBottom: 1, backgroundColor: selected ? theme.selected : undefined }}>
             <box style={{ flexDirection: "row", justifyContent: "space-between", gap: 1 }}>
-              <MarqueeText width={Math.max(1, (wide ? Math.floor(dialogWidth * 0.44) : dialogWidth) - 6)} fg={selected ? theme.accent : theme.text} text={`${selected ? "> " : "  "}${f.filename}`} />
+              <MarqueeText width={Math.max(1, (wide ? Math.floor(dialogWidth * 0.44) : dialogWidth) - 6)} fg={selected ? theme.accent : theme.text} text={`${selected ? "> " : "  "}${f.filename}`} animateOnHover />
               <text fg={theme.muted} flexShrink={0}>{formatSize(f.file_size)}</text>
             </box>
             <text fg={theme.muted} wrapMode="word">  {direction}{f.group_id ? " / group" : ""} / <span fg={status.color}>{status.label}</span>{progress !== undefined && !["completed", "sent"].includes(f.status) ? ` / ${progress}%` : ""}</text>
@@ -858,7 +858,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
           const status = statusStyle(selectedFile.status)
           const missing = ["completed", "sent"].includes(selectedFile.status) && isLocalFileMissing(selectedFile.file_path)
           return <>
-            <MarqueeText width={detailTextWidth} fg={theme.text} text={selectedFile.filename} />
+            <MarqueeText width={detailTextWidth} fg={theme.text} text={selectedFile.filename} animateOnHover />
             <text fg={theme.muted}>{formatSize(selectedFile.file_size)} / <span fg={status.color}>{status.label}</span>{isImageFile(selectedFile.filename) ? " / image" : ""}</text>
             <text fg={theme.muted}>{transferDirection(selectedFile)}{selectedFile.group_id ? " / group" : ""}</text>
             {selectedFile.caption ? <text wrapMode="word">{selectedFile.caption}</text> : null}
@@ -943,7 +943,7 @@ function FileDownloadDialogContent({ dialog, dialogWidth, dialogHeight, dialogDr
   useKeyboard((key) => { if (key.name === "s") void downloadFile(dialog.fileId, dialogDraft || suggested) })
   return <>
     <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingBottom: 1, flexShrink: 0 }}>
-      <box style={{ flexDirection: "row", gap: 1 }}><text flexShrink={0}><span fg={theme.link}><b>Save File</b></span></text><MarqueeText width={Math.max(1, dialogWidth - 15)} fg={theme.muted} text={`· ${dialog.filename}`} /></box>
+      <box style={{ flexDirection: "row", gap: 1 }}><text flexShrink={0}><span fg={theme.link}><b>Save File</b></span></text><MarqueeText width={Math.max(1, dialogWidth - 15)} fg={theme.muted} text={`· ${dialog.filename}`} animateOnHover /></box>
       <text fg={theme.subdued}>Enter saves · Esc back</text>
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
@@ -952,7 +952,7 @@ function FileDownloadDialogContent({ dialog, dialogWidth, dialogHeight, dialogDr
         <box style={{ flexDirection: "column", padding: 1, border: true, borderColor: theme.selected, backgroundColor: theme.surfaceRaised }}>
           <box style={{ flexDirection: "row", gap: 1 }}>
             <text fg={isImage ? theme.warning : theme.link}>{isImage ? "◉" : "▭"}</text>
-            <MarqueeText width={Math.max(1, dialogWidth - 8)} fg={theme.text} text={`${dialog.filename} · ${dialog.fileId.slice(0, 8)}`} />
+            <MarqueeText width={Math.max(1, dialogWidth - 8)} fg={theme.text} text={`${dialog.filename} · ${dialog.fileId.slice(0, 8)}`} animateOnHover />
           </box>
           {dialog.filePath ? <text fg={theme.subdued} wrapMode="word">{dialog.filePath}</text> : <text fg={theme.muted}>No local path</text>}
           {sourceMissing ? <text fg={theme.danger}>Source unavailable — file was moved or deleted locally</text> : null}
