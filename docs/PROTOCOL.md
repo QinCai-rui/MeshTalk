@@ -242,6 +242,14 @@ retained for diagnostics but remain disabled locally. Each side reports both
 directions of a capability gap, flashes a warning, and continues using every
 shared capability.
 
+### Deprecated / removed
+
+Legacy V1 file transfer support was dropped in **v0.32.0**, commit
+`8677c2d` (`feat: make file transfer v2-only`). The removed `file_transfer`
+capability and packet family were `FILE_OFFER` (`0x11`), `FILE_CHUNK`
+(`0x12`), and `FILE_ACK` (`0x13`). Current clients use only
+`file_transfer_v2` and `FILE_OFFER_V2`/`FILE_CHUNK_V2`/`FILE_ACK_V2`.
+
 LAN TCP transport security. After the signed handshake and encrypted key
 confirmation, every LAN TCP application packet has an independent AES-GCM
 transport layer. On-link observers can see only the record lengths and

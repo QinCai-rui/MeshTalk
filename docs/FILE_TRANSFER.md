@@ -4,6 +4,14 @@ MeshTalk file transfer is **V2-only**. The legacy V1 file capability and packet
 family have been removed; current clients never send, accept, queue, resume, or
 acknowledge V1 file packets.
 
+## Deprecated / removed
+
+V1 file transfer support was dropped in **v0.32.0**, commit `8677c2d`
+(`feat: make file transfer v2-only`). The removed `file_transfer` capability
+used `FILE_OFFER` (`0x11`), `FILE_CHUNK` (`0x12`), and `FILE_ACK` (`0x13`).
+They are retained here only as historical reference; current clients use the
+V2 capability and packet family exclusively.
+
 ## Capability and compatibility
 
 `file_transfer_v2` is required for every file-transfer packet:

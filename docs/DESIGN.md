@@ -236,6 +236,13 @@ the same E2EE envelope as messages. It requires `file_transfer_v2` on both
 peers and uses `FILE_OFFER_V2`, `FILE_CHUNK_V2`, and `FILE_ACK_V2`. Legacy V1
 file packets are not supported by current clients.
 
+### Deprecated / removed
+
+V1 file transfer support was dropped in **v0.32.0**, commit `8677c2d`
+(`feat: make file transfer v2-only`). The former `file_transfer` capability
+and `FILE_OFFER`/`FILE_CHUNK`/`FILE_ACK` packet family remain historical
+references only; current clients are V2-only.
+
 The sender snapshots and SHA-256 hashes the file, then sends a signed offer and
 individually E2EE chunks. The receiver verifies the whole-file hash before
 completion. A direct send to a peer without V2 fails with an explicit upgrade
