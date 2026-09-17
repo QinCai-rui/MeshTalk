@@ -128,6 +128,14 @@ class PacketType(enum.IntEnum):
     FILE_ACK_V2 = 0x17
 
 
+# Retained only to purge or ignore values written by clients before V1 removal.
+REMOVED_V1_FILE_PACKET_TYPES = {
+    0x11: "FILE_OFFER",
+    0x12: "FILE_CHUNK",
+    0x13: "FILE_ACK",
+}
+
+
 PACKET_CAPABILITIES = {
     PacketType.MESSAGE: CAP_TEXT_CHAT,
     PacketType.MESSAGE_ACK: CAP_DELIVERY_RECEIPTS,
@@ -154,7 +162,7 @@ def capability_for_packet(packet_type: PacketType) -> str | None:
 @dataclass
 class Packet:
     """A MeshTalk protocol packet with type and payload."""
-    type: PacketType
+    type: PacketType | int
     payload: bytes = field(default=b"")
 
     def encode(self) -> bytes:
@@ -166,14 +174,22 @@ class Packet:
         return header + self.payload
 
     @classmethod
-    def decode_header(cls, data: bytes) -> tuple[int, PacketType]:
+    def decode_header(cls, data: bytes) -> tuple[int, PacketType | int]:
         """Decode packet header, returning payload length and packet type."""
         if len(data) < HEADER_SIZE:
             raise ValueError(f"Header too short: {len(data)} < {HEADER_SIZE}")
         length, ptype = struct.unpack(HEADER_FORMAT, data)
         if length > MAX_PACKET_SIZE:
             raise ValueError(f"Packet too large: {length} > {MAX_PACKET_SIZE}")
-        return length, PacketType(ptype)
+        try:
+            packet_type: PacketType | int = PacketType(ptype)
+        except ValueError:
+            if ptype not in REMOVED_V1_FILE_PACKET_TYPES:
+                raise
+            # Preserve retired values long enough for transports to acknowledge
+            # and ignore them without disconnecting an authenticated peer.
+            packet_type = ptype
+        return length, packet_type
 
     @classmethod
     def decode(cls, header_data: bytes, payload: bytes) -> Packet:

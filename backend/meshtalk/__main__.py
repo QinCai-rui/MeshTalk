@@ -25,7 +25,7 @@ from .message_router import MessageRouter
 from .typing_router import TypingRouter
 from .file_transfer import FileTransferManager
 from .ipc import IPCServer
-from .protocol import Packet, PacketType, capability_for_packet
+from .protocol import Packet, PacketType, REMOVED_V1_FILE_PACKET_TYPES, capability_for_packet
 from .rendezvous import RendezvousService
 from .settings import Settings
 from .analytics import Analytics
@@ -100,7 +100,17 @@ async def main(debug: bool = False) -> None:
                 logger.info("Flushed %d queued file transfer(s) to %s", flushed_files, peer_id)
             return
         for item in items:
-            packet_type = PacketType(item["packet_type"])
+            raw_packet_type = item["packet_type"]
+            if raw_packet_type in REMOVED_V1_FILE_PACKET_TYPES:
+                logger.info("Discarding removed %s queue row", REMOVED_V1_FILE_PACKET_TYPES[raw_packet_type])
+                await db.remove_from_outqueue(item["id"])
+                continue
+            try:
+                packet_type = PacketType(raw_packet_type)
+            except ValueError:
+                logger.warning("Discarding unknown queued packet type %s", raw_packet_type)
+                await db.remove_from_outqueue(item["id"])
+                continue
             # File transfers are flushed by file_manager to avoid sending their
             # offer and chunks twice through the generic outbound queue. Skip
             # them before capability handling so file rows are never

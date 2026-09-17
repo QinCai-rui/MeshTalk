@@ -33,6 +33,7 @@ from .protocol import (
     FileOfferV2Payload,
     Packet,
     PacketType,
+    REMOVED_V1_FILE_PACKET_TYPES,
     sanitize_filename,
 )
 
@@ -666,7 +667,7 @@ class FileTransferManager:
 
     async def _purge_obsolete_v1_queue(self, peer_id: str) -> None:
         """Discard persisted 0x11-0x13 rows from clients predating V2-only files."""
-        obsolete = {0x11, 0x12, 0x13}
+        obsolete = REMOVED_V1_FILE_PACKET_TYPES
         file_ids = set()
         for item in await self.db.get_pending_outgoing(peer_id):
             if item["packet_type"] in obsolete:
@@ -790,6 +791,8 @@ class FileTransferManager:
         transfers = await self.db.get_file_transfers(peer_id, include_group=True)
         for transfer in transfers:
             if transfer["direction"] != "inbound" or transfer["sender_id"] != peer_id or not transfer.get("file_sha256"):
+                if transfer["direction"] == "inbound" and transfer["sender_id"] == peer_id and not transfer.get("file_sha256"):
+                    logger.info("Skipping historical pre-V2 inbound file %s during resume", transfer["file_id"])
                 continue
             if not peer.supports(CAP_FILE_TRANSFER_V2):
                 continue

@@ -124,6 +124,13 @@ class TcpSessionTest(unittest.TestCase):
             reply,
         )
 
+    def test_retired_v1_records_do_not_disconnect_the_session(self):
+        for packet_type in (0x11, 0x12, 0x13):
+            record = self.local_session.encrypt_packet(Packet(packet_type))
+            header, ciphertext = record[:TCP_RECORD_HEADER_SIZE], record[TCP_RECORD_HEADER_SIZE:]
+            packet = self.remote_session.decrypt_record(header, ciphertext)
+            self.assertEqual(packet.type, packet_type)
+
     def test_ciphertext_and_associated_data_tampering_is_rejected(self):
         record = self.local_session.encrypt_packet(Packet(PacketType.PROFILE, b"profile"))
         header, ciphertext = record[:TCP_RECORD_HEADER_SIZE], record[TCP_RECORD_HEADER_SIZE:]

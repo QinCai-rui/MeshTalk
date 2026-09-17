@@ -644,20 +644,23 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
         self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
 
-    async def test_flush_discards_persisted_v1_queue_rows(self):
-        await self.sender_db.save_file_transfer({
-            "file_id": "obsolete-v1", "filename": "old.bin", "file_size": 1,
-            "chunk_size": 1, "total_chunks": 1, "sender_id": self.sender.peer_id,
-            "recipient_id": self.recipient.peer_id, "group_id": None,
-            "direction": "outbound", "status": "queued", "file_path": None,
-            "created_at": 1.0, "file_sha256": "",
-        })
-        await self.sender_db.add_to_outqueue(self.recipient.peer_id, 0x12, b"obsolete", "obsolete-v1")
+    async def test_flush_discards_all_persisted_v1_queue_rows(self):
+        for packet_type in (0x11, 0x12, 0x13):
+            file_id = f"obsolete-v1-{packet_type}"
+            await self.sender_db.save_file_transfer({
+                "file_id": file_id, "filename": "old.bin", "file_size": 1,
+                "chunk_size": 1, "total_chunks": 1, "sender_id": self.sender.peer_id,
+                "recipient_id": self.recipient.peer_id, "group_id": None,
+                "direction": "outbound", "status": "queued", "file_path": None,
+                "created_at": 1.0, "file_sha256": "",
+            })
+            await self.sender_db.add_to_outqueue(self.recipient.peer_id, packet_type, b"obsolete", file_id)
         self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
         self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
-        self.assertEqual((await self.sender_db.get_file_transfer("obsolete-v1"))["status"], "failed")
+        for packet_type in (0x11, 0x12, 0x13):
+            self.assertEqual((await self.sender_db.get_file_transfer(f"obsolete-v1-{packet_type}"))["status"], "failed")
         with self.assertRaisesRegex(ValueError, "Legacy v1"):
-            await self.sender_transfer.retry_file("obsolete-v1")
+            await self.sender_transfer.retry_file("obsolete-v1-18")
 
     async def test_group_retry_all_legacy_reports_upgrade_error(self):
         group_id = self.sender_settings.create_room("Retry legacy").id
@@ -686,6 +689,20 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.sender_manager.peer = None
         with self.assertRaisesRegex(ValueError, "file_transfer_v2"):
             await self.sender_transfer.retry_file(file_id)
+
+    async def test_resume_skips_historical_hashless_inbound_transfer(self):
+        file_id = "historical-v1-inbound"
+        await self.recipient_db.save_file_transfer({
+            "file_id": file_id, "filename": "old.bin", "file_size": 1,
+            "chunk_size": 1, "total_chunks": 1, "sender_id": self.sender.peer_id,
+            "recipient_id": self.recipient.peer_id, "group_id": None,
+            "direction": "inbound", "status": "completed",
+            "file_path": str(self.root / "old.bin"), "created_at": 1.0,
+            "file_sha256": "",
+        })
+        self.recipient_manager.sent.clear()
+        await self.recipient_transfer.resume_for_peer(self.sender.peer_id)
+        self.assertEqual(self.recipient_manager.sent, [])
 
     async def test_retry_blocked_peer_purges_file_queue(self):
         source = self.root / "retryblocked.txt"

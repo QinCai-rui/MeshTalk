@@ -12,6 +12,10 @@ used `FILE_OFFER` (`0x11`), `FILE_CHUNK` (`0x12`), and `FILE_ACK` (`0x13`).
 They are retained here only as historical reference; current clients use the
 V2 capability and packet family exclusively.
 
+Persisted pre-V2 inbound rows without `file_sha256` are also historical. Resume
+skips them without sending legacy ACKs or chunks; their existing terminal or
+partial history is left unchanged.
+
 ## Capability and compatibility
 
 `file_transfer_v2` is required for every file-transfer packet:
