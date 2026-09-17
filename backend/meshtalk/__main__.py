@@ -106,9 +106,6 @@ async def main(debug: bool = False) -> None:
             # them before capability handling so file rows are never
             # mis-attributed to message tables.
             if item["packet_type"] in (
-                PacketType.FILE_OFFER.value,
-                PacketType.FILE_CHUNK.value,
-                PacketType.FILE_ACK.value,
                 PacketType.FILE_OFFER_V2.value,
                 PacketType.FILE_CHUNK_V2.value,
                 PacketType.FILE_ACK_V2.value,

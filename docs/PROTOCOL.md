@@ -220,16 +220,18 @@ encrypted HANDSHAKE_CONFIRM ------------------------------>
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
-`file_transfer`, `file_transfer_v2`, `typing_indicators`, `message_replies`,
+`file_transfer_v2`, `typing_indicators`, `message_replies`, `at_mentions`,
 `direct_route_recovery`). The agreed capability set is the **intersection** of
 both peers' advertised sets, and higher-level code gates behaviour on it:
 `text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
 enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
 `friend_requests` enables the friend-request packet family, `group_chat` enables
-the group packet family, `file_transfer` enables v1 file offer/chunk/ack
-packets, and `file_transfer_v2` enables the v2 file offer/chunk/ack packets
-(section 7.6). `message_replies` enables reply references on message
-packets. `direct_route_recovery` enables probing and promotion of an introduced
+the group packet family, and `file_transfer_v2` enables file offer/chunk/ack
+packets (section 7.6). `message_replies` enables reply references on message
+packets. `at_mentions` marks a peer as able to render `<@user_id>` mention
+tokens as highlighted pills; senders transitively downgrade mention content
+to plain `@Display Name` text for peers that do not advertise it, so older
+peers stay readable instead of seeing raw tokens. `direct_route_recovery` enables probing and promotion of an introduced
 direct UDP route while an established remote UDP session is using DERP. It does
 not gate the initial direct connection attempt or the existing LAN TCP takeover
 behavior, so older peers retain their established behavior; an older peer
@@ -491,7 +493,7 @@ JSON hello (canonical, then Ed25519-signed):
 
 ```json
 {
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "file_transfer_v2", "typing_indicators", "message_replies", "direct_route_recovery"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer_v2", "typing_indicators", "message_replies", "direct_route_recovery"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -518,9 +520,7 @@ During the handshake, peers exchange signed lists of supported capabilities.
   - `block_reports`: Report message blocking status (`MESSAGE_BLOCKED`).
   - `group_chat`: Exchange `GROUP_MESSAGE`, `GROUP_MESSAGE_ACK`, and
     `GROUP_LEAVE` packets for mutually joined named rooms.
-  - `file_transfer`: Exchange v1 `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
-    packets for cross-platform file transfer with image preview and download.
-  - `file_transfer_v2`: Exchange v2 `FILE_OFFER_V2`, `FILE_CHUNK_V2`, and
+  - `file_transfer_v2`: Exchange `FILE_OFFER_V2`, `FILE_CHUNK_V2`, and
     `FILE_ACK_V2` packets (SHA-256 integrity, captions, batches, per-recipient
     group deliveries). A peer lacking it never receives v2 bytes; sends to it
     are marked `unavailable`.
@@ -775,11 +775,11 @@ messages from peers or the control service.
 ### 7.6 File Transfer Protocol
 
 File transfer sends binary files between peers using the same E2EE envelope as
-messages. Files are chunked into encrypted pieces, sent as `FILE_CHUNK` packets,
-and reassembled by the receiver. The `file_transfer` capability is required on
-both peers. The v2 family (`FILE_OFFER_V2`/`FILE_CHUNK_V2`/`FILE_ACK_V2`,
-0x15-0x17) adds SHA-256 integrity, captions, and batches, and requires
-`file_transfer_v2` on both peers instead; v1 remains receive-only.
+messages. Files are chunked into encrypted pieces, sent as `FILE_CHUNK_V2`
+packets, and reassembled by the receiver. `file_transfer_v2` is required on
+both peers. The family (`FILE_OFFER_V2`/`FILE_CHUNK_V2`/`FILE_ACK_V2`,
+0x15-0x17) includes SHA-256 integrity, captions, batches, and per-recipient
+group delivery. Clients do not support the legacy v1 file packet family.
 
 #### Protocol Constants
 
@@ -793,22 +793,22 @@ both peers. The v2 family (`FILE_OFFER_V2`/`FILE_CHUNK_V2`/`FILE_ACK_V2`,
 
 #### Flow
 
-1. **Sender** reads the local file, computes `total_chunks = ceil(file_size / chunk_size)`, and sends a signed `FILE_OFFER` to the recipient (or to every active cached member for group files).
+1. **Sender** reads the local file, computes `total_chunks = ceil(file_size / chunk_size)`, and sends a signed `FILE_OFFER_V2` to the recipient (or to every active cached member for group files).
 2. **Receiver** emits a `file_offer` IPC event so the TUI can show an incoming file notification. Acceptance is implicit (auto-download on receipt of chunks).
-3. **Sender** sends `FILE_CHUNK` packets in order, each containing an AES-256-GCM encrypted slice of the file. Each chunk is individually E2EE using the same one-time ephemeral X25519/AES-GCM construction as messages (section 7.1), with the AAD containing the chunk routing metadata.
+3. **Sender** sends `FILE_CHUNK_V2` packets in order, each containing an AES-256-GCM encrypted slice of the file. Each chunk is individually E2EE using the same one-time ephemeral X25519/AES-GCM construction as messages (section 7.1), with the AAD containing the chunk routing metadata.
 4. **Receiver** decrypts, reassembles chunks by `(file_id, chunk_index)`, and writes to `~/.meshtalk/files/<file_id>/<sanitized_filename>`. Completed files emit a `file_completed` IPC event with the local path.
-5. **Receiver** sends a signed `FILE_ACK` with status `completed` (or `missing` with `missing_ranges` for retransmission). The sender marks the transfer `delivered` on receipt. If the sender is not a friend (direct) or not an active member / is blocked (group), the receiver sends `FILE_ACK` with status `blocked` instead — parity with `MESSAGE_BLOCKED` — and the sender marks the transfer `blocked` and emits `file_blocked`.
-6. **Offline queueing**: `FILE_OFFER` and `FILE_CHUNK` packets are queued in the outgoing queue when the recipient is offline, identical to message queueing. On reconnect, queued transfers are flushed via `flush_for_peer`.
-7. **Resume**: `resume_for_peer` detects partially received transfers and sends `FILE_ACK` with `missing_ranges` so the sender retransmits only the missing chunks.
+5. **Receiver** sends a signed `FILE_ACK_V2` with status `completed` (or `missing` with `missing_ranges` for retransmission). The sender marks the transfer `delivered` on receipt. If the sender is not a friend (direct) or not an active member / is blocked (group), the receiver sends `FILE_ACK_V2` with status `blocked` instead — parity with `MESSAGE_BLOCKED` — and the sender marks the transfer `blocked` and emits `file_blocked`.
+6. **Offline queueing**: `FILE_OFFER_V2` and `FILE_CHUNK_V2` packets are queued in the outgoing queue when the recipient is offline, identical to message queueing. On reconnect, queued transfers are flushed via `flush_for_peer`.
+7. **Resume**: `resume_for_peer` detects partially received transfers and sends `FILE_ACK_V2` with `missing_ranges` so the sender retransmits only the missing chunks.
 
 #### Security Properties
 
 - Each chunk is individually E2EE with a fresh ephemeral key (forward secrecy per chunk).
-- The `FILE_OFFER` signature authenticates the file metadata (filename, size, chunk count).
+- The `FILE_OFFER_V2` signature authenticates the file metadata (filename, size, chunk count, hash, caption, and batch data).
 - Filenames are sanitized on both sender and receiver to prevent path traversal.
 - File storage is scoped to `~/.meshtalk/files/<file_id>/` — files never escape this directory.
-- Peers that do not negotiate `file_transfer` never receive file packets.
-- Incoming file offers from non-friends (for direct transfers) or non-members (for group transfers) are rejected with a signed `FILE_ACK blocked` notice (requires `block_reports`, like `MESSAGE_BLOCKED`).
+- Peers that do not negotiate `file_transfer_v2` never receive file packets; a new send reports an explicit upgrade error before a transfer is created.
+- Incoming file offers from non-friends (for direct transfers) or non-members (for group transfers) are rejected with a signed `FILE_ACK_V2 blocked` notice (requires `block_reports`, like `MESSAGE_BLOCKED`).
 - Early-chunk buffer has a TTL (30 s) and per-file cap (8 chunks) to bound memory usage from out-of-order arrivals.
 - Packet locks are cleaned up after unlock to prevent resource leaks.
 
@@ -840,9 +840,6 @@ after key confirmation, all application packets use encrypted TCP records.
 | GROUP_MESSAGE | 0x0E | Group Message | Signed pairwise-encrypted copy for one group recipient. |
 | GROUP_MESSAGE_ACK | 0x0F | Group Message ACK | Signed per-recipient delivery acknowledgement. |
 | GROUP_LEAVE | 0x10 | Group Leave | Signed durable member-leave event. |
-| FILE_OFFER | 0x11 | File Offer | Signed file metadata (filename, size, chunk count) for a direct or group transfer. |
-| FILE_CHUNK | 0x12 | File Chunk | E2EE encrypted file data chunk with per-chunk signature. |
-| FILE_ACK | 0x13 | File Ack | Delivery acknowledgement with optional `missing_ranges` for retransmission. |
 | FILE_OFFER_V2 | 0x15 | File Offer v2 | Signed metadata + SHA-256 + caption + batch refs. Requires `file_transfer_v2`. |
 | FILE_CHUNK_V2 | 0x16 | File Chunk v2 | E2EE encrypted file data chunk with per-chunk signature. Requires `file_transfer_v2`. |
 | FILE_ACK_V2 | 0x17 | File Ack v2 | Delivery acknowledgement (`completed`/`missing`/`blocked`) + ranges. Requires `file_transfer_v2`. |
@@ -871,10 +868,31 @@ authenticated peer's signing key; mismatched sender_id/responder_id is rejected.
   the removal locally so both views converge.
 - Mute: mute(peer_id, timeout) silences notifications for timeout seconds (0 =
   permanent). Stored in settings.json.
-- Profiles (PROFILE): {peer_id, display_name, tui_active, signature}. Broadcast
-  to every active peer on name change (broadcast_profile_update); tui_active
-  reflects whether any TUI client is connected (drives "active/away/offline"
-   presence in peers).
+- Mentions: group message content may carry `<@user_id>` tokens (inserted by
+  the sender's `@` member picker). The backend extracts the mentioned IDs and
+  includes them as `mentions` in the `group_message` event, in `group_messages`
+  history entries, and in the `group_send` response. Clients decide
+  "mentioned me" solely from that payload array — message content is never
+  parsed for detection (it is only rendered as `@Display Name`). Receivers
+  highlight the message, badge the group, and raise a mention notification
+  (bypasses group mutes, still gated by Do Not Disturb). A leading `\`
+  escapes `<@` so `\<@id>` is a literal and `\\` escapes to a single `\`
+  (`\\<@id>` is a mention preceded by `\`). The virtual token `<@everyone>`
+  mentions the whole group and is carried as `["everyone"]` instead of
+  enumerating every member's id. Recipients without the `at_mentions`
+  capability receive the same message with tokens pre-rendered to plain
+  `@Display Name` text.
+- Profiles (PROFILE): {peer_id, display_name, tui_active, signature, dnd,
+  dnd_signature}. Broadcast to every active peer on name change
+  (broadcast_profile_update); tui_active reflects whether any TUI client is
+  connected (drives "active/away/offline" presence in peers). dnd carries Do
+  Not Disturb state under a separate signature so older clients (which verify
+  only the legacy signature and ignore the unknown fields) keep accepting
+  profile updates.
+- Do Not Disturb: dnd(enabled) pauses all notifications locally and broadcasts
+  the state to peers, who render the peer with a red presence circle. Stored
+  in settings.json and reported as dnd (per peer) in peers and dnd_enabled
+  in identity.
 - Typing (TYPING): a signed envelope `{sender_id, recipient_id, created_at,
   encrypted_content, signature}`. The encrypted body is `{group_id|null,
   is_typing}`. Direct events are friend-only; group events require an active
@@ -906,7 +924,7 @@ over IPC.
 |--------|--------|---------|
 | send | recipient_id, content, reply_to_message_id? | message_id |
 | delete_message | message_id, group_id?, file? | Removes the local message or attachment history and any local attachment file. Never transmitted to peers. |
-| peers | - | List of peers with presence, unread counts, friend/blocked flags, network info. |
+| peers | - | List of peers with presence, DND state, unread counts, friend/blocked flags, network info. |
 | remove_peer | peer_id | Removed (only if not connected). |
 | friend_send | peer_id, note? | request_id |
 | friend_respond | request_id, accept | request_id, accepted |
@@ -918,7 +936,7 @@ over IPC.
 | blocked_peers | - | Blocked list. |
 | tui_presence | client_id, active | Toggles TUI-active presence. |
 | typing | client_id, recipient_id or group_id, is_typing | Transient typing update; exactly one conversation target is required. |
-| identity | - | peer_id, display_name, setup state. |
+| identity | - | peer_id, display_name, setup state, DND state. |
 | status | - | peer_id, connected peers + network info, control URL/connected, public endpoint, rooms. |
 | messages | peer_id | Conversation history (marks read). |
 | set_display_name | display_name | New name; broadcasts PROFILE. |
@@ -928,10 +946,10 @@ over IPC.
 | room_leave | room_id | room_id |
 | room_invite | room_id | Re-export the invite. |
 | rooms | - | Room membership counts. |
-| groups | - | Named groups with cached active-member and unread counts. |
+| groups | - | Named groups with cached active-member, unread, and mention-unread counts. |
 | group_members | group_id | Cached active roster with online state. |
-| group_messages | group_id | Last 200 local messages/system events and per-recipient deliveries; marks read. |
-| group_send | group_id, content, reply_to_message_id? | message_id and per-recipient `sent`, `delivered`, `queued`, or `unavailable` status. |
+| group_messages | group_id | Last 200 local messages/system events, per-message `mentions`, and per-recipient deliveries; marks read. |
+| group_send | group_id, content, reply_to_message_id? | message_id, per-recipient `sent`, `delivered`, `queued`, or `unavailable` status, and `mentions`. |
 | group_leave | group_id | Sends/queues signed leave events, removes local room/group state, returns group_id. |
 | file_send | recipient_id, file_path | file_id — send a file to a direct peer. |
 | group_file_send | group_id, file_path | Per-recipient results — send a file to all active group members. |
@@ -939,8 +957,9 @@ over IPC.
 | file_info | file_id | Detailed metadata for one transfer. |
 | file_download | file_id, dest_path? | dest_path — save a received file to a user-chosen location. |
 | files_dir | path? | Get or set the files storage directory (`~/.meshtalk/files` by default). |
-| mute / unmute | peer_id, timeout? | Mute state. |
-| muted_peers | - | Current mutes. |
+| mute / unmute | peer_id or group_id, timeout? | Mute state. |
+| muted_peers | - | Current peer and group mutes (`muted_peers`, `muted_groups`). |
+| dnd | enabled? | Global Do Not Disturb state; pauses all notifications and broadcasts DND presence to peers. |
 | notifications | setup_dismissed?, delivery?, events? | Global notification preferences. Delivery is `terminal`, `native`, or `disabled`; events controls messages, friend requests, file offers, and completed files. |
 | debug_re_stun | - | Re-run STUN + re-announce. |
 | debug_info | - | Full peer/endpoint/room diagnostic dump. |
@@ -959,7 +978,8 @@ group and affected message/member; `group_sent` reports an offline queued copy
 being flushed, and `group_delivered` reports its recipient ACK.
 `typing` contains `sender_id`, `display_name`, `group_id` (or null),
 `is_typing`, and `created_at`; clients must order updates by `created_at` and
-expire active state locally if no refresh or stop arrives.
+expire active state locally if no refresh or stop arrives. `group_message`
+carries `mentions` (mentioned peer IDs extracted from `<@user_id>` tokens).
 
 The CLI exposes `room create <name>`, `room join`, `groups` / `group list`, and
 `group members|messages|send|leave`. `watch` prints incoming group messages and
@@ -1040,7 +1060,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, file_transfer_v2, typing_indicators, message_replies, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer_v2, typing_indicators, message_replies, at_mentions, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |

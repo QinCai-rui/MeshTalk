@@ -818,14 +818,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       const home = process.env.HOME || process.env.USERPROFILE || ""
       const expanded = home && (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\")) ? home + trimmed.slice(1) : trimmed
       const absolutePath = resolve(expanded)
-      if (selection?.kind === "peer") {
-        const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: absolutePath, caption: "" })
-        if (response.error) throw new Error(response.error)
-        showStatus(`File transfer started: ${absolutePath} -> ${selection.id.slice(0, 8)}`)
-      } else if (selection?.kind === "group") {
-        const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: absolutePath, caption: "" })
-        if (response.error) throw new Error(response.error)
-        showStatus(`Group file transfer started: ${absolutePath}`)
+      if (selection?.kind === "peer" || selection?.kind === "group") {
+        const outstanding = await sendFilesDirect([absolutePath], selection)
+        if (outstanding.length) throw new Error(outstanding[0]?.reason || "File transfer did not start")
       } else { throw new Error("Select a peer or group first") }
       if (dialogActionRef.current !== action) return
       closeDialog()

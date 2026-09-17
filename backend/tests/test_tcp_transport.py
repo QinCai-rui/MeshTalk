@@ -182,7 +182,7 @@ class TcpSessionTest(unittest.TestCase):
     def test_oversized_application_packet_is_rejected(self):
         with self.assertRaises(ValueError):
             self.local_session.encrypt_packet(
-                Packet(PacketType.FILE_CHUNK, b"x" * (MAX_PACKET_SIZE + 1))
+                Packet(PacketType.FILE_CHUNK_V2, b"x" * (MAX_PACKET_SIZE + 1))
             )
 
 

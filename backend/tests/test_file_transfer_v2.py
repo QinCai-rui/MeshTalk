@@ -11,7 +11,6 @@ from meshtalk.file_transfer import FileTransferManager
 from meshtalk.identity import Identity
 from meshtalk.protocol import (
     CAP_BLOCK_REPORTS,
-    CAP_FILE_TRANSFER,
     CAP_FILE_TRANSFER_V2,
     FileAckV2Payload,
     FileOfferV2Payload,
@@ -27,7 +26,7 @@ class FakePeer:
         self.display_name = identity.display_name
         self.signing_public_key = identity.signing_public_key_bytes()
         self.encryption_public_key = identity.encryption_public_key_bytes()
-        self.capabilities = capabilities or (CAP_FILE_TRANSFER, CAP_FILE_TRANSFER_V2, CAP_BLOCK_REPORTS)
+        self.capabilities = capabilities or (CAP_FILE_TRANSFER_V2, CAP_BLOCK_REPORTS)
 
     def supports(self, capability: str) -> bool:
         return capability in self.capabilities
@@ -235,21 +234,6 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
             await self.sender_transfer.retry_file(file_id)
         self.assertEqual(self.sender_manager.sent, [])
 
-    async def test_flush_purges_legacy_file_queue(self):
-        await self.sender_db.save_file_transfer({
-            "file_id": "legacy-file", "filename": "legacy.bin", "file_size": 1,
-            "chunk_size": 1, "total_chunks": 1, "sender_id": self.sender.peer_id,
-            "recipient_id": self.recipient.peer_id, "group_id": None,
-            "direction": "outbound", "status": "queued", "file_path": None,
-            "created_at": 1.0,
-        })
-        await self.sender_db.add_to_outqueue(
-            self.recipient.peer_id, PacketType.FILE_CHUNK.value, b"legacy", "legacy-file"
-        )
-        self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
-        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
-        self.assertEqual((await self.sender_db.get_file_transfer("legacy-file"))["status"], "failed")
-
     async def test_deliver_rechecks_dm_authorization(self):
         source = self.root / "authorization.txt"
         source.write_bytes(b"private")
@@ -267,7 +251,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.sender_transfer._flush_lock("file", self.recipient.peer_id), lock)
 
     async def test_send_rejects_without_v2_before_snapshot(self):
-        self.sender_manager.peer = FakePeer(self.recipient, (CAP_FILE_TRANSFER, CAP_BLOCK_REPORTS))
+        self.sender_manager.peer = FakePeer(self.recipient, (CAP_BLOCK_REPORTS,))
         source = self.root / "nov2.txt"
         source.write_bytes(b"no v2 support")
         with patch.object(self.sender_transfer, "_snapshot_with_hash") as snapshot:
@@ -291,7 +275,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
         await self.sender_db.update_file_transfer(file_id, status="failed")
         self.sender_manager.sent.clear()
-        self.recipient_peer.capabilities = (CAP_FILE_TRANSFER,)
+        self.recipient_peer.capabilities = (CAP_BLOCK_REPORTS,)
         with patch.object(self.sender_transfer, "_snapshot_with_hash") as snapshot:
             for payload in ({"file_path": str(source)}, {"paths": [str(source)]}):
                 response = await namespace["handle_file_send"]({"recipient_id": self.recipient.peer_id, **payload})
@@ -346,7 +330,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.sender_db.add_to_outqueue(
             self.recipient.peer_id, PacketType.FILE_ACK_V2.value, b"ack-bytes", "ack-file"
         )
-        self.sender_manager.peer = FakePeer(self.recipient, (CAP_FILE_TRANSFER, CAP_BLOCK_REPORTS))
+        self.sender_manager.peer = FakePeer(self.recipient, (CAP_BLOCK_REPORTS,))
         self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
         self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
         self.assertEqual(self.sender_manager.sent, [])
@@ -387,7 +371,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         source.write_bytes(b"no v2 flush")
         file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
         self.sender_manager.sent.clear()
-        self.sender_manager.peer = FakePeer(self.recipient, (CAP_FILE_TRANSFER, CAP_BLOCK_REPORTS))
+        self.sender_manager.peer = FakePeer(self.recipient, (CAP_BLOCK_REPORTS,))
         self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
         self.assertEqual(self.sender_manager.sent, [])
 
@@ -399,7 +383,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         )
         await self.sender_db.upsert_peer(
             self.recipient.peer_id, "Recipient", self.recipient.encryption_public_key_bytes(),
-            self.recipient.signing_public_key_bytes(), capabilities=[CAP_FILE_TRANSFER],
+            self.recipient.signing_public_key_bytes(), capabilities=[CAP_BLOCK_REPORTS],
         )
         source = self.root / "nov2offline.txt"
         source.write_bytes(b"no v2 offline")
@@ -415,7 +399,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         source.write_bytes(b"no v2 inbound")
         file_id = await self.sender_transfer.send_file(self.recipient.peer_id, str(source))
         offer_packet = self.sender_manager.sent[0]
-        v1_only_sender = FakePeer(self.sender, (CAP_FILE_TRANSFER, CAP_BLOCK_REPORTS))
+        v1_only_sender = FakePeer(self.sender, (CAP_BLOCK_REPORTS,))
         self.assertTrue(await self.recipient_transfer.handle_packet(v1_only_sender, offer_packet))
         self.assertIsNone(await self.recipient_db.get_file_transfer(file_id))
 
@@ -436,7 +420,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         offer.signature = self.sender.signing_private_key.sign(offer.signed_bytes())
         with self.assertRaisesRegex(ValueError, "Conflicting"):
             await self.recipient_transfer._handle_offer(
-                self.sender_peer, Packet(PacketType.FILE_OFFER_V2, offer.encode()), True
+                self.sender_peer, Packet(PacketType.FILE_OFFER_V2, offer.encode())
             )
 
     async def test_rapid_group_sends_produce_distinct_ids(self):
@@ -502,7 +486,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
             self.recipient.peer_id, PacketType.FILE_CHUNK_V2.value, b"stale", file_id
         )
         self.sender_manager.sent.clear()
-        self.sender_manager.peer = FakePeer(self.recipient, (CAP_FILE_TRANSFER, CAP_BLOCK_REPORTS))
+        self.sender_manager.peer = FakePeer(self.recipient, (CAP_BLOCK_REPORTS,))
         self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
         self.assertEqual(self.sender_manager.sent, [])
         self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
@@ -536,8 +520,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_unnamed_room_rejects_inbound(self):
         group_id = self.recipient_settings.create_room().id
         await self.recipient_db.upsert_group_member(group_id, self.sender.peer_id, "Sender")
-        self.assertFalse(await self.recipient_transfer._authorized_inbound(self.sender_peer, group_id, v2=False))
-        self.assertFalse(await self.recipient_transfer._authorized_inbound(self.sender_peer, group_id, v2=True))
+        self.assertFalse(await self.recipient_transfer._authorized_inbound(self.sender_peer, group_id))
 
     async def test_failed_send_hands_back_file_id(self):
         tree = ast.parse((Path(__file__).parents[1] / "meshtalk" / "__main__.py").read_text())
@@ -554,7 +537,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.sender_db.upsert_peer(
             self.recipient.peer_id, "Recipient", self.recipient.encryption_public_key_bytes(),
             self.recipient.signing_public_key_bytes(),
-            capabilities=[CAP_FILE_TRANSFER, CAP_FILE_TRANSFER_V2],
+            capabilities=[CAP_FILE_TRANSFER_V2],
         )
         source = self.root / "handback.txt"
         source.write_bytes(b"handback-data")
@@ -611,7 +594,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.sender_db.upsert_peer(
             self.recipient.peer_id, "Recipient", self.recipient.encryption_public_key_bytes(),
             self.recipient.signing_public_key_bytes(),
-            capabilities=[CAP_FILE_TRANSFER, CAP_FILE_TRANSFER_V2],
+            capabilities=[CAP_FILE_TRANSFER_V2],
         )
         source = self.root / "queuefail.txt"
         source.write_bytes(b"queue-fail-data")
@@ -661,6 +644,49 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
         self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
 
+    async def test_flush_discards_persisted_v1_queue_rows(self):
+        await self.sender_db.save_file_transfer({
+            "file_id": "obsolete-v1", "filename": "old.bin", "file_size": 1,
+            "chunk_size": 1, "total_chunks": 1, "sender_id": self.sender.peer_id,
+            "recipient_id": self.recipient.peer_id, "group_id": None,
+            "direction": "outbound", "status": "queued", "file_path": None,
+            "created_at": 1.0, "file_sha256": "",
+        })
+        await self.sender_db.add_to_outqueue(self.recipient.peer_id, 0x12, b"obsolete", "obsolete-v1")
+        self.assertEqual(await self.sender_transfer.flush_for_peer(self.recipient.peer_id), 0)
+        self.assertEqual(await self.sender_db.get_pending_outgoing(self.recipient.peer_id), [])
+        self.assertEqual((await self.sender_db.get_file_transfer("obsolete-v1"))["status"], "failed")
+        with self.assertRaisesRegex(ValueError, "Legacy v1"):
+            await self.sender_transfer.retry_file("obsolete-v1")
+
+    async def test_group_retry_all_legacy_reports_upgrade_error(self):
+        group_id = self.sender_settings.create_room("Retry legacy").id
+        legacy = Identity.generate("Legacy")
+        for identity in (self.sender, legacy):
+            await self.sender_db.upsert_group_member(group_id, identity.peer_id, identity.display_name)
+        source = self.root / "retry-all-legacy.txt"
+        source.write_bytes(b"legacy")
+        await self.sender_db.upsert_peer(
+            legacy.peer_id, legacy.display_name, legacy.encryption_public_key_bytes(),
+            legacy.signing_public_key_bytes(), capabilities=[CAP_BLOCK_REPORTS],
+        )
+        # Create a pre-existing V2 group row to exercise retry after a peer downgrade.
+        await self.sender_db.upsert_peer(
+            self.recipient.peer_id, self.recipient.display_name, self.recipient.encryption_public_key_bytes(),
+            self.recipient.signing_public_key_bytes(), capabilities=[CAP_FILE_TRANSFER_V2],
+        )
+        await self.sender_db.upsert_group_member(group_id, self.recipient.peer_id, self.recipient.display_name)
+        file_id = await self.sender_transfer.send_group_file(group_id, str(source))
+        await self.sender_db.set_file_delivery(file_id, self.recipient.peer_id, "unavailable")
+        await self.sender_db.set_file_delivery(file_id, legacy.peer_id, "failed")
+        await self.sender_db.upsert_peer(
+            self.recipient.peer_id, self.recipient.display_name, self.recipient.encryption_public_key_bytes(),
+            self.recipient.signing_public_key_bytes(), capabilities=[CAP_BLOCK_REPORTS],
+        )
+        self.sender_manager.peer = None
+        with self.assertRaisesRegex(ValueError, "file_transfer_v2"):
+            await self.sender_transfer.retry_file(file_id)
+
     async def test_retry_blocked_peer_purges_file_queue(self):
         source = self.root / "retryblocked.txt"
         source.write_bytes(b"retry-blocked-data")
@@ -696,7 +722,7 @@ class FileTransferV2IntegrationTest(unittest.IsolatedAsyncioTestCase):
         with open(transfer["file_path"], "r+b") as output:
             output.seek(0)
             output.write(b"X")
-        await self.recipient_transfer._complete_inbound_transfer(self.sender_peer, transfer, v2=True)
+        await self.recipient_transfer._complete_inbound_transfer(self.sender_peer, transfer)
         await asyncio.sleep(0)
         self.assertEqual((await self.recipient_db.get_file_transfer(file_id))["status"], "failed")
         self.assertTrue(any(event.get("event") == "file_failed" for event in events))
