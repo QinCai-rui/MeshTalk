@@ -23,6 +23,8 @@ const TEXT_INPUT_DIALOGS = new Set<Dialog["kind"]>([
   "add-friend",
   "file-send",
   "files-dir",
+  "storage-dir",
+  "files-settings",
   "file-download",
   "update-directory",
   "update-token",
@@ -47,6 +49,7 @@ export function isFirstLevelSettingsDialog(dialog: Dialog): boolean {
     "control",
     "friends",
     "rooms",
+    "files-settings",
     "advanced",
     "debug",
     "about",
@@ -113,7 +116,7 @@ export function goBack({ dialog, selection, fileTransfers, closeDialog, showDial
     showDialog({ kind: "debug-endpoints" })
   } else if (dialog.kind === "debug-endpoints") {
     showDialog({ kind: "debug" })
-  } else if (dialog.kind === "file-download" || dialog.kind === "files-dir") {
+  } else if (dialog.kind === "file-download" || dialog.kind === "files-dir" || dialog.kind === "storage-dir") {
     showDialog({ kind: "file-list", files: fileTransfers })
   } else {
     closeDialog()
@@ -139,6 +142,7 @@ type CommandDependencies = {
   loadAdvancedConfig: () => Promise<void>
   loadDebugInfo: () => Promise<void>
   loadFiles: () => Promise<void>
+  loadFilesSettings?: () => Promise<void>
   loadFriendRequests: () => Promise<void>
   loadGroupDetails: (group: Group) => Promise<void>
   loadRooms: () => Promise<void>
@@ -146,7 +150,7 @@ type CommandDependencies = {
 }
 
 export function runCommand(command: string, dependencies: CommandDependencies) {
-  const { groups, groupMembers, identity, mutedPeers, mutedGroups, peers, selectedGroupId, selectedPeerId, selection, showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft, setRenameDialog, loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms, openFriendsInbox } = dependencies
+  const { groups, groupMembers, identity, mutedPeers, mutedGroups, peers, selectedGroupId, selectedPeerId, selection, showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft, setRenameDialog, loadAdvancedConfig, loadDebugInfo, loadFiles, loadFilesSettings, loadFriendRequests, loadGroupDetails, loadRooms, openFriendsInbox } = dependencies
   if (command === "control") showDialog({ kind: "control" })
   else if (command === "rooms") { showDialog({ kind: "rooms", rooms: [] }); void loadRooms() }
   else if (command === "group-details") {
@@ -193,6 +197,9 @@ export function runCommand(command: string, dependencies: CommandDependencies) {
   } else if (command === "friend-requests") void loadFriendRequests()
   else if (command === "debug") { showDialog({ kind: "debug" }); void loadDebugInfo() }
   else if (command === "send-file") { if (!selection) { showStatus("Select a peer or group before sending a file."); return }; showDialog({ kind: "file-send" }) }
-  else if (command === "files") { showDialog({ kind: "file-list", files: [] }); void loadFiles() }
+  else if (command === "files") {
+    if (loadFilesSettings) void loadFilesSettings()
+    else { showDialog({ kind: "file-list", files: [] }); void loadFiles() }
+  }
   else if (command === "about") showDialog({ kind: "about" })
 }

@@ -317,6 +317,12 @@ Files are stored in `~/.meshtalk/files/<file_id>/` by default. Override the
 storage directory with the `files_dir` IPC command or `MESHTALK_DATA_DIR`
 environment variable.
 
+The storage location (messages database, received files, and identity) can
+also be changed in Settings » Files & transfers or with `storage set-dir`.
+You are asked whether to transfer existing data: with migration the data is
+copied, verified, and only then removed from the old location — any failure
+aborts the change and the old location stays active.
+
 ## Compile From Source
 
 To produce local standalone binaries, install [Bun](https://bun.sh),
