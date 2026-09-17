@@ -8,6 +8,10 @@ export const MAX_MESSAGE_BYTES = 30 * 1024
 export const UNREAD_MESSAGE_FADE_MS = 3_000
 export const DEFAULT_STATUS = "Ctrl+P: Settings  Ctrl+U: upload  Ctrl+V: paste image  Ctrl+Up/Down: switch chats  PgUp: history  Ctrl+C: quit"
 
+export function isMuteActive(until: number | undefined, now = Date.now() / 1000): boolean {
+  return until !== undefined && (until <= 0 || now < until)
+}
+
 export function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
   return Math.min(MAX_COMPOSER_HEIGHT, Math.max(MIN_COMPOSER_HEIGHT, lines))
@@ -85,9 +89,15 @@ export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
   const delivered = deliveries.filter((delivery) => delivery.status === "delivered").length
   const queued = deliveries.filter((delivery) => delivery.status === "queued").length
   const unavailable = deliveries.filter((delivery) => delivery.status === "unavailable").length
+  const failed = deliveries.filter((delivery) => delivery.status === "failed" || delivery.status === "blocked").length
+  const sent = deliveries.filter((delivery) => delivery.status === "sent").length
+  const pending = deliveries.filter((delivery) => delivery.status === "pending").length
   const details = [`delivered ${delivered}/${deliveries.length}`]
   if (queued) details.push(`queued ${queued}`)
   if (unavailable) details.push(`unavailable ${unavailable}`)
+  if (failed) details.push(`failed ${failed}`)
+  if (sent) details.push(`sent ${sent}`)
+  if (pending) details.push(`pending ${pending}`)
   return details.join(" · ")
 }
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }

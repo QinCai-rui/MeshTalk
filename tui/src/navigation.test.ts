@@ -5,6 +5,8 @@ import type { Dialog } from "./types"
 test("returns from a confirmation image viewer to the original file confirmation", () => {
   const confirmation: Extract<Dialog, { kind: "file-confirm" }> = {
     kind: "file-confirm",
+    target: { kind: "peer", id: "peer" },
+    caption: "",
     paths: ["/tmp/meshtalk-drops/abc/Screenshot.png"],
     source: "drop",
   }

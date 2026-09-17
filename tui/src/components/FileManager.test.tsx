@@ -106,3 +106,22 @@ test("file manager remains usable when narrow and preserves refresh, save, and d
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test("file manager details show caption, batch position, and retry for failed outbound files", async () => {
+  const transfers: FileTransfer[] = [
+    { file_id: "failed-batch", filename: "receipts.zip", file_size: 100, sender_id: "me", recipient_id: "peer-alex-long-id", direction: "outbound", status: "failed", created_at: 30, caption: "Trip receipts", batch_id: "batch-1", batch_index: 1, batch_count: 3 },
+  ]
+  let retried: string | undefined
+  const retryProps = props(transfers)
+  Object.assign(retryProps, { onRetryFile: (fileId: string) => { retried = fileId } })
+  const setup = await testRender(<FileListDialogContent {...retryProps} />, { width: 100, height: 28 })
+  try {
+    const frame = await settle(setup)
+    expect(frame).toContain("Trip receipts")
+    expect(frame).toContain("Batch 2/3")
+    expect(frame).toContain("Retry")
+    expect(retried).toBeUndefined()
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})

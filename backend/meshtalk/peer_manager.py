@@ -24,6 +24,7 @@ from .protocol import (
     Packet,
     PacketType,
     ProfilePayload,
+    REMOVED_V1_FILE_PACKET_TYPES,
     TCP_TRANSPORT_VERSION,
     TCP_PORT,
     DEFAULT_CAPABILITIES,
@@ -80,6 +81,7 @@ class PeerConnection:
         self.writer: asyncio.StreamWriter | None = None
         self.display_name = "Anonymous"
         self.tui_active = False
+        self.dnd = False
         self.signing_public_key: bytes | None = None
         self.encryption_public_key: bytes | None = None
         self.capabilities: list[str] = []
@@ -135,6 +137,7 @@ class PeerManager:
         self._server: asyncio.Server | None = None
         self._running = False
         self.tui_active = False
+        self.dnd_enabled = False
         self.capabilities = validate_capabilities(
             list(DEFAULT_CAPABILITIES if capabilities is None else capabilities)
         )
@@ -240,6 +243,11 @@ class PeerManager:
                 self._known_endpoints[peer_id] = {}
             self._known_endpoints[peer_id].update(endpoints)
 
+    async def _seed_peer_dnd(self, peer: PeerConnection) -> None:
+        """Restore the last verified DND state until a profile update arrives."""
+        stored = await self.db.get_peer(peer.peer_id)
+        peer.dnd = bool(stored["dnd"]) if stored else False
+
     async def connect_to_peer(self, peer_id: str | None, address: str, tcp_port: int) -> None:
         if peer_id:
             self.record_lan_candidate(peer_id, address, tcp_port)
@@ -275,6 +283,7 @@ class PeerManager:
                 return
             if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
                 raise ValueError("Connected peer limit reached")
+            await self._seed_peer_dnd(peer)
             peer.state = PeerState.CONNECTED
             self.peers[peer.peer_id] = peer
             self.record_lan_candidate(peer.peer_id, address, tcp_port)
@@ -322,6 +331,7 @@ class PeerManager:
                 return
             if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
                 raise ValueError("Connected peer limit reached")
+            await self._seed_peer_dnd(peer)
             self.peers[peer.peer_id] = peer
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, capabilities=peer.remote_capabilities)
             self._start_receive_loop(peer)
@@ -387,6 +397,7 @@ class PeerManager:
         gaps = self.udp.get_capability_gaps(peer_id)
         if gaps is not None:
             peer.remote_capabilities, peer.peer_missing_capabilities, peer.local_missing_capabilities = gaps
+        await self._seed_peer_dnd(peer)
         self._udp_peers[peer_id] = peer
         self._known_endpoints.setdefault(peer_id, {})[peer.transport] = peer.endpoint
         active = self.peers.get(peer_id)
@@ -484,14 +495,21 @@ class PeerManager:
         return payload
 
     def _profile_payload(self) -> ProfilePayload:
-        payload = ProfilePayload(self.identity.peer_id, self.identity.display_name, self.tui_active, b"")
+        payload = ProfilePayload(self.identity.peer_id, self.identity.display_name, self.tui_active, b"", self.dnd_enabled, b"")
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+        payload.dnd_signature = self.identity.signing_private_key.sign(payload.dnd_signed_bytes())
         return payload
 
     async def set_tui_active(self, active: bool) -> None:
         if self.tui_active == active:
             return
         self.tui_active = active
+        await self.broadcast_profile_update()
+
+    async def set_dnd_enabled(self, enabled: bool) -> None:
+        if self.dnd_enabled == enabled:
+            return
+        self.dnd_enabled = enabled
         await self.broadcast_profile_update()
 
     async def _send_profile_update(self, peer: PeerConnection) -> None:
@@ -634,6 +652,13 @@ class PeerManager:
                 if packet is None:
                     break
                 peer.last_seen = time.time()
+                if packet.type in REMOVED_V1_FILE_PACKET_TYPES:
+                    logger.info(
+                        "Ignoring retired %s packet from %s",
+                        REMOVED_V1_FILE_PACKET_TYPES[packet.type],
+                        peer.peer_id,
+                    )
+                    continue
                 if packet.type in (
                     PacketType.HANDSHAKE,
                     PacketType.HANDSHAKE_ACK,
@@ -691,12 +716,22 @@ class PeerManager:
             raise ValueError("Invalid profile signature") from exc
         peer.display_name = Identity.normalize_display_name(payload.display_name)
         peer.tui_active = payload.tui_active
+        try:
+            Ed25519PublicKey.from_public_bytes(peer.signing_public_key).verify(
+                payload.dnd_signature, payload.dnd_signed_bytes()
+            )
+            peer.dnd = payload.dnd
+        except (InvalidSignature, ValueError):
+            # Preserve the last verified DND state when a legacy or malformed
+            # profile omits a valid DND signature.
+            pass
         active = self.peers.get(peer.peer_id)
         if active:
             active.display_name = peer.display_name
             active.tui_active = peer.tui_active
+            active.dnd = peer.dnd
         await self.db.upsert_peer(
-            peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, peer.tui_active, peer.remote_capabilities
+            peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, peer.tui_active, peer.remote_capabilities, peer.dnd
         )
         await self._notify_peer_changed(peer.peer_id)
 

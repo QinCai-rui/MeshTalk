@@ -8,10 +8,86 @@ from __future__ import annotations
 import time
 import os
 import json
+import re
 from pathlib import Path
 
 import aiosqlite
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+MENTION_TOKEN_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
+
+# Matches a mention token only when its `<` is not escaped by an odd
+# run of preceding backslashes; the backslash itself escapes the next
+# character, and `\\` escapes to a literal `\`.
+_MENTION_AT_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
+
+
+def _is_escaped(content: str, index: int) -> bool:
+    r"""Whether the character at *index* is escaped by a preceding `\`."""
+    backslashes = 0
+    i = index - 1
+    while i >= 0 and content[i] == "\\":
+        backslashes += 1
+        i -= 1
+    return backslashes % 2 == 1
+
+
+def extract_mentions(content: str) -> list[str]:
+    r"""Extract unique mentioned peer IDs (`<@user_id>` tokens) in order.
+
+    A token `\<@id>` (odd backslashes before `<`) is an escaped literal and
+    does not count as a mention; `\\` collapses to a single `\` so
+    `\\<@id>` is a mention preceded by a literal `\`.
+    """
+    if not isinstance(content, str) or not content:
+        return []
+    seen: set[str] = set()
+    mentions: list[str] = []
+    for match in _MENTION_AT_RE.finditer(content):
+        if _is_escaped(content, match.start()):
+            continue
+        peer_id = match.group(1)
+        if peer_id not in seen:
+            seen.add(peer_id)
+            mentions.append(peer_id)
+    return mentions
+
+
+def render_mentions_plain(content: str, names: dict[str, str]) -> str:
+    r"""Render `<@user_id>` tokens as plain `@Display Name` text.
+
+    Used for recipients without mention support so mentions stay readable
+    instead of arriving as raw tokens. Escape rules mirror the rich client:
+    `\\` becomes `\`, `\<@id>` renders the literal `<@id>`, and `\\<@id>`
+    is a mention preceded by a literal `\`. A lone `\` before any other
+    character is left untouched.
+    """
+    parts: list[str] = []
+    i = 0
+    n = len(content)
+    while i < n:
+        ch = content[i]
+        if ch == "\\" and i + 1 < n and content[i + 1] == "\\":
+            parts.append("\\")
+            i += 2
+            continue
+        if ch == "\\":
+            match = MENTION_TOKEN_RE.match(content, i + 1)
+            if match:
+                parts.append(match.group(0))
+                i += 1 + len(match.group(0))
+                continue
+        if ch == "<":
+            match = MENTION_TOKEN_RE.match(content, i)
+            if match:
+                peer_id = match.group(1)
+                parts.append("@everyone" if peer_id == "everyone" else "@" + names.get(peer_id, "unknown"))
+                i += len(match.group(0))
+                continue
+        parts.append(ch)
+        i += 1
+    return "".join(parts)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS peers (
@@ -142,7 +218,22 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     file_path TEXT,
     created_at REAL NOT NULL,
     completed_at REAL,
-    received_chunks INTEGER NOT NULL DEFAULT 0
+    received_chunks INTEGER NOT NULL DEFAULT 0,
+    file_sha256 TEXT NOT NULL DEFAULT '',
+    caption TEXT NOT NULL DEFAULT '',
+    batch_id TEXT,
+    batch_index INTEGER,
+    batch_count INTEGER,
+    awaiting_ack_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS file_deliveries (
+    file_id TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    awaiting_ack_at REAL,
+    PRIMARY KEY (file_id, recipient_id)
 );
 
 CREATE TABLE IF NOT EXISTS file_received_chunks (
@@ -172,6 +263,8 @@ class Database:
             await self._db.execute("ALTER TABLE peers ADD COLUMN signing_public_key BLOB")
         if "tui_active" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN tui_active INTEGER NOT NULL DEFAULT 0")
+        if "dnd" not in columns:
+            await self._db.execute("ALTER TABLE peers ADD COLUMN dnd INTEGER NOT NULL DEFAULT 0")
         if "lan_endpoint" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN lan_endpoint TEXT")
         if "remote_endpoint" not in columns:
@@ -222,6 +315,21 @@ class Database:
                 await self._db.execute("ALTER TABLE groups ADD COLUMN name TEXT NOT NULL DEFAULT ''")
         except Exception:
             pass
+        file_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(file_transfers)")}
+        file_migrations = {
+            "file_sha256": "TEXT NOT NULL DEFAULT ''",
+            "caption": "TEXT NOT NULL DEFAULT ''",
+            "batch_id": "TEXT",
+            "batch_index": "INTEGER",
+            "batch_count": "INTEGER",
+            "awaiting_ack_at": "REAL",
+        }
+        for column, definition in file_migrations.items():
+            if column not in file_columns:
+                await self._db.execute(f"ALTER TABLE file_transfers ADD COLUMN {column} {definition}")
+        delivery_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(file_deliveries)")}
+        if "awaiting_ack_at" not in delivery_columns:
+            await self._db.execute("ALTER TABLE file_deliveries ADD COLUMN awaiting_ack_at REAL")
         # Migrate group_messages table (older DBs lacked received_at/kind)
         try:
             gm_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_messages)")}
@@ -298,20 +406,26 @@ class Database:
     async def upsert_peer(
         self, peer_id: str, display_name: str, public_key: bytes, signing_public_key: bytes,
         tui_active: bool = False, capabilities: list[str] | None = None,
+        dnd: bool | None = None,
     ) -> None:
         """Insert or update peer information including keys and online status."""
         await self._db.execute(
-            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active, capabilities)
-               VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active, capabilities, dnd)
+               VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
                ON CONFLICT(peer_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  public_key = excluded.public_key,
                  signing_public_key = excluded.signing_public_key,
                  last_seen = excluded.last_seen,
-                   is_online = 1,
-                   tui_active = excluded.tui_active,
-                   capabilities = COALESCE(excluded.capabilities, peers.capabilities)""",
-            (peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active), json.dumps(sorted(set(capabilities))) if capabilities is not None else None),
+                  is_online = 1,
+                  tui_active = excluded.tui_active,
+                  dnd = CASE WHEN ? IS NULL THEN peers.dnd ELSE excluded.dnd END,
+                  capabilities = COALESCE(excluded.capabilities, peers.capabilities)""",
+            (
+                peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active),
+                json.dumps(sorted(set(capabilities))) if capabilities is not None else None,
+                int(dnd) if dnd is not None else 0, dnd,
+            ),
         )
         await self._db.commit()
 
@@ -594,15 +708,28 @@ class Database:
         await self._db.commit()
         return cursor.rowcount > 0
 
-    async def delete_file_transfer_locally(self, file_id: str) -> dict | None:
-        """Remove a local attachment record, chunks, and pending sends."""
+    async def delete_file_transfer_locally(self, file_id: str, files_base: Path) -> dict | None:
+        """Remove all local metadata associated with an attachment."""
         transfer = await self.get_file_transfer(file_id)
         if transfer is None:
             return None
         await self._db.execute("DELETE FROM file_transfers WHERE file_id = ?", (file_id,))
         await self._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (file_id,))
+        await self._db.execute("DELETE FROM file_deliveries WHERE file_id = ?", (file_id,))
         await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (file_id,))
+        await self._db.execute("DELETE FROM seen_messages WHERE message_id = ?", (file_id,))
         await self._db.commit()
+        file_path = transfer.get("file_path")
+        if file_path and await self.count_file_path_references(file_path) == 0:
+            path = Path(file_path)
+            try:
+                base = files_base.resolve()
+                path.resolve().relative_to(base)
+                path.unlink(missing_ok=True)
+                if path.parent.resolve() != base:
+                    path.parent.rmdir()
+            except (OSError, ValueError):
+                pass
         return transfer
 
     async def upsert_group(self, group_id: str, name: str) -> None:
@@ -645,6 +772,29 @@ class Database:
             (local_peer_id,),
         ) as cursor:
             return [dict(row) async for row in cursor]
+
+    async def get_group_mention_unread_count(self, group_id: str, local_peer_id: str) -> int:
+        """Count unread messages in a group that mention the local peer."""
+        async with self._db.execute(
+            """SELECT content FROM group_messages
+               WHERE group_id = ? AND sender_id != ?
+                 AND received_at > COALESCE(
+                   (SELECT read_at FROM groups WHERE group_id = ?), 0
+                 )""",
+            (group_id, local_peer_id, group_id),
+        ) as cursor:
+            mention_count = 0
+            async for row in cursor:
+                try:
+                    content = self._decrypt_content(row["content"]) or ""
+                except (InvalidTag, ValueError, UnicodeDecodeError):
+                    # A corrupt message must not hide mention counts for the
+                    # other rows in this group.
+                    continue
+                mentions = extract_mentions(content)
+                if local_peer_id in mentions or "everyone" in mentions:
+                    mention_count += 1
+            return mention_count
 
     async def upsert_group_member(
         self,
@@ -738,6 +888,7 @@ class Database:
             messages = [dict(row) async for row in cursor]
         for message in messages:
             message["content"] = self._decrypt_content(message["content"]) or ""
+            message["mentions"] = extract_mentions(message["content"])
             message["deliveries"] = await self.get_group_deliveries(message["message_id"])
         return messages
 
@@ -927,13 +1078,15 @@ class Database:
         """Store or update a file transfer record in the database."""
         await self._db.execute(
             """INSERT OR REPLACE INTO file_transfers
-               (file_id, filename, file_size, chunk_size, total_chunks, sender_id, recipient_id, group_id, direction, status, file_path, created_at, completed_at, received_chunks)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (file_id, filename, file_size, chunk_size, total_chunks, sender_id, recipient_id, group_id, direction, status, file_path, created_at, completed_at, received_chunks, file_sha256, caption, batch_id, batch_index, batch_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 transfer["file_id"], transfer["filename"], transfer["file_size"], transfer["chunk_size"],
                 transfer["total_chunks"], transfer["sender_id"], transfer["recipient_id"], transfer.get("group_id"),
                 transfer["direction"], transfer["status"], transfer.get("file_path"), transfer["created_at"],
                 transfer.get("completed_at"), transfer.get("received_chunks", 0),
+                transfer.get("file_sha256", ""), transfer.get("caption", ""), transfer.get("batch_id"),
+                transfer.get("batch_index"), transfer.get("batch_count"),
             ),
         )
         await self._db.commit()
@@ -965,8 +1118,12 @@ class Database:
         clauses: list[str] = []
         params: list[str] = []
         if peer_id:
-            clauses.append("(sender_id = ? OR recipient_id = ?)")
+            peer_clause = "(sender_id = ? OR recipient_id = ?)"
             params.extend([peer_id, peer_id])
+            if include_group:
+                peer_clause = "(" + peer_clause + " OR EXISTS (SELECT 1 FROM file_deliveries d WHERE d.file_id = file_transfers.file_id AND d.recipient_id = ?))"
+                params.append(peer_id)
+            clauses.append(peer_clause)
             if not group_id and not include_group:
                 # Falsy group_id (None, or "" which IPC validation already
                 # rejects) means a DM listing: direct transfers only. Wire
@@ -981,6 +1138,62 @@ class Database:
         query += " ORDER BY created_at DESC"
         async with self._db.execute(query, tuple(params)) as cursor:
             return [dict(row) async for row in cursor]
+
+    async def set_file_delivery(self, file_id: str, recipient_id: str, status: str) -> None:
+        """Create or update one recipient's delivery state."""
+        await self._db.execute(
+            """INSERT INTO file_deliveries (file_id, recipient_id, status, updated_at, awaiting_ack_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(file_id, recipient_id) DO UPDATE SET
+                 status = excluded.status, updated_at = excluded.updated_at,
+                 awaiting_ack_at = excluded.awaiting_ack_at""",
+            (file_id, recipient_id, status, time.time(), time.time() if status == "sent" else None),
+        )
+        await self._db.commit()
+
+    async def get_file_delivery(self, file_id: str, recipient_id: str) -> dict | None:
+        """Return one recipient's delivery state."""
+        async with self._db.execute(
+            "SELECT * FROM file_deliveries WHERE file_id = ? AND recipient_id = ?",
+            (file_id, recipient_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_file_deliveries(self, file_id: str) -> list[dict]:
+        """Return all recipient states for a logical file send."""
+        async with self._db.execute(
+            "SELECT * FROM file_deliveries WHERE file_id = ? ORDER BY recipient_id", (file_id,)
+        ) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def delete_file_delivery(self, file_id: str, recipient_id: str) -> bool:
+        """Delete one recipient's delivery state."""
+        cursor = await self._db.execute(
+            "DELETE FROM file_deliveries WHERE file_id = ? AND recipient_id = ?",
+            (file_id, recipient_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def remove_file_from_outqueue(self, file_id: str, recipient_id: str | None = None) -> int:
+        """Delete queued file packets, optionally scoped to one recipient."""
+        if recipient_id is None:
+            cursor = await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (file_id,))
+        else:
+            cursor = await self._db.execute(
+                "DELETE FROM outgoing_queue WHERE message_id = ? AND recipient_id = ?",
+                (file_id, recipient_id),
+            )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def count_file_path_references(self, file_path: str | Path) -> int:
+        """Count transfer rows sharing a local file path."""
+        async with self._db.execute(
+            "SELECT COUNT(*) FROM file_transfers WHERE file_path = ?", (str(file_path),)
+        ) as cursor:
+            return (await cursor.fetchone())[0]
 
     async def get_pending_file_offers(self) -> list[dict]:
         """Retrieve all file transfers that are pending or actively transferring."""
@@ -1052,6 +1265,11 @@ class Database:
     async def commit(self) -> None:
         """Commit pending changes made by a batched operation."""
         await self._db.commit()
+
+    async def reset_file_received_chunks(self, file_id: str) -> None:
+        """Drop all received-chunk state so a full integrity retry overwrites every chunk."""
+        await self._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (file_id,))
+        await self._db.execute("UPDATE file_transfers SET received_chunks = 0 WHERE file_id = ?", (file_id,))
 
     async def get_missing_file_chunk_ranges(self, file_id: str, total_chunks: int) -> list[tuple[int, int]]:
         """Calculate contiguous ranges of missing file chunks."""

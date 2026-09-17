@@ -1,11 +1,12 @@
 {
   "name": "meshtalk-cli",
-  "version": "0.28.3",
+  "version": "0.32.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build": "bun build src/index.ts --target=bun --compile --outfile dist/meshtalk-cli"
+    "build": "bun build src/index.ts --target=bun --compile --outfile dist/meshtalk-cli",
+    "test": "bun test"
   },
   "dependencies": {},
   "devDependencies": {

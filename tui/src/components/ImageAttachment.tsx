@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type RefObject } from "react"
 import { existsSync, statSync } from "fs"
 import type { ImageProtocol } from "../types"
 import { chatTheme as theme } from "../chatTheme"
+import { HoverHighlight } from "./HoverHighlight"
 
 type CachedImage = {
   modifiedAt: number
@@ -46,7 +47,8 @@ export function fittedImageSize(imageWidth: number, imageHeight: number, maxWidt
 }
 
 export function isLocalFileMissing(filePath: string | null | undefined): boolean {
-  return !filePath || !existsSync(filePath)
+  if (!filePath) return true
+  try { return !statSync(filePath).isFile() } catch { return true }
 }
 
 export function isFullyWithinViewport(node: Pick<BoxRenderable, "screenY" | "height">, viewport: Pick<BoxRenderable, "screenY" | "height">): boolean {
@@ -330,12 +332,12 @@ export function ImageAttachment({ id, filePath, bytes, filename, protocol, expec
         : undefined
     : undefined
   const placeholderTop = layoutSize ? Math.max(0, Math.floor((layoutSize.height - 1) / 2)) : 0
-  return <box id={id} ref={containerRef} onSizeChange={notifyImageViewportChanged} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={{ flexDirection: "column", width: layoutSize?.width, height: layoutSize?.height, minHeight: layoutSize ? undefined : 1 }}>
+  return <HoverHighlight id={id} ref={containerRef} disabled={!onOpen} onSizeChange={notifyImageViewportChanged} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={{ flexDirection: "column", width: layoutSize?.width, height: layoutSize?.height, minHeight: layoutSize ? undefined : 1 }}>
     {/* Keep the renderable identity and reserved geometry stable while its
         native source is released. This avoids a Kitty placement being
         destroyed and recreated when an adjacent row crosses the viewport. */}
     {layoutSize ? <image source={safeImage} fit="fit" protocol={displayProtocol} style={layoutSize} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} /> : null}
     {!layoutSize && placeholderText ? <text fg={theme.muted}>{placeholderText}</text> : null}
     {layoutSize && placeholderText ? <text position="absolute" left={0} top={placeholderTop} width={layoutSize.width} fg={theme.muted}>{placeholderText}</text> : null}
-  </box>
+  </HoverHighlight>
 }
