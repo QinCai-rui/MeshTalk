@@ -31,6 +31,7 @@ from .protocol import (
     MAX_PACKET_SIZE,
     DEFAULT_CAPABILITIES,
     Packet,
+    REMOVED_V1_FILE_PACKET_TYPES,
     intersect_capabilities,
     validate_capabilities,
 )
@@ -632,6 +633,13 @@ class UdpTransport:
         packet = Packet.decode(frame[:HEADER_SIZE], frame[HEADER_SIZE:])
         session.seen[message_id] = time.monotonic()
         self._send_ack(session, message_id)
+        if packet.type in REMOVED_V1_FILE_PACKET_TYPES:
+            logger.info(
+                "Ignoring retired %s packet from %s",
+                REMOVED_V1_FILE_PACKET_TYPES[packet.type],
+                session.peer_id,
+            )
+            return
         self._spawn(self.on_packet(session.peer_id, packet))
 
     def _send_ack(self, session: Session, message_id: int) -> None:

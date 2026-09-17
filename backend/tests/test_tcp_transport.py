@@ -124,6 +124,13 @@ class TcpSessionTest(unittest.TestCase):
             reply,
         )
 
+    def test_retired_v1_records_do_not_disconnect_the_session(self):
+        for packet_type in (0x11, 0x12, 0x13):
+            record = self.local_session.encrypt_packet(Packet(packet_type))
+            header, ciphertext = record[:TCP_RECORD_HEADER_SIZE], record[TCP_RECORD_HEADER_SIZE:]
+            packet = self.remote_session.decrypt_record(header, ciphertext)
+            self.assertEqual(packet.type, packet_type)
+
     def test_ciphertext_and_associated_data_tampering_is_rejected(self):
         record = self.local_session.encrypt_packet(Packet(PacketType.PROFILE, b"profile"))
         header, ciphertext = record[:TCP_RECORD_HEADER_SIZE], record[TCP_RECORD_HEADER_SIZE:]
@@ -182,11 +189,14 @@ class TcpSessionTest(unittest.TestCase):
     def test_oversized_application_packet_is_rejected(self):
         with self.assertRaises(ValueError):
             self.local_session.encrypt_packet(
-                Packet(PacketType.FILE_CHUNK, b"x" * (MAX_PACKET_SIZE + 1))
+                Packet(PacketType.FILE_CHUNK_V2, b"x" * (MAX_PACKET_SIZE + 1))
             )
 
 
 class _DummyDatabase:
+    async def get_peer(self, *args, **kwargs):
+        return None
+
     async def upsert_peer(self, *args, **kwargs):
         pass
 

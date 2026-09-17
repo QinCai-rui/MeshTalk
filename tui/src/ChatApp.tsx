@@ -2176,10 +2176,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const conversationFiles = useMemo(() => {
     const grouped = new Map<string, FileTransfer[]>();
     for (const f of conversationFileTransfers) {
-      const legacyGroup = !f.batch_id && !f.file_sha256 && !f.deliveries && f.group_id && f.direction === "outbound";
-      const key = legacyGroup
-        ? `legacy:${f.filename}|${f.sender_id}|${f.group_id}|${Math.round(f.created_at)}`
-        : `file:${f.file_id}`;
+      const key = `file:${f.file_id}`;
       const list = grouped.get(key);
       if (list) list.push(f);
       else grouped.set(key, [f]);

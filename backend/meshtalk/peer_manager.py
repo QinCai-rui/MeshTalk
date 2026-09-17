@@ -24,6 +24,7 @@ from .protocol import (
     Packet,
     PacketType,
     ProfilePayload,
+    REMOVED_V1_FILE_PACKET_TYPES,
     TCP_TRANSPORT_VERSION,
     TCP_PORT,
     DEFAULT_CAPABILITIES,
@@ -651,6 +652,13 @@ class PeerManager:
                 if packet is None:
                     break
                 peer.last_seen = time.time()
+                if packet.type in REMOVED_V1_FILE_PACKET_TYPES:
+                    logger.info(
+                        "Ignoring retired %s packet from %s",
+                        REMOVED_V1_FILE_PACKET_TYPES[packet.type],
+                        peer.peer_id,
+                    )
+                    continue
                 if packet.type in (
                     PacketType.HANDSHAKE,
                     PacketType.HANDSHAKE_ACK,

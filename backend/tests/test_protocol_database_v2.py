@@ -1,4 +1,5 @@
 import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,9 @@ from meshtalk.protocol import (
     FileChunkV2Payload,
     FileOfferV2Payload,
     PacketType,
+    Packet,
+    HEADER_FORMAT,
+    REMOVED_V1_FILE_PACKET_TYPES,
     ProfilePayload,
     capability_for_packet,
 )
@@ -39,6 +43,17 @@ class FileProtocolV2Tests(unittest.TestCase):
         self.assertEqual(FileChunkV2Payload.decode(chunk.encode()), chunk)
         ack = FileAckV2Payload(FILE_ID, "recipient", "missing", b"s" * 64, [(0, 2)])
         self.assertEqual(FileAckV2Payload.decode(ack.encode()), ack)
+
+    def test_retired_v1_packet_types_are_reserved_and_decoded_for_ignoring(self):
+        for packet_type in REMOVED_V1_FILE_PACKET_TYPES:
+            header = struct.pack(HEADER_FORMAT, 0, packet_type)
+            length, decoded_type = Packet.decode_header(header)
+            self.assertEqual(length, 0)
+            self.assertEqual(decoded_type, packet_type)
+            self.assertEqual(Packet.decode(header, b"").type, packet_type)
+
+        with self.assertRaises(ValueError):
+            Packet.decode_header(struct.pack(HEADER_FORMAT, 0, 0x18))
 
     def test_offer_strict_validation(self):
         invalid = [

@@ -220,15 +220,14 @@ encrypted HANDSHAKE_CONFIRM ------------------------------>
 
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
-`file_transfer`, `file_transfer_v2`, `typing_indicators`, `message_replies`, `at_mentions`,
+`file_transfer_v2`, `typing_indicators`, `message_replies`, `at_mentions`,
 `direct_route_recovery`). The agreed capability set is the **intersection** of
 both peers' advertised sets, and higher-level code gates behaviour on it:
 `text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
 enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
 `friend_requests` enables the friend-request packet family, `group_chat` enables
-the group packet family, `file_transfer` enables v1 file offer/chunk/ack
-packets, and `file_transfer_v2` enables the v2 file offer/chunk/ack packets
-(section 7.6). `message_replies` enables reply references on message
+the group packet family, and `file_transfer_v2` enables file offer/chunk/ack
+packets (section 7.6). `message_replies` enables reply references on message
 packets. `at_mentions` marks a peer as able to render `<@user_id>` mention
 tokens as highlighted pills; senders transitively downgrade mention content
 to plain `@Display Name` text for peers that do not advertise it, so older
@@ -242,6 +241,14 @@ packets. Missing capability lists are rejected. Unknown remote capabilities are
 retained for diagnostics but remain disabled locally. Each side reports both
 directions of a capability gap, flashes a warning, and continues using every
 shared capability.
+
+### Deprecated / removed
+
+Legacy V1 file transfer support was dropped in **v0.32.0**, commit
+`8677c2d` (`feat: make file transfer v2-only`). The removed `file_transfer`
+capability and packet family were `FILE_OFFER` (`0x11`), `FILE_CHUNK`
+(`0x12`), and `FILE_ACK` (`0x13`). Current clients use only
+`file_transfer_v2` and `FILE_OFFER_V2`/`FILE_CHUNK_V2`/`FILE_ACK_V2`.
 
 LAN TCP transport security. After the signed handshake and encrypted key
 confirmation, every LAN TCP application packet has an independent AES-GCM
@@ -494,7 +501,7 @@ JSON hello (canonical, then Ed25519-signed):
 
 ```json
 {
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer", "file_transfer_v2", "typing_indicators", "message_replies", "direct_route_recovery"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer_v2", "typing_indicators", "message_replies", "direct_route_recovery"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -521,9 +528,7 @@ During the handshake, peers exchange signed lists of supported capabilities.
   - `block_reports`: Report message blocking status (`MESSAGE_BLOCKED`).
   - `group_chat`: Exchange `GROUP_MESSAGE`, `GROUP_MESSAGE_ACK`, and
     `GROUP_LEAVE` packets for mutually joined named rooms.
-  - `file_transfer`: Exchange v1 `FILE_OFFER`, `FILE_CHUNK`, and `FILE_ACK`
-    packets for cross-platform file transfer with image preview and download.
-  - `file_transfer_v2`: Exchange v2 `FILE_OFFER_V2`, `FILE_CHUNK_V2`, and
+  - `file_transfer_v2`: Exchange `FILE_OFFER_V2`, `FILE_CHUNK_V2`, and
     `FILE_ACK_V2` packets (SHA-256 integrity, captions, batches, per-recipient
     group deliveries). A peer lacking it never receives v2 bytes; sends to it
     are marked `unavailable`.
@@ -778,11 +783,11 @@ messages from peers or the control service.
 ### 7.6 File Transfer Protocol
 
 File transfer sends binary files between peers using the same E2EE envelope as
-messages. Files are chunked into encrypted pieces, sent as `FILE_CHUNK` packets,
-and reassembled by the receiver. The `file_transfer` capability is required on
-both peers. The v2 family (`FILE_OFFER_V2`/`FILE_CHUNK_V2`/`FILE_ACK_V2`,
-0x15-0x17) adds SHA-256 integrity, captions, and batches, and requires
-`file_transfer_v2` on both peers instead; v1 remains receive-only.
+messages. Files are chunked into encrypted pieces, sent as `FILE_CHUNK_V2`
+packets, and reassembled by the receiver. `file_transfer_v2` is required on
+both peers. The family (`FILE_OFFER_V2`/`FILE_CHUNK_V2`/`FILE_ACK_V2`,
+0x15-0x17) includes SHA-256 integrity, captions, batches, and per-recipient
+group delivery. Clients do not support the legacy v1 file packet family.
 
 #### Protocol Constants
 
@@ -796,22 +801,22 @@ both peers. The v2 family (`FILE_OFFER_V2`/`FILE_CHUNK_V2`/`FILE_ACK_V2`,
 
 #### Flow
 
-1. **Sender** reads the local file, computes `total_chunks = ceil(file_size / chunk_size)`, and sends a signed `FILE_OFFER` to the recipient (or to every active cached member for group files).
+1. **Sender** reads the local file, computes `total_chunks = ceil(file_size / chunk_size)`, and sends a signed `FILE_OFFER_V2` to the recipient (or to every active cached member for group files).
 2. **Receiver** emits a `file_offer` IPC event so the TUI can show an incoming file notification. Acceptance is implicit (auto-download on receipt of chunks).
-3. **Sender** sends `FILE_CHUNK` packets in order, each containing an AES-256-GCM encrypted slice of the file. Each chunk is individually E2EE using the same one-time ephemeral X25519/AES-GCM construction as messages (section 7.1), with the AAD containing the chunk routing metadata.
+3. **Sender** sends `FILE_CHUNK_V2` packets in order, each containing an AES-256-GCM encrypted slice of the file. Each chunk is individually E2EE using the same one-time ephemeral X25519/AES-GCM construction as messages (section 7.1), with the AAD containing the chunk routing metadata.
 4. **Receiver** decrypts, reassembles chunks by `(file_id, chunk_index)`, and writes to `~/.meshtalk/files/<file_id>/<sanitized_filename>`. Completed files emit a `file_completed` IPC event with the local path.
-5. **Receiver** sends a signed `FILE_ACK` with status `completed` (or `missing` with `missing_ranges` for retransmission). The sender marks the transfer `delivered` on receipt. If the sender is not a friend (direct) or not an active member / is blocked (group), the receiver sends `FILE_ACK` with status `blocked` instead — parity with `MESSAGE_BLOCKED` — and the sender marks the transfer `blocked` and emits `file_blocked`.
-6. **Offline queueing**: `FILE_OFFER` and `FILE_CHUNK` packets are queued in the outgoing queue when the recipient is offline, identical to message queueing. On reconnect, queued transfers are flushed via `flush_for_peer`.
-7. **Resume**: `resume_for_peer` detects partially received transfers and sends `FILE_ACK` with `missing_ranges` so the sender retransmits only the missing chunks.
+5. **Receiver** sends a signed `FILE_ACK_V2` with status `completed` (or `missing` with `missing_ranges` for retransmission). The sender marks the transfer `delivered` on receipt. If the sender is not a friend (direct) or not an active member / is blocked (group), the receiver sends `FILE_ACK_V2` with status `blocked` instead — parity with `MESSAGE_BLOCKED` — and the sender marks the transfer `blocked` and emits `file_blocked`.
+6. **Offline queueing**: `FILE_OFFER_V2` and `FILE_CHUNK_V2` packets are queued in the outgoing queue when the recipient is offline, identical to message queueing. On reconnect, queued transfers are flushed via `flush_for_peer`.
+7. **Resume**: `resume_for_peer` detects partially received transfers and sends `FILE_ACK_V2` with `missing_ranges` so the sender retransmits only the missing chunks.
 
 #### Security Properties
 
 - Each chunk is individually E2EE with a fresh ephemeral key (forward secrecy per chunk).
-- The `FILE_OFFER` signature authenticates the file metadata (filename, size, chunk count).
+- The `FILE_OFFER_V2` signature authenticates the file metadata (filename, size, chunk count, hash, caption, and batch data).
 - Filenames are sanitized on both sender and receiver to prevent path traversal.
 - File storage is scoped to `~/.meshtalk/files/<file_id>/` — files never escape this directory.
-- Peers that do not negotiate `file_transfer` never receive file packets.
-- Incoming file offers from non-friends (for direct transfers) or non-members (for group transfers) are rejected with a signed `FILE_ACK blocked` notice (requires `block_reports`, like `MESSAGE_BLOCKED`).
+- Peers that do not negotiate `file_transfer_v2` never receive file packets; a new send reports an explicit upgrade error before a transfer is created.
+- Incoming file offers from non-friends (for direct transfers) or non-members (for group transfers) are rejected with a signed `FILE_ACK_V2 blocked` notice (requires `block_reports`, like `MESSAGE_BLOCKED`).
 - Early-chunk buffer has a TTL (30 s) and per-file cap (8 chunks) to bound memory usage from out-of-order arrivals.
 - Packet locks are cleaned up after unlock to prevent resource leaks.
 
@@ -843,9 +848,6 @@ after key confirmation, all application packets use encrypted TCP records.
 | GROUP_MESSAGE | 0x0E | Group Message | Signed pairwise-encrypted copy for one group recipient. |
 | GROUP_MESSAGE_ACK | 0x0F | Group Message ACK | Signed per-recipient delivery acknowledgement. |
 | GROUP_LEAVE | 0x10 | Group Leave | Signed durable member-leave event. |
-| FILE_OFFER | 0x11 | File Offer | Signed file metadata (filename, size, chunk count) for a direct or group transfer. |
-| FILE_CHUNK | 0x12 | File Chunk | E2EE encrypted file data chunk with per-chunk signature. |
-| FILE_ACK | 0x13 | File Ack | Delivery acknowledgement with optional `missing_ranges` for retransmission. |
 | FILE_OFFER_V2 | 0x15 | File Offer v2 | Signed metadata + SHA-256 + caption + batch refs. Requires `file_transfer_v2`. |
 | FILE_CHUNK_V2 | 0x16 | File Chunk v2 | E2EE encrypted file data chunk with per-chunk signature. Requires `file_transfer_v2`. |
 | FILE_ACK_V2 | 0x17 | File Ack v2 | Delivery acknowledgement (`completed`/`missing`/`blocked`) + ranges. Requires `file_transfer_v2`. |
@@ -1066,7 +1068,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer, file_transfer_v2, typing_indicators, message_replies, at_mentions, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer_v2, typing_indicators, message_replies, at_mentions, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |

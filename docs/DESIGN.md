@@ -232,33 +232,25 @@ without re-friending.
 ## File Transfer
 
 File transfer sends binary files (up to 50 MiB) directly between peers using
-the same E2EE envelope as messages. Files are chunked into encrypted pieces
-(MAX_FILE_CHUNK_SIZE = 28 KiB plaintext), sent as `FILE_CHUNK` packets, and
-reassembled by the receiver. The `file_transfer` capability is required on both
-peers.
+the same E2EE envelope as messages. It requires `file_transfer_v2` on both
+peers and uses `FILE_OFFER_V2`, `FILE_CHUNK_V2`, and `FILE_ACK_V2`. Legacy V1
+file packets are not supported by current clients.
 
-The flow is:
+### Deprecated / removed
 
-1. Sender reads the local file, computes chunk parameters, and sends a signed
-   `FILE_OFFER` containing file metadata (filename, size, chunk count).
-2. Receiver auto-accepts and emits a `file_offer` IPC event for TUI display.
-   Incoming files are stored in `~/.meshtalk/files/<file_id>/`.
-3. Sender sends `FILE_CHUNK` packets in order, each individually E2EE with a
-   fresh ephemeral X25519 key (forward secrecy per chunk).
-4. Receiver decrypts, reassembles by `(file_id, chunk_index)`, and writes to
-   disk. Completion emits `file_completed` with the local path.
-5. Receiver sends a signed `FILE_ACK` (status `completed` or `partial` with
-   `missing_ranges`). Sender marks `delivered` on receipt.
+V1 file transfer support was dropped in **v0.32.0**, commit `8677c2d`
+(`feat: make file transfer v2-only`). The former `file_transfer` capability
+and `FILE_OFFER`/`FILE_CHUNK`/`FILE_ACK` packet family remain historical
+references only; current clients are V2-only.
 
-Offline transfers are queued in the outgoing queue (identical to message
-queueing) and flushed on reconnect via `flush_for_peer`. Partial transfers
-support resume: `resume_for_peer` detects incomplete transfers and sends
-`FILE_ACK` with `missing_ranges` so the sender retransmits only missing chunks.
+The sender snapshots and SHA-256 hashes the file, then sends a signed offer and
+individually E2EE chunks. The receiver verifies the whole-file hash before
+completion. A direct send to a peer without V2 fails with an explicit upgrade
+error before a transfer is created. Offline V2 transfers queue durably and
+resume with signed missing-range ACKs.
 
-Group file transfers use the same protocol with `group_id` set. The offer is
-fanned out to every active cached group member. Each recipient independently
-decrypts and stores the file. Offline group members with cached encryption keys
-receive durable queue entries.
+Group sends use one shared `file_id` and per-recipient deliveries. Unsupported,
+blocked, or inactive members are `unavailable`; capable members continue.
 
 Security properties:
 
@@ -269,7 +261,7 @@ Security properties:
   memory from out-of-order arrivals.
 - Incoming file offers from non-friends (direct) or non-members (group) are
   rejected.
-- Packet locks are cleaned up after unlock to prevent resource leaks.
+- Packet locks serialize per-peer packet processing.
 
 ## Presence And Notifications
 
