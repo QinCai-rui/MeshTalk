@@ -1,6 +1,6 @@
 import { spawn as spawnDetached } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs"
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs"
 import { chmod, copyFile, mkdir, open, rename, rm } from "fs/promises"
 import { tmpdir } from "os"
 import { basename, dirname, join, resolve, sep, win32 as win32path } from "path"
@@ -360,25 +360,109 @@ export function applyPendingWindowsReplacement(): boolean {
     logUpdateHelper(`pending update ignored: staging ${pending.staging} is not inside ${pending.installDir}`)
     return false
   }
-  // Replace atomically: the launcher itself is always locked while this
-  // process runs, so a partial replacement would leave a mixed-version
-  // install (new backend, old launcher). If any file is locked, roll back
-  // the files already moved and leave the pending marker for the restart
-  // helper, which runs after this process has exited.
-  const moved: string[] = []
-  for (const name of backendFirst(pending.files)) {
+  // Pre-flight: never touch the install dir when staged files are missing.
+  for (const name of pending.files) {
     try {
-      renameSync(join(pending.staging, name), join(pending.installDir, name))
-      moved.push(name)
-    } catch {
-      for (const done of moved) {
-        try { renameSync(join(pending.installDir, done), join(pending.staging, done)) } catch {}
+      if (!lstatSync(join(pending.staging, name)).isFile()) {
+        logUpdateHelper(`pending update deferred: staged file missing: ${name}`)
+        return false
       }
+    } catch {
+      logUpdateHelper(`pending update deferred: staged file missing: ${name}`)
       return false
     }
   }
+  const replaced = replacePendingFiles(pending)
+  if (!replaced) return false
   try { rmSync(pending.staging, { recursive: true, force: true }) } catch {}
   try { rmSync(PENDING_UPDATE_PATH, { force: true }) } catch {}
+  return true
+}
+
+// Atomically promotes staged files into the install dir. Exported for testing.
+// Uses a two-phase backup protocol so a locked file (the running launcher on
+// Windows is always locked, as is any executable held open by another
+// MeshTalk instance) can never cause a partial replacement:
+//
+// - Phase 1 backs up each destination with rename (which fails on a locked
+//   file, leaving everything untouched or restorable).
+// - Phase 2 renames each staged file into place.
+// - On any failure, promoted files are moved back to staging and backups are
+//   restored, so the install dir keeps its original contents.
+//
+// A naive "rename staged -> dest, roll back moved files on failure" is
+// destructive: rename overwrites the destination, so rolling back moves the
+// *new* file away and the original is lost. With another instance holding
+// meshtalk.exe locked, that sequence deletes meshtalk-backend.exe from the
+// install dir and leaves a broken install that can only spawn uv (ENOENT).
+export function replacePendingFiles(pending: PendingUpdate): boolean {
+  // Heal a previously corrupted install (destination missing but staged copy
+  // present) by copying — not moving — the missing file into place. Staging
+  // stays intact so the restart helper can still bring every file to the same
+  // version later. Returns false to keep the pending marker.
+  let healed = false
+  for (const name of pending.files) {
+    const source = join(pending.staging, name)
+    const destination = join(pending.installDir, name)
+    let destinationExists = false
+    try { destinationExists = lstatSync(destination).isFile() } catch { destinationExists = false }
+    if (destinationExists) continue
+    try {
+      copyFileSync(source, destination)
+      healed = true
+      logUpdateHelper(`pending update healed missing file: ${name}`)
+    } catch (error) {
+      logUpdateHelper(`pending update could not heal missing file ${name}: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+  }
+  // The running process locks its own executable for as long as it lives, so
+  // a full in-place replacement from inside the installed launcher can never
+  // succeed. Bail out before touching anything; the detached helper owns the
+  // replacement after this process exits. (Healing above still runs first so
+  // a missing backend is restored and the app can start.)
+  try {
+    const installRoot = resolve(pending.installDir)
+    for (const candidate of [process.execPath, process.argv[0], process.argv[1]]) {
+      if (!candidate) continue
+      try {
+        if (resolve(dirname(candidate)) === installRoot && pending.files.includes(basename(candidate))) {
+          logUpdateHelper(`pending update deferred: ${candidate} is running (locked); helper will replace after exit`)
+          return false
+        }
+      } catch {}
+    }
+  } catch {}
+  if (healed) return false
+  const backupSuffix = ".meshtalk-update-bak"
+  const backedUp: string[] = []
+  const moved: string[] = []
+  try {
+    for (const name of backendFirst(pending.files)) {
+      const destination = join(pending.installDir, name)
+      let destinationExists = false
+      try { destinationExists = lstatSync(destination).isFile() } catch { destinationExists = false }
+      if (!destinationExists) throw new Error(`destination missing: ${name}`)
+      renameSync(destination, `${destination}${backupSuffix}`)
+      backedUp.push(name)
+    }
+    for (const name of backendFirst(pending.files)) {
+      renameSync(join(pending.staging, name), join(pending.installDir, name))
+      moved.push(name)
+    }
+  } catch (error) {
+    for (const done of moved) {
+      try { renameSync(join(pending.installDir, done), join(pending.staging, done)) } catch {}
+    }
+    for (const name of [...backedUp].reverse()) {
+      try { renameSync(join(pending.installDir, name) + backupSuffix, join(pending.installDir, name)) } catch {}
+    }
+    logUpdateHelper(`pending update deferred (locked): ${error instanceof Error ? error.message : String(error)}`)
+    return false
+  }
+  for (const name of backedUp) {
+    try { rmSync(join(pending.installDir, name) + backupSuffix, { force: true }) } catch {}
+  }
   return true
 }
 
@@ -401,6 +485,86 @@ export function logUpdateHelper(message: string): void {
     const stamp = new Date().toISOString()
     writeFileSync(join(DATA_DIR, "update-helper.log"), `${stamp} ${message}\n`, { flag: "a" })
   } catch {}
+}
+
+// Parses `tasklist /fo csv /nh` output into meshtalk.exe PIDs, excluding the
+// current process and deduplicating. Exported for testing.
+export function parseLauncherPids(tasklistCsv: string, currentPid: number): number[] {
+  const pids: number[] = []
+  for (const line of tasklistCsv.split("\n")) {
+    const match = line.match(/"meshtalk\.exe","\s*(\d+)\s*"/i)
+    if (!match) continue
+    const pid = Number(match[1])
+    if (Number.isInteger(pid) && pid > 0 && pid !== currentPid && !pids.includes(pid)) pids.push(pid)
+  }
+  return pids
+}
+
+// PIDs of other meshtalk.exe launchers still running. A running launcher
+// locks meshtalk.exe, so the update helper could never replace it while they
+// live. Fails open (returns []) when tasklist itself is unavailable.
+export function otherLauncherPids(currentPid: number = process.pid): number[] {
+  if (process.platform !== "win32") return []
+  try {
+    const result = Bun.spawnSync(["tasklist", "/fo", "csv", "/nh", "/fi", "IMAGENAME eq meshtalk.exe"], { stdout: "pipe", stderr: "ignore" })
+    if (result.exitCode !== 0) {
+      logUpdateHelper(`otherLauncherPids: tasklist exited with code ${result.exitCode}; failing open (no fail-fast on other launchers)`)
+      return []
+    }
+    return parseLauncherPids(new TextDecoder().decode(result.stdout), currentPid)
+  } catch (error) {
+    logUpdateHelper(`otherLauncherPids: tasklist failed (${error instanceof Error ? error.message : String(error)}); failing open (no fail-fast on other launchers)`)
+    return []
+  }
+}
+
+function launcherPidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+export type CloseLaunchersResult = { closed: number[]; remaining: number[] }
+
+// Force-closes the given launcher PIDs so a pending update can replace the
+// locked meshtalk.exe. Uses `taskkill /F`: console launchers have no message
+// loop, so a graceful `taskkill` without /F is refused by Windows (verified
+// empirically: "This process can only be terminated forcefully"). Never
+// touches the current process. Returns which PIDs are gone vs still alive
+// after waiting up to timeoutMs for them to exit.
+export async function closeLauncherPids(pids: number[], timeoutMs = 10_000): Promise<CloseLaunchersResult> {
+  const closed: number[] = []
+  const remaining: number[] = []
+  if (process.platform !== "win32") return { closed, remaining }
+  const targets = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid)
+  for (const pid of targets) {
+    if (!launcherPidAlive(pid)) continue
+    try {
+      const result = Bun.spawnSync(["taskkill", "/F", "/pid", String(pid)], { stdout: "ignore", stderr: "ignore" })
+      logUpdateHelper(`close launcher pid=${pid}: taskkill /F exited with code ${result.exitCode}`)
+    } catch (error) {
+      logUpdateHelper(`close launcher pid=${pid}: taskkill failed (${error instanceof Error ? error.message : String(error)})`)
+    }
+  }
+  const pending = new Set(targets.filter(launcherPidAlive))
+  const deadline = Date.now() + timeoutMs
+  while (pending.size > 0 && Date.now() < deadline) {
+    await Bun.sleep(200)
+    for (const pid of [...pending]) {
+      if (!launcherPidAlive(pid)) pending.delete(pid)
+    }
+  }
+  for (const pid of targets) {
+    if (pending.has(pid)) remaining.push(pid)
+    else closed.push(pid)
+  }
+  if (remaining.length > 0) logUpdateHelper(`close launchers: still running after ${timeoutMs}ms: ${remaining.join(",")}`)
+  else if (targets.length > 0) logUpdateHelper(`close launchers: closed ${targets.length} other instance(s)`)
+  return { closed, remaining }
+}
+
+// Closes all other MeshTalk launcher windows. Convenience wrapper over
+// otherLauncherPids + closeLauncherPids.
+export async function closeOtherLaunchers(timeoutMs = 10_000): Promise<CloseLaunchersResult> {
+  return closeLauncherPids(otherLauncherPids(), timeoutMs)
 }
 
 // Builds the Windows batch helper. Exported for testing. The helper replaces
