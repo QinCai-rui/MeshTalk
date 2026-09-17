@@ -416,7 +416,9 @@ function Get-PlatformInfo {
         $script:DefaultInstallDir = Join-Path $localAppData 'MeshTalk'
     } else {
         $script:ExecutableSuffix = ''
-        $script:DefaultInstallDir = Join-Path (Get-HomeDirectory) '.local/bin'
+        $unixHome = Get-HomeDirectory
+        if (-not $unixHome) { Invoke-Die "Unable to locate the home directory." }
+        $script:DefaultInstallDir = Join-Path $unixHome '.local/bin'
     }
     $script:AssetArch = $script:Arch
     $script:WindowsArm64Emulation = $false
@@ -448,6 +450,7 @@ function Confirm-NotAdministrator {
         $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
         $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     } catch {
+        Write-WarnMsg "Unable to determine Administrator status; continuing."
         return
     }
     if ($isAdmin) {
