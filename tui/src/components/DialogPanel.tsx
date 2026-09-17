@@ -172,7 +172,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "debug-endpoints" && <DebugEndpointsDialogContent debugInfo={debugInfo} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "debug-peer" && <DebugPeerDialogContent dialog={dialog} debugInfo={debugInfo} dialogHeight={dialogHeight} />}
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
-      {dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} screenWidth={dialogWidthFor("file-list") + 2} screenHeight={dialogHeight + 4} imageProtocol={imageProtocol} peers={peers} groups={groups} closeDialog={closeDialog} showDialog={showDialog} confirmPendingFileSend={confirmPendingFileSend} />}
+      {dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} dialogError={dialogError} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} screenWidth={dialogWidthFor("file-list") + 2} screenHeight={dialogHeight + 4} imageProtocol={imageProtocol} peers={peers} groups={groups} closeDialog={closeDialog} showDialog={showDialog} confirmPendingFileSend={confirmPendingFileSend} />}
       {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} onRetryFile={onRetryFile} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
@@ -651,7 +651,7 @@ function DebugPeerDialogContent({ dialog, debugInfo, dialogHeight }: { dialog: E
   )
 }
 
-export function FileConfirmDialogContent({ dialog, dialogWidth, dialogHeight, screenWidth, screenHeight, imageProtocol, peers, groups, closeDialog, showDialog, confirmPendingFileSend }: { dialog: Extract<Dialog, { kind: "file-confirm" }>; dialogWidth: number; dialogHeight: number; screenWidth: number; screenHeight: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; closeDialog: () => void; showDialog: (dialog: Dialog) => void; confirmPendingFileSend: () => void }) {
+export function FileConfirmDialogContent({ dialog, dialogError, dialogWidth, dialogHeight, screenWidth, screenHeight, imageProtocol, peers, groups, closeDialog, showDialog, confirmPendingFileSend }: { dialog: Extract<Dialog, { kind: "file-confirm" }>; dialogError: string; dialogWidth: number; dialogHeight: number; screenWidth: number; screenHeight: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; closeDialog: () => void; showDialog: (dialog: Dialog) => void; confirmPendingFileSend: () => void }) {
   const targetName = dialog.target.kind === "peer"
     ? peers.find((p) => p.peer_id === dialog.target.id)?.display_name ?? dialog.target.id.slice(0, 8)
     : groups.find((g) => g.group_id === dialog.target.id)?.name ?? "group"
@@ -684,6 +684,7 @@ export function FileConfirmDialogContent({ dialog, dialogWidth, dialogHeight, sc
   return (
     <>
       <text><b>{title}</b></text>
+      {dialogError ? <text fg={theme.danger} wrapMode="word">{dialogError}</text> : null}
       {dialog.caption ? <text wrapMode="word"><span fg={theme.muted}>Caption: </span>{dialog.caption}</text> : null}
       {(dialog.image || imagePath) && previewFilename ? <>
         <box style={{ height: previewBounds.maxHeight, minHeight: previewBounds.maxHeight, flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
