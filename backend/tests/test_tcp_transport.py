@@ -194,6 +194,9 @@ class TcpSessionTest(unittest.TestCase):
 
 
 class _DummyDatabase:
+    async def get_peer(self, *args, **kwargs):
+        return None
+
     async def upsert_peer(self, *args, **kwargs):
         pass
 

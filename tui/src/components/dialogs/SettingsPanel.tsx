@@ -5,6 +5,7 @@ import { chatTheme as theme } from "../../chatTheme"
 import { dialogUsesTextInput, isFirstLevelSettingsDialog, isUpdaterDialog } from "../../navigation"
 import type { Dialog } from "../../types"
 import { SettingsBusyContext, SettingsPanelContext } from "./SettingsInteraction"
+import { HoverHighlight } from "../HoverHighlight"
 
 const categories = [
   ["rename", "Profile"],
@@ -46,6 +47,7 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
   const body = useRef<ScrollBoxRenderable>(null)
   const lastFocus = useRef<Renderable | null>(null)
   const [railFocused, setRailFocused] = useState(false)
+  const [hoveredCategory, setHoveredCategory] = useState<number | null>(null)
   const category = settingsCategory(dialog.kind)
   const active = categories.findIndex(([id]) => id === category)
   const [railIndex, setRailIndex] = useState(Math.max(0, active))
@@ -105,9 +107,9 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
   return <SettingsPanelContext.Provider value={true}><SettingsBusyContext.Provider value={busy}><box id="settings-panel" width="100%" height="100%" flexDirection="column" minHeight={0}>
     <box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
       <text fg={theme.accent}><b>{firstRun ? "Welcome to MeshTalk" : "Settings"}</b></text>
-      <box onMouseDown={() => { if (!busy && dialog.kind !== "update") goBack() }}><text fg={theme.muted}>{dialog.kind === "update" ? "Choose an option" : dialogUsesTextInput(dialog) ? "Cancel [Esc]" : isFirstLevelSettingsDialog(dialog) ? "Close [Esc]" : "Back [Esc]"}</text></box>
+      <HoverHighlight disabled={busy || dialog.kind === "update"} onMouseDown={() => { if (!busy && dialog.kind !== "update") goBack() }}>{hovered => <text fg={hovered ? theme.text : theme.muted}>{dialog.kind === "update" ? "Choose an option" : dialogUsesTextInput(dialog) ? "Cancel [Esc]" : isFirstLevelSettingsDialog(dialog) ? "Close [Esc]" : "Back [Esc]"}</text>}</HoverHighlight>
     </box>
-    {!wide && !firstRun && !updaterLocked && <box height={1} flexShrink={0} onMouseDown={() => railFocused ? focusContent() : focusRail()}><text fg={theme.accent}>Categories [Tab] / {active >= 0 ? categories[active]![1] : "Choose a section"}</text></box>}
+    {!wide && !firstRun && !updaterLocked && <HoverHighlight height={1} flexShrink={0} active={railFocused} onMouseDown={() => railFocused ? focusContent() : focusRail()}><text fg={theme.accent}>Categories [Tab] / {active >= 0 ? categories[active]![1] : "Choose a section"}</text></HoverHighlight>}
     <box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0} marginTop={height > 12 ? 1 : 0}>
       {showRail && <scrollbox id="settings-categories" ref={rail} focused={railFocused} width={wide ? 21 : "100%"} flexShrink={0} backgroundColor={theme.surface}
         contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface } }}
@@ -124,7 +126,8 @@ export function SettingsPanel({ dialog, width, height, busy, error, runCommand, 
           rail.current?.scrollChildIntoView("settings-category-" + next)
         }}>
         {categories.map(([id, label], index) => <box id={"settings-category-" + index} key={id} height={2} flexShrink={0} paddingLeft={1} paddingRight={1}
-          backgroundColor={(railFocused ? railIndex === index : category === id) ? theme.selected : theme.surface}
+          backgroundColor={(railFocused ? railIndex === index : category === id) ? theme.selected : hoveredCategory === index ? theme.hover : theme.surface}
+          onMouseMove={() => setHoveredCategory(index)} onMouseOut={() => setHoveredCategory(null)}
           onMouseDown={event => { if (event.button === 0) selectCategory(index) }}>
           <text fg={category === id ? theme.accent : theme.text}>{railFocused && railIndex === index ? "> " : category === id ? "• " : "  "}{label}</text>
         </box>)}

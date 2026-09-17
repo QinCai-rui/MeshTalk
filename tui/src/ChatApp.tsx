@@ -4,6 +4,7 @@ import {
   createHostClipboard,
   createRendererClipboardAdapter,
   decodePasteBytes,
+  SyntaxStyle,
   type BoxRenderable,
   type ScrollBoxRenderable,
   type TextareaRenderable,
@@ -47,6 +48,7 @@ import {
   getComposerHeight,
   inlineFriendActions,
   isImageFile,
+  isMuteActive,
   MIN_COMPOSER_HEIGHT,
   peerPresence,
   sortPeersByInteraction,
@@ -70,6 +72,16 @@ import {
 } from "./pastedImageDedup";
 import { fileConfirmDialogHeight, fileConfirmDialogWidth, hasImageConfirmationPreview, parsePotentialFilePaths } from "./fileSendConfirm";
 import { statSync } from "fs";
+import {
+  filterMentionCandidates,
+  mentionQueryAt,
+  payloadMentions,
+  EVERYONE_PEER_ID,
+  spansToTokens,
+  updateSpansAfterEdit,
+  type MentionCandidate,
+  type MentionSpan,
+} from "./mentions";
 import {
   APP_RELEASE_VERSION,
   IS_RELEASE_BUILD,
@@ -191,12 +203,39 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const [splashWelcomeMs, setSplashWelcomeMs] = useState(MIN_SPLASH_WELCOME_MS);
   const [copyToast, setCopyToast] = useState(false);
   const [mutedPeers, setMutedPeers] = useState<Record<string, number>>({});
+  const [mutedGroups, setMutedGroups] = useState<Record<string, number>>({});
+  const [groupActivity, setGroupActivity] = useState<Record<string, number>>({});
+  const [mention, setMention] = useState<{ query: string; selected: number } | null>(null);
+  const [mentionUnread, setMentionUnread] = useState<Record<string, number>>({});
+  // Picked mentions per conversation: `@Display Name` ranges in the composer
+  // that convert back to `<@peer_id>` tokens on send.
+  const [mentionSpans, setMentionSpans] = useState<Record<string, MentionSpan[]>>({});
+  const prevComposerText = useRef<Record<string, string>>({});
+  // Block-styled `@name` spans in the composer: blue background (same hue as
+  // the markdown code style used for mentions in history) with light text.
+  const [composerMentionStyle] = useState(() =>
+    SyntaxStyle.fromStyles({ mention: { fg: chatTheme.text, bg: chatTheme.mentionBg } }),
+  );
+
+  function applyComposerMentionHighlights(spans: MentionSpan[]) {
+    const composer = composerRef.current;
+    if (!composer) return;
+    const styleId = composerMentionStyle.getStyleId("mention");
+    composer.syntaxStyle = composerMentionStyle;
+    composer.clearAllHighlights();
+    if (styleId == null) return;
+    for (const span of spans) {
+      if (span.start < 0 || span.end <= span.start) continue;
+      composer.addHighlightByCharRange({ start: span.start, end: span.end, styleId });
+    }
+  }
   const [notificationPreferences, setNotificationPreferences] =
     useState<NotificationPreferences | null>(null);
   const [notificationTestDelivery, setNotificationTestDelivery] =
     useState<Exclude<NotificationDelivery, "disabled"> | null>(null);
   const [blinkOn, setBlinkOn] = useState(true);
   const [flashingEnabled, setFlashingEnabled] = useState(true);
+  const [dndEnabled, setDndEnabled] = useState(false);
   const [imageProtocol, setImageProtocol] = useState<ImageProtocol>("auto");
   const [controlStatus, setControlStatus] = useState<{
     connected: boolean;
@@ -363,6 +402,30 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       setDrafts((current) =>
         updateBoundedEntry(current, selectionKey, content, MAX_DRAFT_ENTRIES),
       );
+    if (selection?.kind === "group" && selectionKey) {
+      const cursor = composerRef.current?.cursorOffset ?? content.length;
+      const prev = prevComposerText.current[selectionKey] ?? "";
+      // Text already synced (e.g. a late duplicate event from our own
+      // programmatic edits): spans and highlights are current, so skip —
+      // reconciling here would clobber fresh state with stale state reads.
+      if (prev === content) return;
+      const spans = updateSpansAfterEdit(mentionSpans[selectionKey] ?? [], prev, content);
+      setMentionSpans((current) => ({ ...current, [selectionKey]: spans }));
+      prevComposerText.current[selectionKey] = content;
+      if (!scrollFocused && !editingName) {
+        // Never trigger inside a picked mention: it is an atomic symbol.
+        const inSpan = spans.some((span) => span.start <= cursor && cursor <= span.end);
+        const query = inSpan ? undefined : mentionQueryAt(content, cursor);
+        setMention((current) =>
+          query ? { query: query.query, selected: 0 } : current ? null : current,
+        );
+      } else if (mention) {
+        setMention(null);
+      }
+      applyComposerMentionHighlights(spans);
+    } else if (mention) {
+      setMention(null);
+    }
     if (!selection || !content) {
       stopOutgoingTyping();
       return;
@@ -433,12 +496,18 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     setCopyToast,
     mutedPeers,
     setMutedPeers,
+    mutedGroups,
+    setMutedGroups,
+    mentionSpans,
+    setMentionUnread,
     notificationPreferences,
     setNotificationPreferences,
     notificationTestDelivery,
     setNotificationTestDelivery,
     flashingEnabled,
     setFlashingEnabled,
+    dndEnabled,
+    setDndEnabled,
     setImageProtocol,
     setSplashStyle: setConfiguredSplashStyle,
     controlStatus,
@@ -514,6 +583,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     };
     setIdentity(nextIdentity);
     setFlashingEnabled(response.flashing_enabled as boolean);
+    setDndEnabled(Boolean(response.dnd_enabled));
     setNameDraft(nextIdentity.display_name);
 
     await setPhase(StartupPhase.AnnouncePresence);
@@ -529,8 +599,10 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     void actions.refreshFriendRequestsSilent().catch(() => {});
 
     const mutedResp = await ipc.send("muted_peers");
-    if (!mutedResp.error)
-      setMutedPeers(mutedResp.muted_peers as Record<string, number>);
+    if (!mutedResp.error) {
+      setMutedPeers((mutedResp.muted_peers as Record<string, number>) ?? {});
+      setMutedGroups((mutedResp.muted_groups as Record<string, number>) ?? {});
+    }
 
     const notificationResponse = await ipc.send("notifications");
     if (notificationResponse.error)
@@ -900,26 +972,55 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
               (member) => (member.peer_id ?? member.member_id) === senderId,
             )?.display_name ??
             "a member";
-          if (event.event === "group_message")
+          const isGroupMuted = isMuteActive(mutedGroups[groupId]);
+          // Muted groups still move to the top via recency. Mentions are the
+          // exception: they remain visible and notify even when the group is muted.
+          setGroupActivity((current) => ({ ...current, [groupId]: Date.now() }));
+          const mentionedMe =
+            event.event === "group_message" &&
+            senderId !== undefined &&
+            senderId !== identity?.peer_id &&
+            identity !== undefined &&
+            (() => {
+              const mentions = payloadMentions(event.mentions);
+              return mentions.includes(identity.peer_id) || mentions.includes(EVERYONE_PEER_ID);
+            })();
+          if (event.event === "group_message" && mentionedMe)
+            // Mention notifications bypass per-group mutes; only DND blocks them.
+            void notify(
+              notificationPreferences,
+              "messages",
+              renderer,
+              `${sender} mentioned you in ${group?.name ?? "a group"}`,
+              dndEnabled,
+            );
+          else if (event.event === "group_message" && !isGroupMuted)
             void notify(
               notificationPreferences,
               "messages",
               renderer,
               `New message from ${sender} in ${group?.name ?? "a group"}`,
+              dndEnabled,
             );
           if (groupId !== selectedGroupId) {
-            if (event.event === "group_message")
+            if (event.event === "group_message" && (!isGroupMuted || mentionedMe))
               rememberUnreadMessage(
                 `group:${groupId}`,
                 event.message_id as string | undefined,
               );
-            setGroups((current) =>
-              current.map((item) =>
-                item.group_id === groupId
-                  ? { ...item, unread_count: item.unread_count + 1 }
-                  : item,
-              ),
-            );
+            if (event.event === "group_message" && mentionedMe)
+              setMentionUnread((current) => ({
+                ...current,
+                [groupId]: (current[groupId] ?? 0) + 1,
+              }));
+            if (!isGroupMuted || mentionedMe)
+              setGroups((current) =>
+                current.map((item) =>
+                  item.group_id === groupId
+                    ? { ...item, unread_count: item.unread_count + 1 }
+                    : item,
+                ),
+              );
           } else {
             void ipc
               .send("group_messages", { group_id: groupId })
@@ -1069,6 +1170,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
             "friend_requests",
             renderer,
             `Friend request from ${request.sender_name}`,
+            dndEnabled,
           );
           if (!dialog) setDialog({ kind: "friend-request-incoming", request });
           else
@@ -1104,20 +1206,28 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         }
         if (event.event === "file_offer") {
           const filename = event.filename as string;
-          if (!event.group_id)
-            updatePeerInteraction(event.sender_id as string | undefined);
+          const offerGroupId = event.group_id as string | null | undefined;
+          const offerSenderId = event.sender_id as string | undefined;
+          if (!offerGroupId)
+            updatePeerInteraction(offerSenderId);
+          else setGroupActivity((current) => ({ ...current, [offerGroupId]: Date.now() }));
           const sender =
             peers.find((p) => p.peer_id === event.sender_id)?.display_name ??
             String(event.sender_id).slice(0, 8);
           actions.showStatus(
             `Incoming file: ${filename} (${event.file_size} bytes) from ${sender}`,
           );
-          void notify(
-            notificationPreferences,
-            "file_offers",
-            renderer,
-            `Incoming file ${filename} from ${sender}`,
-          );
+          const offerMuted = offerGroupId
+            ? isMuteActive(mutedGroups[offerGroupId])
+            : isMuteActive(offerSenderId === undefined ? undefined : mutedPeers[offerSenderId]);
+          if (!offerMuted)
+            void notify(
+              notificationPreferences,
+              "file_offers",
+              renderer,
+              `Incoming file ${filename} from ${sender}`,
+              dndEnabled,
+            );
           if (fileEventMatchesSelection(event)) refreshSelectedConversationFiles();
           return;
         }
@@ -1139,15 +1249,23 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           const filename = event.filename as string;
           const fpath = event.file_path as string;
           const fileId = event.file_id as string;
-          if (!event.group_id)
-            updatePeerInteraction(event.sender_id as string | undefined);
+          const completedGroupId = event.group_id as string | null | undefined;
+          const completedSenderId = event.sender_id as string | undefined;
+          if (!completedGroupId)
+            updatePeerInteraction(completedSenderId);
+          else setGroupActivity((current) => ({ ...current, [completedGroupId]: Date.now() }));
           actions.showStatus(`File received: ${filename} -> ${fpath}`);
-          void notify(
-            notificationPreferences,
-            "file_completed",
-            renderer,
-            `File received: ${filename}`,
-          );
+          const completedMuted = completedGroupId
+            ? isMuteActive(mutedGroups[completedGroupId])
+            : isMuteActive(completedSenderId === undefined ? undefined : mutedPeers[completedSenderId]);
+          if (!completedMuted)
+            void notify(
+              notificationPreferences,
+              "file_completed",
+              renderer,
+              `File received: ${filename}`,
+              dndEnabled,
+            );
           setConversationFileTransfers((current) =>
             current.map((file) =>
               file.file_id === fileId
@@ -1205,17 +1323,14 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         const sender =
           peers.find((peer) => peer.peer_id === senderId)?.display_name ??
           "a peer";
-        const mutedUntil = mutedPeers[senderId];
-        const isMuted =
-          mutedUntil === undefined
-            ? false
-            : mutedUntil <= 0 || Date.now() / 1000 < mutedUntil;
+        const isMuted = isMuteActive(mutedPeers[senderId]);
         if (!isMuted)
           void notify(
             notificationPreferences,
             "messages",
             renderer,
             `New message from ${sender}`,
+            dndEnabled,
           );
         updatePeerInteraction(senderId);
         const conversationKey = `peer:${senderId}`;
@@ -1223,17 +1338,21 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           senderId !== selectedPeerId ||
           selectionKeyRef.current !== conversationKey
         ) {
-          rememberUnreadMessage(
-            conversationKey,
-            event.message_id as string | undefined,
-          );
-          setPeers((current) =>
-            current.map((peer) =>
-              peer.peer_id === senderId
-                ? { ...peer, unread_count: peer.unread_count + 1 }
-                : peer,
-            ),
-          );
+          // Muted peers still move to the top via updatePeerInteraction above,
+          // but show no unread badge or highlight.
+          if (!isMuted) {
+            rememberUnreadMessage(
+              conversationKey,
+              event.message_id as string | undefined,
+            );
+            setPeers((current) =>
+              current.map((peer) =>
+                peer.peer_id === senderId
+                  ? { ...peer, unread_count: peer.unread_count + 1 }
+                  : peer,
+              ),
+            );
+          }
           return;
         }
         setMessages((current) => [
@@ -1262,6 +1381,8 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     [
       ipc,
       mutedPeers,
+      mutedGroups,
+      dndEnabled,
       peers,
       groups,
       groupMembers,
@@ -1281,6 +1402,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       setConversationLoading(false);
       setDraftLength(0);
       setComposerHeight(MIN_COMPOSER_HEIGHT);
+      setMention(null);
       return;
     }
     setMessages([]);
@@ -1294,6 +1416,9 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         : (groups.find((group) => group.group_id === selection.id)
             ?.unread_count ?? 0);
     setScrollFocused(false);
+    setMention(null);
+    prevComposerText.current[selectionKey] = drafts[selectionKey] ?? "";
+    applyComposerMentionHighlights(mentionSpans[selectionKey] ?? []);
     setDraftLength(new TextEncoder().encode(drafts[selectionKey] ?? "").length);
     setComposerHeight(MIN_COMPOSER_HEIGHT);
     if (selection.kind === "peer") {
@@ -1310,6 +1435,11 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
             : group,
         ),
       );
+      setMentionUnread((current) => {
+        if (!(selection.id in current)) return current;
+        const { [selection.id]: _, ...rest } = current;
+        return rest;
+      });
       void ipc
         .send("group_members", { group_id: selection.id })
         .then((response) => {
@@ -1580,6 +1710,79 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       }
       return;
     }
+    if (mentionOpen) {
+      if (key.name === "up" || key.name === "down") {
+        key.preventDefault();
+        const direction = key.name === "up" ? -1 : 1;
+        setMention((current) =>
+          current
+            ? {
+                ...current,
+                selected:
+                  (current.selected + direction + mentionCandidates.length) %
+                  mentionCandidates.length,
+              }
+            : current,
+        );
+        return;
+      }
+      if (key.name === "tab") {
+        key.preventDefault();
+        completeMention(mentionCandidates[mentionSelected]!.peerId);
+        return;
+      }
+      if (key.name === "escape") {
+        key.preventDefault();
+        setMention(null);
+        return;
+      }
+      if (key.name === "left" || key.name === "right" || key.name === "home" || key.name === "end") {
+        // Moving the cursor out of the token dismisses the picker; span
+        // handling below keeps picked mentions atomic.
+        setMention(null);
+      }
+    }
+    if (
+      !dialog && !editingName && !scrollFocused && !isSending && selection && selectionKey &&
+      (mentionSpans[selectionKey]?.length ?? 0) > 0
+    ) {
+      const composer = composerRef.current;
+      const cursor = composer?.cursorOffset ?? 0;
+      const spans = mentionSpans[selectionKey] ?? [];
+      const noModifier = !key.ctrl && !key.meta && !key.super;
+      if (key.name === "backspace" && noModifier) {
+        const span = spans.find((item) => cursor > item.start && cursor <= item.end);
+        if (span && composer) {
+          key.preventDefault();
+          deleteMentionSpan(span);
+          return;
+        }
+      }
+      if (key.name === "delete" && noModifier) {
+        const span = spans.find((item) => cursor >= item.start && cursor < item.end);
+        if (span && composer) {
+          key.preventDefault();
+          deleteMentionSpan(span);
+          return;
+        }
+      }
+      if (key.name === "left" && noModifier) {
+        const span = spans.find((item) => cursor > item.start && cursor <= item.end);
+        if (span && composer) {
+          key.preventDefault();
+          composer.cursorOffset = span.start;
+          return;
+        }
+      }
+      if (key.name === "right" && noModifier) {
+        const span = spans.find((item) => cursor >= item.start && cursor < item.end);
+        if (span && composer) {
+          key.preventDefault();
+          composer.cursorOffset = span.end;
+          return;
+        }
+      }
+    }
     if (key.name === "escape" && editingName) {
       setEditingName(false);
       setNameDraft(identity?.display_name ?? "");
@@ -1839,6 +2042,127 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const selectedGroup = groups.find(
     (group) => group.group_id === selectedGroupId,
   );
+  // Groups move to the top on recent activity (including muted groups);
+  // otherwise fall back to alphabetical order.
+  const orderedGroups = useMemo(
+    () =>
+      [...groups].sort(
+        (a, b) =>
+          (groupActivity[b.group_id] ?? 0) - (groupActivity[a.group_id] ?? 0) ||
+          a.name.localeCompare(b.name),
+      ),
+    [groups, groupActivity],
+  );
+  const mentionMembers = useMemo<MentionCandidate[]>(() => {
+    if (selection?.kind !== "group" || !selectedGroupId) return [];
+    const members = groupMembers[selectedGroupId] ?? [];
+    const list = members
+      .map((member) => {
+        const id = member.peer_id ?? member.member_id;
+        if (!id) return undefined;
+        const candidate: MentionCandidate = {
+          peerId: id,
+          displayName: member.display_name,
+          isSelf: id === identity?.peer_id,
+        };
+        return candidate;
+      })
+      .filter((member): member is MentionCandidate => member !== undefined);
+    // `@everyone` is a virtual mention that expands to the whole group on
+    // the receivers' side; keep it first so it stays discoverable and the
+    // payload stays `["everyone"]` instead of enumerating every id.
+    return [{ peerId: "everyone", displayName: "everyone" }, ...list];
+  }, [selection, selectedGroupId, groupMembers, identity]);
+  const mentionCandidates = useMemo(
+    // Fetch more than fits the popup; the list scrolls internally.
+    () => (mention ? filterMentionCandidates(mentionMembers, mention.query, 30) : []),
+    [mention, mentionMembers],
+  );
+  const mentionOpen =
+    selection?.kind === "group" &&
+    mention !== null &&
+    mentionCandidates.length > 0 &&
+    !dialog &&
+    !editingName &&
+    !scrollFocused &&
+    !isSending;
+  const mentionSelected = mention
+    ? Math.min(mention.selected, Math.max(0, mentionCandidates.length - 1))
+    : 0;
+
+  function completeMention(peerId: string) {
+    const composer = composerRef.current;
+    const key = selectionKey;
+    const content = composer?.plainText ?? (key ? drafts[key] ?? "" : "");
+    const cursor = composer?.cursorOffset ?? content.length;
+    const query = mentionQueryAt(content, cursor);
+    const candidate = mentionCandidates.find((item) => item.peerId === peerId);
+    if (!composer || !query || !candidate || !key) {
+      setMention(null);
+      return;
+    }
+    // Display `@Display Name`; the span converts back to `<@peer_id>` on send.
+    const insertAt = cursor - (query.query.length + 1);
+    for (let i = 0; i < query.query.length + 1; i++) composer.deleteCharBackward();
+    composer.insertText(`@${candidate.displayName} `);
+    const after = composer.plainText;
+    const span: MentionSpan = {
+      peerId,
+      name: candidate.displayName,
+      start: insertAt,
+      end: insertAt + candidate.displayName.length + 1,
+    };
+    const reconciled = updateSpansAfterEdit(mentionSpans[key] ?? [], content, after);
+    const fresh = [...reconciled, span];
+    // Functional update so a rapid second pick chains onto committed state.
+    setMentionSpans((current) => ({
+      ...current,
+      [key]: [...updateSpansAfterEdit(current[key] ?? [], content, after), span],
+    }));
+    prevComposerText.current[key] = after;
+    setDrafts((current) => ({ ...current, [key]: after }));
+    setDraftLength(new TextEncoder().encode(after).length);
+    setComposerHeight(getComposerHeight(composer));
+    setMention(null);
+    handleComposerChange(after);
+    // handleComposerChange reads pre-update state, so apply the fresh spans here.
+    applyComposerMentionHighlights(fresh);
+    // Clicking a popup row blurs the textarea via the renderer's default
+    // mousedown handling (row preventDefault suppresses it, but refocus
+    // anyway on the next tick in case any default handling already ran).
+    // Harmless on keyboard pick paths where focus never left.
+    setTimeout(() => {
+      if (composerRef.current === composer) composer.focus();
+    }, 0);
+  }
+
+  function deleteMentionSpan(span: MentionSpan) {
+    const composer = composerRef.current;
+    const key = selectionKey;
+    if (!composer || !key) return;
+    const before = composer.plainText;
+    if (before.slice(span.start, span.end) !== `@${span.name}`) {
+      // Stale span: drop it and leave the text alone.
+      setMentionSpans((current) => ({
+        ...current,
+        [key]: (current[key] ?? []).filter(
+          (item) => item.peerId !== span.peerId || item.start !== span.start || item.end !== span.end,
+        ),
+      }));
+      return;
+    }
+    composer.cursorOffset = span.end;
+    for (let i = 0; i < span.end - span.start; i++) composer.deleteCharBackward();
+    const after = composer.plainText;
+    const spans = updateSpansAfterEdit(mentionSpans[key] ?? [], before, after);
+    setMentionSpans((current) => ({ ...current, [key]: spans }));
+    prevComposerText.current[key] = after;
+    setDrafts((current) => ({ ...current, [key]: after }));
+    setDraftLength(new TextEncoder().encode(after).length);
+    setComposerHeight(getComposerHeight(composer));
+    setMention(null);
+    applyComposerMentionHighlights(spans);
+  }
   const selectedTypingNames = Object.values(
     typingPeers[selectionKey ?? ""] ?? {},
   )
@@ -1963,11 +2287,14 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         appVersion={APP_RELEASE_VERSION}
         stacked={stacked}
         dialogOpen={Boolean(dialog) || helpOpen}
+        dndEnabled={dndEnabled}
         editingName={editingName}
-        groups={groups}
+        groups={orderedGroups}
         groupMembers={groupMembers}
         identity={identity}
         mutedPeers={mutedPeers}
+        mutedGroups={mutedGroups}
+        mentionCounts={mentionUnread}
         nameDraft={nameDraft}
         peers={visiblePeers}
         selectedGroupId={selectedGroupId}
@@ -2010,6 +2337,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         isSending={isSending}
         limitColor={limitColor}
         mutedPeers={mutedPeers}
+        mutedGroups={mutedGroups}
         peers={peers}
         selected={selected}
         selectedGroup={selectedGroup}
@@ -2027,6 +2355,16 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         unreadMessageStates={unreadMessages}
         markUnreadMessageVisible={markUnreadMessageVisible}
         openSettings={() => actions.showDialog({ kind: "settings" })}
+        onToggleMute={() => actions.runCommand(
+          (selectedPeerId != null && isMuteActive(mutedPeers[selectedPeerId])) ||
+          (selectedGroupId != null && isMuteActive(mutedGroups[selectedGroupId]))
+            ? "unmute"
+            : "mute",
+        )}
+        mentionOpen={mentionOpen}
+        mentionCandidates={mentionCandidates}
+        mentionSelected={mentionSelected}
+        onMentionPick={(peerId) => completeMention(peerId)}
         openImage={(file) => {
           if (file.file_path)
             actions.showDialog({
@@ -2049,9 +2387,30 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         clearReplyTarget={() => setSelectedReplyTarget(undefined)}
         onComposerChange={handleComposerChange}
         send={() => {
+          // Enter with the mention popup open completes the highlighted
+          // mention instead of sending (single path: the global keyboard
+          // handler deliberately ignores Enter to avoid double handling).
+          if (mentionOpen) {
+            completeMention(mentionCandidates[mentionSelected]!.peerId);
+            return;
+          }
           stopOutgoingTyping();
+          const sentSelection = selection;
+          const sentKey = selectionKeyRef.current;
           void actions.send(replyTo?.id).then((sent) => {
-            if (sent) setReplyTo(undefined);
+            if (sent) {
+              setReplyTo(undefined);
+              if (sentKey) {
+                setMentionSpans((current) => {
+                  if (!(sentKey in current)) return current;
+                  const { [sentKey]: _, ...rest } = current;
+                  return rest;
+                });
+                delete prevComposerText.current[sentKey];
+              }
+              if (sentSelection?.kind === "group")
+                setGroupActivity((current) => ({ ...current, [sentSelection.id]: Date.now() }));
+            }
           });
         }}
         inboxCount={inboxCount}
@@ -2127,6 +2486,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           groups={groups}
           identity={identity}
           mutedPeers={mutedPeers}
+          dndEnabled={dndEnabled}
           notificationPreferences={notificationPreferences}
           notificationTestDelivery={notificationTestDelivery}
           peers={peers}
@@ -2159,6 +2519,8 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           loadGroupDetails={actions.loadGroupDetails}
           mutePeer={actions.mutePeer}
           unmutePeer={actions.unmutePeer}
+          muteGroup={actions.muteGroup}
+          unmuteGroup={actions.unmuteGroup}
           sendFriendRequest={actions.sendFriendRequest}
           respondToFriendRequest={actions.respondToFriendRequest}
           cancelFriendRequest={actions.cancelFriendRequest}

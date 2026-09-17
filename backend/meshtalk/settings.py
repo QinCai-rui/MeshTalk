@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+import math
 import os
 import secrets
 import tempfile
@@ -133,6 +134,7 @@ class Settings:
         self._control_setup_dismissed = False
         self._identity_setup_dismissed = False
         self._flashing_enabled = True
+        self._dnd_enabled = False
         self._notification_setup_dismissed = False
         self._notification_delivery = "terminal"
         self._notification_events = {
@@ -147,6 +149,7 @@ class Settings:
         self._stun_pinned_ips: tuple[str, ...] = ()
         self.rooms: dict[str, Room] = {}
         self.muted_peers: dict[str, float] = {}
+        self.muted_groups: dict[str, float] = {}
         self._files_dir: str | None = None
         self._image_protocol = "auto"
         self._confirm_file_send = True
@@ -346,6 +349,16 @@ class Settings:
         self.save()
 
     @property
+    def dnd_enabled(self) -> bool:
+        """Return whether Do Not Disturb is enabled (all notifications blocked)."""
+        return self._dnd_enabled
+
+    def set_dnd_enabled(self, enabled: bool) -> None:
+        """Enable or disable Do Not Disturb."""
+        self._dnd_enabled = bool(enabled)
+        self.save()
+
+    @property
     def github_token(self) -> str:
         """Return the stored GitHub personal access token."""
         return self._github_token
@@ -416,6 +429,27 @@ class Settings:
         """Unmute a previously muted peer."""
         self.muted_peers.pop(peer_id, None)
         self.save()
+
+    def mute_group(self, group_id: str, until: float = 0) -> None:
+        """Mute a group until the specified timestamp (0 for permanent)."""
+        self.muted_groups[group_id] = until
+        self.save()
+
+    def unmute_group(self, group_id: str) -> None:
+        """Unmute a previously muted group."""
+        self.muted_groups.pop(group_id, None)
+        self.save()
+
+    def is_group_muted(self, group_id: str) -> bool:
+        """Check if a group is currently muted."""
+        until = self.muted_groups.get(group_id)
+        if until is None:
+            return False
+        if until > 0 and time.time() >= until:
+            del self.muted_groups[group_id]
+            self.save()
+            return False
+        return True
 
     def is_peer_muted(self, peer_id: str) -> bool:
         """Check if a peer is currently muted."""
@@ -510,6 +544,7 @@ class Settings:
             "control_setup_dismissed": self._control_setup_dismissed,
             "identity_setup_dismissed": self._identity_setup_dismissed,
             "flashing_enabled": self._flashing_enabled,
+            "dnd_enabled": self._dnd_enabled,
             "notifications": self.notification_preferences,
             "github_token": self._github_token,
             "stun_server": {"host": self._stun_host, "port": self._stun_port},
@@ -523,6 +558,7 @@ class Settings:
                 for room in self.rooms.values()
             ],
             "muted_peers": self.muted_peers,
+            "muted_groups": self.muted_groups,
             "files_dir": self._files_dir,
             "image_protocol": self._image_protocol,
             "confirm_file_send": self._confirm_file_send,
@@ -563,6 +599,7 @@ class Settings:
         self._control_setup_dismissed = bool(data.get("control_setup_dismissed", False))
         self._identity_setup_dismissed = bool(data.get("identity_setup_dismissed", False))
         self._flashing_enabled = bool(data.get("flashing_enabled", True))
+        self._dnd_enabled = bool(data.get("dnd_enabled", False))
         notifications = data.get("notifications", {})
         if isinstance(notifications, dict):
             self._notification_setup_dismissed = bool(notifications.get("setup_dismissed", False))
@@ -604,11 +641,29 @@ class Settings:
             self.rooms[room.id] = room
         raw_mutes = data.get("muted_peers", {})
         now = time.time()
-        for peer_id, until in raw_mutes.items():
-            if not isinstance(peer_id, str) or not isinstance(until, (int, float)):
-                continue
-            if until <= 0 or now < until:
-                self.muted_peers[peer_id] = float(until)
+        if isinstance(raw_mutes, dict):
+            for peer_id, until in raw_mutes.items():
+                if (
+                    not isinstance(peer_id, str)
+                    or not isinstance(until, (int, float))
+                    or isinstance(until, bool)
+                    or not math.isfinite(float(until))
+                ):
+                    continue
+                if until <= 0 or now < until:
+                    self.muted_peers[peer_id] = float(until)
+        raw_group_mutes = data.get("muted_groups", {})
+        if isinstance(raw_group_mutes, dict):
+            for group_id, until in raw_group_mutes.items():
+                if (
+                    not isinstance(group_id, str)
+                    or not isinstance(until, (int, float))
+                    or isinstance(until, bool)
+                    or not math.isfinite(float(until))
+                ):
+                    continue
+                if until <= 0 or now < until:
+                    self.muted_groups[group_id] = float(until)
         files_dir = data.get("files_dir")
         if isinstance(files_dir, str) and files_dir.strip():
             # Validate but don't fail load if old path no longer exists - keep stored value

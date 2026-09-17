@@ -1,4 +1,5 @@
 import type { Conversation, Dialog, FileTransfer, Group, GroupMember, Peer } from "./types"
+import { isMuteActive } from "./utils"
 
 type NavigationDependencies = {
   dialog: Dialog | null
@@ -124,6 +125,7 @@ type CommandDependencies = {
   groupMembers: Record<string, GroupMember[]>
   identity: { peer_id: string; display_name: string } | undefined
   mutedPeers: Record<string, number>
+  mutedGroups: Record<string, number>
   peers: Peer[]
   selectedGroupId: string | undefined
   selectedPeerId: string | undefined
@@ -144,7 +146,7 @@ type CommandDependencies = {
 }
 
 export function runCommand(command: string, dependencies: CommandDependencies) {
-  const { groups, groupMembers, identity, mutedPeers, peers, selectedGroupId, selectedPeerId, selection, showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft, setRenameDialog, loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms, openFriendsInbox } = dependencies
+  const { groups, groupMembers, identity, mutedPeers, mutedGroups, peers, selectedGroupId, selectedPeerId, selection, showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft, setRenameDialog, loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms, openFriendsInbox } = dependencies
   if (command === "control") showDialog({ kind: "control" })
   else if (command === "rooms") { showDialog({ kind: "rooms", rooms: [] }); void loadRooms() }
   else if (command === "group-details") {
@@ -162,12 +164,22 @@ export function runCommand(command: string, dependencies: CommandDependencies) {
   else if (command === "advanced") void loadAdvancedConfig()
   else if (command === "rename") { const displayName = identity?.display_name ?? ""; setRenameDialog(); setNameDraft(displayName); setDialogDraft(displayName); setDialogError("") }
   else if (command === "mute" || command === "unmute") {
+    if (selection?.kind === "group" || (!selectedPeerId && selectedGroupId)) {
+      const group = groups.find((item) => item.group_id === selectedGroupId)
+      if (!group) { showStatus(`Select a group to ${command}.`); return }
+      const isMuted = isMuteActive(mutedGroups[group.group_id])
+      if (command === "mute" && isMuted) { showStatus(`${group.name} is already muted.`); return }
+      if (command === "unmute" && !isMuted) { showStatus(`${group.name} is not muted.`); return }
+      showDialog(command === "mute" ? { kind: "mute-timeout", groupId: group.group_id, displayName: group.name } : { kind: "unmute-confirm", groupId: group.group_id, displayName: group.name })
+      return
+    }
     const peer = peers.find((peer) => peer.peer_id === selectedPeerId)
     if (!peer) { showStatus(`Select a peer to ${command}.`); return }
     if (command === "mute" && peer.peer_id === identity?.peer_id) { showStatus("You cannot mute yourself."); return }
     if (command === "mute" && !peer.is_online) { showStatus(`${peer.display_name} is not online.`); return }
-    if (command === "mute" && mutedPeers[peer.peer_id]) { showStatus(`${peer.display_name} is already muted.`); return }
-    if (command === "unmute" && !mutedPeers[peer.peer_id]) { showStatus(`${peer.display_name} is not muted.`); return }
+    const isMuted = isMuteActive(mutedPeers[peer.peer_id])
+    if (command === "mute" && isMuted) { showStatus(`${peer.display_name} is already muted.`); return }
+    if (command === "unmute" && !isMuted) { showStatus(`${peer.display_name} is not muted.`); return }
     showDialog(command === "mute" ? { kind: "mute-timeout", peerId: peer.peer_id, displayName: peer.display_name } : { kind: "unmute-confirm", peerId: peer.peer_id, displayName: peer.display_name })
   } else if (command === "add-friend" || command === "remove-friend") {
     const peer = peers.find((peer) => peer.peer_id === selectedPeerId)
