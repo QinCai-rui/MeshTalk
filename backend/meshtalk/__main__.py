@@ -932,6 +932,11 @@ async def main(debug: bool = False) -> None:
             "db_path": str(storage / DB_FILENAME),
             "storage_has_content": dir_has_content(storage),
             "files_has_content": dir_has_content(files_base),
+            # Live identity: clients must re-sync this after any storage
+            # switch, since adopting another location changes peer_id and
+            # display_name (otherwise own messages mislabel as the peer).
+            "peer_id": identity.peer_id,
+            "display_name": identity.display_name,
             # Back-compat aliases for older clients.
             "configured": settings._files_dir,
             "env": os.environ.get("MESHTALK_FILES_DIR"),

@@ -906,6 +906,17 @@ export function useChatActions(deps: ChatActionsDeps) {
     finally { finishDialogAction(action) }
   }
 
+  function syncIdentityFrom(response: unknown) {
+    // A storage switch can adopt another location's identity (new peer_id /
+    // display_name). Refresh TUI state so own messages still label as "You"
+    // and the nav pane shows the current name.
+    const r = response as Record<string, unknown>
+    if (typeof r.peer_id === "string" && typeof r.display_name === "string") {
+      setIdentity({ peer_id: r.peer_id, display_name: r.display_name })
+      setNameDraft(r.display_name)
+    }
+  }
+
   async function setFilesDir(path: string, migrate?: boolean) {
     const action = beginDialogAction()
     if (action === null) return
@@ -915,6 +926,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("files_dir", { path: trimmed, ...(migrate ? { migrate: true } : {}) })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
+      syncIdentityFrom(response)
       if (response.migrated) showStatus(`Files storage moved to ${response.files_dir as string}. Old files transferred and removed.`)
       else if (typeof response.note === "string") showStatus(response.note)
       else showStatus(`Files storage set to ${response.files_dir as string}. New files will go there.`)
@@ -934,6 +946,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("storage", { path: trimmed, ...(migrate ? { migrate: true } : {}) })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
+      syncIdentityFrom(response)
       if (response.migrated) showStatus(`Storage moved to ${response.storage_dir as string}. Old data transferred and removed.`)
       else if (typeof response.note === "string") showStatus(response.note)
       else showStatus(`Storage set to ${response.storage_dir as string}.`)
@@ -953,6 +966,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("files_dir", { path: "default", ...(migrate ? { migrate: true } : {}) })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
+      syncIdentityFrom(response)
       if (response.migrated) showStatus(`Files location reset to default and files transferred.`)
       else if (typeof response.note === "string") showStatus(response.note)
       else showStatus(`Files location reset to default.`)
@@ -971,6 +985,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("storage", { path: "default", ...(migrate ? { migrate: true } : {}) })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
+      syncIdentityFrom(response)
       if (response.migrated) showStatus(`Storage location reset to default and data transferred.`)
       else if (typeof response.note === "string") showStatus(response.note)
       else showStatus(`Storage location reset to default.`)
