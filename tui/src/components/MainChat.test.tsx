@@ -114,6 +114,21 @@ test("sidebar uses friend/request markers and mouse selection retains the conver
   } finally { await close(setup) }
 })
 
+test("keeps friend markers visible beside long peer names", async () => {
+  const props = sidebarProps(120)
+  const displayName = "A-very-long-peer-name-that-must-wrap-without-hiding-markers"
+  props.peers = [{ ...peers[0]!, display_name: displayName, friend_request: "both" }]
+  props.mutedPeers = {}
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup)
+    expect(frame.replace(/[\s♥↙↗]/g, "")).toContain(displayName)
+    expect(frame).toContain("♥")
+    expect(frame).toContain("↙")
+    expect(frame).toContain("↗")
+  } finally { await close(setup) }
+})
+
 test("muted peers and groups hide unread badges while staying dimmed", async () => {
   const props = sidebarProps(120)
   props.peers = [{ ...peers[0]!, unread_count: 3 }]

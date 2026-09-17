@@ -99,9 +99,10 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
         const flags = [peer.capability_gap && "Limited", isMuted && "Muted", peerDnd && "DND"].filter(Boolean).join(" / ")
         return <HoverHighlight id={`nav-peer-${peer.peer_id}`} key={peer.peer_id} active={selected} onMouseDown={() => pick({ kind: "peer", id: peer.peer_id })} opacity={isMuted ? 0.30 : undefined} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
-            <text fg={nameColor} wrapMode="word">
-              {selected ? "> " : "  "}{presenceIndicator(presence, peer.dnd)} {selected || showUnread ? <b>{peer.display_name}</b> : peer.display_name}{markers}
+            <text fg={nameColor} style={{ flexGrow: 1, flexShrink: 1, minWidth: 0 }} wrapMode="word">
+              {selected ? "> " : "  "}{presenceIndicator(presence, peer.dnd)} {selected || showUnread ? <b>{peer.display_name}</b> : peer.display_name}
             </text>
+            {markers.length > 0 && <text fg={nameColor} flexShrink={0}>{markers}</text>}
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {showUnread && <text fg={theme.accent}>{peer.unread_count} new</text>}
