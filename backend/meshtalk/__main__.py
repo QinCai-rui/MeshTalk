@@ -1084,7 +1084,8 @@ async def main(debug: bool = False) -> None:
             return {"error": str(exc)}
         try:
             summary = await switch_storage_location(
-                db=db, settings=settings, file_manager=file_manager, target=target, migrate=migrate
+                db=db, settings=settings, file_manager=file_manager, identity=identity,
+                target=target, migrate=migrate,
             )
         except RuntimeError as exc:
             return {"error": str(exc)}

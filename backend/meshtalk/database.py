@@ -999,6 +999,15 @@ class Database:
         ) as cursor:
             return await cursor.fetchone() is not None
 
+    def set_storage_key(self, storage_key: bytes | None) -> None:
+        """Replace the local-storage encryption key.
+
+        Used when the backend adopts another location's identity (whose
+        database rows were encrypted under a different key). Call while the
+        connection is closed, before reconnecting.
+        """
+        self._cipher = AESGCM(storage_key or os.urandom(32))
+
     async def vacuum_into(self, dest: Path) -> None:
         """Write a transaction-consistent snapshot of the database to dest.
 

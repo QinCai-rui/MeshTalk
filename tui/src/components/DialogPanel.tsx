@@ -804,6 +804,12 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
     return `Sent to ${peerLabel(file.recipient_id)}`
   }
   const wide = dialogWidth >= 92
+  // Keep row filenames on one line: long unbroken names would otherwise
+  // wrap mid-word across rows and garble the fixed title/size layout.
+  // The full name stays visible in the details pane (wide) or the expanded
+  // path line (narrow).
+  const rowNameLimit = Math.max(8, Math.floor((wide ? 38 : dialogWidth) - 18))
+  const rowFilename = (name: string) => name.length > rowNameLimit ? `${name.slice(0, rowNameLimit - 1)}…` : name
   const renderSelectedImage = (file: FileTransfer, maxWidth: number) => isImageFile(file.filename) && file.status === "completed" && file.file_path && !isLocalFileMissing(file.file_path)
     ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage lazy={false} maxWidth={maxWidth} maxHeight={Math.max(4, Math.min(14, dialogHeight - 14))} onOpen={() => showDialog({ kind: "image-view", filePath: file.file_path!, filename: file.filename, version: file.completed_at, returnTo: "files" })} />
     : null
@@ -824,8 +830,8 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
         <text ref={unselectableRef} fg={filter === chip.id ? theme.accent : theme.muted}>{filter === chip.id ? "> " : ""}{chip.label} {chip.count}</text>
       </box>)}
     </box>
-    <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: wide ? "row" : "column", gap: wide ? 1 : 0 }}>
-      <scrollbox id="file-manager-list" ref={scrollboxRef} focused style={{ width: wide ? "44%" : "100%", flexGrow: wide ? 0 : 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1 }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas }, arrowOptions: { foregroundColor: theme.line } }}>
+    <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: wide ? "row" : "column", gap: wide ? 1 : 0, minWidth: 0, alignItems: "flex-start" }}>
+      <scrollbox id="file-manager-list" ref={scrollboxRef} focused style={{ width: wide ? 38 : "100%", flexGrow: 0, flexShrink: 0, minHeight: 0, minWidth: 0, alignSelf: "flex-start" }} contentOptions={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1 }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas }, arrowOptions: { foregroundColor: theme.line } }}>
         {!filtered.length ? <box style={{ paddingLeft: 2, paddingRight: 2, paddingTop: 2, flexDirection: "column", gap: 1 }}><text fg={theme.text}><b>No {filter === "all" ? "file transfers" : filter} yet</b></text><text fg={theme.muted}>Send a file with /file or receive one from a peer.</text></box> : null}
         {filtered.map((f) => {
           const status = statusStyle(f.status)
@@ -833,31 +839,31 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
           const selected = f.file_id === selectedId
           const progress = f.total_chunks && f.received_chunks !== undefined ? Math.round(f.received_chunks / f.total_chunks * 100) : undefined
           const direction = transferDirection(f)
-          return <box key={f.file_id} id={f.file_id} onMouseDown={() => setSelectedId(f.file_id)} style={{ width: "100%", flexDirection: "column", paddingLeft: 2, paddingRight: 1, paddingTop: 1, paddingBottom: 1, backgroundColor: selected ? theme.selected : undefined }}>
-            <box style={{ flexDirection: "row", justifyContent: "space-between", gap: 1 }}>
-              <text fg={selected ? theme.accent : theme.text} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}<b>{f.filename}</b></text>
-              <text fg={theme.muted} flexShrink={0}>{formatSize(f.file_size)}</text>
+          return <box key={f.file_id} id={f.file_id} onMouseDown={() => setSelectedId(f.file_id)} style={{ width: "100%", flexDirection: "column", paddingLeft: 2, paddingRight: 1, paddingTop: 1, paddingBottom: 1, backgroundColor: selected ? theme.selected : undefined, minWidth: 0, overflow: "hidden" }}>
+            <box style={{ flexDirection: "row", justifyContent: "space-between", gap: 1, minWidth: 0, overflow: "hidden" }}>
+              <text fg={selected ? theme.accent : theme.text} style={{ flexGrow: 1, flexShrink: 1, minWidth: 0 }} wrapMode="none" overflow="hidden">{selected ? "> " : "  "}<b>{rowFilename(f.filename)}</b></text>
+              <text fg={theme.muted} flexShrink={0} wrapMode="none">{formatSize(f.file_size)}</text>
             </box>
             <text fg={theme.muted} wrapMode="word">  {direction}{f.group_id ? " / group" : ""} / <span fg={status.color}>{status.label}</span>{progress !== undefined && !["completed", "sent"].includes(f.status) ? ` / ${progress}%` : ""}</text>
             {missing ? <text fg={theme.danger}>  File unavailable: moved or deleted locally</text> : null}
             {progress !== undefined && !["completed", "sent"].includes(f.status) ? <box style={{ width: "100%", height: 1, backgroundColor: theme.surface }}><box style={{ width: `${Math.min(100, progress)}%`, height: 1, backgroundColor: theme.warning }} /></box> : null}
-            {!wide && selected && f.file_path ? <text fg={theme.muted} wrapMode="word">  {f.file_path}</text> : null}
+            {!wide && selected && f.file_path ? <text fg={theme.muted} wrapMode="char">  {f.file_path}</text> : null}
             {!wide && selected ? renderSelectedImage(f, Math.max(12, dialogWidth - 6)) : null}
           </box>
         })}
       </scrollbox>
-      {wide && <box id="file-manager-details" style={{ flexGrow: 1, flexShrink: 1, minWidth: 0, padding: 2, backgroundColor: theme.surface }}>
+      {wide && <box id="file-manager-details" style={{ flexGrow: 1, flexShrink: 1, minWidth: 0, padding: 2, backgroundColor: theme.surface, alignSelf: "flex-start" }}>
         {!selectedFile ? <text fg={theme.muted}>Select a file to see its details.</text> : (() => {
           const status = statusStyle(selectedFile.status)
           const missing = ["completed", "sent"].includes(selectedFile.status) && isLocalFileMissing(selectedFile.file_path)
           return <>
-            <text fg={theme.text} wrapMode="word"><b>{selectedFile.filename}</b></text>
+            <text fg={theme.text} wrapMode="char"><b>{selectedFile.filename}</b></text>
             <text fg={theme.muted}>{formatSize(selectedFile.file_size)} / <span fg={status.color}>{status.label}</span>{isImageFile(selectedFile.filename) ? " / image" : ""}</text>
             <text fg={theme.muted}>{transferDirection(selectedFile)}{selectedFile.group_id ? " / group" : ""}</text>
             <text fg={theme.muted}>Transfer {selectedFile.file_id.slice(0, 8)}</text>
             <box height={1} />
             <text fg={theme.muted}>Local file</text>
-            {selectedFile.file_path ? <text fg={missing ? theme.danger : theme.text} wrapMode="word">{selectedFile.file_path}</text> : <text fg={theme.muted}>No local path available</text>}
+            {selectedFile.file_path ? <text fg={missing ? theme.danger : theme.text} wrapMode="char">{selectedFile.file_path}</text> : <text fg={theme.muted}>No local path available</text>}
             {missing ? <text fg={theme.danger}>File unavailable: moved or deleted locally</text> : null}
             <box height={1} />
             {renderSelectedImage(selectedFile, Math.max(12, Math.floor(dialogWidth * 0.5) - 6))}
@@ -1017,7 +1023,7 @@ export function FilesSettingsContent({ dialog, dialogHeight, dialogBusy, loadFil
     {pendingMigrate ? <box style={{ position: "absolute", left: 2, right: 2, top: 1, border: true, borderColor: theme.link, backgroundColor: theme.surfaceRaised, padding: 1, flexDirection: "column", gap: 1 }}>
       <text fg={theme.text}><b>Transfer existing {pendingMigrate.scope === "files" ? "files" : "data"} to the new location?</b></text>
       <text fg={theme.muted} wrapMode="word">{pendingMigrate.path || "(default)"}</text>
-      <text fg={theme.muted} wrapMode="word">Yes copies and verifies everything, then removes the old files. No keeps the old files where they are. A failed copy aborts the change. [Y]es / [N]o · Esc cancels</text>
+      <text fg={theme.muted} wrapMode="word">Yes copies and verifies everything, then removes the old files. No switches without copying — data already at the new location will be used, old files stay where they are. A failed copy aborts the change. [Y]es / [N]o · Esc cancels</text>
       <box style={{ flexDirection: "row", gap: 1 }}>
         <box id="migrate-yes" onMouseDown={() => confirmMigrate(true)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}>Yes, transfer</text></box>
         <box id="migrate-no" onMouseDown={() => confirmMigrate(false)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>No, keep old</text></box>
@@ -1096,7 +1102,7 @@ export function FilesDirDialogContent({ dialog, dialogDraft, setDialogDraft, set
     {pendingMigrate ? <box style={{ position: "absolute", left: 2, right: 2, top: 1, border: true, borderColor: theme.link, backgroundColor: theme.surfaceRaised, padding: 1, flexDirection: "column", gap: 1 }}>
       <text fg={theme.text}><b>Transfer existing {pendingMigrate.scope === "files" ? "files" : "data"} to the new location?</b></text>
       <text fg={theme.muted} wrapMode="word">{pendingMigrate.path}</text>
-      <text fg={theme.muted}>Yes copies and verifies everything, then removes the old files. No keeps the old files where they are. A failed copy aborts the change. [Y]es / [N]o</text>
+      <text fg={theme.muted}>Yes copies and verifies everything, then removes the old files. No switches without copying — data already at the new location will be used, old files stay where they are. A failed copy aborts the change. [Y]es / [N]o</text>
       <box style={{ flexDirection: "row", gap: 1 }}>
         <box onMouseDown={() => confirmMigrate(true)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.selected, border: true, borderColor: theme.link }}><text fg={theme.text}>Yes, transfer</text></box>
         <box onMouseDown={() => confirmMigrate(false)} style={{ height: 3, paddingLeft: 1, paddingRight: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.surface, border: true, borderColor: theme.surface }}><text fg={theme.text}>No, keep old</text></box>

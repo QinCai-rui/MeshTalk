@@ -265,17 +265,20 @@ async def migrate_files_location(*, db, settings, target: Path) -> dict:
     return {"migrated": True, "cleanup_warning": cleanup_warning}
 
 
-async def switch_storage_location(*, db, settings, file_manager, target: Path, migrate: bool) -> dict:
+async def switch_storage_location(*, db, settings, file_manager, identity, target: Path, migrate: bool) -> dict:
     """Switch the live backend to a new storage directory.
 
     With ``migrate=True`` the messages database (consistent snapshot),
     identity, and default-located files are copied, verified, and only then
-    deleted from the old location. With ``migrate=False`` a fresh database is
-    opened at the target and old data is left intact. ``db`` needs
+    deleted from the old location. With ``migrate=False`` nothing is copied:
+    an empty target gets a fresh database (old data left intact), while a
+    target that already holds MeshTalk data is adopted as-is. ``db`` needs
     ``db_path``/``close()``/``connect()``/``vacuum_into()``/
-    ``has_active_file_transfers()``; ``settings`` needs ``storage_dir``/
-    ``files_dir``/``_storage_dir``/``_files_dir``/``set_storage_dir()``;
-    ``file_manager`` needs a writable ``data_dir`` attribute.
+    ``set_storage_key()``/``has_active_file_transfers()``; ``settings``
+    needs ``storage_dir``/``files_dir``/``_storage_dir``/``_files_dir``/
+    ``set_storage_dir()``; ``file_manager`` needs a writable ``data_dir``
+    attribute; ``identity`` is the shared live identity, updated in place
+    when adopting another location's identity.
 
     Raises RuntimeError when the switch cannot be completed; the old location
     stays active in that case. Returns a summary dict with ``migrated``,
@@ -294,12 +297,13 @@ async def switch_storage_location(*, db, settings, file_manager, target: Path, m
     new_db = target / DB_FILENAME
     old_identity = old_storage / IDENTITY_FILENAME
     new_identity = target / IDENTITY_FILENAME
-    if new_db.exists() or new_identity.exists():
+    target_has_data = new_db.exists() or new_identity.exists()
+    if migrate and target_has_data:
         raise RuntimeError(
             f"Target '{target}' already contains MeshTalk data. "
             "Choose an empty location or move that data aside first."
         )
-    if not migrate and dir_has_content(target):
+    if not migrate and not target_has_data and dir_has_content(target):
         raise RuntimeError(
             f"Target '{target}' already contains files. "
             "Pass migrate=true to transfer, or choose an empty location."
@@ -354,6 +358,90 @@ async def switch_storage_location(*, db, settings, file_manager, target: Path, m
                 detail = "; ".join(problems[:5])
                 raise RuntimeError(f"Verification of the copied files failed ({detail}). Location unchanged.")
     else:
+        if target_has_data:
+            # Adopt the data already at the target: use its database (after a
+            # read-only verification) and its identity (so existing rows stay
+            # decryptable), leaving the old location completely untouched.
+            adopted_identity = None
+            if new_identity.exists():
+                try:
+                    from .identity import Identity
+                    adopted_identity = Identity.load(target)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Cannot use the identity at '{target}': {exc}. Location unchanged."
+                    ) from exc
+                if adopted_identity is None:
+                    raise RuntimeError(
+                        f"Cannot use the identity at '{target}' (unsupported format). "
+                        "Location unchanged."
+                    )
+            elif new_db.exists():
+                raise RuntimeError(
+                    f"Target '{target}' contains a database but no identity, so its "
+                    "messages cannot be decrypted. Move that data aside first or "
+                    "choose another location."
+                )
+            if new_db.exists():
+                problem = sqlite_integrity_ok(new_db)
+                if problem:
+                    raise RuntimeError(
+                        f"The database at '{target}' failed verification ({problem}). "
+                        "Location unchanged."
+                    )
+            new_key = (adopted_identity or identity).storage_key()
+            old_key = identity.storage_key()
+            previous_db_path = db.db_path
+            await db.close()
+            db.db_path = new_db
+            db.set_storage_key(new_key)
+            try:
+                await db.connect()
+            except Exception as exc:
+                db.db_path = previous_db_path
+                try:
+                    db.set_storage_key(old_key)
+                except Exception:
+                    pass
+                try:
+                    await db.connect()
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"Could not open the database at the new location: {exc}. Location unchanged."
+                ) from exc
+            identity_changed = (
+                adopted_identity is not None and adopted_identity.peer_id != identity.peer_id
+            )
+            if adopted_identity is not None:
+                identity.signing_private_key = adopted_identity.signing_private_key
+                identity.encryption_private_key = adopted_identity.encryption_private_key
+                identity.peer_id = adopted_identity.peer_id
+                identity.display_name = adopted_identity.display_name
+            file_manager.data_dir = target
+            try:
+                settings.set_storage_dir(str(target))
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
+            summary = {
+                "migrated": False,
+                "files_migrated": False,
+                "cleanup_warning": None,
+                "noop": False,
+                "note": (
+                    f"Switched to the existing data at '{target}'. "
+                    "Previous data was left intact at "
+                    f"'{old_storage}'."
+                ),
+            }
+            if identity_changed:
+                summary["note"] += (
+                    " Now using the peer identity stored at the new location; "
+                    "peers may need to reconnect."
+                )
+            if not files_follow_storage:
+                summary["files_note"] = "A custom files directory is configured; it was left unchanged."
+            return summary
         if old_identity.exists():
             copy_file(old_identity, new_identity)
     # Switch the live backend to the new location. The old database connection
@@ -395,10 +483,10 @@ async def switch_storage_location(*, db, settings, file_manager, target: Path, m
                 old_identity.unlink()
             except OSError as exc:
                 cleanup_problems.append(f"cannot delete {old_identity}: {exc}")
-        if not files_follow_storage:
-            summary["files_note"] = "A custom files directory is configured; it was left unchanged."
     else:
         summary["note"] = f"Storage switched to '{target}'. Previous data was left intact at '{old_storage}'."
+    if not files_follow_storage:
+        summary["files_note"] = "A custom files directory is configured; it was left unchanged."
     if cleanup_problems:
         summary["cleanup_warning"] = (
             "Location changed, but some old files could not be deleted: " + "; ".join(cleanup_problems[:5])

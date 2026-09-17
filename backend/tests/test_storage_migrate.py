@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from meshtalk.database import Database
+from meshtalk.identity import Identity
 from meshtalk.settings import Settings
 from meshtalk.storage import migrate_files_location, switch_storage_location
 
@@ -25,6 +26,8 @@ class StorageMigrationTest(unittest.TestCase):
         self.db = Database(self.storage / "meshtalk.db", os.urandom(32))
         _run(self.db.connect())
         (self.storage / "identity.json").write_text('{"peer": "old"}')
+        self.identity = Identity.generate("Old")
+        self.identity.save(self.storage)
         files_base = self.storage / "files"
         (files_base / "peer" / "photo.bin").parent.mkdir(parents=True, exist_ok=True)
         (files_base / "peer" / "photo.bin").write_bytes(b"p" * 64)
@@ -47,7 +50,7 @@ class StorageMigrationTest(unittest.TestCase):
         summary = _run(
             switch_storage_location(
                 db=self.db, settings=self.settings, file_manager=self.file_manager,
-                target=target, migrate=True,
+                identity=self.identity, target=target, migrate=True,
             )
         )
         self.assertTrue(summary["migrated"])
@@ -78,7 +81,7 @@ class StorageMigrationTest(unittest.TestCase):
         summary = _run(
             switch_storage_location(
                 db=self.db, settings=self.settings, file_manager=self.file_manager,
-                target=target, migrate=False,
+                identity=self.identity, target=target, migrate=False,
             )
         )
         self.assertFalse(summary["migrated"])
@@ -92,7 +95,10 @@ class StorageMigrationTest(unittest.TestCase):
         self.assertTrue((self.storage / "meshtalk.db").exists())
         self.assertTrue((self.storage / "identity.json").exists())
         # Identity carried over so the peer ID survives a restart.
-        self.assertEqual((target / "identity.json").read_text(), '{"peer": "old"}')
+        self.assertEqual(
+            (target / "identity.json").read_text(),
+            (self.storage / "identity.json").read_text(),
+        )
 
     def test_switch_aborts_when_copy_fails(self):
         _run(self._seed_message())
@@ -102,7 +108,7 @@ class StorageMigrationTest(unittest.TestCase):
                 _run(
                     switch_storage_location(
                         db=self.db, settings=self.settings, file_manager=self.file_manager,
-                        target=target, migrate=True,
+                        identity=self.identity, target=target, migrate=True,
                     )
                 )
         # Old location still active with data intact.
@@ -122,7 +128,7 @@ class StorageMigrationTest(unittest.TestCase):
             _run(
                 switch_storage_location(
                     db=self.db, settings=self.settings, file_manager=self.file_manager,
-                    target=target, migrate=True,
+                    identity=self.identity, target=target, migrate=True,
                 )
             )
         self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
@@ -140,7 +146,7 @@ class StorageMigrationTest(unittest.TestCase):
             _run(
                 switch_storage_location(
                     db=self.db, settings=self.settings, file_manager=self.file_manager,
-                    target=target, migrate=True,
+                    identity=self.identity, target=target, migrate=True,
                 )
             )
         self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
@@ -149,7 +155,7 @@ class StorageMigrationTest(unittest.TestCase):
         summary = _run(
             switch_storage_location(
                 db=self.db, settings=self.settings, file_manager=self.file_manager,
-                target=self.storage, migrate=True,
+                identity=self.identity, target=self.storage, migrate=True,
             )
         )
         self.assertTrue(summary["noop"])
@@ -186,6 +192,103 @@ class StorageMigrationTest(unittest.TestCase):
         with patch.dict(os.environ, {"MESHTALK_FILES_DIR": str(self.storage / "files")}):
             with self.assertRaisesRegex(RuntimeError, "MESHTALK_FILES_DIR"):
                 _run(migrate_files_location(db=self.db, settings=self.settings, target=target))
+
+    def _make_adopt_target(self, name: str = "adopted-storage") -> tuple[Path, Identity]:
+        """Build a second storage dir with its own identity, database row, and file."""
+        target = Path(self.tempdir.name) / name
+        target.mkdir()
+        adopted = Identity.generate("Adopted")
+        adopted.save(target)
+        adopted_db = Database(target / "meshtalk.db", adopted.storage_key())
+        _run(adopted_db.connect())
+        try:
+            _run(
+                adopted_db._db.execute(
+                    "INSERT INTO messages (message_id, sender_id, recipient_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                    ("adopted-1", "x", "y", adopted_db._encrypt_content("hello adopted"), 2.0),
+                )
+            )
+            _run(adopted_db._db.commit())
+        finally:
+            _run(adopted_db.close())
+        (target / "files" / "peer").mkdir(parents=True)
+        (target / "files" / "peer" / "kept.bin").write_bytes(b"k" * 32)
+        return target, adopted
+
+    def test_switch_without_migrate_adopts_existing_target_data(self):
+        _run(self._seed_message())
+        old_peer_id = self.identity.peer_id
+        target, adopted = self._make_adopt_target()
+        summary = _run(
+            switch_storage_location(
+                db=self.db, settings=self.settings, file_manager=self.file_manager,
+                identity=self.identity, target=target, migrate=False,
+            )
+        )
+        self.assertFalse(summary["migrated"])
+        self.assertIn("existing data", summary["note"])
+        self.assertIn("identity", summary["note"])
+        # Live backend now serves the adopted location with its identity.
+        self.assertEqual(self.db.db_path, target / "meshtalk.db")
+        self.assertEqual(self.file_manager.data_dir, target)
+        self.assertEqual(self.settings.storage_dir, target.resolve())
+        self.assertEqual(self.identity.peer_id, adopted.peer_id)
+        self.assertNotEqual(self.identity.peer_id, old_peer_id)
+        self.assertEqual(self.identity.display_name, "Adopted")
+        # Adopted message decrypts under the adopted identity's key.
+        async def _messages():
+            async with self.db._db.execute("SELECT message_id, content FROM messages ORDER BY message_id") as cursor:
+                return [(row[0], row[1]) async for row in cursor]
+        rows = _run(_messages())
+        self.assertEqual([row[0] for row in rows], ["adopted-1"])
+        self.assertEqual(self.db._decrypt_content(rows[0][1]), "hello adopted")
+        # Old location untouched: nothing copied, nothing deleted.
+        self.assertTrue((self.storage / "meshtalk.db").exists())
+        self.assertTrue((self.storage / "identity.json").exists())
+        self.assertEqual((self.storage / "files" / "peer" / "photo.bin").read_bytes(), b"p" * 64)
+
+    def test_switch_without_migrate_adopts_same_identity_quietly(self):
+        target = Path(self.tempdir.name) / "same-id"
+        target.mkdir()
+        self.identity.save(target)
+        summary = _run(
+            switch_storage_location(
+                db=self.db, settings=self.settings, file_manager=self.file_manager,
+                identity=self.identity, target=target, migrate=False,
+            )
+        )
+        self.assertFalse(summary["migrated"])
+        self.assertNotIn("identity", summary["note"])
+        self.assertEqual(self.db.db_path, target / "meshtalk.db")
+
+    def test_switch_without_migrate_refuses_db_without_identity(self):
+        target = Path(self.tempdir.name) / "orphan-db"
+        target.mkdir()
+        (target / "meshtalk.db").write_bytes(b"no identity here")
+        with self.assertRaisesRegex(RuntimeError, "no identity"):
+            _run(
+                switch_storage_location(
+                    db=self.db, settings=self.settings, file_manager=self.file_manager,
+                    identity=self.identity, target=target, migrate=False,
+                )
+            )
+        self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
+        self.assertEqual(self.settings.storage_dir, self.storage)
+
+    def test_switch_without_migrate_refuses_corrupt_target_db(self):
+        target = Path(self.tempdir.name) / "corrupt"
+        target.mkdir()
+        Identity.generate("Corrupt").save(target)
+        (target / "meshtalk.db").write_bytes(b"not a database at all")
+        with self.assertRaisesRegex(RuntimeError, "verification"):
+            _run(
+                switch_storage_location(
+                    db=self.db, settings=self.settings, file_manager=self.file_manager,
+                    identity=self.identity, target=target, migrate=False,
+                )
+            )
+        self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
+        self.assertEqual(self.identity.display_name, "Old")
 
 
 if __name__ == "__main__":
