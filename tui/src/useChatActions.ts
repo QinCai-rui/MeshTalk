@@ -1,6 +1,6 @@
 import type { IPCClient } from "../../common/ipc-client"
 import type { Release } from "../../common/updater"
-import { checkForUpdate, GitHubAuthenticationError, installRelease, isReleaseInstallDir, releaseInstallDir, requestUpdateRestart, saveGithubToken, saveUpdateChannel as persistUpdateChannel, UPDATE_RESTART_EXIT_CODE, type UpdateChannel } from "../../common/updater"
+import { checkForUpdate, closeOtherLaunchers, GitHubAuthenticationError, installRelease, isReleaseInstallDir, otherLauncherPids, releaseInstallDir, requestUpdateRestart, saveGithubToken, saveUpdateChannel as persistUpdateChannel, UPDATE_RESTART_EXIT_CODE, type UpdateChannel } from "../../common/updater"
 import type { AdvancedConfig, BlockedPeer, ControlStatus, DebugInfo, Dialog, FileConfirmSource, FileTransfer, FriendRequest, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, RoomStatus, SplashPreference } from "./types"
 import type { NotificationDelivery, NotificationEvent, NotificationPreferences } from "./notifications"
 import { join, resolve } from "path"
@@ -271,6 +271,21 @@ export function useChatActions(deps: ChatActionsDeps) {
       const installDir = destination?.trim() ? resolve(destination.trim()) : releaseInstallDir()
       if (!installDir) throw new Error(`Unable to locate the standalone MeshTalk installation. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`)
       if (!isReleaseInstallDir(installDir)) throw new Error(`Update directory must contain the current MeshTalk release binaries. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`)
+      // On Windows another open MeshTalk window locks meshtalk.exe, which
+      // would leave the update staged but never applied. Close the other
+      // windows before downloading; if any refuse to close, stop and tell
+      // the user instead of staging an update that cannot land.
+      if (process.platform === "win32") {
+        const others = otherLauncherPids()
+        if (others.length > 0) {
+          if (dialogActionRef.current === action) {
+            setDialog((current) => current?.kind === "update" ? { ...current, progress: { current: 0, total: 6, step: `Closing ${others.length} other MeshTalk window(s)...` } } : current)
+          }
+          const { remaining } = await closeOtherLaunchers()
+          if (remaining.length > 0) throw new Error(`Another MeshTalk instance is still running (PID ${remaining.join(", ")}). Close all MeshTalk windows manually and try the update again.`)
+          showStatus(`Closed ${others.length} other MeshTalk window(s) to continue the update.`)
+        }
+      }
       await installRelease(release, installDir, (progress) => {
         if (dialogActionRef.current === action) setDialog((current) => current?.kind === "update" ? { ...current, progress } : current)
       })

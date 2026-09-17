@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
-import { buildWindowsReplacementScript, installRelease, isNewerVersion, isStagingWithinInstallDir, parsePendingUpdate, readUpdateChannel, saveUpdateChannel, type UpdateProgress } from "./updater"
+import { buildWindowsReplacementScript, closeLauncherPids, installRelease, isNewerVersion, isStagingWithinInstallDir, parseLauncherPids, parsePendingUpdate, readUpdateChannel, replacePendingFiles, saveUpdateChannel, type UpdateProgress } from "./updater"
 
 describe("isNewerVersion", () => {
   test("orders numeric release revisions after the base release", () => {
@@ -139,6 +139,119 @@ describe("buildWindowsReplacementScript", () => {
     expect(script).toContain("could not replace meshtalk.exe")
     expect(script).toContain("relaunched")
     expect(script).toContain("C:\\data\\update-helper.log")
+  })
+})
+
+describe("replacePendingFiles", () => {
+  test("replaces atomically and cleans up backups", () => {
+    const root = mkdtempSync(join(tmpdir(), "meshtalk-replace-"))
+    try {
+      const installDir = join(root, "install")
+      const staging = join(installDir, ".meshtalk-update-abc")
+      mkdirSync(installDir)
+      mkdirSync(staging)
+      writeFileSync(join(installDir, "meshtalk"), "old launcher")
+      writeFileSync(join(installDir, "meshtalk-backend"), "old backend")
+      writeFileSync(join(staging, "meshtalk"), "new launcher")
+      writeFileSync(join(staging, "meshtalk-backend"), "new backend")
+      expect(replacePendingFiles({ staging, installDir, files: ["meshtalk", "meshtalk-backend"] })).toBe(true)
+      expect(readFileSync(join(installDir, "meshtalk"), "utf-8")).toBe("new launcher")
+      expect(readFileSync(join(installDir, "meshtalk-backend"), "utf-8")).toBe("new backend")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("a failed promotion never deletes the original backend", () => {
+    const root = mkdtempSync(join(tmpdir(), "meshtalk-replace-"))
+    try {
+      const installDir = join(root, "install")
+      const staging = join(installDir, ".meshtalk-update-abc")
+      mkdirSync(installDir)
+      mkdirSync(staging)
+      writeFileSync(join(installDir, "meshtalk"), "old launcher")
+      writeFileSync(join(installDir, "meshtalk-backend"), "old backend")
+      // Staging launcher missing: promotion must fail after the backend was
+      // already moved, and the original backend must be restored.
+      writeFileSync(join(staging, "meshtalk-backend"), "new backend")
+      expect(replacePendingFiles({ staging, installDir, files: ["meshtalk", "meshtalk-backend"] })).toBe(false)
+      expect(readFileSync(join(installDir, "meshtalk-backend"), "utf-8")).toBe("old backend")
+      expect(readFileSync(join(installDir, "meshtalk"), "utf-8")).toBe("old launcher")
+      expect(readFileSync(join(staging, "meshtalk-backend"), "utf-8")).toBe("new backend")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("heals a missing destination by copying while keeping staging", () => {
+    const root = mkdtempSync(join(tmpdir(), "meshtalk-replace-"))
+    try {
+      const installDir = join(root, "install")
+      const staging = join(installDir, ".meshtalk-update-abc")
+      mkdirSync(installDir)
+      mkdirSync(staging)
+      writeFileSync(join(installDir, "meshtalk"), "old launcher")
+      writeFileSync(join(staging, "meshtalk"), "new launcher")
+      writeFileSync(join(staging, "meshtalk-backend"), "new backend")
+      expect(replacePendingFiles({ staging, installDir, files: ["meshtalk", "meshtalk-backend"] })).toBe(false)
+      expect(readFileSync(join(installDir, "meshtalk-backend"), "utf-8")).toBe("new backend")
+      expect(readFileSync(join(staging, "meshtalk-backend"), "utf-8")).toBe("new backend")
+      expect(readFileSync(join(installDir, "meshtalk"), "utf-8")).toBe("old launcher")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("parseLauncherPids", () => {
+  const csv = [
+    '"meshtalk.exe","1234","Console","1","10,000 K"',
+    '"MESHTALK.EXE","5678","Console","1","10,000 K"',
+    '"other.exe","9999","Console","1","10,000 K"',
+    "INFO: No tasks are running which match the specified criteria.",
+    "",
+  ].join("\r\n")
+
+  test("extracts meshtalk.exe PIDs, excluding the current process", () => {
+    expect(parseLauncherPids(csv, 1234)).toEqual([5678])
+    expect(parseLauncherPids(csv, 1)).toEqual([1234, 5678])
+  })
+
+  test("deduplicates and ignores malformed lines", () => {
+    const repeated = `"meshtalk.exe","42","Console","1","1 K"\r\n"meshtalk.exe","42","Console","1","1 K"\r\n"meshtalk.exe","notapid","Console","1","1 K"`
+    expect(parseLauncherPids(repeated, 1)).toEqual([42])
+    expect(parseLauncherPids("", 1)).toEqual([])
+  })
+})
+
+describe("closeLauncherPids", () => {
+  test("empty input closes nothing", async () => {
+    expect(await closeLauncherPids([])).toEqual({ closed: [], remaining: [] })
+  })
+
+  test("never targets the current process", async () => {
+    const result = await closeLauncherPids([process.pid], 1000)
+    expect(result).toEqual({ closed: [], remaining: [] })
+  })
+
+  test("a nonexistent PID is reported gone without throwing", async () => {
+    const result = await closeLauncherPids([2147483647], 1000)
+    expect(result.remaining).toEqual([])
+  })
+
+  // End-to-end on Windows only: a real console process must actually die via
+  // taskkill /F (a graceful taskkill without /F is refused for console apps).
+  test("force-closes a running console process on Windows", async () => {
+    if (process.platform !== "win32") return
+    const dummy = Bun.spawn(["cmd", "/c", "ping -t 127.0.0.1 >nul"], { stdout: "ignore", stderr: "ignore" })
+    try {
+      await Bun.sleep(500)
+      const result = await closeLauncherPids([dummy.pid], 10_000)
+      expect(result.remaining).toEqual([])
+      expect(result.closed).toContain(dummy.pid)
+    } finally {
+      try { dummy.kill() } catch {}
+    }
   })
 })
 

@@ -6,7 +6,7 @@ import { createConnection, type Socket } from "net";
 import { basename, dirname, join, resolve } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { applyPendingWindowsReplacement, checkForUpdate, githubRepository, installRelease, isReleaseInstallDir, logUpdateHelper, releaseInstallDir, saveGithubRepository, saveGithubToken, spawnWindowsReplacementHelper, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
+import { applyPendingWindowsReplacement, checkForUpdate, closeOtherLaunchers, githubRepository, installRelease, isReleaseInstallDir, logUpdateHelper, otherLauncherPids, releaseInstallDir, saveGithubRepository, saveGithubToken, spawnWindowsReplacementHelper, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
 import { main as cliMain } from "../cli/src/index";
 import { runTui } from "./tui-entry";
 import type { SplashStyle } from "../tui/src/SplashScreen";
@@ -216,6 +216,10 @@ function resolveComponents(): Components {
   const backend = bundledComponent("meshtalk-backend");
   if (backend) return { backend };
 
+  if (IS_RELEASE_BUILD) {
+    throw new Error(`Release components are missing (meshtalk-backend${EXECUTABLE_SUFFIX} was not found next to the launcher). The installation may have been left incomplete by an interrupted update. Try reinstalling MeshTalk using the quick install script: https://github.com/QinCai-rui/MeshTalk#quick-install`);
+  }
+
   const uv = findExecutable("uv");
   if (!uv) {
     throw new Error("Release components are missing. Source development requires uv in PATH.");
@@ -331,37 +335,6 @@ function readPidFile(): number | undefined {
 
 function backendPidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
-// PIDs of other meshtalk.exe launchers still running. A running launcher
-// locks meshtalk.exe, so the update helper could never replace it while they
-// live — fail fast with a clear message instead of timing out with the old
-// version still installed and orphaned processes piling up.
-function otherLauncherPids(): number[] {
-  if (!isWindows) return [];
-  try {
-    const result = Bun.spawnSync(["tasklist", "/fo", "csv", "/nh", "/fi", "IMAGENAME eq meshtalk.exe"], { stdout: "pipe", stderr: "ignore" });
-    if (result.exitCode !== 0) {
-      const detail = `tasklist exited with code ${result.exitCode}; failing open (no fail-fast on other launchers)`;
-      log(detail);
-      try { logUpdateHelper(`otherLauncherPids: ${detail}`); } catch {}
-      return [];
-    }
-    const output = new TextDecoder().decode(result.stdout);
-    const pids: number[] = [];
-    for (const line of output.split("\n")) {
-      const match = line.match(/"meshtalk\.exe","\s*(\d+)\s*"/i);
-      if (!match) continue;
-      const pid = Number(match[1]);
-      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && !pids.includes(pid)) pids.push(pid);
-    }
-    return pids;
-  } catch (error) {
-    const detail = `tasklist failed (${error instanceof Error ? error.message : String(error)}); failing open (no fail-fast on other launchers)`;
-    log(detail);
-    try { logUpdateHelper(`otherLauncherPids: ${detail}`); } catch {}
-    return [];
-  }
 }
 
 async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> {
@@ -629,11 +602,19 @@ async function main() {
           if (stale !== undefined && !backendPidAlive(stale)) rmSync(`${DATA_DIR}/meshtalk.pid`, { force: true });
         } catch {}
         // Another open MeshTalk window holds a lock on meshtalk.exe forever,
-        // so the helper could never replace it. Refuse early with a clear
+        // so the helper could never replace it. Close the other windows
+        // first; if any refuse to close, refuse the restart with a clear
         // message instead of failing minutes later with the old version.
         const others = otherLauncherPids();
         if (others.length > 0) {
-          throw new Error(`Another MeshTalk instance is still running (PID ${others.join(", ")}). Close all MeshTalk windows before restarting to update.`);
+          log(`Another MeshTalk instance is still running (PID ${others.join(", ")}). Closing it to continue the update...`);
+          logUpdateHelper(`restart closing other launchers: ${others.join(",")}`);
+          const { remaining } = await closeOtherLaunchers();
+          if (remaining.length > 0) {
+            logUpdateHelper(`restart ABORTED: other launchers still running: ${remaining.join(",")}`);
+            throw new Error(`Another MeshTalk instance is still running (PID ${remaining.join(", ")}). Close all MeshTalk windows before restarting to update.`);
+          }
+          logUpdateHelper("restart: other launchers closed");
         }
         if (!spawnWindowsReplacementHelper()) {
           logUpdateHelper("restart ABORTED: helper spawn failed");
