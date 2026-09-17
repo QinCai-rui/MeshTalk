@@ -814,6 +814,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
     return `Sent to ${peerLabel(file.recipient_id)}`
   }
   const wide = dialogWidth >= 92
+  const detailTextWidth = Math.max(1, dialogWidth - Math.floor(dialogWidth * 0.44) - 5)
   const renderSelectedImage = (file: FileTransfer, maxWidth: number) => isImageFile(file.filename) && file.status === "completed" && file.file_path && !isLocalFileMissing(file.file_path)
     ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage lazy={false} maxWidth={maxWidth} maxHeight={Math.max(4, Math.min(14, dialogHeight - 14))} onOpen={() => showDialog({ kind: "image-view", filePath: file.file_path!, filename: file.filename, version: file.completed_at, returnTo: "files" })} />
     : null
@@ -857,7 +858,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
           const status = statusStyle(selectedFile.status)
           const missing = ["completed", "sent"].includes(selectedFile.status) && isLocalFileMissing(selectedFile.file_path)
           return <>
-            <MarqueeText width={Math.max(1, dialogWidth - 6)} fg={theme.text} text={selectedFile.filename} />
+            <MarqueeText width={detailTextWidth} fg={theme.text} text={selectedFile.filename} />
             <text fg={theme.muted}>{formatSize(selectedFile.file_size)} / <span fg={status.color}>{status.label}</span>{isImageFile(selectedFile.filename) ? " / image" : ""}</text>
             <text fg={theme.muted}>{transferDirection(selectedFile)}{selectedFile.group_id ? " / group" : ""}</text>
             {selectedFile.caption ? <text wrapMode="word">{selectedFile.caption}</text> : null}
