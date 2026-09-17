@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     MeshTalk Installer (PowerShell port)
@@ -38,6 +38,72 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# ─── Default PowerShell (5.1) compatibility ──────────────────────────────────
+# Windows PowerShell 5.1 defaults to TLS 1.0, which GitHub rejects. Opt into
+# TLS 1.2 up front so all later Invoke-WebRequest / Invoke-RestMethod calls
+# succeed on stock Windows without user configuration.
+try {
+    $tlsCurrent = [Net.ServicePointManager]::SecurityProtocol
+    $tls12 = [Net.SecurityProtocolType]::Tls12
+    if (($tlsCurrent -band $tls12) -ne $tls12) {
+        [Net.ServicePointManager]::SecurityProtocol = ($tlsCurrent -bor $tls12)
+    }
+} catch { }
+
+# `` `e `` (ESC) only exists in PowerShell 6+. Use [char]27 so ANSI sequences
+# also build correctly under Windows PowerShell 5.1.
+$script:ESC = [char]27
+
+function Test-OutputRedirected {
+    try {
+        return [Console]::IsOutputRedirected
+    } catch {
+        return $false
+    }
+}
+
+function Get-HomeDirectory {
+    if ($HOME) { return $HOME }
+    if ($env:USERPROFILE) { return $env:USERPROFILE }
+    if ($env:HOME) { return $env:HOME }
+    return ''
+}
+
+function Test-IsMacOS {
+    try {
+        return [bool](Get-Variable -Name IsMacOS -ValueOnly -ErrorAction Stop)
+    } catch {
+        return $false
+    }
+}
+
+function Test-IsLinux {
+    try {
+        return [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction Stop)
+    } catch {
+        return $false
+    }
+}
+
+function Get-ProcessorArchitecture {
+    # RuntimeInformation exists on .NET 4.7+ / .NET Core. Fall back to env vars
+    # for older Windows PowerShell 5.1 hosts (.NET 4.5).
+    try {
+        $archType = [System.Runtime.InteropServices.RuntimeInformation]
+        $archValue = $archType::OSArchitecture.ToString()
+        if ($archValue) { return $archValue }
+    } catch { }
+    $raw = $env:PROCESSOR_ARCHITEW6432
+    if (-not $raw) { $raw = $env:PROCESSOR_ARCHITECTURE }
+    if (-not $raw) { return '' }
+    switch ($raw.ToUpperInvariant()) {
+        'AMD64' { return 'X64' }
+        'X86'   { return 'X86' }
+        'ARM64' { return 'Arm64' }
+        default { return $raw }
+    }
+}
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 $Repository     = 'QinCai-rui/MeshTalk'
@@ -89,27 +155,36 @@ $script:UseAnsi = $false
 function Initialize-Colors {
     $supportsAnsi = $false
     try {
-        if ($Host.UI.SupportsVirtualTerminal) { $supportsAnsi = $true }
+        $vtCapable = $false
+        try { $vtCapable = [bool]$Host.UI.SupportsVirtualTerminal } catch { $vtCapable = $false }
+        if ($vtCapable) { $supportsAnsi = $true }
     } catch { }
     if ($env:FORCE_COLOR) { $supportsAnsi = $true }
-    if (-not [Console]::IsOutputRedirected -and $supportsAnsi) {
-        $script:UseAnsi = $true
+    try {
+        if ((Test-OutputRedirected) -or (-not $supportsAnsi)) {
+            $script:UseAnsi = $false
+        } else {
+            $script:UseAnsi = $true
+        }
+    } catch {
+        $script:UseAnsi = $false
     }
 
     if ($script:UseAnsi) {
-        $script:RESET      = "`e[0m"
-        $script:BOLD       = "`e[1m"
-        $script:DIM        = "`e[2m"
-        $script:DIM_BOLD   = "`e[2;1m"
-        $script:UNDERLINE  = "`e[4m"
-        $script:BLUE       = "`e[94m"
-        $script:CYAN       = "`e[96m"
-        $script:GREEN      = "`e[32m"
-        $script:YELLOW     = "`e[33m"
-        $script:RED        = "`e[91m"
-        $script:GRAY       = "`e[90m"
-        $script:PURPLE     = "`e[95m"
-        $script:WHITE      = "`e[97m"
+        $e = $script:ESC
+        $script:RESET      = "$e[0m"
+        $script:BOLD       = "$e[1m"
+        $script:DIM        = "$e[2m"
+        $script:DIM_BOLD   = "$e[2;1m"
+        $script:UNDERLINE  = "$e[4m"
+        $script:BLUE       = "$e[94m"
+        $script:CYAN       = "$e[96m"
+        $script:GREEN      = "$e[32m"
+        $script:YELLOW     = "$e[33m"
+        $script:RED        = "$e[91m"
+        $script:GRAY       = "$e[90m"
+        $script:PURPLE     = "$e[95m"
+        $script:WHITE      = "$e[97m"
     } else {
         $script:RESET = $script:BOLD = $script:DIM = $script:DIM_BOLD = $script:UNDERLINE = ''
         $script:BLUE = $script:CYAN = $script:GREEN = $script:YELLOW = ''
@@ -188,7 +263,7 @@ function Write-Success {
 function Start-Step {
     param([string]$Label)
     $script:TaskLabel = $Label
-    if ([Console]::IsOutputRedirected -or -not $script:UseAnsi) {
+    if ((Test-OutputRedirected) -or (-not $script:UseAnsi)) {
         Write-Host "  $($script:INFO)  $Label..."
     } else {
         Write-Host -NoNewline "  $($script:INFO)  $Label..."
@@ -200,10 +275,10 @@ function Complete-Step {
         [string]$Marker = $script:TICK,
         [string]$CompletedLabel = $script:TaskLabel
     )
-    if ([Console]::IsOutputRedirected -or -not $script:UseAnsi) {
+    if ((Test-OutputRedirected) -or (-not $script:UseAnsi)) {
         Write-Host "  $Marker  $CompletedLabel"
     } else {
-        Write-Host "`e[2K`r  $Marker  $CompletedLabel"
+        Write-Host "$($script:ESC)[2K`r  $Marker  $CompletedLabel"
     }
     $script:TaskLabel = ''
 }
@@ -306,19 +381,24 @@ function Show-Banner {
 
 # ─── Platform Detection ──────────────────────────────────────────────────────
 function Get-PlatformInfo {
-    # This script is intended to run under Windows PowerShell / pwsh on Windows,
-    # but pwsh also runs on macOS/Linux, so detect accordingly.
+    # Windows PowerShell 5.1 only runs on Windows and has no $IsMacOS/$IsLinux
+    # automatic variables (referencing them under StrictMode throws), so guard
+    # with Get-Variable and treat PS <= 5 as Windows.
+    $isMacOSHost = Test-IsMacOS
+    $isLinuxHost = Test-IsLinux
     if ($env:OS -eq 'Windows_NT') {
         $script:PlatformName = 'windows'
-    } elseif ($IsMacOS) {
+    } elseif ($PSVersionTable.PSVersion.Major -le 5) {
+        $script:PlatformName = 'windows'
+    } elseif ($isMacOSHost) {
         $script:PlatformName = 'macos'
-    } elseif ($IsLinux) {
+    } elseif ($isLinuxHost) {
         $script:PlatformName = 'linux'
     } else {
         Invoke-Die "Unsupported operating system."
     }
 
-    $archRaw = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    $archRaw = Get-ProcessorArchitecture
     switch ($archRaw) {
         'X64'   { $script:Arch = 'x64' }
         'Arm64' { $script:Arch = 'arm64' }
@@ -327,10 +407,16 @@ function Get-PlatformInfo {
 
     if ($script:PlatformName -eq 'windows') {
         $script:ExecutableSuffix = '.exe'
-        $script:DefaultInstallDir = Join-Path $env:LOCALAPPDATA 'MeshTalk'
+        $localAppData = $env:LOCALAPPDATA
+        if (-not $localAppData) {
+            $userProfile = Get-HomeDirectory
+            if ($userProfile) { $localAppData = Join-Path $userProfile 'AppData\Local' }
+        }
+        if (-not $localAppData) { Invoke-Die "Unable to locate the local AppData directory." }
+        $script:DefaultInstallDir = Join-Path $localAppData 'MeshTalk'
     } else {
         $script:ExecutableSuffix = ''
-        $script:DefaultInstallDir = Join-Path $HOME '.local/bin'
+        $script:DefaultInstallDir = Join-Path (Get-HomeDirectory) '.local/bin'
     }
     $script:AssetArch = $script:Arch
     $script:WindowsArm64Emulation = $false
@@ -357,9 +443,13 @@ function Confirm-DownloadMethod {
 
 function Confirm-NotAdministrator {
     if ($script:PlatformName -ne 'windows') { return }
-    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
-    $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    try {
+        $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
+        $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return
+    }
     if ($isAdmin) {
         Write-WarnMsg "Running with Administrator privileges is not recommended for this installer."
         Write-WarnMsg "Continuing anyway, since Windows does not allow this check to block execution the way root does on POSIX."
@@ -379,7 +469,7 @@ function Invoke-GitHubApi {
     param([string]$Url)
     $headers = Get-AuthHeaders
     try {
-        return Invoke-RestMethod -Uri $Url -Headers $headers -Method Get -ErrorAction Stop
+        return Invoke-RestMethod -Uri $Url -Headers $headers -Method Get -UseBasicParsing -ErrorAction Stop
     } catch {
         return $null
     }
@@ -389,7 +479,7 @@ function Invoke-GitHubApiRaw {
     param([string]$Url)
     $headers = Get-AuthHeaders
     try {
-        return (Invoke-WebRequest -Uri $Url -Headers $headers -Method Get -ErrorAction Stop).Content
+        return (Invoke-WebRequest -Uri $Url -Headers $headers -Method Get -UseBasicParsing -ErrorAction Stop).Content
     } catch {
         return $null
     }
@@ -400,7 +490,7 @@ function Save-UrlToFile {
     $headers = @{}
     if ($script:AuthToken) { $headers['Authorization'] = "Bearer $($script:AuthToken)" }
     try {
-        Invoke-WebRequest -Uri $Url -Headers $headers -OutFile $Destination -ErrorAction Stop
+        Invoke-WebRequest -Uri $Url -Headers $headers -OutFile $Destination -UseBasicParsing -ErrorAction Stop
         return $true
     } catch {
         return $false
@@ -411,12 +501,17 @@ function Invoke-Gh {
     param([string[]]$GhArgs)
     $output = $null
     if ($script:AuthToken) {
+        $hadToken = Test-Path 'Env:\GH_TOKEN'
         $oldToken = $env:GH_TOKEN
         $env:GH_TOKEN = $script:AuthToken
         try {
             $output = & gh @GhArgs 2>$null
         } finally {
-            $env:GH_TOKEN = $oldToken
+            if ($hadToken) {
+                $env:GH_TOKEN = $oldToken
+            } else {
+                Remove-Item 'Env:\GH_TOKEN' -ErrorAction SilentlyContinue
+            }
         }
     } else {
         $output = & gh @GhArgs 2>$null
@@ -703,14 +798,15 @@ function Set-UnixShellPath {
     }
 
     $shellName = if ($env:SHELL) { (Split-Path -Leaf $env:SHELL).ToLowerInvariant() } else { '' }
+    $homeDir = Get-HomeDirectory
     if ($shellName -eq 'zsh') {
-        $startupFile = "$HOME/.zshrc"
+        $startupFile = "$homeDir/.zshrc"
     } elseif ($shellName -eq 'bash') {
         $startupFile = $null
-        foreach ($candidate in @("$HOME/.bashrc", "$HOME/.bash_profile", "$HOME/.profile")) {
+        foreach ($candidate in @("$homeDir/.bashrc", "$homeDir/.bash_profile", "$homeDir/.profile")) {
             if (Test-Path $candidate) { $startupFile = $candidate; break }
         }
-        if (-not $startupFile) { $startupFile = "$HOME/.bashrc" }
+        if (-not $startupFile) { $startupFile = "$homeDir/.bashrc" }
     } else {
         $shellLabel = if ($shellName) { $shellName } else { 'active shell' }
         $manualCommand = switch ($shellName) {
@@ -803,9 +899,9 @@ function Select-InstallDir {
     }
 
     if ($script:InstallDirSel -eq '~') {
-        $script:InstallDirSel = $HOME
+        $script:InstallDirSel = Get-HomeDirectory
     } elseif ($script:InstallDirSel.StartsWith('~/') -or $script:InstallDirSel.StartsWith('~\')) {
-        $script:InstallDirSel = Join-Path $HOME $script:InstallDirSel.Substring(2)
+        $script:InstallDirSel = Join-Path (Get-HomeDirectory) $script:InstallDirSel.Substring(2)
     }
 }
 
@@ -881,7 +977,17 @@ function Install-MeshTalk {
                 Invoke-Die "The release archive contains an unsafe path: $entry"
             }
         }
-        & tar -xzf $archive --no-same-owner --no-same-permissions -C $extractDir
+        # GNU tar flags --no-same-owner/--no-same-permissions are unsupported by
+        # the bsdtar build bundled with Windows. Only use them on Unix; on
+        # Windows extract with portable flags so stock PowerShell 5.1 hosts work.
+        if ($script:PlatformName -eq 'windows') {
+            & tar -xzf $archive -C $extractDir
+        } else {
+            & tar -xzf $archive --no-same-owner --no-same-permissions -C $extractDir
+            if ($LASTEXITCODE -ne 0) {
+                & tar -xzf $archive -C $extractDir
+            }
+        }
         if ($LASTEXITCODE -ne 0) { Invoke-Die "Unable to extract the release archive." }
 
         foreach ($file in $script:ExpectedFiles) {
