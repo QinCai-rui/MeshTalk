@@ -48,7 +48,7 @@ test("shows send errors in the confirmation dialog", async () => {
   }
 })
 
-test("keeps actions visible for wrapped errors in a narrow image dialog", async () => {
+test("keeps actions visible for long errors in a narrow image dialog", async () => {
   const props = baseProps({ kind: "file-confirm", paths: [], source: "image", target: { kind: "peer", id: peer.peer_id }, caption: "", image: { bytes: new Uint8Array(Buffer.from(PNG, "base64")), mimeType: "image/png" } })
   props.dialogError = "Recipient does not support file_transfer_v2; ask them to upgrade MeshTalk to receive files and use a V2 client."
   props.dialogWidth = 32

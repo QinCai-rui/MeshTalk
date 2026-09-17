@@ -5,8 +5,9 @@ import { useRenderer } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { chatTheme as theme, presenceIndicator } from "../chatTheme"
 import type { Conversation, Group, GroupMember, Peer } from "../types"
-import { clipTextToWidth, friendMarkers, isMuteActive, peerPresence, terminalWidth } from "../utils"
+import { friendMarkers, isMuteActive, peerPresence } from "../utils"
 import { HoverHighlight } from "./HoverHighlight"
+import { MarqueeText } from "./MarqueeText"
 
 const presenceColor = (presence: "active" | "away" | "offline", dnd = false) =>
   dnd && presence !== "offline" ? theme.presence.dnd : theme.presence[presence]
@@ -61,18 +62,12 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
     return () => { renderer.off("frame", reveal) }
   }, [renderer, selectedPeerId, selectedGroupId, stacked])
   const peersById = new Map(peers.map(peer => [peer.peer_id, peer]))
-  const nameLabel = (name: string, unread: number, markerWidth = 0) => {
-    if (!stacked) return name
-    const available = Math.max(4, sidebarWidth - 5 - markerWidth - (unread > 0 ? `${unread} new`.length + 1 : 0))
-    const clipped = clipTextToWidth(name, available)
-    return clipped === name ? name : `${clipTextToWidth(name, available - 3)}...`
-  }
   const pick = (selection: Conversation) => { setSelection(selection); setScrollFocused(false); setEditingName(false) }
   const rowStyle = (selected: boolean) => ({ width: "100%" as const, flexDirection: "column" as const, paddingLeft: 1, paddingRight: 1, backgroundColor: selected ? theme.selected : undefined })
   return <box style={{ width: sidebarWidth, height: stacked ? 8 : "100%", flexShrink: 0, flexDirection: "column", backgroundColor: theme.surface }}>
     <HoverHighlight style={{ paddingLeft: 1, paddingRight: 1, paddingTop: stacked ? 0 : 1, paddingBottom: stacked ? 0 : 1, flexShrink: 0 }} active={editingName} onMouseDown={() => setEditingName(true)}>
       <text fg={theme.accent}><b>MeshTalk</b><span fg={theme.muted}> {appVersion}</span></text>
-      {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <text fg={theme.text} wrapMode="none">{clipTextToWidth(`You: ${identity?.display_name ?? "Connecting..."}`, sidebarWidth - 2)}</text>}
+      {editingName ? <input value={nameDraft} focused={!dialogOpen} placeholder="Display name" onInput={setNameDraft} onSubmit={saveDisplayName} maxLength={48} /> : <MarqueeText width={Math.max(1, sidebarWidth - 2)} fg={theme.text} text={`You: ${identity?.display_name ?? "Connecting..."}`} />}
       {dndEnabled && !editingName && <text fg={theme.presence.dnd} wrapMode="none">● Do Not Disturb on</text>}
       {!stacked && <text fg={theme.muted}>Ctrl+Up/Down switch chats</text>}
     </HoverHighlight>
@@ -95,7 +90,6 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
         const color = presenceColor(presence, peer.dnd)
         const markers = friendMarkers(peer)
         const typing = typingConversationKeys.has(`peer:${peer.peer_id}`)
-        const label = nameLabel(peer.display_name, 0, terminalWidth(markers))
         const isMuted = isMuteActive(mutedPeers[peer.peer_id])
         // Muted rows keep their normal colors; transparency comes from row
         // opacity only. Unread badges and bold emphasis are suppressed so
@@ -105,8 +99,7 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
         const flags = [peer.capability_gap && "Limited", isMuted && "Muted", peerDnd && "DND"].filter(Boolean).join(" / ")
         return <HoverHighlight id={`nav-peer-${peer.peer_id}`} key={peer.peer_id} active={selected} onMouseDown={() => pick({ kind: "peer", id: peer.peer_id })} opacity={isMuted ? 0.30 : undefined} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
-            <text fg={nameColor} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{presenceIndicator(presence, peer.dnd)} {selected || showUnread ? <b>{label}</b> : label}</text>
-            {markers.length > 0 && <text fg={nameColor} flexShrink={0}>{markers}</text>}
+            <MarqueeText width={Math.max(1, sidebarWidth - 2)} fg={nameColor} text={`${selected ? "> " : "  "}${presenceIndicator(presence, peer.dnd)} ${peer.display_name}${markers}`} />
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {showUnread && <text fg={theme.accent}>{peer.unread_count} new</text>}
@@ -140,14 +133,13 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
         const otherOnline = visibleMembers.some(member => (member.peer_id ?? member.member_id) !== identity?.peer_id)
         const onlyYouOnline = Boolean(members && visibleMembers.some(member => (member.peer_id ?? member.member_id) === identity?.peer_id) && !otherOnline)
         const memberLabel = ` (${group.member_count} members)`
-        const label = nameLabel(group.name, 0, terminalWidth(memberLabel))
         const isMuted = isMuteActive(mutedGroups[group.group_id])
         const nameColor = selected ? theme.accent : theme.text
         const mentionCount = mentionCounts[group.group_id] ?? 0
         const showUnread = group.unread_count > 0 && (!isMuted || mentionCount > 0)
         return <HoverHighlight id={`nav-group-${group.group_id}`} key={group.group_id} active={selected} onMouseDown={() => pick({ kind: "group", id: group.group_id })} opacity={isMuted ? 0.30 : undefined} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
-            <text fg={nameColor} style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">{selected ? "> " : "  "}{selected || showUnread || mentionCount > 0 ? <b>{label}</b> : label}<span fg={theme.muted}>{memberLabel}</span></text>
+            <MarqueeText width={Math.max(1, sidebarWidth - 2)} fg={nameColor} text={`${selected ? "> " : "  "}${group.name}${memberLabel}`} />
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {showUnread && <text fg={theme.accent}>{group.unread_count} new</text>}
