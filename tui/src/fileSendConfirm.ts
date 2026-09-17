@@ -1,6 +1,7 @@
 import { copyFile, mkdir } from "fs/promises"
 import { tmpdir } from "os"
 import { basename, join } from "path"
+import { terminalWidth } from "./utils"
 
 export type FileDropSource = "drop" | "paste" | "clipboard" | "picker"
 
@@ -35,6 +36,34 @@ export function fileConfirmDialogWidth(screenWidth: number): number {
 
 export function fileConfirmDialogHeight(screenHeight: number, hasImage: boolean): number {
   return Math.max(1, Math.min(hasImage ? 22 : 12, Math.floor(screenHeight) - (hasImage ? 2 : 6)))
+}
+
+export function wrappedTextRows(text: string, maxWidth: number): number {
+  const widthLimit = Math.max(1, Math.floor(maxWidth))
+  return text.split(/\r?\n/).reduce((rows, line) => {
+    const words = line.trim().split(/\s+/).filter(Boolean)
+    if (!words.length) return rows + 1
+    let lineRows = 1
+    let used = 0
+    for (const word of words) {
+      const wordWidth = terminalWidth(word)
+      if (used && used + 1 + wordWidth <= widthLimit) {
+        used += 1 + wordWidth
+        continue
+      }
+      if (used) {
+        lineRows++
+        used = 0
+      }
+      if (wordWidth > widthLimit) {
+        lineRows += Math.floor((wordWidth - 1) / widthLimit)
+        used = wordWidth % widthLimit || widthLimit
+      } else {
+        used = wordWidth
+      }
+    }
+    return rows + lineRows
+  }, 0)
 }
 
 export function fileConfirmImageBounds(screenWidth: number, screenHeight: number, popupWidth: number, popupHeight: number, reservedRows = 0): { maxWidth: number; maxHeight: number } {

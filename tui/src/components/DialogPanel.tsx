@@ -15,7 +15,7 @@ import { addablePeers, isImageFile, peerPresence, sortPeersByInteraction } from 
 import { statSync } from "fs"
 import { detectImageFormat, ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 import { chatTheme as theme } from "../chatTheme"
-import { fileConfirmImageBounds, fileTypeLabel, formatFileSize } from "../fileSendConfirm"
+import { fileConfirmImageBounds, fileTypeLabel, formatFileSize, wrappedTextRows } from "../fileSendConfirm"
 import { SettingsPanel, usesSettingsPanel } from "./dialogs/SettingsPanel"
 import { isUpdaterDialog } from "../navigation"
 import { readLevel, writeLevel, markPrompted, type AnalyticsLevel } from "../../../common/analytics"
@@ -678,7 +678,8 @@ export function FileConfirmDialogContent({ dialog, dialogError, dialogWidth, dia
     : undefined
   const previewFilename = imageFilename ?? (imagePath ? entries[0]?.name : undefined)
   const previewSize = dialog.image?.bytes.byteLength ?? (imagePath ? entries[0]?.size : undefined)
-  const previewBounds = fileConfirmImageBounds(screenWidth, screenHeight, dialogWidth, dialogHeight, dialogError ? 3 : 0)
+  const errorRows = dialogError ? wrappedTextRows(dialogError, dialogWidth - 2) : 0
+  const previewBounds = fileConfirmImageBounds(screenWidth, screenHeight, dialogWidth, dialogHeight, errorRows ? errorRows + 1 : 0)
   const sendable = entries.filter((entry) => entry.exists).length
   const title = entries.length > 1 ? `Send ${sendable} files to ${targetName}?` : dialog.image ? `Send image to ${targetName}?` : `Send file to ${targetName}?`
   return (
