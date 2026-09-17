@@ -9,18 +9,23 @@ type MarqueeTextProps = {
   fg?: SelectProps["selectedTextColor"]
   segments?: Array<{ text: string; fg?: SelectProps["selectedTextColor"] }>
   animateInSettings?: boolean
+  animateOnHover?: boolean
 }
 
-export function MarqueeText({ text, width, fg, segments, animateInSettings = false }: MarqueeTextProps) {
+export function MarqueeText({ text, width, fg, segments, animateInSettings = false, animateOnHover = false }: MarqueeTextProps) {
   const inSettings = useContext(SettingsPanelContext)
-  const shouldAnimate = !inSettings || animateInSettings
+  const [hovered, setHovered] = useState(false)
+  const shouldAnimate = animateOnHover ? hovered : !inSettings || animateInSettings
   const [offset, setOffset] = useState(0)
   const viewportWidth = Math.max(1, width)
   const fullText = segments?.map(segment => segment.text).join("") ?? text
   const maxOffset = Math.max(0, terminalWidth(fullText) - viewportWidth)
 
   useEffect(() => {
-    if (!shouldAnimate) return
+    if (!shouldAnimate) {
+      setOffset(0)
+      return
+    }
     if (!maxOffset) {
       setOffset(0)
       return
@@ -73,6 +78,6 @@ export function MarqueeText({ text, width, fg, segments, animateInSettings = fal
     })
   }
 
-  if (!shouldAnimate) return <text wrapMode="word">{segments ? segments.map((segment, index) => <span key={index} fg={segment.fg}>{segment.text}</span>) : <span fg={fg}>{text}</span>}</text>
-  return <box width={viewportWidth} height={1} overflow="hidden" flexShrink={0}><text wrapMode="none">{renderText()}</text></box>
+  if (!shouldAnimate && !animateOnHover) return <text wrapMode="word">{segments ? segments.map((segment, index) => <span key={index} fg={segment.fg}>{segment.text}</span>) : <span fg={fg}>{text}</span>}</text>
+  return <box width={viewportWidth} height={1} overflow="hidden" flexShrink={0} onMouseOver={() => setHovered(true)} onMouseOut={() => setHovered(false)}><text wrapMode="none">{renderText()}</text></box>
 }
