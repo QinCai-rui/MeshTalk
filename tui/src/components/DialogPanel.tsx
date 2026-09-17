@@ -177,7 +177,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
       {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} bytes={dialog.bytes} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
-      {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} onRetryFile={onRetryFile} />}
+      {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} onRetryFile={onRetryFile} />}
   </>
   if (usesSettingsPanel(dialog)) return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center" onMouseDown={dismissOnOverlay}>
     <box width={dialogWidthFor(dialog.kind)} height={dialogHeight} border borderColor={theme.line} backgroundColor={theme.surfaceRaised} paddingX={1} paddingY={dialogHeight > 12 ? 1 : 0} onMouseDown={event => event.stopPropagation()}>
@@ -216,7 +216,7 @@ const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePa
   )
 }, imageViewerPropsEqual)
 
-function DeliveryDetailsDialogContent({ dialog, dialogWidth, onRetryFile }: { dialog: Extract<Dialog, { kind: "delivery-details" }>; dialogWidth: number; onRetryFile?: (fileId: string, recipientId?: string) => void }) {
+function DeliveryDetailsDialogContent({ dialog, onRetryFile }: { dialog: Extract<Dialog, { kind: "delivery-details" }>; onRetryFile?: (fileId: string, recipientId?: string) => void }) {
   const nowSec = Date.now() / 1000
   const statusOrder = ["delivered", "sent", "queued", "pending", "failed", "blocked", "unavailable"]
   const statusColor: Record<string, string> = { delivered: theme.success, sent: theme.markdown.heading, queued: theme.warning, pending: theme.muted, failed: theme.danger, blocked: theme.danger, unavailable: theme.danger }
@@ -229,7 +229,7 @@ function DeliveryDetailsDialogContent({ dialog, dialogWidth, onRetryFile }: { di
       {deliveries.map((delivery: GroupDelivery) => {
         const canRetry = retryable(status, delivery.awaiting_ack_at) && Boolean(dialog.fileId && onRetryFile)
         return <box key={delivery.recipient_id} style={{ flexDirection: "row", gap: 2 }}>
-          <MarqueeText width={Math.max(1, dialogWidth - (canRetry ? 12 : 4))} text={`  ${delivery.display_name}`} />
+          <text style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">  {delivery.display_name}</text>
           {canRetry ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile!(dialog.fileId!, delivery.recipient_id) } }}><text fg={theme.text}><u>Retry</u></text></HoverHighlight> : null}
         </box>
       })}

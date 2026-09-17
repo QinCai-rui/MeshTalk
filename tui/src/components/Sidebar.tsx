@@ -99,7 +99,9 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
         const flags = [peer.capability_gap && "Limited", isMuted && "Muted", peerDnd && "DND"].filter(Boolean).join(" / ")
         return <HoverHighlight id={`nav-peer-${peer.peer_id}`} key={peer.peer_id} active={selected} onMouseDown={() => pick({ kind: "peer", id: peer.peer_id })} opacity={isMuted ? 0.30 : undefined} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
-            <MarqueeText width={Math.max(1, sidebarWidth - 2)} fg={nameColor} text={`${selected ? "> " : "  "}${presenceIndicator(presence, peer.dnd)} ${peer.display_name}${markers}`} />
+            <text fg={nameColor} wrapMode="word">
+              {selected ? "> " : "  "}{presenceIndicator(presence, peer.dnd)} {selected || showUnread ? <b>{peer.display_name}</b> : peer.display_name}{markers}
+            </text>
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {showUnread && <text fg={theme.accent}>{peer.unread_count} new</text>}
@@ -139,7 +141,10 @@ export function Sidebar({ appVersion, stacked = false, dialogOpen, dndEnabled = 
         const showUnread = group.unread_count > 0 && (!isMuted || mentionCount > 0)
         return <HoverHighlight id={`nav-group-${group.group_id}`} key={group.group_id} active={selected} onMouseDown={() => pick({ kind: "group", id: group.group_id })} opacity={isMuted ? 0.30 : undefined} style={rowStyle(selected)}>
           <box flexDirection="row" width="100%">
-            <MarqueeText width={Math.max(1, sidebarWidth - 2)} fg={nameColor} text={`${selected ? "> " : "  "}${group.name}${memberLabel}`} />
+            <text wrapMode="word">
+              <span fg={nameColor}>{selected || showUnread || mentionCount > 0 ? <b>{selected ? "> " : "  "}{group.name}</b> : <>{selected ? "> " : "  "}{group.name}</>}</span>
+              <span fg={theme.muted}>{memberLabel}</span>
+            </text>
           </box>
           <box height={1} paddingLeft={2} flexDirection="row" gap={1}>
             {showUnread && <text fg={theme.accent}>{group.unread_count} new</text>}
