@@ -104,7 +104,13 @@ jobs:
         shell: bash
         run: |
           if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            VERSION="${{ inputs.version }}"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[^0-9] ]]; then
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             SHORT_SHA="${GITHUB_SHA::7}"
             LATEST_TAG="$(gh release view --json tagName --jq .tagName 2>/dev/null || echo 'v0.0.0')"
@@ -117,6 +123,7 @@ jobs:
               X=0; Y=1; Z=0
             fi
             echo "version=${X}.${Y}.${Z}-SNAPSHOT+${{ github.run_number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -154,7 +161,7 @@ jobs:
         run: cp build/nuitka/meshtalk-backend${{ matrix.suffix }} dist/release/meshtalk-backend${{ matrix.suffix }}
 
       - name: Build launcher binary
-        run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --outfile dist/release/meshtalk${{ matrix.suffix }}
+        run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --define 'MESHTALK_PRERELEASE=${{ steps.version.outputs.prerelease }}' --outfile dist/release/meshtalk${{ matrix.suffix }}
 
       - name: Package standalone release
         run: tar -czf dist/${{ matrix.artifact }}.tar.gz -C dist/release .
@@ -186,8 +193,13 @@ jobs:
         shell: bash
         run: |
           if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            VERSION="${{ inputs.version }}"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[^0-9] ]]; then
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             SHORT_SHA="${GITHUB_SHA::7}"
             LATEST_TAG="$(gh release view --json tagName --jq .tagName 2>/dev/null || echo 'v0.0.0')"
