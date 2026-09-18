@@ -84,20 +84,33 @@ export function addablePeers(peers: Peer[], identityPeerId?: string): Peer[] {
 }
 export function composerLimitColor(length: number): string | undefined { const usage = length / MAX_MESSAGE_BYTES; if (usage >= 1) return theme.danger; if (usage >= 0.9) return theme.caution; if (usage >= 0.75) return theme.warning; return undefined }
 export const unreadMessageBackground = unreadBackground
+export function normalizeDeliveryStatus(status: string): string {
+  // File transfers report per-recipient delivery with transfer lifecycle
+  // statuses ("completed", "transferring", "receiving"); message deliveries
+  // use "delivered"/"pending". Normalize so shared labels and dialogs never
+  // drop or miscount file recipients.
+  if (status === "completed") return "delivered"
+  if (status === "transferring" || status === "receiving") return "pending"
+  return status
+}
 export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
   if (!deliveries.length) return "sent"
-  const delivered = deliveries.filter((delivery) => delivery.status === "delivered").length
-  const queued = deliveries.filter((delivery) => delivery.status === "queued").length
-  const unavailable = deliveries.filter((delivery) => delivery.status === "unavailable").length
-  const failed = deliveries.filter((delivery) => delivery.status === "failed" || delivery.status === "blocked").length
-  const sent = deliveries.filter((delivery) => delivery.status === "sent").length
-  const pending = deliveries.filter((delivery) => delivery.status === "pending").length
+  const statuses = deliveries.map((delivery) => normalizeDeliveryStatus(delivery.status))
+  const count = (status: string) => statuses.filter((value) => value === status).length
+  const delivered = count("delivered")
+  const queued = count("queued")
+  const unavailable = count("unavailable")
+  const failed = statuses.filter((status) => status === "failed" || status === "blocked").length
+  const sent = count("sent")
+  const pending = count("pending")
+  const known = delivered + queued + unavailable + failed + sent + pending
   const details = [`delivered ${delivered}/${deliveries.length}`]
   if (queued) details.push(`queued ${queued}`)
   if (unavailable) details.push(`unavailable ${unavailable}`)
   if (failed) details.push(`failed ${failed}`)
   if (sent) details.push(`sent ${sent}`)
   if (pending) details.push(`pending ${pending}`)
+  if (statuses.length > known) details.push(`other ${statuses.length - known}`)
   return details.join(" · ")
 }
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }

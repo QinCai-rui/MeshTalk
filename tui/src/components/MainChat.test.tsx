@@ -731,6 +731,51 @@ test("delivery details are shown for group messages, not direct messages", async
   } finally { await close(groupSetup) }
 })
 
+test("group file rows count completed deliveries as delivered", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [
+    { peer_id: "alex", display_name: "Alex Morgan" },
+    { peer_id: "sam", display_name: "Sam Chen" },
+    { peer_id: "jo", display_name: "Jo Park" },
+    { peer_id: "max", display_name: "Max Ray" },
+  ] }
+  props.conversationItems = [
+    { type: "file", createdAt: 1788580860, file: { file_id: "file1", filename: "photo.png", file_size: 29200, sender_id: "me", recipient_id: "", group_id: "team", direction: "outbound", status: "transferring", created_at: 1788580860, file_path: "/tmp/photo.png", deliveries: [
+      { recipient_id: "alex", display_name: "Alex Morgan", status: "completed", updated_at: 1788580861 },
+      { recipient_id: "sam", display_name: "Sam Chen", status: "completed", updated_at: 1788580861 },
+      { recipient_id: "jo", display_name: "Jo Park", status: "queued", updated_at: 1788580861 },
+      { recipient_id: "max", display_name: "Max Ray", status: "unavailable", updated_at: 1788580861 },
+    ] }, allFiles: [] },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
+  try {
+    const frame = await settle(setup, "photo.png")
+    expect(frame).toContain("delivered 2/4 · queued 1 · unavailable 1")
+  } finally { await close(setup) }
+})
+
+test("synthesized file deliveries keep failed distinct from unavailable", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }] }
+  const file = { file_id: "file2", filename: "broken.zip", file_size: 100, sender_id: "me", recipient_id: "", group_id: "team", direction: "outbound", status: "failed", created_at: 1788580860 }
+  props.conversationItems = [
+    { type: "file", createdAt: 1788580860, file, allFiles: [file] },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
+  try {
+    const frame = await settle(setup, "broken.zip")
+    expect(frame).toContain("delivered 0/1 · failed 1")
+  } finally { await close(setup) }
+})
+
 test("sidebar no-peers empty state offers friend, connection, and LAN help actions", async () => {
   const props = sidebarProps(120)
   props.peers = []

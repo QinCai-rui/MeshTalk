@@ -11,7 +11,7 @@ import { SettingsConfirm, SettingsField, SettingsMenu, SettingsNotice, SettingsS
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useKeyboard } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
-import { addablePeers, isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
+import { addablePeers, isImageFile, normalizeDeliveryStatus, peerPresence, sortPeersByInteraction } from "../utils"
 import { statSync } from "fs"
 import { detectImageFormat, ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 import { chatTheme as theme } from "../chatTheme"
@@ -176,7 +176,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} onRetryFile={onRetryFile} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
-      {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} bytes={dialog.bytes} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
+      {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} bytes={dialog.bytes} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} version={dialog.version ?? null} />}
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} onRetryFile={onRetryFile} />}
   </>
   if (usesSettingsPanel(dialog)) return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center" onMouseDown={dismissOnOverlay}>
@@ -198,34 +198,73 @@ type ImageViewerDialogContentProps = {
   dialogWidth: number
   dialogHeight: number
   imageProtocol: ImageProtocol
+  // Transfer lifecycle marker (e.g. completion timestamp). A viewer opened
+  // mid-transfer must retry its load once the file completes.
+  version?: number | null
 }
 
 export function imageViewerPropsEqual(previous: ImageViewerDialogContentProps, next: ImageViewerDialogContentProps): boolean {
-  return previous.filePath === next.filePath && previous.bytes === next.bytes && previous.filename === next.filename && previous.dialogWidth === next.dialogWidth && previous.dialogHeight === next.dialogHeight && previous.imageProtocol === next.imageProtocol
+  return previous.filePath === next.filePath && previous.bytes === next.bytes && previous.filename === next.filename && previous.dialogWidth === next.dialogWidth && previous.dialogHeight === next.dialogHeight && previous.imageProtocol === next.imageProtocol && previous.version === next.version
 }
 
-const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePath, bytes, filename, dialogWidth, dialogHeight, imageProtocol }: ImageViewerDialogContentProps) {
+const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePath, bytes, filename, dialogWidth, dialogHeight, imageProtocol, version }: ImageViewerDialogContentProps) {
   return (
     <>
       <MarqueeText width={Math.max(1, dialogWidth - 4)} fg={theme.success} text={filename} />
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, alignItems: "center", justifyContent: "center" }}>
-        <ImageAttachment filePath={filePath} bytes={bytes} filename={filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} />
+        <ImageAttachment filePath={filePath} bytes={bytes} filename={filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} version={version} />
       </box>
       <text fg={theme.muted}>Esc returns.</text>
     </>
   )
 }, imageViewerPropsEqual)
 
+export type ImageViewOverlayProps = ImageViewerDialogContentProps & {
+  onClose: () => void
+}
+
+export function imageViewOverlayPropsEqual(previous: ImageViewOverlayProps, next: ImageViewOverlayProps): boolean {
+  // onClose is intentionally ignored: it is invoked via ref so chat-state
+  // re-renders (new callback identities) do not remount the fullscreen image.
+  return imageViewerPropsEqual(previous, next)
+}
+
+export const ImageViewOverlay = memo(function ImageViewOverlay({ filePath, bytes, filename, dialogWidth, dialogHeight, imageProtocol, version, onClose }: ImageViewOverlayProps) {
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center" onMouseDown={(event: { button?: number }) => { if (event.button === undefined || event.button === 0) onCloseRef.current() }}>
+    <box width={dialogWidth} height={dialogHeight} border borderColor={theme.line} backgroundColor={theme.surfaceRaised} padding={1} gap={1} overflow="hidden" flexDirection="column" onMouseDown={(event) => event.stopPropagation()}>
+      <ImageViewerDialogContent filePath={filePath} bytes={bytes} filename={filename} dialogWidth={dialogWidth} dialogHeight={dialogHeight} imageProtocol={imageProtocol} version={version} />
+    </box>
+  </box>
+}, imageViewOverlayPropsEqual)
+
+const DELIVERY_STATUS_ORDER = ["delivered", "sent", "queued", "pending", "failed", "blocked", "unavailable"]
+
+export function groupDeliveriesForDisplay(deliveries: GroupDelivery[]): Array<readonly [string, GroupDelivery[]]> {
+  const normalized = deliveries.map((delivery) => ({ ...delivery, status: normalizeDeliveryStatus(delivery.status) }))
+  const grouped = DELIVERY_STATUS_ORDER.map((status) => [status, normalized.filter((delivery) => delivery.status === status)] as const).filter(([, groupedDeliveries]) => groupedDeliveries.length)
+  const known = new Set(DELIVERY_STATUS_ORDER)
+  const extra = new Map<string, GroupDelivery[]>()
+  for (const delivery of normalized) {
+    if (known.has(delivery.status)) continue
+    const list = extra.get(delivery.status)
+    if (list) list.push(delivery)
+    else extra.set(delivery.status, [delivery])
+  }
+  for (const [, extraDeliveries] of extra) grouped.push([extraDeliveries[0].status, extraDeliveries] as const)
+  return grouped
+}
+
 function DeliveryDetailsDialogContent({ dialog, onRetryFile }: { dialog: Extract<Dialog, { kind: "delivery-details" }>; onRetryFile?: (fileId: string, recipientId?: string) => void }) {
   const nowSec = Date.now() / 1000
-  const statusOrder = ["delivered", "sent", "queued", "pending", "failed", "blocked", "unavailable"]
   const statusColor: Record<string, string> = { delivered: theme.success, sent: theme.markdown.heading, queued: theme.warning, pending: theme.muted, failed: theme.danger, blocked: theme.danger, unavailable: theme.danger }
-  const grouped = statusOrder.map((status) => [status, dialog.deliveries.filter((delivery) => delivery.status === status)] as const).filter(([, deliveries]) => deliveries.length)
+  const grouped = groupDeliveriesForDisplay(dialog.deliveries)
   const retryable = (status: string, awaitingAckAt?: number | null) => ["failed", "blocked", "unavailable", "queued"].includes(status) || (status === "sent" && (!awaitingAckAt || nowSec >= awaitingAckAt + 30))
   return <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
     {!dialog.deliveries.length ? <text fg={theme.muted}>No delivery details are available yet.</text> : null}
-    {grouped.map(([status, deliveries]) => <box key={status} style={{ flexDirection: "column", marginBottom: 1 }}>
-      <text fg={statusColor[status]}><b>{status[0].toUpperCase() + status.slice(1)} ({deliveries.length})</b></text>
+    {grouped.map(([status, deliveries]) => <box key={status || "unknown"} style={{ flexDirection: "column", marginBottom: 1 }}>
+      <text fg={statusColor[status] ?? theme.muted}><b>{status ? status[0].toUpperCase() + status.slice(1) : "Unknown"} ({deliveries.length})</b></text>
       {deliveries.map((delivery: GroupDelivery) => {
         const canRetry = retryable(status, delivery.awaiting_ack_at) && Boolean(dialog.fileId && onRetryFile)
         return <box key={delivery.recipient_id} style={{ flexDirection: "row", gap: 2 }}>
@@ -816,7 +855,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
   const wide = dialogWidth >= 92
   const detailTextWidth = Math.max(1, dialogWidth - Math.floor(dialogWidth * 0.44) - 5)
   const renderSelectedImage = (file: FileTransfer, maxWidth: number) => isImageFile(file.filename) && file.status === "completed" && file.file_path && !isLocalFileMissing(file.file_path)
-    ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage lazy={false} maxWidth={maxWidth} maxHeight={Math.max(4, Math.min(14, dialogHeight - 14))} onOpen={() => showDialog({ kind: "image-view", filePath: file.file_path!, filename: file.filename, version: file.completed_at, returnTo: "files" })} />
+    ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage lazy={false} maxWidth={maxWidth} maxHeight={Math.max(4, Math.min(14, dialogHeight - 14))} version={file.completed_at ?? file.status} onOpen={() => showDialog({ kind: "image-view", filePath: file.file_path!, filename: file.filename, version: file.completed_at, returnTo: "files" })} />
     : null
   return <box style={{ width: "100%", height: "100%", minHeight: 0, flexDirection: "column", backgroundColor: theme.canvas }}>
     <box style={{ flexShrink: 0, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1, backgroundColor: theme.surface }}>
