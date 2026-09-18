@@ -1131,7 +1131,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     let replyTo = args.replyToMessageId
     if (replyTo) {
       const mapped = resolvedSendMeta.get(replyTo)
-      if (mapped) replyTo = mapped.realId
+      if (mapped) replyTo = mapped.failed ? undefined : mapped.realId
       else if (replyTo.startsWith("pending-")) replyTo = undefined // parent failed/evicted
     }
     try {
@@ -1172,6 +1172,11 @@ export function useChatActions(deps: ChatActionsDeps) {
       // Keep the optimistic row so the failed message stays visible in context,
       // and detach any reply that referenced this still-pending message — its
       // temp id was never persisted, so the link would dangle forever.
+      // Record a failed meta entry too: without it, a row stashed in the
+      // pending buffer (user switched conversations) would revive as
+      // still-pending forever.
+      resolvedSendMeta.set(args.tempId, { realId: args.tempId, failed: true })
+      trimSendMap(resolvedSendMeta)
       setMessages((current) => current.map((message) =>
         message.message_id === args.tempId ? { ...message, pending: 0, failed: 1 }
         : message.reply_to_message_id === args.tempId ? { ...message, reply_to_message_id: undefined }

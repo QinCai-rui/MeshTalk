@@ -166,7 +166,14 @@ function preservePendingMessages(
   const serverIds = new Set(server.map((message) => message.message_id));
   const pending: Message[] = [];
   for (const message of current) {
-    if (message.pending && !serverIds.has(message.message_id)) pending.push(message);
+    // Keep still-sending rows and failed temp rows (the server never has a
+    // temp id); otherwise failed sends would vanish on the next refresh.
+    if (
+      (message.pending ||
+        (message.failed && message.message_id.startsWith("pending-"))) &&
+      !serverIds.has(message.message_id)
+    )
+      pending.push(message);
   }
   // Deduplicate pending rows by message_id to avoid duplicates from revive
   const seen = new Set<string>();
@@ -1292,12 +1299,14 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         }
         if (event.event === "message_failed") {
           const messageId = event.message_id as string;
-          // Also remove failed tempId from pending buffers to avoid orphaned rows.
-          if (selectionKeyRef.current) {
-            const buf = pendingMessageBuffer.current[selectionKeyRef.current];
-            if (buf?.some((m) => m.message_id === messageId)) {
-              pendingMessageBuffer.current[selectionKeyRef.current] =
-                buf.filter((m) => m.message_id !== messageId);
+          // Sweep all pending buffers, not just the current conversation's:
+          // the failed id may be stashed under a different key.
+          for (const key of Object.keys(pendingMessageBuffer.current)) {
+            const buf = pendingMessageBuffer.current[key]!;
+            if (buf.some((m) => m.message_id === messageId)) {
+              pendingMessageBuffer.current[key] = buf.filter(
+                (m) => m.message_id !== messageId,
+              );
             }
           }
           setMessages((current) =>
@@ -1833,9 +1842,40 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       if (key.name === "return" || key.name === "linefeed") {
         key.preventDefault();
         const message = deleteConfirmation;
+        // Resolve still-pending ids. An in-flight row cannot be deleted: its
+        // queued send would still deliver to the peer. A failed temp row
+        // exists only locally, so it is dropped without an IPC round-trip.
+        const meta = resolvedSendMeta.get(message.id);
+        if (message.id.startsWith("pending-") && !meta) {
+          actions.showStatus(
+            "That message is still sending; delete it once it arrives.",
+          );
+          return;
+        }
+        if (meta?.failed) {
+          for (const key of Object.keys(pendingMessageBuffer.current)) {
+            pendingMessageBuffer.current[key] = pendingMessageBuffer.current[
+              key
+            ]!.filter((m) => m.message_id !== message.id);
+          }
+          setMessages((current) =>
+            current.filter((item) => item.message_id !== message.id),
+          );
+          setSelectedReplyTarget((current) =>
+            current?.id === message.id ? undefined : current,
+          );
+          setReplyTo((current) =>
+            current?.id === message.id ? undefined : current,
+          );
+          setDeleteConfirmation(undefined);
+          actions.showStatus("Message deleted locally.");
+          return;
+        }
+        const realId = meta ? meta.realId : message.id;
+        const targetIds = new Set([message.id, realId]);
         void ipc
           .send("delete_message", {
-            message_id: message.id,
+            message_id: realId,
             group_id: message.groupId,
             file: message.kind === "file",
           })
@@ -1843,29 +1883,32 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
             if (response.error) throw new Error(response.error);
             if (message.kind === "file")
               setConversationFileTransfers((current) =>
-                current.filter((item) => item.file_id !== message.id),
+                current.filter((item) => !targetIds.has(item.file_id)),
               );
             else {
               // Also update pending buffers when deleting so tempIds don't linger.
               // Look up pending state from messages since ReplyTarget has no pending field.
               const currentMessages = messagesRef.current;
-              const pendingMessage = currentMessages.find((m) => m.message_id === message.id);
+              const pendingMessage = currentMessages.find((m) =>
+                targetIds.has(m.message_id),
+              );
               if (pendingMessage?.pending && selectionKeyRef.current) {
-                const buf = pendingMessageBuffer.current[selectionKeyRef.current];
-                if (buf?.some((m) => m.message_id === message.id)) {
+                const buf =
+                  pendingMessageBuffer.current[selectionKeyRef.current];
+                if (buf?.some((m) => targetIds.has(m.message_id))) {
                   pendingMessageBuffer.current[selectionKeyRef.current] =
-                    buf.filter((m) => m.message_id !== message.id);
+                    buf.filter((m) => !targetIds.has(m.message_id));
                 }
               }
               setMessages((current) =>
-                current.filter((item) => item.message_id !== message.id),
+                current.filter((item) => !targetIds.has(item.message_id)),
               );
             }
             setSelectedReplyTarget((current) =>
-              current?.id === message.id ? undefined : current,
+              targetIds.has(current?.id ?? "") ? undefined : current,
             );
             setReplyTo((current) =>
-              current?.id === message.id ? undefined : current,
+              targetIds.has(current?.id ?? "") ? undefined : current,
             );
             setDeleteConfirmation(undefined);
             actions.showStatus("Message deleted locally.");
