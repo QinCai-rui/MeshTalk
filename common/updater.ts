@@ -33,12 +33,14 @@ export type Release = {
 
 export type UpdateChannel = "stable" | "unstable"
 
-export function readUpdateChannel(settingsPath: string = SETTINGS_PATH): UpdateChannel {
+export function readUpdateChannel(settingsPath: string = SETTINGS_PATH, fallback: UpdateChannel = "stable"): UpdateChannel {
   try {
     const value = JSON.parse(readFileSync(settingsPath, "utf-8")) as { update_channel?: unknown }
-    return value.update_channel === "unstable" ? "unstable" : "stable"
+    if (value.update_channel === "unstable") return "unstable"
+    if (value.update_channel === "stable") return "stable"
+    return fallback
   } catch {
-    return "stable"
+    return fallback
   }
 }
 
@@ -111,6 +113,10 @@ function parseVersion(value: string): Version | null {
 export function isStableVersion(value: string): boolean {
   const version = parseVersion(value)
   return version !== null && version.snapshotRun === null
+}
+
+export function defaultUpdateChannel(version: string): UpdateChannel {
+  return isStableVersion(version) ? "stable" : "unstable"
 }
 
 export function isNewerVersion(latest: string, current: string): boolean {
@@ -266,7 +272,7 @@ function newestUsable(releases: ReleaseResponse[], allowPrerelease: boolean): Re
   return null
 }
 
-export async function checkForUpdate(currentVersion: string, channel: UpdateChannel = readUpdateChannel()): Promise<Release | null> {
+export async function checkForUpdate(currentVersion: string, channel: UpdateChannel = readUpdateChannel(undefined, defaultUpdateChannel(currentVersion))): Promise<Release | null> {
   const allowPrerelease = channel === "unstable"
   let release: Release | null = null
   let accessDenied = false

@@ -6,7 +6,7 @@ import { MouseSelect } from "./MouseSelect"
 import { MarqueeText } from "./MarqueeText"
 import { NotificationDialogs } from "./dialogs/NotificationDialogs"
 import { AboutDialog, SettingsLanding, UpdateDestinationDialog, UpdateDialog, UpdateTokenDialog } from "./dialogs/CommandDialogs"
-import { readUpdateChannel, type UpdateChannel } from "../../../common/updater"
+import { defaultUpdateChannel, readUpdateChannel, type UpdateChannel } from "../../../common/updater"
 import { SettingsConfirm, SettingsField, SettingsMenu, SettingsNotice, SettingsScreen, SettingsSummary } from "./dialogs/SettingsPrimitives"
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useKeyboard } from "@opentui/react"
@@ -132,7 +132,7 @@ export function DialogPanel(props: DialogPanelProps) {
 
   const content = <>
       {dialog.kind === "settings" && <SettingsLanding dialogHeight={dialogHeight} />}
-      {dialog.kind === "about" && <AboutDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} isReleaseBuild={isReleaseBuild} checkForUpdates={checkForUpdatesFromAbout} updateChannel={readUpdateChannel()} saveUpdateChannel={saveUpdateChannel} />}
+      {dialog.kind === "about" && <AboutDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} isReleaseBuild={isReleaseBuild} checkForUpdates={checkForUpdatesFromAbout} updateChannel={readUpdateChannel(undefined, defaultUpdateChannel(appReleaseVersion))} saveUpdateChannel={saveUpdateChannel} />}
       {dialog.kind === "update" && <UpdateDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} closeDialog={closeDialog} installing={dialogBusy} installUpdate={installUpdate} restartUpdate={restartUpdate} chooseUpdateDestination={(release) => { setDialogError(""); setDialogDraft(""); showDialog({ kind: "update-directory", release }) }} />}
       {dialog.kind === "update-directory" && <UpdateDestinationDialog dialog={dialog} dialogHeight={dialogHeight} dialogError={dialogError} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} installUpdate={installUpdate} />}
       {dialog.kind === "update-token" && <UpdateTokenDialog dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidth} dialogError={dialogError} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} saveUpdateToken={saveUpdateToken} />}

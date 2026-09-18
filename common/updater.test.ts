@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
-import { buildWindowsReplacementScript, installRelease, isNewerVersion, isStagingWithinInstallDir, isStableVersion, parsePendingUpdate, readUpdateChannel, saveUpdateChannel, type UpdateProgress } from "./updater"
+import { buildWindowsReplacementScript, defaultUpdateChannel, installRelease, isNewerVersion, isStagingWithinInstallDir, isStableVersion, parsePendingUpdate, readUpdateChannel, saveUpdateChannel, type UpdateProgress } from "./updater"
 
 describe("isStableVersion", () => {
   test("recognizes stable and snapshot versions", () => {
@@ -14,6 +14,13 @@ describe("isStableVersion", () => {
   test("rejects invalid versions", () => {
     expect(isStableVersion("dev")).toBe(false)
     expect(isStableVersion("0.32.2-preview")).toBe(false)
+  })
+})
+
+describe("defaultUpdateChannel", () => {
+  test("uses unstable for prerelease versions", () => {
+    expect(defaultUpdateChannel("0.32.2")).toBe("stable")
+    expect(defaultUpdateChannel("0.32.2-SNAPSHOT+307-13466ec")).toBe("unstable")
   })
 })
 
@@ -76,6 +83,15 @@ describe("updateChannel", () => {
     const settingsPath = join(directory, "settings.json")
     writeFileSync(settingsPath, JSON.stringify({ update_channel: "beta" }))
     expect(readUpdateChannel(settingsPath)).toBe("stable")
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  test("uses the supplied fallback when no channel is saved", () => {
+    const directory = mkdtempSync(join(tmpdir(), "meshtalk-channel-"))
+    const settingsPath = join(directory, "settings.json")
+    expect(readUpdateChannel(settingsPath, "unstable")).toBe("unstable")
+    writeFileSync(settingsPath, JSON.stringify({ update_channel: "beta" }))
+    expect(readUpdateChannel(settingsPath, "unstable")).toBe("unstable")
     rmSync(directory, { recursive: true, force: true })
   })
 })
