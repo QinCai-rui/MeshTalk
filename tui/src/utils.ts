@@ -103,12 +103,14 @@ export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
   const failed = statuses.filter((status) => status === "failed" || status === "blocked").length
   const sent = count("sent")
   const pending = count("pending")
+  const known = delivered + queued + unavailable + failed + sent + pending
   const details = [`delivered ${delivered}/${deliveries.length}`]
   if (queued) details.push(`queued ${queued}`)
   if (unavailable) details.push(`unavailable ${unavailable}`)
   if (failed) details.push(`failed ${failed}`)
   if (sent) details.push(`sent ${sent}`)
   if (pending) details.push(`pending ${pending}`)
+  if (statuses.length > known) details.push(`other ${statuses.length - known}`)
   return details.join(" · ")
 }
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }

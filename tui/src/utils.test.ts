@@ -31,3 +31,11 @@ test("counts completed file deliveries as delivered", () => {
   ]
   expect(groupDeliveryLabel(deliveries)).toBe("delivered 2/5 · queued 1 · unavailable 1 · pending 1")
 })
+
+test("surfaces unknown delivery statuses instead of dropping them", () => {
+  const deliveries = [
+    { recipient_id: "a", display_name: "A", status: "delivered", updated_at: 1 },
+    { recipient_id: "b", display_name: "B", status: "warp-drive", updated_at: 1 },
+  ]
+  expect(groupDeliveryLabel(deliveries)).toBe("delivered 1/2 · other 1")
+})
