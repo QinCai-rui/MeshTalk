@@ -22,19 +22,14 @@ export function helpFocusLabel(focus: HelpFocus): string {
   return "Composing";
 }
 
-/** Ctrl+/ arrives as "/" with ctrl, or as the 0x1F control character on some terminals. */
+/** Ctrl+H opens or closes the keyboard help overlay. */
 export function isHelpHotkey(key: {
   name?: string;
   ctrl?: boolean;
   sequence?: string;
   raw?: string;
 }): boolean {
-  if (!key.ctrl) return false;
-  return (
-    key.name === "/" ||
-    key.sequence === "\x1f" ||
-    key.raw === "\x1f"
-  );
+  return Boolean(key.ctrl && key.name === "h");
 }
 
 export type HelpShortcut = { keys: string; description: string };
@@ -63,7 +58,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       { keys: "Ctrl+Up / Ctrl+Down", description: "Switch chats (DMs, then groups)" },
       { keys: "Ctrl+F", description: "Open friends inbox" },
       { keys: "Ctrl+P", description: "Open settings (press again to close)" },
-      { keys: "Ctrl+/", description: "Open / close this help (? also closes)" },
+      { keys: "Ctrl+H", description: "Open / close this help (? also closes)" },
       { keys: "Esc", description: "Close dialog, leave history, cancel reply or name edit" },
       { keys: "Ctrl+C", description: "Quit MeshTalk" },
     ],
@@ -254,7 +249,7 @@ export function HelpOverlay({
           })}
         </scrollbox>
         <text fg={theme.muted} wrapMode="word" flexShrink={0} paddingBottom={1}>
-          <span fg={theme.link}>Esc / Ctrl+/</span> close  ·  <span fg={theme.warning}>PgUp/PgDn</span> scroll  ·  click outside closes
+          <span fg={theme.link}>Esc / Ctrl+H</span> close  ·  <span fg={theme.warning}>PgUp/PgDn</span> scroll  ·  click outside closes
         </text>
       </box>
     </box>
