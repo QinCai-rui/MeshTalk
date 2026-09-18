@@ -32,6 +32,7 @@ import type {
   FileTransfer,
   FriendRequest,
   Group,
+  GroupDelivery,
   GroupMember,
   ImageProtocol,
   Message,
@@ -64,7 +65,7 @@ import {
   type NotificationDelivery,
   type NotificationPreferences,
 } from "./notifications";
-import { useChatActions } from "./useChatActions";
+import { useChatActions, resolvePendingSendId, type ResolvedSendMeta, resolvedSendMeta } from "./useChatActions";
 import {
   createPastedImageDedupRecord,
   shouldSuppressPastedImage,
@@ -155,6 +156,94 @@ type StartupResult = {
   };
 };
 
+// Server history refreshes replace the message list wholesale. Still-sending
+// (optimistic) rows only exist locally, so re-append them instead of dropping
+// them mid-send.
+function preservePendingMessages(
+  current: Message[],
+  server: Message[],
+): Message[] {
+  const serverIds = new Set(server.map((message) => message.message_id));
+  const pending: Message[] = [];
+  for (const message of current) {
+    // Keep still-sending rows and failed temp rows (the server never has a
+    // temp id); otherwise failed sends would vanish on the next refresh.
+    if (
+      (message.pending ||
+        (message.failed && message.message_id.startsWith("pending-"))) &&
+      !serverIds.has(message.message_id)
+    )
+      pending.push(message);
+  }
+  // Deduplicate pending rows by message_id to avoid duplicates from revive
+  const seen = new Set<string>();
+  const unique: Message[] = [];
+  for (const p of pending) {
+    if (!seen.has(p.message_id)) {
+      seen.add(p.message_id);
+      unique.push(p);
+    }
+  }
+  if (!unique.length) return server;
+  return [...server, ...unique];
+}
+
+function reviveBufferedPending(
+  buffered: Message[],
+  server: Message[],
+  metaMap: Map<string, ResolvedSendMeta>,
+  selectionKey: string | undefined,
+  pendingBuffer: Record<string, Message[]>,
+): Message[] {
+  if (!buffered.length) return [];
+  const serverIds = new Set(server.map((message) => message.message_id));
+  const revived: Message[] = [];
+  for (const row of buffered) {
+    const meta = metaMap.get(row.message_id);
+    if (meta) {
+      if (serverIds.has(meta.realId)) continue;
+      if (meta.failed) {
+        // Revive as a visible failed row (matching preservePendingMessages),
+        // then drop from the buffer so it doesn't duplicate.
+        if (selectionKey && pendingBuffer[selectionKey]) {
+          pendingBuffer[selectionKey] = pendingBuffer[selectionKey]!.filter(
+            (m) => m.message_id !== row.message_id,
+          );
+        }
+        if (!serverIds.has(row.message_id)) {
+          revived.push({ ...row, pending: 0, failed: 1 });
+        }
+        continue;
+      }
+      revived.push({
+        ...row,
+        message_id: meta.realId,
+        pending: 0,
+        queued: meta.queued ? 1 : 0,
+        deliveries: meta.deliveries ?? row.deliveries,
+        mentions: meta.mentions ?? row.mentions,
+      });
+    } else if (!serverIds.has(row.message_id)) {
+      revived.push(row);
+    }
+  }
+  return revived;
+}
+
+// Patch pending rows in buffers when delivery events arrive, so they revive
+// with accurate status instead of stale queued state.
+function patchPendingBuffers(
+  id: string,
+  updater: (m: Message) => Message,
+  buffer: Record<string, Message[]>,
+) {
+  for (const [key, buf] of Object.entries(buffer)) {
+    buffer[key] = buf.map((m: Message) =>
+      m.message_id === id ? updater(m) : m,
+    );
+  }
+}
+
 export function ChatApp({ splashStyle, analyticsPrompt = false }: { splashStyle?: SplashStyle | false; analyticsPrompt?: boolean } = {}) {
   const [consentOpen, setConsentOpen] = useState(analyticsPrompt);
   // Mount chat (and its global keyboard/paste listeners) only after consent.
@@ -190,6 +279,17 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const [isSending, setIsSending] = useState(false);
   const lastPastedImage = useRef<PastedImageDedupRecord | undefined>(undefined);
   const selectionKeyRef = useRef<string | undefined>(undefined);
+  const messagesRef = useRef<Message[]>([]);
+  messagesRef.current = messages;
+  // Optimistic rows stashed when the user switches conversations mid-send,
+  // re-attached on the next history load for that conversation. Cap per key.
+  const pendingMessageBuffer = useRef<Record<string, Message[]>>({});
+  const MAX_PENDING_BUFFER = 100;
+  function capPendingBuffer(key: string) {
+    const buf = pendingMessageBuffer.current[key] ?? [];
+    if (buf.length <= MAX_PENDING_BUFFER) return;
+    pendingMessageBuffer.current[key] = buf.slice(0, MAX_PENDING_BUFFER);
+  }
   const [nameDraft, setNameDraft] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [scrollFocused, setScrollFocused] = useState(false);
@@ -480,7 +580,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     setDraftLength,
     composerHeight,
     setComposerHeight,
-    isSending,
     setIsSending,
     nameDraft,
     setNameDraft,
@@ -529,6 +628,20 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     filePickerOpenRef: filePickerOpen,
     composerRef,
     selectionKey,
+    setMentionSpans,
+    clearPrevComposerText: (key: string) => {
+      delete prevComposerText.current[key];
+    },
+    onMessageEnqueued: ({ kind, targetId }) => {
+      // The composer clears at enqueue time, so drop the reply banner and
+      // mark group activity now instead of waiting for the ack.
+      setReplyTo(undefined);
+      if (kind === "group")
+        setGroupActivity((current) => ({
+          ...current,
+          [targetId]: Date.now(),
+        }));
+    },
   });
 
   useEffect(() => {
@@ -776,9 +889,9 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   }, [deleteConfirmation]);
 
   useEffect(() => {
-    if (dialog || editingName || scrollFocused || isSending)
+    if (dialog || editingName || scrollFocused)
       stopOutgoingTyping();
-  }, [dialog, editingName, scrollFocused, isSending]);
+  }, [dialog, editingName, scrollFocused]);
 
   useEffect(() => {
     const service = createClipboard({
@@ -1043,7 +1156,12 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
               .send("group_messages", { group_id: groupId })
               .then((response) => {
                 if (!response.error)
-                  setMessages(response.messages as Message[]);
+                  setMessages((current) =>
+                    preservePendingMessages(
+                      current,
+                      response.messages as Message[],
+                    ),
+                  );
               })
               .catch(() => {});
           }
@@ -1061,6 +1179,16 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         }
         if (event.event === "group_delivered" || event.event === "group_sent") {
           const messageId = event.message_id as string;
+          patchPendingBuffers(messageId, (m) => ({
+            ...m,
+            deliveries: Array.isArray(event.deliveries)
+              ? (event.deliveries as GroupDelivery[])
+              : (m.deliveries ?? []).map((d) =>
+                  d.recipient_id === (event.recipient_id as string)
+                    ? { ...d, status: (event.status as string) ?? "sent" }
+                    : d,
+                ),
+          }), pendingMessageBuffer.current);
           setMessages((current) =>
             current.map((message) => {
               if (message.message_id !== messageId) return message;
@@ -1097,7 +1225,12 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
               .send("group_messages", { group_id: selectedGroupId })
               .then((response) => {
                 if (!response.error)
-                  setMessages(response.messages as Message[]);
+                  setMessages((current) =>
+                    preservePendingMessages(
+                      current,
+                      response.messages as Message[],
+                    ),
+                  );
               })
               .catch(() => {});
           }
@@ -1111,6 +1244,15 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
             while (next.size > 1_024) next.delete(next.values().next().value!);
             return next;
           });
+          // Also update buffered rows so they revive with correct status.
+          patchPendingBuffers(messageId, (m) => ({
+            ...m,
+            message_id: messageId,
+            pending: 0,
+            delivered: 1,
+            queued: 0,
+            received_at: Date.now() / 1000,
+          }), pendingMessageBuffer.current);
           setMessages((current) =>
             current.map((message) =>
               message.message_id === messageId
@@ -1128,6 +1270,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         }
         if (event.event === "message_sent") {
           const messageId = event.message_id as string;
+          patchPendingBuffers(messageId, (m) => ({ ...m, queued: 0 }), pendingMessageBuffer.current);
           setMessages((current) =>
             current.map((message) =>
               message.message_id === messageId
@@ -1160,6 +1303,16 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         }
         if (event.event === "message_failed") {
           const messageId = event.message_id as string;
+          // Sweep all pending buffers, not just the current conversation's:
+          // the failed id may be stashed under a different key.
+          for (const key of Object.keys(pendingMessageBuffer.current)) {
+            const buf = pendingMessageBuffer.current[key]!;
+            if (buf.some((m) => m.message_id === messageId)) {
+              pendingMessageBuffer.current[key] = buf.filter(
+                (m) => m.message_id !== messageId,
+              );
+            }
+          }
           setMessages((current) =>
             current.map((message) =>
               message.message_id === messageId
@@ -1389,7 +1542,12 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           .send("messages", { peer_id: senderId })
           .then((response) => {
             if (!response.error && selectionKeyRef.current === conversationKey) {
-              setMessages(response.messages as Message[]);
+              setMessages((current) =>
+                preservePendingMessages(
+                  current,
+                  response.messages as Message[],
+                ),
+              );
               void actions.refreshPeers();
             }
           })
@@ -1475,7 +1633,18 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         if (cancelled) return;
         const history = response.messages as Message[];
         rememberUnreadHistory(selectionKey, history, unreadCount);
-        setMessages(history);
+        const buffered = pendingMessageBuffer.current[selectionKey] ?? [];
+        if (buffered.length) delete pendingMessageBuffer.current[selectionKey];
+        const revived = reviveBufferedPending(
+          buffered,
+          history,
+          resolvedSendMeta,
+          selectionKey,
+          pendingMessageBuffer.current,
+        );
+        setMessages((current) =>
+          preservePendingMessages(current, [...history, ...revived]),
+        );
         setConversationLoading(false);
         if (selection.kind === "peer") void actions.refreshPeers();
         else void actions.refreshGroups();
@@ -1499,6 +1668,19 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       .catch(() => {});
     return () => {
       cancelled = true;
+      // Stash still-sending rows so they survive the conversation switch and
+      // are re-attached on the next history load for this conversation.
+      const pending = messagesRef.current.filter((message) => message.pending);
+      if (pending.length && selectionKeyRef.current) {
+        const existing = pendingMessageBuffer.current[selectionKeyRef.current] ?? [];
+        const ids = new Set(existing.map((message) => message.message_id));
+        const deduped = pending.filter((message) => !ids.has(message.message_id));
+        pendingMessageBuffer.current[selectionKeyRef.current] = [
+          ...existing,
+          ...deduped.slice(0, MAX_PENDING_BUFFER - existing.length),
+        ];
+        capPendingBuffer(selectionKeyRef.current);
+      }
     };
   }, [selectionKey]);
 
@@ -1548,7 +1730,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   }
 
   usePaste((event) => {
-    if (helpOpen || dialog || editingName || isSending) return;
+    if (helpOpen || dialog || editingName) return;
     try {
       const rawBytes = event.bytes;
       const eventMimeType = event.metadata?.mimeType?.toLowerCase();
@@ -1639,7 +1821,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       return;
     }
     if (key.name === "?" && !key.ctrl && !key.meta && !(key as unknown as { super?: boolean }).super) {
-      const composerFocused = Boolean(selection) && !dialog && !editingName && !scrollFocused && !isSending;
+      const composerFocused = Boolean(selection) && !dialog && !editingName && !scrollFocused;
       const textInputDialog = dialog ? dialogUsesTextInput(dialog) : false;
       if (helpOpen || (!composerFocused && !textInputDialog)) {
         key.preventDefault();
@@ -1664,9 +1846,40 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       if (key.name === "return" || key.name === "linefeed") {
         key.preventDefault();
         const message = deleteConfirmation;
+        // Resolve still-pending ids. An in-flight row cannot be deleted: its
+        // queued send would still deliver to the peer. A failed temp row
+        // exists only locally, so it is dropped without an IPC round-trip.
+        const meta = resolvedSendMeta.get(message.id);
+        if (message.id.startsWith("pending-") && !meta) {
+          actions.showStatus(
+            "That message is still sending; delete it once it arrives.",
+          );
+          return;
+        }
+        if (meta?.failed) {
+          for (const key of Object.keys(pendingMessageBuffer.current)) {
+            pendingMessageBuffer.current[key] = pendingMessageBuffer.current[
+              key
+            ]!.filter((m) => m.message_id !== message.id);
+          }
+          setMessages((current) =>
+            current.filter((item) => item.message_id !== message.id),
+          );
+          setSelectedReplyTarget((current) =>
+            current?.id === message.id ? undefined : current,
+          );
+          setReplyTo((current) =>
+            current?.id === message.id ? undefined : current,
+          );
+          setDeleteConfirmation(undefined);
+          actions.showStatus("Message deleted locally.");
+          return;
+        }
+        const realId = meta ? meta.realId : message.id;
+        const targetIds = new Set([message.id, realId]);
         void ipc
           .send("delete_message", {
-            message_id: message.id,
+            message_id: realId,
             group_id: message.groupId,
             file: message.kind === "file",
           })
@@ -1674,17 +1887,32 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
             if (response.error) throw new Error(response.error);
             if (message.kind === "file")
               setConversationFileTransfers((current) =>
-                current.filter((item) => item.file_id !== message.id),
+                current.filter((item) => !targetIds.has(item.file_id)),
               );
-            else
+            else {
+              // Also update pending buffers when deleting so tempIds don't linger.
+              // Look up pending state from messages since ReplyTarget has no pending field.
+              const currentMessages = messagesRef.current;
+              const pendingMessage = currentMessages.find((m) =>
+                targetIds.has(m.message_id),
+              );
+              if (pendingMessage?.pending && selectionKeyRef.current) {
+                const buf =
+                  pendingMessageBuffer.current[selectionKeyRef.current];
+                if (buf?.some((m) => targetIds.has(m.message_id))) {
+                  pendingMessageBuffer.current[selectionKeyRef.current] =
+                    buf.filter((m) => !targetIds.has(m.message_id));
+                }
+              }
               setMessages((current) =>
-                current.filter((item) => item.message_id !== message.id),
+                current.filter((item) => !targetIds.has(item.message_id)),
               );
+            }
             setSelectedReplyTarget((current) =>
-              current?.id === message.id ? undefined : current,
+              targetIds.has(current?.id ?? "") ? undefined : current,
             );
             setReplyTo((current) =>
-              current?.id === message.id ? undefined : current,
+              targetIds.has(current?.id ?? "") ? undefined : current,
             );
             setDeleteConfirmation(undefined);
             actions.showStatus("Message deleted locally.");
@@ -1706,7 +1934,6 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       !dialog &&
       !editingName &&
       !scrollFocused &&
-      !isSending &&
       selection
     ) {
       key.preventDefault();
@@ -1760,7 +1987,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       }
     }
     if (
-      !dialog && !editingName && !scrollFocused && !isSending && selection && selectionKey &&
+      !dialog && !editingName && !scrollFocused && selection && selectionKey &&
       (mentionSpans[selectionKey]?.length ?? 0) > 0
     ) {
       const composer = composerRef.current;
@@ -2033,7 +2260,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       return;
     }
     const modifier = (key as unknown as { alt?: boolean }).alt || key.meta || key.ctrl;
-    if (modifier && ["1", "2", "3", "4"].includes(key.name) && !dialog && !editingName && !isSending && selected && !selectedGroup) {
+    if (modifier && ["1", "2", "3", "4"].includes(key.name) && !dialog && !editingName && selected && !selectedGroup) {
       const options = inlineFriendActions(selected);
       const option = options[Number(key.name) - 1];
       if (option) {
@@ -2101,8 +2328,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
     mentionCandidates.length > 0 &&
     !dialog &&
     !editingName &&
-    !scrollFocused &&
-    !isSending;
+    !scrollFocused;
   const mentionSelected = mention
     ? Math.min(mention.selected, Math.max(0, mentionCandidates.length - 1))
     : 0;
@@ -2412,23 +2638,9 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
             return;
           }
           stopOutgoingTyping();
-          const sentSelection = selection;
-          const sentKey = selectionKeyRef.current;
-          void actions.send(replyTo?.id).then((sent) => {
-            if (sent) {
-              setReplyTo(undefined);
-              if (sentKey) {
-                setMentionSpans((current) => {
-                  if (!(sentKey in current)) return current;
-                  const { [sentKey]: _, ...rest } = current;
-                  return rest;
-                });
-                delete prevComposerText.current[sentKey];
-              }
-              if (sentSelection?.kind === "group")
-                setGroupActivity((current) => ({ ...current, [sentSelection.id]: Date.now() }));
-            }
-          });
+          // Reply banner + group activity update at enqueue time via
+          // onMessageEnqueued; the promise resolves at ack time.
+          void actions.send(replyTo?.id).catch(() => {});
         }}
         inboxCount={inboxCount}
         onFriendAction={handleInlineFriendAction}

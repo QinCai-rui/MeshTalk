@@ -990,3 +990,19 @@ for (const width of [80, 48, 32]) {
     } finally { await close(setup) }
   })
 }
+
+test("still-sending messages show a sending indicator instead of blocking", async () => {
+  const props = panelProps(80)
+  props.conversationItems = [
+    ...props.conversationItems,
+    { type: "message", createdAt: 1788580920, message: { message_id: "pending-abc", sender_id: "me", recipient_id: "alex", content: "On its way", created_at: 1788580920, pending: 1 } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    const frame = await settle(setup, "On its way")
+    // "sending…" (ellipsis) is the row-level pending status; the footer uses
+    // "Sending... /" (ascii dots), so this cannot match the footer.
+    expect(frame).toContain("sending…")
+    expect(frame).toContain("On its way")
+  } finally { await close(setup) }
+})
