@@ -571,6 +571,15 @@ class Settings:
             "analytics_prompted_versions": self.analytics_prompted_versions,
             "analytics_seen_versions": self.analytics_seen_versions,
         }
+        # The launcher/TUI own update_channel. Preserve a value written after
+        # this Settings instance was loaded instead of clobbering it on the
+        # backend's next unrelated save.
+        try:
+            external = json.loads(self.path.read_text()) if self.path.exists() else {}
+            if external.get("update_channel") in {"stable", "unstable"}:
+                data["update_channel"] = external["update_channel"]
+        except Exception:
+            pass
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, indent=2))
         temporary.chmod(0o600)
