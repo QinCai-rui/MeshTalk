@@ -849,10 +849,13 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
       else if (key.name === "return" || key.name === "enter") confirmPicker()
       return
     }
+    // File Manager owns Esc/Backspace itself (ChatApp skips file-list keys
+    // so layered popups never double-fire with global navigation).
     if (key.name === "escape") { key.preventDefault(); backToSettings(); return }
-    // While the search field is focused, keys belong to it (Enter submits
-    // and blurs via the input; Escape keeps its global back meaning).
+    // While the search field is focused, the input handles all editing keys
+    // natively (Backspace/Delete included); shortcuts stay quiet.
     if (searchFocused) return
+    if (key.name === "backspace") { closeDialog(); return }
     const index = filtered.findIndex((f) => f.file_id === selectedId)
     if (key.name === "up" || key.name === "k") { if (index > 0) setSelectedId(filtered[index - 1].file_id) }
     else if (key.name === "down" || key.name === "j") { if (index >= 0 && index < filtered.length - 1) setSelectedId(filtered[index + 1].file_id) }
@@ -890,7 +893,10 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
   const renderSelectedImage = (file: FileTransfer, maxWidth: number) => isImageFile(file.filename) && file.status === "completed" && file.file_path && !isLocalFileMissing(file.file_path)
     ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage lazy={false} maxWidth={maxWidth} maxHeight={Math.max(4, Math.min(14, dialogHeight - 14))} onOpen={() => showDialog({ kind: "image-view", filePath: file.file_path!, filename: file.filename, version: file.completed_at, returnTo: "files" })} />
     : null
-  return <box style={{ width: "100%", height: "100%", minHeight: 0, flexDirection: "column", backgroundColor: theme.canvas }}>
+  // Clicking anywhere outside the search field blurs it, so the typing
+  // cursor never lingers after the mouse moves on.
+  const blurSearch = () => setSearchFocused(false)
+  return <box onMouseDown={blurSearch} style={{ width: "100%", height: "100%", minHeight: 0, flexDirection: "column", backgroundColor: theme.canvas }}>
     <box style={{ flexShrink: 0, paddingLeft: 2, paddingRight: 2, backgroundColor: theme.surface }}>
       <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
         <box style={{ flexDirection: "row", gap: 1, alignItems: "center" }}>
@@ -914,9 +920,9 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
       <HoverHighlight id="file-group-button" onMouseDown={openGroupPicker} active={!!groupFilter} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: groupFilter ? theme.selected : undefined }}>
         <text fg={groupFilter ? theme.accent : theme.muted}>Group: {groupFilter ? groupLabel(groupFilter) : "All"}</text>
       </HoverHighlight>
-      <HoverHighlight id="file-search-field" onMouseDown={() => setSearchFocused(true)} active={searchFocused} style={{ flexDirection: "row", alignItems: "center", flexGrow: 1, minWidth: 16, height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: searchFocused ? theme.selected : undefined }}>
+      <HoverHighlight id="file-search-field" onMouseDown={(event) => { event.stopPropagation(); setSearchFocused(true) }} active={searchFocused} style={{ flexDirection: "row", alignItems: "center", flexGrow: 1, minWidth: 16, height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: searchFocused || query !== "" ? theme.selected : undefined }}>
         <text fg={searchFocused ? theme.accent : theme.muted}>/ </text>
-        <input focused={searchFocused} value={query} placeholder="filter by filename…" onInput={setQuery} onSubmit={() => setSearchFocused(false)} maxLength={256} />
+        <input focused={searchFocused} placeholder="filter by filename…" onInput={setQuery} onSubmit={() => setSearchFocused(false)} maxLength={256} style={{ flexGrow: 1, minWidth: 0 }} />
       </HoverHighlight>
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: wide ? "row" : "column", gap: wide ? 1 : 0, minWidth: 0, alignItems: "flex-start" }}>

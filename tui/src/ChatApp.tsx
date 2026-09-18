@@ -1707,12 +1707,11 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       // A child that already consumed the key (e.g. closing an in-dialog
       // popup) must not also trigger navigation: one Esc exits one layer.
       if (key.defaultPrevented) return
+      // File Manager owns all of its keys (Esc/Backspace included, including
+      // while searching): handling them here as well would double-fire,
+      // because this listener was registered before the dialog's own.
+      if (dialog.kind === "file-list") return
       if (key.name === "escape" || (key.name === "backspace" && !dialogUsesTextInput(dialog))) {
-        if (dialog.kind === "file-list") {
-          key.preventDefault();
-          void actions.loadFilesSettings();
-          return;
-        }
         key.preventDefault();
         actions.goBack();
       }

@@ -251,6 +251,70 @@ test("file manager search narrows by filename phrase", async () => {
   }
 })
 
+test("file manager search displays each character live and backspace edits", async () => {
+  const transfers: FileTransfer[] = [
+    { file_id: "f-alex", filename: "project-notes.pdf", file_size: 2048, sender_id: "peer-alex-long-id", recipient_id: "me", direction: "inbound", status: "completed", created_at: 30 },
+    { file_id: "f-group", filename: "team-plan.pdf", file_size: 1024, sender_id: "me", recipient_id: "peer-bob-long-id", direction: "outbound", group_id: "studio", status: "sent", created_at: 10 },
+  ]
+  let shown: Dialog | undefined
+  const liveProps = props(transfers)
+  Object.assign(liveProps, { showDialog: (dialog: Dialog) => { shown = dialog } })
+  const setup = await testRender(<FileListDialogContent {...liveProps} />, { width: 100, height: 28 })
+  try {
+    await settle(setup)
+    await act(async () => { setup.mockInput.pressKey("/") })
+    await settle(setup)
+    // Each keystroke must appear immediately (no one-step display lag).
+    let frame = ""
+    for (const char of "plan") {
+      await act(async () => { setup.mockInput.pressKey(char) })
+      frame = await settle(setup)
+    }
+    expect(frame).toContain("/ plan")
+    expect(frame).toContain("team-plan.pdf")
+    expect(frame).not.toContain("project-notes.pdf")
+    // Backspace deletes a character instead of navigating away.
+    await act(async () => { setup.mockInput.pressBackspace() })
+    frame = await settle(setup)
+    expect(frame).toContain("/ pla")
+    expect(frame).not.toContain("/ plan")
+    expect(shown).toBeUndefined()
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
+
+test("file manager search blurs when clicking elsewhere", async () => {
+  const transfers: FileTransfer[] = [
+    { file_id: "f-alex", filename: "project-notes.pdf", file_size: 2048, sender_id: "peer-alex-long-id", recipient_id: "me", direction: "inbound", status: "completed", created_at: 30 },
+    { file_id: "f-group", filename: "team-plan.pdf", file_size: 1024, sender_id: "me", recipient_id: "peer-bob-long-id", direction: "outbound", group_id: "studio", status: "sent", created_at: 10 },
+  ]
+  let refreshed = 0
+  const blurProps = props(transfers)
+  Object.assign(blurProps, { loadFiles: () => { refreshed += 1 } })
+  const setup = await testRender(<FileListDialogContent {...blurProps} />, { width: 100, height: 28 })
+  try {
+    await settle(setup)
+    await act(async () => { setup.mockInput.pressKey("/") })
+    await settle(setup)
+    for (const char of "plan") await act(async () => { setup.mockInput.pressKey(char) })
+    let frame = await settle(setup)
+    expect(frame).toContain("/ plan")
+    // Clicking the header blurs the field: pressing r refreshes instead of
+    // typing, while the entered filter stays applied.
+    await clickText(setup, "File Manager")
+    frame = await settle(setup)
+    await act(async () => { setup.mockInput.pressKey("r") })
+    frame = await settle(setup)
+    expect(refreshed).toBe(1)
+    expect(frame).toContain("/ plan")
+    expect(frame).toContain("team-plan.pdf")
+    expect(frame).not.toContain("project-notes.pdf")
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
+
 test("file manager details show caption, batch position, and retry for failed outbound files", async () => {
   const transfers: FileTransfer[] = [
     { file_id: "failed-batch", filename: "receipts.zip", file_size: 100, sender_id: "me", recipient_id: "peer-alex-long-id", direction: "outbound", status: "failed", created_at: 30, caption: "Trip receipts", batch_id: "batch-1", batch_index: 1, batch_count: 3 },
