@@ -203,11 +203,15 @@ function reviveBufferedPending(
     if (meta) {
       if (serverIds.has(meta.realId)) continue;
       if (meta.failed) {
-        // Remove failed tempId from buffer entirely to avoid persistent ghosts
+        // Revive as a visible failed row (matching preservePendingMessages),
+        // then drop from the buffer so it doesn't duplicate.
         if (selectionKey && pendingBuffer[selectionKey]) {
           pendingBuffer[selectionKey] = pendingBuffer[selectionKey]!.filter(
             (m) => m.message_id !== row.message_id,
           );
+        }
+        if (!serverIds.has(row.message_id)) {
+          revived.push({ ...row, pending: 0, failed: 1 });
         }
         continue;
       }
