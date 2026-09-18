@@ -253,15 +253,21 @@ type MessageRowProps = {
   blocked: boolean
   queued: boolean
   failed: boolean
+  pending: boolean
   showReceived: boolean
   messageSyntaxStyle: SyntaxStyle
+  pendingMessageSyntaxStyle: SyntaxStyle
   messageRefs: MessageRefs
   handlers: ConversationRowHandlersRef
 }
 
-const ConversationMessageRow = memo(function ConversationMessageRow({ message, isLocal, isSystem, senderName, renderedContent, bodyBlocks, mentioned, replyTarget, replySender, replyContent, replySnippet, selectedRow, unreadHighlightStartedAt, replyHighlightStartedAt, replyHighlightGeneration, selectedGroup, delivered, blocked, queued, failed, showReceived, messageSyntaxStyle, messageRefs, handlers }: MessageRowProps) {
-  const markdown = useMemo(() => <markdown content={renderedContent} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />, [messageSyntaxStyle, renderedContent])
+const ConversationMessageRow = memo(function ConversationMessageRow({ message, isLocal, isSystem, senderName, renderedContent, bodyBlocks, mentioned, replyTarget, replySender, replyContent, replySnippet, selectedRow, unreadHighlightStartedAt, replyHighlightStartedAt, replyHighlightGeneration, selectedGroup, delivered, blocked, queued, failed, pending, showReceived, messageSyntaxStyle, pendingMessageSyntaxStyle, messageRefs, handlers }: MessageRowProps) {
+  const markdown = useMemo(() => <markdown content={renderedContent} syntaxStyle={pending ? pendingMessageSyntaxStyle : messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />, [messageSyntaxStyle, pendingMessageSyntaxStyle, pending, renderedContent])
   const rowBackground = replyHighlightStartedAt ? undefined : selectedRow ? theme.selected : mentioned ? theme.mention : undefined
+  // Still-sending rows render greyed out and italic per issue #220. The
+  // header (time + sender) stays normal so the timeline stays scannable;
+  // the body and status carry the pending treatment.
+  const pendingBody = pending && !isSystem
   return (
     <HoverHighlight id={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} active={Boolean(rowBackground || replyHighlightStartedAt || unreadHighlightStartedAt)} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "message", createdAt: message.created_at, message }))} style={{ position: "relative", width: "100%", flexDirection: "column", marginBottom: 1, backgroundColor: rowBackground }}>
       {replyHighlightStartedAt && <HighlightOverlay key={replyHighlightGeneration} id={`reply-highlight-${message.message_id}`} startedAt={replyHighlightStartedAt} />}
@@ -270,10 +276,12 @@ const ConversationMessageRow = memo(function ConversationMessageRow({ message, i
         <text>
           <span fg={selectedRow ? theme.accent : theme.muted}>{selectedRow ? "> " : ""}</span><span fg={theme.muted}>{formatTime(message.created_at)} </span>
           <span fg={isSystem ? theme.warning : isLocal ? theme.accent : theme.text}>{isSystem ? "System" : isLocal ? "You" : senderName}</span>
-          {isLocal && !isSystem && !selectedGroup && <span fg={blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
+          {isLocal && !isSystem && !selectedGroup && <span fg={pending ? theme.muted : blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{pending ? <i>sending…</i> : blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
           {showReceived && <span fg={theme.muted}> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
         </text>
-        {isLocal && !isSystem && selectedGroup && <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></HoverHighlight>}
+        {isLocal && !isSystem && selectedGroup && (pending
+          ? <text fg={theme.muted}><i>sending…</i></text>
+          : <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></HoverHighlight>)}
         {message.reply_to_message_id && <HoverHighlight disabled={!replyTarget} onMouseDown={replyTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); const target = replyTargetForItem(replyTarget); handlers.current.clearReplyTarget(); handlers.current.highlightReplyTarget(target.id); handlers.current.setScrollFocused(true); handlers.current.scrollboxRef.current?.scrollChildIntoView(target.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></HoverHighlight>}
         {!bodyBlocks ? (
           markdown
@@ -283,26 +291,30 @@ const ConversationMessageRow = memo(function ConversationMessageRow({ message, i
               <box key={`${message.message_id}-block-${blockIndex}`} flexDirection="column">
                 {blockIndex > 0 ? <box height={1} /> : null}
                 {block.kind === "plain" ? (
-                  <markdown content={block.text} syntaxStyle={messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
+                  <markdown content={block.text} syntaxStyle={pending ? pendingMessageSyntaxStyle : messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />
                 ) : (
-                  <text wrapMode="word">
+                  <text wrapMode="word" fg={pendingBody ? theme.muted : undefined}>
                     {block.segments.flatMap((segment, segmentIndex) =>
                       segment.type === "mention" ? (
-                        [<span key={`${segmentIndex}-m`} fg={theme.text} bg={theme.mentionBg}>@{segment.name}</span>]
+                        pendingBody
+                          ? [<span key={`${segmentIndex}-m`} fg={theme.muted}><i>@{segment.name}</i></span>]
+                          : [<span key={`${segmentIndex}-m`} fg={theme.text} bg={theme.mentionBg}>@{segment.name}</span>]
                       ) : segment.type === "code" ? (
-                        [<span key={`${segmentIndex}-c`} fg={theme.markdown.raw}>{/^ {0,3}[`~]{3,}/.test(segment.text) ? segment.text : segment.text.match(/^(`+)([\s\S]*)\1$/)?.[2] ?? segment.text}</span>]
+                        [<span key={`${segmentIndex}-c`} fg={pendingBody ? theme.muted : theme.markdown.raw}>{pendingBody ? <i>{/^ {0,3}[`~]{3,}/.test(segment.text) ? segment.text : segment.text.match(/^(`+)([\s\S]*)\1$/)?.[2] ?? segment.text}</i> : /^ {0,3}[`~]{3,}/.test(segment.text) ? segment.text : segment.text.match(/^(`+)([\s\S]*)\1$/)?.[2] ?? segment.text}</span>]
                       ) : (
                         parseInlineMarkdown(segment.text).map((frag, fragIndex) => {
                           const key = `${segmentIndex}-${fragIndex}`
-                          if (frag.type === "code") return <span key={key} fg={theme.markdown.raw}>{frag.text}</span>
-                          if (frag.type === "heading") return <span key={key} fg={theme.markdown.heading}><b>{frag.text}</b></span>
-                          if (frag.type === "list") return <Fragment key={key}><span fg={theme.markdown.list}>{frag.marker} </span><span fg={theme.markdown.default}>{frag.text}</span></Fragment>
-                          if (frag.type === "quote") return <span key={key} fg={theme.markdown.comment}>{frag.text}</span>
-                          if (frag.type === "strong") return <span key={key} fg={theme.markdown.default}><b>{frag.text}</b></span>
-                          if (frag.type === "em") return <span key={key} fg={theme.markdown.default}><i>{frag.text}</i></span>
-                          if (frag.type === "link") return <span key={key} fg={theme.markdown.heading}><u>{frag.label}</u></span>
-                          if (frag.type === "strike") return <span key={key} fg={theme.markdown.default}>{frag.text}</span>
-                          return <span key={key} fg={theme.markdown.default}>{frag.text}</span>
+                          const fg = pendingBody ? theme.muted : theme.markdown.default
+                          const body = (node: ReactNode) => pendingBody ? <i>{node}</i> : node
+                          if (frag.type === "code") return <span key={key} fg={pendingBody ? theme.muted : theme.markdown.raw}>{body(frag.text)}</span>
+                          if (frag.type === "heading") return <span key={key} fg={pendingBody ? theme.muted : theme.markdown.heading}>{body(<b>{frag.text}</b>)}</span>
+                          if (frag.type === "list") return <Fragment key={key}><span fg={pendingBody ? theme.muted : theme.markdown.list}>{frag.marker} </span><span fg={fg}>{body(frag.text)}</span></Fragment>
+                          if (frag.type === "quote") return <span key={key} fg={pendingBody ? theme.muted : theme.markdown.comment}>{body(frag.text)}</span>
+                          if (frag.type === "strong") return <span key={key} fg={fg}>{body(<b>{frag.text}</b>)}</span>
+                          if (frag.type === "em") return <span key={key} fg={fg}><i>{frag.text}</i></span>
+                          if (frag.type === "link") return <span key={key} fg={pendingBody ? theme.muted : theme.markdown.heading}>{body(<u>{frag.label}</u>)}</span>
+                          if (frag.type === "strike") return <span key={key} fg={fg}>{body(frag.text)}</span>
+                          return <span key={key} fg={fg}>{body(frag.text)}</span>
                         })
                       ),
                     )}
@@ -316,6 +328,31 @@ const ConversationMessageRow = memo(function ConversationMessageRow({ message, i
     </HoverHighlight>
   )
 })
+
+const PENDING_MESSAGE_MARKDOWN_STYLES = {
+  default: { fg: theme.muted, italic: true },
+  "markup.heading.1": { fg: theme.muted, italic: true, bold: true },
+  "markup.heading.2": { fg: theme.muted, italic: true, bold: true },
+  "markup.heading.3": { fg: theme.muted, italic: true, bold: true },
+  "markup.heading.4": { fg: theme.muted, italic: true, bold: true },
+  "markup.heading.5": { fg: theme.muted, italic: true, bold: true },
+  "markup.heading.6": { fg: theme.muted, italic: true, bold: true },
+  "markup.strong": { fg: theme.muted, italic: true, bold: true },
+  "markup.italic": { fg: theme.muted, italic: true },
+  "markup.link.label": { fg: theme.muted, italic: true, underline: true },
+  "markup.link.url": { fg: theme.muted, italic: true, underline: true },
+  "markup.raw": { fg: theme.muted, italic: true },
+  "markup.list": { fg: theme.muted, italic: true },
+  keyword: { fg: theme.muted, italic: true, bold: true },
+  string: { fg: theme.muted, italic: true },
+  comment: { fg: theme.muted, italic: true },
+  number: { fg: theme.muted, italic: true },
+  boolean: { fg: theme.muted, italic: true },
+  function: { fg: theme.muted, italic: true },
+  type: { fg: theme.muted, italic: true },
+  operator: { fg: theme.muted, italic: true },
+  punctuation: { fg: theme.muted, italic: true },
+} as const
 
 const MESSAGE_MARKDOWN_STYLES = {
   default: { fg: theme.markdown.default },
@@ -358,6 +395,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
   const [imageViewport, setImageViewport] = useState({ width: Math.max(1, width - 3), height: 16 })
   const [atLatest, setAtLatest] = useState(true)
   const messageSyntaxStyle = useMemo(() => SyntaxStyle.fromStyles(MESSAGE_MARKDOWN_STYLES), [])
+  const pendingMessageSyntaxStyle = useMemo(() => SyntaxStyle.fromStyles(PENDING_MESSAGE_MARKDOWN_STYLES), [])
   const rowHandlers = useRef<ConversationRowHandlers>(null!)
   const typingText = typingNames.length === 1
     ? `${clipTextToWidth(typingNames[0]!, Math.max(1, width - 18)).trimEnd()} is typing`
@@ -417,7 +455,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
   }
 
 
-  useEffect(() => () => messageSyntaxStyle.destroy(), [messageSyntaxStyle])
+  useEffect(() => () => { messageSyntaxStyle.destroy(); pendingMessageSyntaxStyle.destroy() }, [messageSyntaxStyle, pendingMessageSyntaxStyle])
 
   // Keep the keyboard-highlighted mention visible while navigating a long list.
   useEffect(() => {
@@ -729,8 +767,10 @@ const replySender = replySenderId === identity?.peer_id ? "You"
               blocked={Boolean(message.blocked)}
               queued={Boolean(message.queued)}
               failed={Boolean(message.failed)}
+              pending={Boolean(message.pending)}
               showReceived={typeof message.received_at === "number" && formatTimeMinute(message.received_at) !== formatTimeMinute(message.created_at)}
               messageSyntaxStyle={messageSyntaxStyle}
+              pendingMessageSyntaxStyle={pendingMessageSyntaxStyle}
               messageRefs={messageRefs}
               handlers={rowHandlers}
             />,
@@ -775,7 +815,7 @@ const replySender = replySenderId === identity?.peer_id ? "You"
       )}
       <text fg={limitColor ?? theme.accent}><b>{!scrollFocused && !editingName && hasConversation ? "> " : ""}{composerTitle}</b></text>
       {replyTo && <text fg={theme.accent}>Replying to {replyTo.senderId === identity?.peer_id ? "You" : selectedGroup ? groupMembers[selectedGroupId ?? ""]?.find((member) => (member.peer_id ?? member.member_id) === replyTo.senderId)?.display_name ?? "Unknown member" : selected?.display_name ?? "Unknown peer"}: {(selectedGroup && replyTo.kind === "message" ? renderMentionedContent(replyTo.label, resolveMentionName) : replyTo.label).replace(/\s+/g, " ").trim().slice(0, 60)}{replyTo.label.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""} (Esc cancels)</text>}
-      <textarea key={selectionKey ?? "no-conversation"} ref={composerRef} initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""} placeholder={hasConversation ? "Write a message..." : "Select a peer or group"} focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !isSending && !dialogOpen} onMouseDown={() => setScrollFocused(false)} onContentChange={() => {
+      <textarea key={selectionKey ?? "no-conversation"} ref={composerRef} initialValue={selectionKey ? drafts[selectionKey] ?? "" : ""} placeholder={hasConversation ? "Write a message..." : "Select a peer or group"} focused={Boolean(selected || selectedGroup) && !editingName && !scrollFocused && !dialogOpen} onMouseDown={() => setScrollFocused(false)} onContentChange={() => {
         const composer = composerRef.current
         const content = composer?.plainText ?? ""
         setDraftLength(new TextEncoder().encode(content).length)

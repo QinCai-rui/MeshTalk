@@ -56,7 +56,6 @@ type ChatActionsDeps = {
   setDraftLength: (n: number) => void
   composerHeight: number
   setComposerHeight: (n: number) => void
-  isSending: boolean
   setIsSending: (b: boolean) => void
   nameDraft: string
   setNameDraft: (s: string) => void
@@ -106,13 +105,51 @@ type ChatActionsDeps = {
   filePickerOpenRef: { current: boolean }
   composerRef: { current: { plainText: string; selectAll: () => void; deleteSelection: () => void; insertText: (text: string) => void } | null }
   selectionKey: string | undefined
+  setMentionSpans: React.Dispatch<React.SetStateAction<Record<string, MentionSpan[]>>>
+  clearPrevComposerText: (key: string) => void
+  onMessageEnqueued?: (info: { kind: "peer" | "group"; targetId: string }) => void
+}
+
+// Non-blocking sends (issue #220): optimistic rows appear instantly while the
+// IPC requests run one-by-one per conversation (FIFO). Module-level so the
+// queues survive re-renders of the hook's owning component.
+const sendQueues = new Map<string, Promise<void>>()
+const pendingSendIds = new Map<string, string>()
+export type ResolvedSendMeta = {
+  realId: string
+  queued?: boolean
+  deliveries?: GroupDelivery[]
+  mentions?: string[]
+  failed?: boolean
+}
+// Unified lookup table for pending → real mapping + revive data.
+export const resolvedSendMeta = new Map<string, ResolvedSendMeta>()
+let sendsInFlight = 0
+
+function trimSendMap(map: Map<string, unknown>) {
+  // Oldest-first trim; in-flight entries are always the newest, so they survive.
+  if (map.size <= 1_000) return
+  for (const key of map.keys()) {
+    map.delete(key)
+    if (map.size <= 500) break
+  }
+}
+
+/** Real message id for a finished optimistic send, if it has acked or failed. */
+export function resolvePendingSendId(tempId: string): string | undefined {
+  return resolvedSendMeta.get(tempId)?.realId
+}
+
+/** Ack metadata for a finished optimistic send, if it has acked. */
+export function getResolvedSendMeta(tempId: string): ResolvedSendMeta | undefined {
+  return resolvedSendMeta.get(tempId)
 }
 
 export function useChatActions(deps: ChatActionsDeps) {
   const { ipc, clipboardRef, renderer, backendDisconnectedRef } = deps
   const { peers, setPeers, groups, setGroups, groupMembers, setGroupMembers, identity, setIdentity } = deps
   const { selection, setSelection, selectedPeerId, selectedGroupId, messages, setMessages, drafts, setDrafts } = deps
-  const { draftLength, setDraftLength, composerHeight, setComposerHeight, isSending, setIsSending } = deps
+  const { draftLength, setDraftLength, composerHeight, setComposerHeight, setIsSending } = deps
   const { nameDraft, setNameDraft, editingName, setEditingName, scrollFocused, setScrollFocused } = deps
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
   const { mutedPeers, setMutedPeers, mutedGroups, setMutedGroups, mentionSpans, setMentionUnread, notificationPreferences, setNotificationPreferences } = deps
@@ -121,6 +158,7 @@ export function useChatActions(deps: ChatActionsDeps) {
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps
   const { statusResetRef, copyToastResetRef, dialogActionRef, dialogBusyRef, filePickerOpenRef, composerRef, selectionKey } = deps
+  const { setMentionSpans, clearPrevComposerText, onMessageEnqueued } = deps
   const setFriendRequests = deps.setFriendRequests
 
   function showStatus(message: string, durationMs = 2_000) {
@@ -1084,49 +1122,131 @@ export function useChatActions(deps: ChatActionsDeps) {
     finally { finishDialogAction(action) }
   }
 
-  async function send(replyToMessageId?: string): Promise<boolean> {
-    const composer = composerRef.current
-    // Picked mentions display as `@Display Name`; convert spans back to tokens.
-    const rawContent = composer?.plainText ?? ""
-    const spans = selectionKey ? (mentionSpans[selectionKey] ?? []) : []
-    const content = spansToTokens(rawContent, spans).trim()
-    if (!content) { showStatus("Message is empty."); return false }
-    if (!selection || !selectionKey || !identity) { showStatus("Select a peer or group before sending."); return false }
-    if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) { showStatus("Message exceeds the 30 KiB limit."); return false }
-    setIsSending(true)
+  async function deliverQueuedMessage(args: {
+    tempId: string; kind: "peer" | "group"; targetId: string; content: string
+    replyToMessageId?: string; peerName?: string
+  }): Promise<boolean> {
+    // A reply to a still-pending message must reference its real id. FIFO
+    // ordering per conversation guarantees the parent settles first.
+    let replyTo = args.replyToMessageId
+    if (replyTo) {
+      const mapped = resolvedSendMeta.get(replyTo)
+      if (mapped) replyTo = mapped.realId
+      else if (replyTo.startsWith("pending-")) replyTo = undefined // parent failed/evicted
+    }
     try {
-      const response = selection.kind === "peer"
-        ? await ipc.send("send", { recipient_id: selection.id, content, reply_to_message_id: replyToMessageId })
-        : await ipc.send("group_send", { group_id: selection.id, content, reply_to_message_id: replyToMessageId })
+      const response = args.kind === "peer"
+        ? await ipc.send("send", { recipient_id: args.targetId, content: args.content, reply_to_message_id: replyTo })
+        : await ipc.send("group_send", { group_id: args.targetId, content: args.content, reply_to_message_id: replyTo })
       if (response.error) throw new Error(response.error)
+      const realId = response.message_id as string
+      pendingSendIds.set(args.tempId, realId)
+      trimSendMap(pendingSendIds)
       const queued = Boolean(response.queued)
-      if (selection.kind === "peer") {
-        const lastInteraction = Date.now() / 1000
-        setPeers((current) => sortPeersByInteraction(current.map((peer) => peer.peer_id === selection.id ? { ...peer, last_interaction: lastInteraction } : peer)))
+      const meta: ResolvedSendMeta = { realId, queued }
+      if (args.kind === "group") {
+        meta.deliveries = response.deliveries as GroupDelivery[]
+        meta.mentions = payloadMentions(response.mentions)
       }
-      setMessages((c) => [...c, {
-        message_id: response.message_id as string, sender_id: identity.peer_id,
-        ...(selection.kind === "peer" ? { recipient_id: selection.id } : { group_id: selection.id, deliveries: response.deliveries as GroupDelivery[], mentions: payloadMentions(response.mentions) }),
-        content, created_at: Date.now() / 1000, delivered: 0, queued: queued ? 1 : 0, reply_to_message_id: replyToMessageId,
-      }])
-      if (composer && composer === composerRef.current) { composer.selectAll(); composer.deleteSelection() }
-      setDrafts((current) => updateBoundedEntry(
-        current, selectionKey, "", MAX_DRAFT_ENTRIES,
-      ))
-      setDraftLength(0)
-      setComposerHeight(MIN_COMPOSER_HEIGHT)
-      showStatus(selection.kind === "group" ? `Group message sent: ${groupDeliveryLabel(response.deliveries as GroupDelivery[])}.`
+      resolvedSendMeta.set(args.tempId, meta)
+      trimSendMap(resolvedSendMeta)
+      setMessages((current) => current.map((message) => {
+        if (message.message_id === args.tempId) {
+          return {
+            ...message,
+            message_id: realId, pending: 0, delivered: 0,
+            ...(args.kind === "peer"
+              ? { queued: queued ? 1 : 0 }
+              : { deliveries: response.deliveries as GroupDelivery[], mentions: payloadMentions(response.mentions) }),
+          }
+        }
+        // Keep reply links intact when the parent was still pending at send time.
+        if (message.reply_to_message_id === args.tempId) return { ...message, reply_to_message_id: realId }
+        return message
+      }))
+      showStatus(args.kind === "group" ? `Group message sent: ${groupDeliveryLabel(response.deliveries as GroupDelivery[])}.`
         : queued ? "Message stored and queued. It will send when the peer is online."
           : "Message sent. Waiting for delivery confirmation.")
       return true
     } catch (error) {
+      // Keep the optimistic row so the failed message stays visible in context,
+      // and detach any reply that referenced this still-pending message — its
+      // temp id was never persisted, so the link would dangle forever.
+      setMessages((current) => current.map((message) =>
+        message.message_id === args.tempId ? { ...message, pending: 0, failed: 1 }
+        : message.reply_to_message_id === args.tempId ? { ...message, reply_to_message_id: undefined }
+        : message,
+      ))
       if (!backendDisconnectedRef.current) {
         const msg = error instanceof Error ? error.message : String(error)
-        if (msg.includes("No known public key")) showStatus(`You must connect to ${peers.find((p) => p.peer_id === selection.id)?.display_name ?? "this peer"} at least once before offline messages can be queued.`)
+        if (msg.includes("No known public key")) showStatus(`You must connect to ${args.peerName ?? "this peer"} at least once before offline messages can be queued.`)
         else setStatus(`Send error: ${msg}`)
       }
       return false
-    } finally { setIsSending(false) }
+    }
+  }
+
+  async function send(replyToMessageId?: string): Promise<boolean> {
+    const composer = composerRef.current
+    // Snapshot everything at Enter time: the composer is cleared immediately
+    // so the next message can be typed while this one is still sending.
+    const snapshotSelection = selection
+    const snapshotKey = selectionKey
+    const snapshotIdentity = identity
+    // Picked mentions display as `@Display Name`; convert spans back to tokens.
+    const rawContent = composer?.plainText ?? ""
+    const spans = snapshotKey ? (mentionSpans[snapshotKey] ?? []) : []
+    const content = spansToTokens(rawContent, spans).trim()
+    if (!content) { showStatus("Message is empty."); return false }
+    if (!snapshotSelection || !snapshotKey || !snapshotIdentity) { showStatus("Select a peer or group before sending."); return false }
+    if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) { showStatus("Message exceeds the 30 KiB limit."); return false }
+    const tempId = `pending-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    const peerName = snapshotSelection.kind === "peer"
+      ? peers.find((p) => p.peer_id === snapshotSelection.id)?.display_name
+      : undefined
+    setMessages((c) => [...c, {
+      message_id: tempId, sender_id: snapshotIdentity.peer_id,
+      ...(snapshotSelection.kind === "peer" ? { recipient_id: snapshotSelection.id } : { group_id: snapshotSelection.id, deliveries: [] }),
+      content, created_at: Date.now() / 1000, delivered: 0, queued: 0, pending: 1, reply_to_message_id: replyToMessageId,
+    }])
+    if (snapshotSelection.kind === "peer") {
+      const lastInteraction = Date.now() / 1000
+      setPeers((current) => sortPeersByInteraction(current.map((peer) => peer.peer_id === snapshotSelection.id ? { ...peer, last_interaction: lastInteraction } : peer)))
+    }
+    if (composer && composer === composerRef.current) { composer.selectAll(); composer.deleteSelection() }
+    setDrafts((current) => updateBoundedEntry(
+      current, snapshotKey, "", MAX_DRAFT_ENTRIES,
+    ))
+    setDraftLength(0)
+    setComposerHeight(MIN_COMPOSER_HEIGHT)
+    // The composer was just cleared, so its spans are stale — reset them now
+    // (at enqueue time, not at ack time) so text typed while sending keeps
+    // its own spans.
+    setMentionSpans((current) => {
+      if (!(snapshotKey in current)) return current
+      const { [snapshotKey]: _, ...rest } = current
+      return rest
+    })
+    clearPrevComposerText(snapshotKey)
+    sendsInFlight += 1
+    setIsSending(true)
+    onMessageEnqueued?.({ kind: snapshotSelection.kind, targetId: snapshotSelection.id })
+    const previous = sendQueues.get(snapshotKey) ?? Promise.resolve()
+    const task = previous.then(() => deliverQueuedMessage({
+      tempId, kind: snapshotSelection.kind, targetId: snapshotSelection.id,
+      content, replyToMessageId, peerName,
+    }))
+    const tail = task.then(() => undefined, () => undefined)
+    sendQueues.set(snapshotKey, tail)
+    void task.then(() => {
+      if (sendQueues.get(snapshotKey) === tail) sendQueues.delete(snapshotKey)
+      sendsInFlight -= 1
+      if (sendsInFlight <= 0) {
+        sendsInFlight = 0
+        setIsSending(false)
+      }
+    })
+    return task
   }
 
   function saveUpdateChannel(channel: UpdateChannel) {

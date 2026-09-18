@@ -677,6 +677,13 @@ class Database:
         )
         await self._db.commit()
 
+    async def mark_message_queued(self, message_id: str) -> None:
+        """Mark a message as queued for later delivery."""
+        await self._db.execute(
+            "UPDATE messages SET queued = 1 WHERE message_id = ?", (message_id,)
+        )
+        await self._db.commit()
+
     async def mark_message_blocked(self, message_id: str) -> None:
         """Mark a message as blocked by the recipient."""
         await self._db.execute(

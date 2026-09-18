@@ -26,7 +26,7 @@ export type FileDelivery = { recipient_id: string; display_name?: string; status
 export type Message = {
   message_id: string; sender_id: string; recipient_id?: string; group_id?: string; content: string
   created_at: number; kind?: string; deliveries?: GroupDelivery[]; delivered?: number; blocked?: number
-  queued?: number; failed?: number; received_at?: number; reply_to_message_id?: string | null
+  queued?: number; failed?: number; pending?: number; received_at?: number; reply_to_message_id?: string | null
   mentions?: string[]
 }
 export type UnreadMessageState = { conversationKey: string; receivedAt: number; visibleAt?: number }
