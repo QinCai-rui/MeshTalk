@@ -1,15 +1,22 @@
 import { type BoxRenderable } from "@opentui/core";
 import { useTimeline } from "@opentui/react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { isStableVersion } from "../../common/updater";
 import { chatTheme as theme } from "./chatTheme";
 
 declare const APP_VERSION: string;
 declare const MESHTALK_RELEASE: boolean;
+declare const MESHTALK_PRERELEASE: boolean;
 
-export const IS_RELEASE_BUILD =
-  typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE;
 export const APP_RELEASE_VERSION =
   typeof APP_VERSION !== "undefined" && APP_VERSION ? APP_VERSION : "dev";
+export const IS_RELEASE_BUILD =
+  typeof MESHTALK_RELEASE !== "undefined" && MESHTALK_RELEASE;
+export const IS_PRERELEASE_BUILD =
+  typeof MESHTALK_PRERELEASE !== "undefined"
+    ? MESHTALK_PRERELEASE
+    : IS_RELEASE_BUILD && !isStableVersion(APP_RELEASE_VERSION);
+export const IS_STABLE_BUILD = IS_RELEASE_BUILD && !IS_PRERELEASE_BUILD;
 export const MIN_SPLASH_PHASE_MS = 300;
 export const MIN_SPLASH_DURATION_MS = 3000;
 export const MIN_SPLASH_WELCOME_MS = 200;
@@ -170,7 +177,7 @@ function useSplashStartup<T>({ start, onReady, onError, phaseDurationMs, welcome
     return new Promise((resolve) => setTimeout(resolve, phaseDurationRef.current));
   }
 
-  const welcomeMessage = `Welcome to MeshTalk ${APP_RELEASE_VERSION} (${IS_RELEASE_BUILD ? "stable" : "dev"}, ${process.platform ?? "unknown"})`;
+  const welcomeMessage = `Welcome to MeshTalk ${APP_RELEASE_VERSION} (${IS_STABLE_BUILD ? "stable" : IS_RELEASE_BUILD ? "unstable" : "dev"}, ${process.platform ?? "unknown"})`;
 
   useEffect(() => {
     let cancelled = false;
@@ -358,7 +365,7 @@ function CardSplash({ width, height, startup }: { width: number; height: number;
         style={{ width: cardWidth, border: true, borderColor: theme.splash.border, backgroundColor: theme.splash.surface, padding: 1, flexDirection: "column", overflow: "hidden" }}
       >
         <box style={{ width: "100%", marginBottom: 1, flexDirection: "row", justifyContent: "space-between" }}>
-          <text><span fg={theme.splash.build}>{IS_RELEASE_BUILD ? "● STABLE" : "◐ DEV BUILD"}</span></text>
+          <text><span fg={theme.splash.build}>{IS_STABLE_BUILD ? "● STABLE" : IS_RELEASE_BUILD ? "◐ UNSTABLE" : "◐ DEV BUILD"}</span></text>
           <text><span fg={theme.splash.buildLabel}>VERSION </span><span fg={theme.splash.title}><b>{APP_RELEASE_VERSION}</b></span></text>
         </box>
 
@@ -409,7 +416,7 @@ function BootLogSplash({ width, height, startup }: { width: number; height: numb
       </box> : <text><span fg={theme.splash.violet}><b>MESH</b></span><span fg={theme.splash.accent}><b>TALK</b></span></text>}
 
       <text>
-        <span fg={theme.splash.phaseInactiveText}>Welcome to </span><span fg={theme.splash.text}><b>MeshTalk</b></span><span fg={theme.splash.phaseInactiveText}> </span><span fg={theme.splash.version}>{APP_RELEASE_VERSION}</span><span fg={theme.splash.phaseInactiveText}> ({IS_RELEASE_BUILD ? "stable" : "dev"}, {process.platform ?? "unknown"})</span>
+        <span fg={theme.splash.phaseInactiveText}>Welcome to </span><span fg={theme.splash.text}><b>MeshTalk</b></span><span fg={theme.splash.phaseInactiveText}> </span><span fg={theme.splash.version}>{APP_RELEASE_VERSION}</span><span fg={theme.splash.phaseInactiveText}> ({IS_STABLE_BUILD ? "stable" : IS_RELEASE_BUILD ? "unstable" : "dev"}, {process.platform ?? "unknown"})</span>
       </text>
       <box style={{ height: 1 }} />
 
