@@ -85,6 +85,7 @@ Cancel. All settings colours come from chatTheme.ts.
 | Key | Action / context |
 | --- | --- |
 | Ctrl+P | Open or close settings |
+| Ctrl+H | Open or close keyboard help |
 | Ctrl+Up/Down | Switch peer/group conversation |
 | Ctrl+N | Edit display name |
 | Ctrl+U | Open file picker |
