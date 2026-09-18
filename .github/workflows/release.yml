@@ -84,6 +84,13 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
+    env:
+      # Keep build caches in the workspace so actions/cache can restore them
+      # consistently on macOS, Linux, and Windows.
+      UV_CACHE_DIR: ${{ github.workspace }}/.cache/uv
+      NUITKA_CACHE_DIR: ${{ github.workspace }}/.cache/nuitka
+      CCACHE_DIR: ${{ github.workspace }}/.cache/nuitka/ccache
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -95,6 +102,20 @@ jobs:
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
+
+      - name: Cache uv and Nuitka build data
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/uv
+            .cache/nuitka
+          # Keep a new entry per commit so newly compiled objects can be
+          # saved, while restore-keys reuses the latest previous build.
+          # The artifact name keeps Intel and Apple Silicon caches separate.
+          key: ${{ runner.os }}-${{ matrix.artifact }}-python-3.12-${{ hashFiles('backend/uv.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.artifact }}-python-3.12-${{ hashFiles('backend/uv.lock') }}-
+            ${{ runner.os }}-${{ matrix.artifact }}-python-3.12-
 
       - name: Install dependencies
         run: bun install --os="*" --cpu="*"
@@ -136,7 +157,7 @@ jobs:
       - name: Configure static OpenSSL build (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install openssl@3
+          brew install openssl@3 ccache
           echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
           echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
           echo "UV_NO_BINARY_PACKAGE=cryptography" >> "$GITHUB_ENV"
