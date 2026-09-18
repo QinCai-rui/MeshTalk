@@ -118,10 +118,7 @@ export function UpdateDialog({ appReleaseVersion, dialog, dialogError, dialogHei
   const headerWidth = Math.max(1, dialogWidth - 4)
   return <SettingsScreen breadcrumb={["About & updates", "Update"]} dialogHeight={dialogHeight}>
   <box style={{ width: "100%", flexDirection: "column", gap: 1 }}>
-    <box style={{ width: "100%", flexDirection: "column", flexShrink: 0 }}>
-      <MarqueeText width={headerWidth} fg={theme.muted} text={dialog.installed ? `MeshTalk ${dialog.release.version} is ready.` : `MeshTalk ${dialog.release.version} is available.`} animateInSettings />
-      {!dialog.installed && <MarqueeText width={headerWidth} fg={theme.muted} text={`Installed version: ${appReleaseVersion}`} animateInSettings />}
-    </box>
+    <MarqueeText width={headerWidth} fg={theme.muted} text={dialog.installed ? `MeshTalk ${dialog.release.version} is ready.` : `MeshTalk ${dialog.release.version} is available. Installed version: ${appReleaseVersion}`} animateInSettings />
     {installing ? <box style={{ flexDirection: "row", alignItems: "center", gap: 1, height: 1, flexShrink: 0, overflow: "hidden" }}><spinner name="material" color={theme.warning} /><MarqueeText width={Math.max(1, headerWidth - 2)} fg={theme.warning} text={progressLabel(dialog.progress ?? { current: 1, total: 6, step: "Preparing update" })} animateInSettings /></box> : dialog.installed ? <MarqueeText width={headerWidth} fg={theme.success} text="Update installed. Restart now to use the new version, or dismiss to keep this session running." animateInSettings /> : <MarqueeText width={headerWidth} fg={theme.muted} text="The download will be verified with GitHub's SHA-256 digest before installation." animateInSettings />}
     {dialogError && <MarqueeText width={headerWidth} fg={theme.danger} text={dialogError} animateInSettings />}
     {!installing && <MouseSelect focused height={Math.max(3, dialogHeight - 7)} options={dialog.installed ? [
