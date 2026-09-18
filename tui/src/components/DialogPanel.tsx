@@ -738,16 +738,59 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
   const [filter, setFilter] = useState<"all" | "inbound" | "outbound" | "images" | "other">("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<FileTransfer | null>(null)
+  const [peerFilter, setPeerFilter] = useState<string | null>(null)
+  const [groupFilter, setGroupFilter] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
+  const [searchFocused, setSearchFocused] = useState(false)
   const pendingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const scrollboxRef = useRef<ScrollBoxRenderable | null>(null)
+  const pickerScrollRef = useRef<ScrollBoxRenderable | null>(null)
+  const peerOptions = useMemo(() => {
+    const ids: string[] = []
+    for (const f of dialog.files) {
+      const id = f.direction === "inbound" ? f.sender_id : f.recipient_id
+      if (id && !ids.includes(id)) ids.push(id)
+    }
+    return ids
+  }, [dialog.files])
+  const [peerPicker, setPeerPicker] = useState(false)
+  const [groupPicker, setGroupPicker] = useState(false)
+  const [pickerIndex, setPickerIndex] = useState(0)
+  const pickerOpen = peerPicker || groupPicker
+  const pickerOptions: (string | null)[] = peerPicker ? [null, ...peerOptions] : [null, ...groups.map((g) => g.group_id)]
+  const openPeerPicker = () => { setGroupPicker(false); setPickerIndex(0); setPeerPicker(true) }
+  const openGroupPicker = () => { setPeerPicker(false); setPickerIndex(0); setGroupPicker(true) }
+  const closePicker = () => { setPeerPicker(false); setGroupPicker(false) }
+  const pickOption = (id: string | null) => {
+    if (peerPicker) {
+      setPeerFilter(id)
+      if (id) setGroupFilter(null)
+    } else {
+      setGroupFilter(id)
+      if (id) setPeerFilter(null)
+    }
+    closePicker()
+  }
+  const confirmPicker = () => pickOption(pickerOptions[pickerIndex] ?? null)
+  useEffect(() => {
+    if (peerFilter && !peerOptions.includes(peerFilter)) setPeerFilter(null)
+  }, [peerOptions, peerFilter])
+  useEffect(() => {
+    if (groupFilter && !groups.some((g) => g.group_id === groupFilter)) setGroupFilter(null)
+  }, [groups, groupFilter])
   const filtered = useMemo(() => {
     let files = [...dialog.files].sort((a, b) => (b.completed_at ?? b.created_at) - (a.completed_at ?? a.created_at))
     if (filter === "inbound") files = files.filter((f) => f.direction === "inbound")
     if (filter === "outbound") files = files.filter((f) => f.direction === "outbound")
     if (filter === "images") files = files.filter((f) => isImageFile(f.filename))
     if (filter === "other") files = files.filter((f) => !isImageFile(f.filename))
+    if (peerFilter) files = files.filter((f) => f.sender_id === peerFilter || f.recipient_id === peerFilter)
+    if (groupFilter) files = files.filter((f) => f.group_id === groupFilter)
+    const q = query.trim().toLowerCase()
+    if (q) files = files.filter((f) => f.filename.toLowerCase().includes(q) || (f.caption ?? "").toLowerCase().includes(q))
     return files
-  }, [dialog.files, filter])
+  }, [dialog.files, filter, peerFilter, groupFilter, query])
+  const filtering = peerFilter !== null || groupFilter !== null || query.trim() !== ""
   const counts = useMemo(() => ({
     all: dialog.files.length,
     inbound: dialog.files.filter((f) => f.direction === "inbound").length,
@@ -762,6 +805,9 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
   useEffect(() => {
     if (selectedId) scrollboxRef.current?.scrollChildIntoView(selectedId)
   }, [selectedId])
+  useEffect(() => {
+    if (pickerOpen) pickerScrollRef.current?.scrollChildIntoView(`file-picker-option-${pickerIndex}`)
+  }, [pickerOpen, pickerIndex])
   useEffect(() => {
     if (pendingTimer.current) clearTimeout(pendingTimer.current)
     if (!pendingDelete) { pendingTimer.current = undefined; return }
@@ -791,17 +837,29 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
   }
   useKeyboard((key) => {
     if (pendingDelete) {
-      if (key.name === "escape") setPendingDelete(null)
+      if (key.name === "escape") { key.preventDefault(); setPendingDelete(null) }
       else if (key.name === "return" || key.name === "enter") void confirmDelete()
       return
     }
+    if (peerPicker || groupPicker) {
+      const total = (peerPicker ? peerOptions.length : groups.length) + 1
+      if (key.name === "escape") { key.preventDefault(); closePicker() }
+      else if (key.name === "up" || key.name === "k") setPickerIndex((i) => (i - 1 + total) % total)
+      else if (key.name === "down" || key.name === "j") setPickerIndex((i) => (i + 1) % total)
+      else if (key.name === "return" || key.name === "enter") confirmPicker()
+      return
+    }
     if (key.name === "escape") { key.preventDefault(); backToSettings(); return }
+    // While the search field is focused, keys belong to it (Enter submits
+    // and blurs via the input; Escape keeps its global back meaning).
+    if (searchFocused) return
     const index = filtered.findIndex((f) => f.file_id === selectedId)
     if (key.name === "up" || key.name === "k") { if (index > 0) setSelectedId(filtered[index - 1].file_id) }
     else if (key.name === "down" || key.name === "j") { if (index >= 0 && index < filtered.length - 1) setSelectedId(filtered[index + 1].file_id) }
     else if (key.name === "return" || key.name === "enter" || key.name === "s") saveSelected()
     else if (key.name === "r") loadFiles()
     else if (key.name === "d") requestDelete()
+    else if (key.name === "/") { key.preventDefault(); setSearchFocused(true) }
   })
   const formatSize = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
   const statusStyle = (status: string) => {
@@ -816,6 +874,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
     { id: "outbound", label: "Sent", count: counts.outbound }, { id: "images", label: "Images", count: counts.images }, { id: "other", label: "Other", count: counts.other },
   ]
   const peerLabel = (peerId: string) => peers.find((peer) => peer.peer_id === peerId)?.display_name ?? peerId.slice(0, 8)
+  const groupLabel = (groupId: string) => groups.find((group) => group.group_id === groupId)?.name ?? groupId.slice(0, 8)
   const transferDirection = (file: FileTransfer) => {
     if (file.direction === "inbound") return `Received from ${peerLabel(file.sender_id)}`
     if (file.group_id) return `Sent to ${groups.find((group) => group.group_id === file.group_id)?.name ?? file.group_id.slice(0, 8)}`
@@ -838,7 +897,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
           <box id="file-manager-back" onMouseDown={backToSettings} style={{ height: 1, width: 5, alignItems: "center", justifyContent: "center", backgroundColor: theme.link }}><text fg={theme.surfaceRaised}><b>{"<"}</b></text></box>
           <text fg={theme.text}><b>File Manager</b></text>
         </box>
-        <text fg={theme.muted}>{counts.all} transfer{counts.all === 1 ? "" : "s"}</text>
+        <text fg={theme.muted}>{counts.all} transfer{counts.all === 1 ? "" : "s"}{filtered.length !== counts.all ? ` · ${filtered.length} shown` : ""}</text>
       </box>
       <box height={1} />
       <text fg={theme.muted}>Files shared through MeshTalk</text>
@@ -848,9 +907,21 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
         <text fg={filter === chip.id ? theme.accent : theme.muted}>{filter === chip.id ? "> " : ""}{chip.label} {chip.count}</text>
       </HoverHighlight>)}
     </box>
+    <box style={{ flexDirection: "row", flexWrap: "wrap", gap: 1, paddingLeft: 2, paddingRight: 2, paddingBottom: 1, flexShrink: 0, backgroundColor: theme.surface }}>
+      <HoverHighlight id="file-peer-button" onMouseDown={openPeerPicker} active={!!peerFilter} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: peerFilter ? theme.selected : undefined }}>
+        <text fg={peerFilter ? theme.accent : theme.muted}>Peer: {peerFilter ? peerLabel(peerFilter) : "All"}</text>
+      </HoverHighlight>
+      <HoverHighlight id="file-group-button" onMouseDown={openGroupPicker} active={!!groupFilter} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: groupFilter ? theme.selected : undefined }}>
+        <text fg={groupFilter ? theme.accent : theme.muted}>Group: {groupFilter ? groupLabel(groupFilter) : "All"}</text>
+      </HoverHighlight>
+      <HoverHighlight id="file-search-field" onMouseDown={() => setSearchFocused(true)} active={searchFocused} style={{ flexDirection: "row", alignItems: "center", flexGrow: 1, minWidth: 16, height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: searchFocused ? theme.selected : undefined }}>
+        <text fg={searchFocused ? theme.accent : theme.muted}>/ </text>
+        <input focused={searchFocused} value={query} placeholder="filter by filename…" onInput={setQuery} onSubmit={() => setSearchFocused(false)} maxLength={256} />
+      </HoverHighlight>
+    </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: wide ? "row" : "column", gap: wide ? 1 : 0, minWidth: 0, alignItems: "flex-start" }}>
       <scrollbox id="file-manager-list" ref={scrollboxRef} focused style={{ width: wide ? 38 : "100%", flexGrow: 0, flexShrink: 0, minHeight: 0, minWidth: 0, alignSelf: "flex-start" }} contentOptions={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1 }} verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas }, arrowOptions: { foregroundColor: theme.line } }}>
-        {!filtered.length ? <box style={{ paddingLeft: 2, paddingRight: 2, paddingTop: 2, flexDirection: "column", gap: 1 }}><text fg={theme.text}><b>No {filter === "all" ? "file transfers" : filter} yet</b></text><text fg={theme.muted}>Send a file with /file or receive one from a peer.</text></box> : null}
+        {!filtered.length ? <box style={{ paddingLeft: 2, paddingRight: 2, paddingTop: 2, flexDirection: "column", gap: 1 }}><text fg={theme.text}><b>{filtering ? "No matching transfers" : `No ${filter === "all" ? "file transfers" : filter} yet`}</b></text><text fg={theme.muted}>{filtering ? "Adjust the filters or press / to search." : "Send a file with /file or receive one from a peer."}</text></box> : null}
         {filtered.map((f) => {
           const status = statusStyle(f.status)
           const missing = ["completed", "sent"].includes(f.status) && isLocalFileMissing(f.file_path)
@@ -898,7 +969,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
       <FileManagerAction shortcut="D" label="elete" onPress={requestDelete} danger />
       <FileManagerAction shortcut="R" label="efresh" onPress={() => void loadFiles()} />
       <FileManagerAction shortcut="Esc" label=" Back" onPress={() => backToSettings()} />
-      <text fg={theme.muted}>Up/Down or J/K select</text>
+      <text fg={theme.muted}>Up/Down or J/K select · / search</text>
     </box>
     {pendingDelete ? <box style={{ position: "absolute", left: 2, right: 2, top: Math.max(1, Math.floor(dialogHeight / 2) - 3), border: true, borderColor: theme.danger, backgroundColor: theme.dangerSurface, padding: 1, flexDirection: "column", gap: 1 }}>
       <text fg={theme.danger}><b>Delete {pendingDelete.filename} locally?</b></text>
@@ -906,6 +977,22 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
       <box style={{ flexDirection: "row", gap: 1 }}>
         <FileManagerAction shortcut="Enter" label=" Delete" onPress={() => void confirmDelete()} danger />
         <FileManagerAction shortcut="Esc" label=" Cancel" onPress={() => setPendingDelete(null)} />
+      </box>
+    </box> : null}
+    {pickerOpen ? <box style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center", backgroundColor: theme.overlay }} onMouseDown={closePicker}>
+      <box onMouseDown={(event) => event.stopPropagation()} style={{ width: Math.max(30, Math.min(64, dialogWidth - 8)), border: true, borderColor: theme.line, backgroundColor: theme.surfaceRaised, padding: 1, flexDirection: "column", gap: 1 }}>
+        <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <text fg={theme.text}><b>Filter by {peerPicker ? "peer" : "group"}</b></text>
+          <HoverHighlight id="file-picker-close" onMouseDown={closePicker} style={{ height: 1, paddingLeft: 1, paddingRight: 1 }}><text fg={theme.muted}>X</text></HoverHighlight>
+        </box>
+        <scrollbox ref={pickerScrollRef} style={{ height: Math.min(Math.max(1, pickerOptions.length), 8), flexShrink: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surfaceRaised } }}>
+          {pickerOptions.map((id, index) => (
+            <HoverHighlight key={id ?? "all"} id={`file-picker-option-${index}`} active={index === pickerIndex} onMouseDown={() => pickOption(id)} onMouseMove={() => setPickerIndex(index)} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: index === pickerIndex ? theme.selected : undefined }}>
+              <text fg={index === pickerIndex ? theme.accent : theme.text}>{index === pickerIndex ? "> " : "  "}{id === null ? "All" : peerPicker ? peerLabel(id) : groupLabel(id)}</text>
+            </HoverHighlight>
+          ))}
+        </scrollbox>
+        <text fg={theme.muted}>Enter confirms · Esc closes</text>
       </box>
     </box> : null}
   </box>

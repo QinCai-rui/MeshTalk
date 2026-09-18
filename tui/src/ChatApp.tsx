@@ -1704,6 +1704,9 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       return;
     }
     if (dialog) {
+      // A child that already consumed the key (e.g. closing an in-dialog
+      // popup) must not also trigger navigation: one Esc exits one layer.
+      if (key.defaultPrevented) return
       if (key.name === "escape" || (key.name === "backspace" && !dialogUsesTextInput(dialog))) {
         if (dialog.kind === "file-list") {
           key.preventDefault();
