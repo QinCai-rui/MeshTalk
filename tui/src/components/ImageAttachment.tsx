@@ -1,5 +1,5 @@
 import { NativeImage, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
-import { useEffect, useRef, useState, type RefObject } from "react"
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { existsSync, statSync } from "fs"
 import type { ImageProtocol } from "../types"
 import { chatTheme as theme } from "../chatTheme"
@@ -142,19 +142,23 @@ async function loadCachedThumbnail(filePath: string): Promise<NativeImage | unde
   return cache.get(filePath)?.thumbnail
 }
 
-async function cachedThumbnail(filePath: string): Promise<NativeImage | undefined> {
-  const pending = pendingThumbnailLoads.get(filePath)
+async function cachedThumbnail(filePath: string, loadKey?: number | string | null): Promise<NativeImage | undefined> {
+  // Pending decodes are keyed by path plus lifecycle: a retry after the
+  // transfer completes must not join the stale promise that is still decoding
+  // the half-written file, or the preview can stick on "(image unavailable)".
+  const pendingKey = `${filePath}::${loadKey ?? ""}`
+  const pending = pendingThumbnailLoads.get(pendingKey)
   if (pending) return pending
   const load = loadCachedThumbnail(filePath)
-  pendingThumbnailLoads.set(filePath, load)
+  pendingThumbnailLoads.set(pendingKey, load)
   try {
     return await load
   } finally {
-    if (pendingThumbnailLoads.get(filePath) === load) pendingThumbnailLoads.delete(filePath)
+    if (pendingThumbnailLoads.get(pendingKey) === load) pendingThumbnailLoads.delete(pendingKey)
   }
 }
 
-async function loadImage(filePath: string | undefined, bytes: Uint8Array | undefined, fullSize: boolean) {
+async function loadImage(filePath: string | undefined, bytes: Uint8Array | undefined, fullSize: boolean, loadKey?: number | string | null) {
   if (bytes) {
     const source = NativeImage.decode(bytes)
     try {
@@ -170,7 +174,7 @@ async function loadImage(filePath: string | undefined, bytes: Uint8Array | undef
       source.dispose()
     }
   }
-  if (!fullSize) return filePath ? cachedThumbnail(filePath) : undefined
+  if (!fullSize) return filePath ? cachedThumbnail(filePath, loadKey) : undefined
   if (!filePath || !existsSync(filePath)) return undefined
   const header = new Uint8Array(await Bun.file(filePath).slice(0, 16).arrayBuffer())
   if (!detectImageFormat(header)) return undefined
@@ -195,9 +199,14 @@ type ImageAttachmentProps = {
   maxWidth: number
   maxHeight: number
   onOpen?: () => void
+  // Opaque marker for the underlying file's lifecycle (e.g. transfer status /
+  // completion timestamp). The file path of an inbound transfer is allocated
+  // up front and never changes, so without this the thumbnail loaded from a
+  // half-written file would never retry after the transfer completes.
+  version?: number | string | null
 }
 
-export function ImageAttachment({ id, filePath, bytes, filename, protocol, expectedImage = false, fullSize = false, lazy = true, scrollboxRef, maxWidth, maxHeight, onOpen }: ImageAttachmentProps) {
+export function ImageAttachment({ id, filePath, bytes, filename, protocol, expectedImage = false, fullSize = false, lazy = true, scrollboxRef, maxWidth, maxHeight, onOpen, version }: ImageAttachmentProps) {
   const containerRef = useRef<BoxRenderable>(null)
   const viewportCheckRef = useRef<(deferUnload?: boolean) => void>(() => {})
   const nearViewportRef = useRef(!lazy)
@@ -217,7 +226,7 @@ export function ImageAttachment({ id, filePath, bytes, filename, protocol, expec
     setIntrinsicSize(undefined)
     setReservedSize(undefined)
     setLoadFailed(false)
-  }, [bytes, filePath, fullSize, lazy, protocol])
+  }, [bytes, filePath, fullSize, lazy, protocol, version])
 
   nearViewportRef.current = nearViewport
   viewportCheckRef.current = (deferUnload = true) => {
@@ -253,8 +262,15 @@ export function ImageAttachment({ id, filePath, bytes, filename, protocol, expec
     const listener = () => viewportCheckRef.current()
     viewportListeners.add(listener)
     listener()
+    // Container/scrollbox refs can attach after this mount, in which case the
+    // immediate check above bails out unseen and the row would sit on its
+    // placeholder until something else forces a recheck. Two deferred passes
+    // cover the initial layout without a standing timer.
+    queueMicrotask(() => viewportCheckRef.current())
+    const deferredTimer = setTimeout(() => viewportCheckRef.current(), 100)
     return () => {
       viewportListeners.delete(listener)
+      clearTimeout(deferredTimer)
     }
   }, [])
 
@@ -272,7 +288,7 @@ export function ImageAttachment({ id, filePath, bytes, filename, protocol, expec
     if (!nearViewport) return
     let cancelled = false
     setLoadFailed(false)
-    void loadImage(filePath, bytes, fullSize).then((loaded) => {
+    void loadImage(filePath, bytes, fullSize, version ?? null).then((loaded) => {
       // Full-size and in-memory loads return a new handle owned by this
       // component. A file-backed thumbnail comes from the shared cache.
       if (cancelled) {
@@ -297,7 +313,7 @@ export function ImageAttachment({ id, filePath, bytes, filename, protocol, expec
     return () => {
       cancelled = true
     }
-  }, [bytes, filePath, fullSize, nearViewport, protocol])
+  }, [bytes, filePath, fullSize, nearViewport, protocol, version])
 
   // Keep the placeholder geometry correct when the terminal is resized while
   // this image is unloaded. The native source may be gone, so retain only its
@@ -322,7 +338,12 @@ export function ImageAttachment({ id, filePath, bytes, filename, protocol, expec
       return undefined
     }
   })()
-  const layoutSize = displayed ?? reservedSize
+  // Memoize geometry objects: OpenTUI treats a new style identity as a layout
+  // change and re-uploads Kitty/Sixel placements, which reads as a flash when
+  // an unrelated chat update re-renders this component.
+  const layoutSize = useMemo(() => displayed ?? reservedSize, [displayed?.width, displayed?.height, reservedSize?.width, reservedSize?.height])
+  const containerStyle = useMemo(() => ({ flexDirection: "column" as const, width: layoutSize?.width, height: layoutSize?.height, minHeight: layoutSize ? undefined : 1 }), [layoutSize?.width, layoutSize?.height])
+  const imageStyle = useMemo(() => (layoutSize ? { width: layoutSize.width, height: layoutSize.height } : undefined), [layoutSize?.width, layoutSize?.height])
   const displayProtocol = protocol
   const placeholderText = expectedImage
     ? !nearViewport
@@ -332,11 +353,11 @@ export function ImageAttachment({ id, filePath, bytes, filename, protocol, expec
         : undefined
     : undefined
   const placeholderTop = layoutSize ? Math.max(0, Math.floor((layoutSize.height - 1) / 2)) : 0
-  return <HoverHighlight id={id} ref={containerRef} disabled={!onOpen} onSizeChange={notifyImageViewportChanged} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={{ flexDirection: "column", width: layoutSize?.width, height: layoutSize?.height, minHeight: layoutSize ? undefined : 1 }}>
+  return <HoverHighlight id={id} ref={containerRef} disabled={!onOpen} onSizeChange={notifyImageViewportChanged} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} style={containerStyle}>
     {/* Keep the renderable identity and reserved geometry stable while its
         native source is released. This avoids a Kitty placement being
         destroyed and recreated when an adjacent row crosses the viewport. */}
-    {layoutSize ? <image source={safeImage} fit="fit" protocol={displayProtocol} style={layoutSize} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} /> : null}
+    {layoutSize ? <image source={safeImage} fit="fit" protocol={displayProtocol} style={imageStyle} onMouseDown={(event) => { if (event.button === 0 && onOpen) { event.preventDefault(); event.stopPropagation(); onOpen() } }} /> : null}
     {!layoutSize && placeholderText ? <text fg={theme.muted}>{placeholderText}</text> : null}
     {layoutSize && placeholderText ? <text position="absolute" left={0} top={placeholderTop} width={layoutSize.width} fg={theme.muted}>{placeholderText}</text> : null}
   </HoverHighlight>

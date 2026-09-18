@@ -7,7 +7,7 @@ import { useTimeline } from "@opentui/react"
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme } from "../chatTheme"
-import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, inlineFriendActions, isImageFile, isMuteActive, MAX_MESSAGE_BYTES, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
+import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, inlineFriendActions, isImageFile, isMuteActive, MAX_MESSAGE_BYTES, normalizeDeliveryStatus, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
 import { renderMentionedContent, payloadMentions, segmentMentionedContent, splitMentionBody, parseInlineMarkdown, type MentionCandidate, type MentionBodyBlock } from "../mentions"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
 import { MarqueeText } from "./MarqueeText"
@@ -224,7 +224,7 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
             {isBatch && attachmentRetryable && retryEnabled ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(attachment.file_id) } }}><text fg={theme.text}><u>Retry</u></text></HoverHighlight> : null}
             {isBatch && isLocal && selectedGroup ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(attachmentDeliveries, attachment.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(attachmentDeliveries)} <u>(click for details)</u></text></HoverHighlight> : null}
             {unavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
-            {!unavailable && attachment.file_path ? <ImageAttachment filePath={attachment.file_path} filename={attachment.filename} protocol={imageProtocol} expectedImage={isImageFile(attachment.filename)} scrollboxRef={handlers.current.scrollboxRef} maxWidth={imageMaxWidth} maxHeight={imageMaxHeight} onOpen={() => handlers.current.openImage(attachment)} /> : null}
+            {!unavailable && attachment.file_path ? <ImageAttachment filePath={attachment.file_path} filename={attachment.filename} protocol={imageProtocol} expectedImage={isImageFile(attachment.filename)} scrollboxRef={handlers.current.scrollboxRef} maxWidth={imageMaxWidth} maxHeight={imageMaxHeight} version={attachment.completed_at ?? attachment.status} onOpen={() => handlers.current.openImage(attachment)} /> : null}
           </box>
         })}
       </box>
@@ -545,12 +545,12 @@ export function ConversationPanel(props: ConversationPanelProps) {
     for (const item of conversationItems) {
       if (item.type !== "file") continue
       if (item.file.deliveries) {
-        deliveries.set(item.file.file_id, item.file.deliveries.map((delivery) => ({ ...delivery, display_name: delivery.display_name ?? resolveName(delivery.recipient_id) })))
+        deliveries.set(item.file.file_id, item.file.deliveries.map((delivery) => ({ ...delivery, status: normalizeDeliveryStatus(delivery.status), display_name: delivery.display_name ?? resolveName(delivery.recipient_id) })))
       } else {
         const synthesized = item.allFiles.map((file) => ({
           recipient_id: file.recipient_id,
           display_name: groupMemberNames.get(file.recipient_id) ?? peerNames.get(file.recipient_id) ?? file.recipient_id.slice(0, 8),
-          status: file.status === "completed" ? "delivered" : file.status === "failed" ? "unavailable" : file.status === "transferring" || file.status === "receiving" ? "pending" : file.status,
+          status: normalizeDeliveryStatus(file.status),
           updated_at: file.completed_at ?? file.created_at,
         }))
         deliveries.set(item.file.file_id, synthesized)
@@ -562,7 +562,7 @@ export function ConversationPanel(props: ConversationPanelProps) {
       }
       for (const attachment of item.allFiles) {
         if (attachment.file_id === item.file.file_id || !attachment.deliveries) continue
-        deliveries.set(attachment.file_id, attachment.deliveries.map((delivery) => ({ ...delivery, display_name: delivery.display_name ?? resolveName(delivery.recipient_id) })))
+        deliveries.set(attachment.file_id, attachment.deliveries.map((delivery) => ({ ...delivery, status: normalizeDeliveryStatus(delivery.status), display_name: delivery.display_name ?? resolveName(delivery.recipient_id) })))
       }
     }
     return deliveries

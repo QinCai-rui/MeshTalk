@@ -56,7 +56,7 @@ import {
 } from "./utils";
 import { Sidebar } from "./components/Sidebar";
 import { ConversationPanel } from "./components/ConversationPanel";
-import { DialogPanel } from "./components/DialogPanel";
+import { DialogPanel, ImageViewOverlay } from "./components/DialogPanel";
 import { HelpOverlay, helpFocusFor, isHelpHotkey } from "./components/HelpOverlay";
 import { clearImageCache } from "./components/ImageAttachment";
 import {
@@ -895,9 +895,26 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
 
   useEffect(() => {
     if (!flashingEnabled) return;
+    // The blink timer re-renders the whole tree twice per second. While a
+    // fullscreen image is open that repaint reads as a flicker, so pause it.
+    if (dialog?.kind === "image-view") return;
     const interval = setInterval(() => setBlinkOn((v) => !v), 600);
     return () => clearInterval(interval);
-  }, [flashingEnabled]);
+  }, [flashingEnabled, dialog?.kind]);
+
+  useEffect(() => {
+    // The fullscreen viewer snapshots the transfer version at open time. If
+    // the underlying transfer completes while it is open, advance the marker
+    // so the viewer retries its load instead of sticking on a placeholder.
+    // Settle to the newest completion across matching rows: first-mismatch
+    // would ping-pong when several rows share a snapshot path.
+    if (dialog?.kind !== "image-view" || !dialog.filePath) return;
+    const matches = conversationFileTransfers.filter((file) => file.file_path === dialog.filePath);
+    if (!matches.length) return;
+    const latest = matches.reduce((a, b) => (b.completed_at ?? 0) > (a.completed_at ?? 0) ? b : a);
+    const version = latest.completed_at ?? null;
+    if (version !== (dialog.version ?? null)) setDialog({ ...dialog, version });
+  }, [dialog, conversationFileTransfers]);
 
   useEffect(
     () =>
@@ -2470,7 +2487,19 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           <text><span fg={chatTheme.success}>●</span><span fg={chatTheme.text}> Copied to clipboard</span></text>
         </box>
       )}
-      {dialog && (
+      {dialog?.kind === "image-view" && (
+        <ImageViewOverlay
+          filePath={dialog.filePath}
+          bytes={dialog.bytes}
+          filename={dialog.filename}
+          dialogWidth={Math.max(1, width - 2)}
+          dialogHeight={Math.max(1, height - 2)}
+          imageProtocol={imageProtocol}
+          version={dialog.version ?? null}
+          onClose={actions.closeDialog}
+        />
+      )}
+      {dialog && dialog.kind !== "image-view" && (
         <DialogPanel
           dialog={dialog}
           dialogBusy={dialogBusy}
