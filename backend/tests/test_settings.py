@@ -131,6 +131,16 @@ class SettingsControlSetupTest(unittest.TestCase):
         self.assertEqual(Settings(self.path).github_token, "ghp_example")
         self.assertEqual(json.loads(self.path.read_text())["github_token"], "ghp_example")
 
+    def test_backend_save_preserves_update_channel_written_by_launcher(self):
+        settings = Settings(self.path)
+
+        # The TUI can write this after the backend has loaded its Settings
+        # object. A later backend save must not remove the TUI-owned field.
+        self.path.write_text(json.dumps({"version": 1, "update_channel": "unstable"}))
+        settings.set_dnd_enabled(True)
+
+        self.assertEqual(json.loads(self.path.read_text())["update_channel"], "unstable")
+
     def test_environment_control_url_does_not_mutate_persisted_settings(self):
         settings = Settings(self.path)
         settings.dismiss_control_setup()
