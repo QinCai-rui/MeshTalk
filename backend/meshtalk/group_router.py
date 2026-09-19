@@ -11,7 +11,7 @@ from typing import Awaitable, Callable
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .database import Database, extract_mentions, render_mentions_plain
+from .database import Database, MAX_QUEUED_GROUP_PER_PEER, extract_mentions, render_mentions_plain
 from .encryption import decrypt_as_recipient, encrypt_for_recipient
 from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
@@ -53,9 +53,13 @@ GROUP_INBOUND_WINDOW_SECONDS = 60
 GROUP_RELAY_INBOUND_BURST = 120
 # Coarse per-transport-peer limiter, checked before any database I/O.
 GROUP_PEER_BURST = 240
-# Minimum seconds between full relay sweeps for one peer, unless the previous
-# sweep hit the per-sweep cap (backlog still draining).
-GROUP_SWEEP_COOLDOWN_SECONDS = 30
+# Relay send budget per peer: at most this many relayed messages per minute.
+# Bounds sustained flap-driven egress regardless of reconnect rate, while
+# never blocking legitimate drain below the rate.
+GROUP_RELAY_SENDS_PER_MINUTE = 100
+# ACK forwards (live or queued) share one small per-transport-peer bucket:
+# recipients legitimately ACK in bursts after a relay sweep.
+GROUP_ACK_BURST = 120
 # Upper bound on queued forwarded ACKs per sender; replays beyond this are dropped.
 MAX_QUEUED_ACKS_PER_PEER = 100
 GroupEventCallback = Callable[[dict], Awaitable[None]]
@@ -76,7 +80,7 @@ class GroupRouter:
         self.settings = settings
         self.on_event = on_event
         self._recent_relays: dict[tuple[str, str], float] = {}
-        self._sweep_state: dict[str, tuple[float, bool]] = {}
+        self._relay_budgets: dict[str, list[float]] = {}
         self._inbound_hits: dict[tuple[str, str], list[float]] = {}
 
     async def sync_groups(self) -> None:
@@ -248,6 +252,11 @@ class GroupRouter:
                 except Exception:
                     pass
             try:
+                # Bound per-recipient queue growth: a vanished member must not
+                # accumulate rows forever via honest fan-out.
+                if await self.db.count_queued_packets(recipient_id, PacketType.GROUP_MESSAGE.value) >= MAX_QUEUED_GROUP_PER_PEER:
+                    await self.db.set_group_delivery(message_id, recipient_id, "unavailable")
+                    continue
                 await self.db.add_to_outqueue(
                     recipient_id, PacketType.GROUP_MESSAGE.value, encoded, message_id, group_id
                 )
@@ -385,6 +394,16 @@ class GroupRouter:
     def _check_relay_rate(self, sender_id: str) -> bool:
         return self._check_rate("relayed", sender_id, GROUP_RELAY_INBOUND_BURST, GROUP_INBOUND_WINDOW_SECONDS)
 
+    def _relay_budget_left(self, peer_id: str) -> int:
+        """Remaining relay sends for a peer in the current minute window."""
+        now = time.time()
+        hits = [hit for hit in self._relay_budgets.get(peer_id, []) if now - hit < 60]
+        self._relay_budgets[peer_id] = hits
+        if len(self._relay_budgets) > 4096:
+            for old_key in list(self._relay_budgets)[: len(self._relay_budgets) - 4096]:
+                del self._relay_budgets[old_key]
+        return max(0, GROUP_RELAY_SENDS_PER_MINUTE - len(hits))
+
     async def relay_for_peer(self, peer_id: str) -> int:
         """Re-encrypt stored group messages from other senders for a reachable peer.
 
@@ -395,13 +414,13 @@ class GroupRouter:
         cached signing key and discard duplicates by message_id. Live sends
         only — no queue rows, so a failed send retries on the next connect.
         Successful sends are remembered briefly to avoid re-sending the same
-        message on every reconnect flap. Only messages created at or after the
-        target joined are relayed (no pre-membership history), and each sweep
-        sends at most MAX_RELAY_PER_SWEEP messages per peer.
+        message on every reconnect flap, and a persistent per-peer rowid
+        cursor resumes past relayed rows across restarts. Only messages
+        created at or after the target joined are relayed (no pre-membership
+        history), and each sweep sends at most MAX_RELAY_PER_SWEEP messages
+        per peer within a per-minute send budget shared across sweeps.
         Candidates are fetched SQL-side already bounded, so sweeps never
-        decrypt more than they can send. Sweeps for one peer are skipped
-        within GROUP_SWEEP_COOLDOWN_SECONDS unless the previous sweep hit the
-        cap (backlog still draining).
+        decrypt more than they can send.
         """
         peer = self.peer_manager.get_connected_peer(peer_id)
         if peer is None or not peer.supports(CAP_GROUP_CHAT):
@@ -416,8 +435,7 @@ class GroupRouter:
             return 0
         relayed_count = 0
         now = time.time()
-        last_sweep, last_capped = self._sweep_state.get(peer_id, (0, True))
-        if not last_capped and now - last_sweep < GROUP_SWEEP_COOLDOWN_SECONDS:
+        if self._relay_budget_left(peer_id) <= 0:
             return 0
         self._recent_relays = {
             key: sent_at for key, sent_at in self._recent_relays.items()
@@ -425,10 +443,10 @@ class GroupRouter:
         }
         if len(self._recent_relays) > MAX_RECENT_RELAYS:
             self._recent_relays = dict(list(self._recent_relays.items())[-MAX_RECENT_RELAYS:])
-        if len(self._sweep_state) > MAX_RECENT_RELAYS:
-            self._sweep_state = dict(list(self._sweep_state.items())[-MAX_RECENT_RELAYS:])
         for group in await self.db.get_groups(self.identity.peer_id):
             if relayed_count >= MAX_RELAY_PER_SWEEP:
+                break
+            if self._relay_budget_left(peer_id) <= 0:
                 break
             group_id = group["group_id"]
             self_member = await self.db.get_group_member(group_id, self.identity.peer_id)
@@ -447,7 +465,7 @@ class GroupRouter:
                 )
             except Exception:
                 continue
-            max_sent: tuple[float, str] | None = None
+            max_rowid: int | None = None
             for stored in messages:
                 if relayed_count >= MAX_RELAY_PER_SWEEP:
                     break
@@ -501,20 +519,22 @@ class GroupRouter:
                     # advancing past unsent rows. They retry next connect.
                     break
                 self._recent_relays[relay_key] = time.time()
+                self._relay_budgets.setdefault(peer_id, []).append(time.time())
                 relayed_count += 1
-                sent_mark = (stored["created_at"], stored["message_id"])
-                if max_sent is None or sent_mark > max_sent:
-                    max_sent = sent_mark
-            if max_sent is not None:
+                sent_rowid = stored["rowid"]
+                if max_rowid is None or sent_rowid > max_rowid:
+                    max_rowid = sent_rowid
+            if max_rowid is not None:
                 try:
-                    await self.db.set_relay_cursor(peer_id, group_id, max_sent[0], max_sent[1])
+                    await self.db.set_relay_cursor(peer_id, group_id, max_rowid)
                 except Exception:  # noqa: BLE001
                     pass
-        self._sweep_state[peer_id] = (time.time(), relayed_count >= MAX_RELAY_PER_SWEEP)
         return relayed_count
 
     async def _handle_ack(self, peer: PeerConnection, acknowledgement: GroupAckPayload) -> None:
         direct = acknowledgement.recipient_id == peer.peer_id
+        if not self._check_rate("ack", peer.peer_id, GROUP_ACK_BURST, GROUP_INBOUND_WINDOW_SECONDS):
+            return
         if direct:
             if peer.signing_public_key is None:
                 raise ValueError("Group acknowledgement identity mismatch")

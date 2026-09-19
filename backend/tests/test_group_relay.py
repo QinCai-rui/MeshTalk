@@ -607,7 +607,7 @@ class GroupRelayCursorTest(unittest.IsolatedAsyncioTestCase):
             second = await GroupRouter(relay, manager2, db, settings).relay_for_peer(target.peer_id)
             self.assertEqual((first, second, manager.sent, manager2.sent), (1, 0, 1, 0))
             cursor = await db.get_relay_cursor(target.peer_id, group_id)
-            self.assertEqual(cursor, (now, "c1"))
+            self.assertIsInstance(cursor, int)
         finally:
             await db.close()
 
@@ -681,5 +681,41 @@ class GroupRelayCursorTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 await router._handle_message(peer, payload)
             self.assertIsNone(await db.get_group_message("big1"))
+        finally:
+            await db.close()
+
+    async def test_future_timestamp_does_not_poison_cursor(self):
+        import time as _time
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        sender, relay, target = (Identity.generate(n) for n in ("S", "R", "T"))
+        db = Database(root / "future.db")
+        await db.connect()
+        try:
+            settings = Settings(root / "future.json")
+            room = settings.create_room("Future")
+            group_id = room.id
+            await db.upsert_group(group_id, "Future")
+            for identity in (relay, sender, target):
+                await db.upsert_group_member(group_id, identity.peer_id, "M", group_capable=True)
+            now = _time.time()
+            stamps = [now, now + 365 * 86400, now + 1]
+            for index, created_at in enumerate(stamps):
+                content = f"m{index}".encode()
+                await db.save_group_message({
+                    "message_id": f"f{index}", "group_id": group_id,
+                    "sender_id": sender.peer_id, "content": content.decode(),
+                    "created_at": created_at,
+                    "origin_signature": sender.signing_private_key.sign(
+                        group_origin_signed_bytes(
+                            f"f{index}", group_id, sender.peer_id, created_at, None,
+                            hashlib.sha256(content).hexdigest())),
+                })
+            manager = CountingPeerManager(self._peer_for(target))
+            sent = await GroupRouter(relay, manager, db, settings).relay_for_peer(target.peer_id)
+            # Insertion order wins over sender clock: all three relayed.
+            self.assertEqual((sent, manager.sent), (3, 3))
         finally:
             await db.close()
