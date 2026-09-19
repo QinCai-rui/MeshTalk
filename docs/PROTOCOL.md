@@ -782,10 +782,13 @@ signing key before storing. Sender verify keys are learned from verified room
 endpoint cards as well as direct handshakes, so relayed verification succeeds
 even without prior direct contact. Relays cannot modify content without breaking the
 origin signature and learn nothing beyond the group chat they already belong
-to. Relayed system events are never forwarded, relay sends are live-only
-(retried on the next connect), and the recipient ACKs the relay transport
+to. Relayed system events are never forwarded, and only messages created at
+or after the target's group join time are relayed, so new members never
+receive pre-membership history. Relay sends are live-only
+(retried on the next connect), bounded per sweep, with repeat sends to the
+same peer suppressed; the recipient ACKs the relay transport
 peer; the relay forwards that ACK toward the original sender (live or via one
-durably queued `GROUP_MESSAGE_ACK` row) so sender delivery converges.
+durably queued `GROUP_MESSAGE_ACK` row, deduplicated by exact bytes) so sender delivery converges.
 
 `GROUP_LEAVE` contains a UUID `event_id`, `group_id`, leaving `peer_id`,
 `created_at`, and an Ed25519 signature over those canonical fields. A receiver

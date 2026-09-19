@@ -38,6 +38,11 @@ MAX_GROUP_MESSAGE_CONTENT_SIZE = 30 * 1024
 # recipient would discard the duplicate by message_id anyway). In-memory only:
 # a restart may resend, which duplicates safely discard.
 RELAY_RESEND_SUPPRESS_SECONDS = 86400
+# Upper bound on live relay sends per peer per sweep. Large backlogs drain
+# across reconnects instead of amplifying one flap into a burst.
+MAX_RELAY_PER_SWEEP = 50
+# Upper bound on remembered relay sends; oldest entries are evicted first.
+MAX_RECENT_RELAYS = 5000
 GroupEventCallback = Callable[[dict], Awaitable[None]]
 
 
@@ -334,7 +339,9 @@ class GroupRouter:
         cached signing key and discard duplicates by message_id. Live sends
         only — no queue rows, so a failed send retries on the next connect.
         Successful sends are remembered briefly to avoid re-sending the same
-        message on every reconnect flap.
+        message on every reconnect flap. Only messages created at or after the
+        target joined are relayed (no pre-membership history), and each sweep
+        sends at most MAX_RELAY_PER_SWEEP messages per peer.
         """
         peer = self.peer_manager.get_connected_peer(peer_id)
         if peer is None or not peer.supports(CAP_GROUP_CHAT):
@@ -353,19 +360,30 @@ class GroupRouter:
             key: sent_at for key, sent_at in self._recent_relays.items()
             if now - sent_at < RELAY_RESEND_SUPPRESS_SECONDS
         }
+        if len(self._recent_relays) > MAX_RECENT_RELAYS:
+            self._recent_relays = dict(list(self._recent_relays.items())[-MAX_RECENT_RELAYS:])
         for group in await self.db.get_groups(self.identity.peer_id):
+            if relayed_count >= MAX_RELAY_PER_SWEEP:
+                break
             group_id = group["group_id"]
             self_member = await self.db.get_group_member(group_id, self.identity.peer_id)
             target_member = await self.db.get_group_member(group_id, peer_id)
             if not self_member or not self_member["active"] or not target_member or not target_member["active"]:
                 continue
+            # Never relay pre-membership history: the target only receives
+            # messages created at or after it joined the group.
+            target_joined_at = target_member.get("joined_at") or 0
             try:
                 messages = await self.db.get_group_messages(group_id, limit=200)
             except Exception:
                 continue
             for stored in messages:
+                if relayed_count >= MAX_RELAY_PER_SWEEP:
+                    break
                 try:
                     if stored.get("kind", "message") != "message":
+                        continue
+                    if stored["created_at"] < target_joined_at:
                         continue
                     sender_id = stored["sender_id"]
                     if sender_id == self.identity.peer_id or sender_id == peer_id:
@@ -389,7 +407,7 @@ class GroupRouter:
                     # therefore see raw `<@id>` tokens on relayed copies, unlike
                     # direct sends which are pre-rendered per recipient.
                     canonical = stored.get("content") or ""
-                    if not isinstance(canonical, str) or not canonical:
+                    if not isinstance(canonical, str):
                         continue
                     canonical_bytes = canonical.encode("utf-8")
                     if len(canonical_bytes) > MAX_GROUP_MESSAGE_CONTENT_SIZE:
@@ -490,6 +508,15 @@ class GroupRouter:
             except Exception:  # noqa: BLE001
                 pass
         try:
+            # A malicious recipient could replay the same ACK while the sender
+            # is offline; the queue would grow without bound. Identical ACK
+            # bytes verify identically, so one queued copy suffices.
+            for item in await self.db.get_pending_outgoing(target_id):
+                if (
+                    item["packet_type"] == PacketType.GROUP_MESSAGE_ACK.value
+                    and bytes(item["encrypted_payload"]) == encoded
+                ):
+                    return
             await self.db.add_to_outqueue(
                 target_id, PacketType.GROUP_MESSAGE_ACK.value, encoded, None, message["group_id"]
             )

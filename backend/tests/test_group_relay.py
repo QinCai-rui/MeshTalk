@@ -290,6 +290,17 @@ class GroupForwardAckQueueTest(unittest.IsolatedAsyncioTestCase):
         sender_peer.capabilities = [CAP_GROUP_CHAT]
         self.assertTrue(await self.router.can_flush(sender_peer, dict(row)))
 
+    async def test_replayed_ack_queues_only_once(self):
+        ack = GroupAckPayload(self.message_id, self.group_id, self.recipient.peer_id)
+        ack.signature = self.recipient.signing_private_key.sign(ack.signed_bytes())
+        transport = PeerConnection(self.recipient.peer_id, "127.0.0.1", 1)
+        message = {"message_id": self.message_id, "group_id": self.group_id,
+                   "sender_id": self.sender.peer_id}
+        for _ in range(5):
+            await self.router._forward_ack(transport, ack, message)
+        queued = await self.db.get_pending_outgoing(self.sender.peer_id)
+        self.assertEqual(len(queued), 1)
+
 
 class CountingPeerManager:
     """Peer manager stand-in with one connected peer; counts live sends."""
@@ -309,6 +320,8 @@ class GroupRelaySuppressionTest(unittest.IsolatedAsyncioTestCase):
     """Repeat sweeps must not re-send an already-relayed message."""
 
     async def test_second_sweep_suppresses_resend(self):
+        import time as _time
+
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -322,7 +335,7 @@ class GroupRelaySuppressionTest(unittest.IsolatedAsyncioTestCase):
             await db.upsert_group(group_id, "Suppress")
             for identity in (relay, sender, target):
                 await db.upsert_group_member(group_id, identity.peer_id, "M", group_capable=True)
-            created_at = 1700000000.0
+            created_at = _time.time()
             origin = sender.signing_private_key.sign(
                 group_origin_signed_bytes(
                     "m1", group_id, sender.peer_id, created_at, None,
@@ -342,5 +355,101 @@ class GroupRelaySuppressionTest(unittest.IsolatedAsyncioTestCase):
             first = await router.relay_for_peer(target.peer_id)
             second = await router.relay_for_peer(target.peer_id)
             self.assertEqual((first, second, manager.sent), (1, 0, 1))
+        finally:
+            await db.close()
+
+    async def test_pre_join_history_is_not_relayed(self):
+        import time as _time
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        sender, relay, target = (Identity.generate(name) for name in ("S", "R", "T"))
+        db = Database(root / "history.db")
+        await db.connect()
+        try:
+            settings = Settings(root / "history.json")
+            room = settings.create_room("History")
+            group_id = room.id
+            await db.upsert_group(group_id, "History")
+            for identity in (relay, sender, target):
+                await db.upsert_group_member(group_id, identity.peer_id, "M", group_capable=True)
+            target_joined = (await db.get_group_member(group_id, target.peer_id))["joined_at"]
+            old_origin = sender.signing_private_key.sign(
+                group_origin_signed_bytes(
+                    "old", group_id, sender.peer_id, target_joined - 100, None,
+                    hashlib.sha256(b"before you joined").hexdigest(),
+                )
+            )
+            await db.save_group_message({
+                "message_id": "old", "group_id": group_id, "sender_id": sender.peer_id,
+                "content": "before you joined", "created_at": target_joined - 100,
+                "origin_signature": old_origin,
+            })
+            now = _time.time()
+            new_origin = sender.signing_private_key.sign(
+                group_origin_signed_bytes(
+                    "new", group_id, sender.peer_id, now, None,
+                    hashlib.sha256(b"after you joined").hexdigest(),
+                )
+            )
+            await db.save_group_message({
+                "message_id": "new", "group_id": group_id, "sender_id": sender.peer_id,
+                "content": "after you joined", "created_at": now,
+                "origin_signature": new_origin,
+            })
+            peer = PeerConnection(target.peer_id, "127.0.0.1", 1)
+            peer.capabilities = [CAP_GROUP_CHAT]
+            peer.encryption_public_key = X25519PrivateKey.generate().public_key().public_bytes(
+                Encoding.Raw, PublicFormat.Raw)
+            manager = CountingPeerManager(peer)
+            router = GroupRouter(relay, manager, db, settings)
+            self.assertEqual(await router.relay_for_peer(target.peer_id), 1)
+            self.assertEqual(manager.sent, 1)
+        finally:
+            await db.close()
+
+    async def test_sweep_is_bounded(self):
+        import time as _time
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        sender, relay, target = (Identity.generate(name) for name in ("S", "R", "T"))
+        db = Database(root / "bound.db")
+        await db.connect()
+        try:
+            settings = Settings(root / "bound.json")
+            room = settings.create_room("Bound")
+            group_id = room.id
+            await db.upsert_group(group_id, "Bound")
+            for identity in (relay, sender, target):
+                await db.upsert_group_member(group_id, identity.peer_id, "M", group_capable=True)
+            base = _time.time()
+            for index in range(60):
+                message_id = f"m{index}"
+                created_at = base + index
+                origin = sender.signing_private_key.sign(
+                    group_origin_signed_bytes(
+                        message_id, group_id, sender.peer_id, created_at, None,
+                        hashlib.sha256(b"x").hexdigest(),
+                    )
+                )
+                await db.save_group_message({
+                    "message_id": message_id, "group_id": group_id,
+                    "sender_id": sender.peer_id, "content": "x",
+                    "created_at": created_at, "origin_signature": origin,
+                })
+            peer = PeerConnection(target.peer_id, "127.0.0.1", 1)
+            peer.capabilities = [CAP_GROUP_CHAT]
+            peer.encryption_public_key = X25519PrivateKey.generate().public_key().public_bytes(
+                Encoding.Raw, PublicFormat.Raw)
+            manager = CountingPeerManager(peer)
+            router = GroupRouter(relay, manager, db, settings)
+            first = await router.relay_for_peer(target.peer_id)
+            second = await router.relay_for_peer(target.peer_id)
+            self.assertEqual(first, 50)
+            self.assertEqual(second, 10)
+            self.assertEqual(manager.sent, 60)
         finally:
             await db.close()
