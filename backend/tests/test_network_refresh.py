@@ -67,6 +67,39 @@ class NetworkRefreshTest(unittest.IsolatedAsyncioTestCase):
                 await manager.stop()
                 await db.close()
 
+    async def test_refresh_notifies_offline_peers_when_udp_restart_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity = Identity.generate("Alice")
+            peer_identity = Identity.generate("Bob")
+            db = Database(root / "meshtalk.db")
+            await db.connect()
+            peer_id = peer_identity.peer_id
+            await db.upsert_peer(
+                peer_id,
+                "Bob",
+                peer_identity.encryption_public_key_bytes(),
+                peer_identity.signing_public_key_bytes(),
+            )
+            manager = PeerManager(identity, db, lambda *_: None, tcp_port=0)
+            await manager.start()
+            notifications = []
+
+            async def on_peer_changed(changed_peer_id):
+                notifications.append(changed_peer_id)
+
+            manager.on_peer_changed = on_peer_changed
+            try:
+                await manager.record_remote_candidate(peer_id, ("198.51.100.10", 40000))
+                with patch.object(manager.udp, "restart", AsyncMock(side_effect=OSError("socket unavailable"))):
+                    with self.assertRaises(OSError):
+                        await manager.refresh_network()
+                self.assertEqual(notifications, [peer_id])
+                self.assertEqual((await db.get_peer(peer_id))["is_online"], 0)
+            finally:
+                await manager.stop()
+                await db.close()
+
     async def test_udp_restart_remains_retryable_after_start_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

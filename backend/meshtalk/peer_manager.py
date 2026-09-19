@@ -227,11 +227,13 @@ class PeerManager:
             for transport in endpoints:
                 await self.db.save_peer_endpoint(peer_id, transport, None)
 
-        await self.udp.restart()
-        for peer_id in peer_ids:
-            if self.get_connected_peer(peer_id) is None:
-                await self.db.set_peer_online(peer_id, False)
-            await self._notify_peer_changed(peer_id)
+        try:
+            await self.udp.restart()
+        finally:
+            for peer_id in peer_ids:
+                if self.get_connected_peer(peer_id) is None:
+                    await self.db.set_peer_online(peer_id, False)
+                await self._notify_peer_changed(peer_id)
 
     def _should_initiate(self, remote_peer_id: str) -> bool:
         return self.identity.peer_id < remote_peer_id

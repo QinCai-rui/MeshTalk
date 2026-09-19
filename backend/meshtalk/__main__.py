@@ -220,8 +220,10 @@ async def main(debug: bool = False) -> None:
         """Rebind all network-bound services after the active route changes."""
         async with network_refresh_lock:
             try:
-                await peer_manager.refresh_network()
-                await discovery.refresh()
+                try:
+                    await peer_manager.refresh_network()
+                finally:
+                    await discovery.refresh()
             finally:
                 rendezvous.network_changed()
 
