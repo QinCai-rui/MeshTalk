@@ -459,7 +459,7 @@ class GroupDoSGuardTest(unittest.IsolatedAsyncioTestCase):
     """Inbound rate limit, history retention, and dead-queue reaping."""
 
     async def test_inbound_rate_limit_trips(self):
-        from meshtalk.group_router import GROUP_INBOUND_BURST
+        from meshtalk.group_router import GROUP_INBOUND_BURST, GROUP_RELAY_INBOUND_BURST
 
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -474,6 +474,11 @@ class GroupDoSGuardTest(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(router._check_inbound_rate(sender))
             self.assertFalse(router._check_inbound_rate(sender))
             self.assertTrue(router._check_inbound_rate("other" * 16))
+            # Relayed bursts get their own roomier bucket: a tripped direct
+            # bucket must not starve relayed history from the same sender.
+            for _ in range(GROUP_RELAY_INBOUND_BURST):
+                self.assertTrue(router._check_relay_rate(sender))
+            self.assertFalse(router._check_relay_rate(sender))
         finally:
             await db.close()
 
@@ -504,6 +509,34 @@ class GroupDoSGuardTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await db.close()
 
+    async def test_retention_keeps_undelivered_backlog(self):
+        import meshtalk.database as database_module
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        db = Database(root / "keep.db")
+        await db.connect()
+        try:
+            await db.upsert_group("h" * 32, "Keep")
+            await db.save_group_message({
+                "message_id": "inflight", "group_id": "h" * 32,
+                "sender_id": "s" * 64, "content": "wait for me", "created_at": 1.0,
+            })
+            await db.set_group_delivery("inflight", "o" * 64, "queued")
+            old_limit, database_module.MAX_GROUP_HISTORY_ROWS = database_module.MAX_GROUP_HISTORY_ROWS, 10
+            try:
+                for index in range(250):
+                    await db.save_group_message({
+                        "message_id": f"k{index}", "group_id": "h" * 32,
+                        "sender_id": "s" * 64, "content": "x", "created_at": float(index + 2),
+                    })
+            finally:
+                database_module.MAX_GROUP_HISTORY_ROWS = old_limit
+            self.assertIsNotNone(await db.get_group_message("inflight"))
+        finally:
+            await db.close()
+
     async def test_cleanup_reaps_dead_queue_rows(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -520,5 +553,133 @@ class GroupDoSGuardTest(unittest.IsolatedAsyncioTestCase):
             await db.cleanup_expired()
             async with db._db.execute("SELECT COUNT(*) AS n FROM outgoing_queue") as cur:
                 self.assertEqual((await cur.fetchone())["n"], 0)
+        finally:
+            await db.close()
+
+
+class GroupRelayCursorTest(unittest.IsolatedAsyncioTestCase):
+    """Persistent resume cursor: restarts and unrelayable rows don't stall."""
+
+    async def _seed(self, root):
+        sender, relay, target = (Identity.generate(n) for n in ("S", "R", "T"))
+        db = Database(root / "cursor.db")
+        await db.connect()
+        settings = Settings(root / "cursor.json")
+        room = settings.create_room("Cursor")
+        group_id = room.id
+        await db.upsert_group(group_id, "Cursor")
+        for identity in (relay, sender, target):
+            await db.upsert_group_member(group_id, identity.peer_id, "M", group_capable=True)
+        return sender, relay, target, db, settings, group_id
+
+    def _origin(self, sender, message_id, group_id, created_at, content):
+        return sender.signing_private_key.sign(
+            group_origin_signed_bytes(
+                message_id, group_id, sender.peer_id, created_at, None,
+                hashlib.sha256(content).hexdigest(),
+            )
+        )
+
+    def _peer_for(self, target):
+        peer = PeerConnection(target.peer_id, "127.0.0.1", 1)
+        peer.capabilities = [CAP_GROUP_CHAT]
+        peer.encryption_public_key = X25519PrivateKey.generate().public_key().public_bytes(
+            Encoding.Raw, PublicFormat.Raw)
+        return peer
+
+    async def test_cursor_survives_restart(self):
+        import time as _time
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        sender, relay, target, db, settings, group_id = await self._seed(Path(temporary.name))
+        try:
+            now = _time.time()
+            await db.save_group_message({
+                "message_id": "c1", "group_id": group_id, "sender_id": sender.peer_id,
+                "content": "one", "created_at": now,
+                "origin_signature": self._origin(sender, "c1", group_id, now, b"one"),
+            })
+            manager = CountingPeerManager(self._peer_for(target))
+            first = await GroupRouter(relay, manager, db, settings).relay_for_peer(target.peer_id)
+            # Fresh router: empty in-memory suppression, but the cursor persists.
+            manager2 = CountingPeerManager(self._peer_for(target))
+            second = await GroupRouter(relay, manager2, db, settings).relay_for_peer(target.peer_id)
+            self.assertEqual((first, second, manager.sent, manager2.sent), (1, 0, 1, 0))
+            cursor = await db.get_relay_cursor(target.peer_id, group_id)
+            self.assertEqual(cursor, (now, "c1"))
+        finally:
+            await db.close()
+
+    async def test_unrelayable_head_rows_do_not_stall_tail(self):
+        import time as _time
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        sender, relay, target = (Identity.generate(n) for n in ("S", "R", "T"))
+        blocked = Identity.generate("B")
+        db = Database(Path(temporary.name) / "stall.db")
+        await db.connect()
+        try:
+            settings = Settings(Path(temporary.name) / "stall.json")
+            room = settings.create_room("Stall")
+            group_id = room.id
+            await db.upsert_group(group_id, "Stall")
+            for identity in (relay, sender, target, blocked):
+                await db.upsert_group_member(group_id, identity.peer_id, "M", group_capable=True)
+            await db.block_peer(blocked.peer_id, "Blocked")
+            now = _time.time()
+            await db.save_group_message({
+                "message_id": "bad", "group_id": group_id, "sender_id": blocked.peer_id,
+                "content": "blocked head", "created_at": now,
+                "origin_signature": self._origin(blocked, "bad", group_id, now, b"blocked head"),
+            })
+            await db.save_group_message({
+                "message_id": "good", "group_id": group_id, "sender_id": sender.peer_id,
+                "content": "tail", "created_at": now + 1,
+                "origin_signature": self._origin(sender, "good", group_id, now + 1, b"tail"),
+            })
+            manager = CountingPeerManager(self._peer_for(target))
+            sent = await GroupRouter(relay, manager, db, settings).relay_for_peer(target.peer_id)
+            self.assertEqual((sent, manager.sent), (1, 1))
+        finally:
+            await db.close()
+
+    async def test_oversize_inbound_rejected(self):
+        import time as _time
+
+        from meshtalk.group_router import MAX_GROUP_MESSAGE_CONTENT_SIZE
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        sender, target = Identity.generate("Big"), Identity.generate("T")
+        db = Database(Path(temporary.name) / "big.db")
+        await db.connect()
+        try:
+            settings = Settings(Path(temporary.name) / "big.json")
+            room = settings.create_room("Big")
+            group_id = room.id
+            await db.upsert_group(group_id, "Big")
+            for identity in (sender, target):
+                await db.upsert_group_member(group_id, identity.peer_id, "M", group_capable=True)
+            router = GroupRouter(target, StubPeerManager(), db, settings)
+            now = _time.time()
+            big = b"x" * (MAX_GROUP_MESSAGE_CONTENT_SIZE + 1)
+            payload = GroupMessagePayload(
+                "big1", group_id, sender.peer_id, target.peer_id, now, b"",
+                origin_signature=sender.signing_private_key.sign(
+                    group_origin_signed_bytes(
+                        "big1", group_id, sender.peer_id, now, None,
+                        hashlib.sha256(big).hexdigest())),
+            )
+            payload.encrypted_content = encrypt_for_recipient(
+                target.encryption_public_key_bytes(), big, payload.associated_data())
+            payload.signature = sender.signing_private_key.sign(payload.signed_bytes())
+            peer = PeerConnection(sender.peer_id, "127.0.0.1", 1)
+            peer.capabilities = [CAP_GROUP_CHAT]
+            peer.signing_public_key = sender.signing_public_key_bytes()
+            with self.assertRaises(ValueError):
+                await router._handle_message(peer, payload)
+            self.assertIsNone(await db.get_group_message("big1"))
         finally:
             await db.close()

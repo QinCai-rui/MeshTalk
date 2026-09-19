@@ -246,6 +246,15 @@ CREATE TABLE IF NOT EXISTS file_received_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_group_messages_group_created ON group_messages(group_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_outgoing_queue_recipient ON outgoing_queue(recipient_id, attempts);
+
+CREATE TABLE IF NOT EXISTS group_relay_cursors (
+    peer_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    message_id TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (peer_id, group_id)
+);
 """
 
 MAX_GROUP_HISTORY_ROWS = 5000
@@ -954,21 +963,43 @@ class Database:
     async def _prune_group_history(self, group_id: str) -> None:
         """Drop oldest group history beyond the retention bound.
 
-        Bounds the table against inbound floods; recent history (far more
-        than any UI page or relay sweep reads) is always kept.
+        Only rows no one is still waiting for are eligible: anything with a
+        non-terminal delivery (pending/queued/sent) is kept, so floods cannot
+        evict an offline member's undelivered backlog. Derived delivery rows
+        and queued group packets for pruned messages are removed in the same
+        transaction, and the whole prune is atomic.
         """
-        async with self._db.execute(
-            "SELECT COUNT(*) AS n FROM group_messages WHERE group_id = ?", (group_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row and row["n"] > MAX_GROUP_HISTORY_ROWS + 100:
-            await self._db.execute(
-                """DELETE FROM group_messages WHERE group_id = ? AND message_id NOT IN (
-                     SELECT message_id FROM group_messages WHERE group_id = ?
-                     ORDER BY rowid DESC LIMIT ?)""",
-                (group_id, group_id, MAX_GROUP_HISTORY_ROWS),
-            )
+        await self._db.execute("BEGIN IMMEDIATE")
+        try:
+            async with self._db.execute(
+                "SELECT COUNT(*) AS n FROM group_messages WHERE group_id = ?", (group_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row and row["n"] > MAX_GROUP_HISTORY_ROWS + 100:
+                await self._db.execute(
+                    """DELETE FROM group_messages WHERE group_id = ? AND message_id NOT IN (
+                         SELECT message_id FROM group_messages WHERE group_id = ?
+                         ORDER BY rowid DESC LIMIT ?) AND message_id NOT IN (
+                         SELECT message_id FROM group_deliveries
+                         WHERE status NOT IN ('delivered', 'unavailable'))""",
+                    (group_id, group_id, MAX_GROUP_HISTORY_ROWS),
+                )
+                await self._db.execute(
+                    """DELETE FROM group_deliveries WHERE message_id NOT IN (
+                         SELECT message_id FROM group_messages)"""
+                )
+                await self._db.execute(
+                    """DELETE FROM outgoing_queue WHERE group_id = ? AND message_id IS NOT NULL
+                       AND message_id NOT IN (SELECT message_id FROM group_messages)""",
+                    (group_id,),
+                )
             await self._db.commit()
+        except Exception:
+            try:
+                await self._db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
 
     async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
         """Retrieve recent group messages with delivery status."""
@@ -1010,26 +1041,58 @@ class Database:
                 grouped.setdefault(row["message_id"], []).append(dict(row))
         return grouped
 
+    async def get_relay_cursor(self, peer_id: str, group_id: str) -> tuple[float, str] | None:
+        """Return the (created_at, message_id) high-water mark relayed to a peer."""
+        async with self._db.execute(
+            "SELECT created_at, message_id FROM group_relay_cursors WHERE peer_id = ? AND group_id = ?",
+            (peer_id, group_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return (row["created_at"], row["message_id"]) if row else None
+
+    async def set_relay_cursor(self, peer_id: str, group_id: str, created_at: float, message_id: str) -> None:
+        """Advance the relay high-water mark; only moves forward."""
+        await self._db.execute(
+            """INSERT INTO group_relay_cursors (peer_id, group_id, created_at, message_id, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(peer_id, group_id) DO UPDATE SET
+                 created_at = excluded.created_at, message_id = excluded.message_id,
+                 updated_at = excluded.updated_at
+               WHERE excluded.created_at > group_relay_cursors.created_at
+                  OR (excluded.created_at = group_relay_cursors.created_at
+                      AND excluded.message_id > group_relay_cursors.message_id)""",
+            (peer_id, group_id, created_at, message_id, time.time()),
+        )
+        await self._db.commit()
+
     async def get_group_messages_for_relay(
-        self, group_id: str, since: float, limit: int, offset: int = 0
+        self, group_id: str, since: float, limit: int,
+        after: tuple[float, str] | None = None,
     ) -> list[dict]:
         """Retrieve relayable messages SQL-side, oldest first.
 
-        Only real messages at/after ``since`` are returned (never system
-        events or pre-membership history), already bounded to ``limit`` rows,
+        Only real messages at/after ``since`` (and past the ``after`` resume
+        cursor, when given) are returned, already bounded to ``limit`` rows,
         so sweeps never decrypt or scan more than they can send. Delivery
         rows are intentionally omitted: the relay does not need them and the
         recipient tracks its own state by message_id.
         """
         if limit <= 0:
             return []
-        async with self._db.execute(
-            """SELECT message_id, group_id, sender_id, content, created_at, reply_to_message_id, origin_signature
+        if after is not None:
+            query = """SELECT message_id, group_id, sender_id, content, created_at, reply_to_message_id, origin_signature
                FROM group_messages
                WHERE group_id = ? AND kind = 'message' AND created_at >= ?
-               ORDER BY created_at ASC, rowid ASC LIMIT ? OFFSET ?""",
-            (group_id, since, limit, offset),
-        ) as cursor:
+                 AND (created_at > ? OR (created_at = ? AND message_id > ?))
+               ORDER BY created_at ASC, message_id ASC LIMIT ?"""
+            params: tuple = (group_id, since, after[0], after[0], after[1], limit)
+        else:
+            query = """SELECT message_id, group_id, sender_id, content, created_at, reply_to_message_id, origin_signature
+               FROM group_messages
+               WHERE group_id = ? AND kind = 'message' AND created_at >= ?
+               ORDER BY created_at ASC, message_id ASC LIMIT ?"""
+            params = (group_id, since, limit)
+        async with self._db.execute(query, params) as cursor:
             messages = [dict(row) async for row in cursor]
         for message in messages:
             message["content"] = self._decrypt_content(message["content"]) or ""

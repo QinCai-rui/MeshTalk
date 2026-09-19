@@ -786,15 +786,18 @@ to. Relayed system events are never forwarded, and only messages created at
 or after the target's group join time are relayed, so new members never
 receive pre-membership history. Relay sends are live-only
 (retried on the next connect), fetched SQL-side already bounded to the
-per-sweep cap with repeat sends suppressed and sweeps rate-limited, so a
-flapping peer cannot force repeated full-history work; the recipient ACKs
-the relay transport
+per-sweep cap with repeat sends suppressed, a persistent per-peer resume
+cursor (so unrelayable head rows cannot stall the backlog), and sweeps
+rate-limited, so a flapping peer cannot force repeated full-history work;
+the recipient ACKs the relay transport
 peer; the relay forwards that ACK toward the original sender (live or via one
 durably queued `GROUP_MESSAGE_ACK` row, deduplicated by exact bytes) so sender delivery converges.
-Inbound group messages are rate-limited per sender before signature
-verification, group history is retention-bounded, and dead queue rows are
-reaped by periodic cleanup, so malicious members cannot grow local state
-or CPU cost without bound.
+Inbound group messages are rate-limited per sender (with a roomier separate
+bucket for relayed bursts, plus a coarse per-transport-peer limiter checked
+before any database I/O) and size-checked after decryption, group history is
+retention-bounded without evicting in-flight undelivered rows, and dead queue
+rows are reaped by periodic cleanup, so malicious members cannot grow local
+state or CPU cost without bound.
 
 `GROUP_LEAVE` contains a UUID `event_id`, `group_id`, leaving `peer_id`,
 `created_at`, and an Ed25519 signature over those canonical fields. A receiver
