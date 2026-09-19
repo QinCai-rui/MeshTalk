@@ -741,7 +741,8 @@ groups and control connectivity when STUN discovery fails.
   "created_at": 1700000000.0,
   "reply_to_message_id": "<uuid, optional>",
   "encrypted_content": "<hex>",
-  "signature": "<128 hex>"
+  "signature": "<128 hex>",
+  "origin_signature": "<128 hex or empty>"
 }
 ```
 
@@ -750,7 +751,9 @@ The AAD is canonical JSON of `message_id`, `group_id`, `sender_id`,
 X25519/AES-GCM construction as direct messages, independently for each
 recipient. The signature is Ed25519 over
 `SHA-256(AAD || encrypted_content)`. Content is limited to 30 KiB before
-encryption.
+encryption. Direct `GROUP_MESSAGE` deliveries may set `origin_signature` to
+the empty string; relayed group messages must include the original sender's
+64-byte signature.
 
 Receipt requires negotiated `group_chat`; authenticated peer ID equal to
 `sender_id`; the local ID equal to `recipient_id`; a locally joined named room;
@@ -762,9 +765,43 @@ If the sender is locally blocked, the packet is suppressed without an ACK.
 Blocked members are also excluded from local outgoing fanout.
 
 `GROUP_MESSAGE_ACK` signs canonical JSON containing `message_id`, `group_id`,
-and the acknowledging `recipient_id`. The sender accepts it only from that
-authenticated recipient and only for a known delivery row in the same group,
-then records `delivered` and emits `group_delivered`.
+and the acknowledging `recipient_id`. The sender accepts it from that
+authenticated recipient (direct) or as a relay-forwarded copy verified with
+the recipient's cached signing key, and only for a known delivery row in the
+same group, then records `delivered` and emits `group_delivered`.
+
+Mesh relay (always-on): any active group member that holds a message may
+re-encrypt its canonical plaintext for another active member when that peer
+becomes reachable. Participation is not configurable in v1: issue #155 asked
+for opt-out, but always-on was chosen for the mesh design (every member
+already holds the plaintext, so relaying exposes nothing new); opt-out
+remains a possible follow-up. Relayed copies keep the original `message_id`, `group_id`,
+`sender_id`, `created_at`, and `reply_to_message_id`, carry the sender's
+unmodified `origin_signature` (Ed25519 over canonical JSON of those fields
+plus `SHA-256(plaintext)`), and add a fresh per-hop `signature` from the
+relay. Recipients verify the hop signature with the connected relay key,
+decrypt, then verify the origin signature with the original sender's cached
+signing key before storing. Sender verify keys are learned from verified room
+endpoint cards as well as direct handshakes, so relayed verification succeeds
+even without prior direct contact. Relays cannot modify content without breaking the
+origin signature and learn nothing beyond the group chat they already belong
+to. Relayed system events are never forwarded, and only messages created at
+or after the target's group join time are relayed, so new members never
+receive pre-membership history. Relay sends are live-only
+(retried on the next connect), fetched SQL-side already bounded to the
+per-sweep cap with repeat sends suppressed, a persistent per-peer rowid
+resume cursor (immune to sender-clock games), and a per-minute send budget
+shared across sweeps, so a flapping peer cannot force repeated full-history
+work;
+the recipient ACKs the relay transport
+peer; the relay forwards that ACK toward the original sender (live or via one
+durably queued `GROUP_MESSAGE_ACK` row, deduplicated by exact bytes) so sender delivery converges.
+Inbound group messages are rate-limited per sender (with a roomier separate
+bucket for relayed bursts, plus a coarse per-transport-peer limiter checked
+before any database I/O) and size-checked after decryption, group history is
+retention-bounded without evicting in-flight undelivered rows, and dead queue
+rows are reaped by periodic cleanup, so malicious members cannot grow local
+state or CPU cost without bound.
 
 `GROUP_LEAVE` contains a UUID `event_id`, `group_id`, leaving `peer_id`,
 `created_at`, and an Ed25519 signature over those canonical fields. A receiver
