@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from meshtalk.database import Database
 from meshtalk.discovery import DiscoveryService
@@ -23,6 +23,20 @@ class NetworkRefreshTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(service, "start", retry_start):
             await service.refresh()
         retry_start.assert_awaited_once()
+
+    async def test_discovery_start_recovers_from_latched_failed_refresh(self):
+        service = DiscoveryService(24891, AsyncMock())
+        service._running = True
+        loop = MagicMock()
+        transport = MagicMock()
+        transport.get_extra_info.return_value = None
+        loop.create_datagram_endpoint = AsyncMock(return_value=(transport, MagicMock()))
+        with patch("asyncio.get_event_loop", return_value=loop):
+            await service.start()
+        try:
+            self.assertIs(service._transport, transport)
+        finally:
+            await service.stop()
 
     async def test_refresh_clears_stale_endpoints_and_rebinds_udp(self):
         with tempfile.TemporaryDirectory() as temporary:

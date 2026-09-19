@@ -49,7 +49,7 @@ class DiscoveryService:
 
     async def start(self) -> None:
         """Start the discovery service and begin broadcasting presence."""
-        if self._running:
+        if self._running and self._transport is not None:
             return
         self._running = True
         try:
