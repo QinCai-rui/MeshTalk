@@ -43,6 +43,18 @@ RELAY_RESEND_SUPPRESS_SECONDS = 86400
 MAX_RELAY_PER_SWEEP = 50
 # Upper bound on remembered relay sends; oldest entries are evicted first.
 MAX_RECENT_RELAYS = 5000
+# Upper bound on rows examined per group per sweep (paging through the
+# suppression filter); sends per sweep stay capped at MAX_RELAY_PER_SWEEP.
+MAX_RELAY_EXAMINE_PER_SWEEP = 200
+# Inbound group-message rate limit per sender (burst per minute). Human chat
+# never approaches this; floods are dropped before signature verification.
+GROUP_INBOUND_BURST = 30
+GROUP_INBOUND_WINDOW_SECONDS = 60
+# Minimum seconds between full relay sweeps for one peer, unless the previous
+# sweep hit the per-sweep cap (backlog still draining).
+GROUP_SWEEP_COOLDOWN_SECONDS = 30
+# Upper bound on queued forwarded ACKs per sender; replays beyond this are dropped.
+MAX_QUEUED_ACKS_PER_PEER = 100
 GroupEventCallback = Callable[[dict], Awaitable[None]]
 
 
@@ -61,6 +73,8 @@ class GroupRouter:
         self.settings = settings
         self.on_event = on_event
         self._recent_relays: dict[tuple[str, str], float] = {}
+        self._sweep_state: dict[str, tuple[float, bool]] = {}
+        self._sender_hits: dict[str, list[float]] = {}
 
     async def sync_groups(self) -> None:
         for room in self.settings.rooms.values():
@@ -269,6 +283,8 @@ class GroupRouter:
                 raise ValueError("Relay is not an active group member")
         if await self.db.is_peer_blocked(message.sender_id):
             return
+        if not self._check_inbound_rate(message.sender_id):
+            return
         if peer.signing_public_key is None:
             raise ValueError("Missing authenticated signing key")
         try:
@@ -329,6 +345,25 @@ class GroupRouter:
             peer, Packet(PacketType.GROUP_MESSAGE_ACK, acknowledgement.encode())
         )
 
+    def _check_inbound_rate(self, sender_id: str) -> bool:
+        """Token-bucket-ish flood guard: at most BURST messages per WINDOW per sender.
+
+        Checked before signature verification and decryption so floods cost
+        almost nothing. Over-limit messages are dropped like blocked-peer
+        traffic (no store, no ACK).
+        """
+        now = time.time()
+        hits = [hit for hit in self._sender_hits.get(sender_id, []) if now - hit < GROUP_INBOUND_WINDOW_SECONDS]
+        if len(hits) >= GROUP_INBOUND_BURST:
+            self._sender_hits[sender_id] = hits
+            return False
+        hits.append(now)
+        self._sender_hits[sender_id] = hits
+        if len(self._sender_hits) > 4096:
+            for old_key in list(self._sender_hits)[: len(self._sender_hits) - 4096]:
+                del self._sender_hits[old_key]
+        return True
+
     async def relay_for_peer(self, peer_id: str) -> int:
         """Re-encrypt stored group messages from other senders for a reachable peer.
 
@@ -342,6 +377,10 @@ class GroupRouter:
         message on every reconnect flap. Only messages created at or after the
         target joined are relayed (no pre-membership history), and each sweep
         sends at most MAX_RELAY_PER_SWEEP messages per peer.
+        Candidates are fetched SQL-side already bounded, so sweeps never
+        decrypt more than they can send. Sweeps for one peer are skipped
+        within GROUP_SWEEP_COOLDOWN_SECONDS unless the previous sweep hit the
+        cap (backlog still draining).
         """
         peer = self.peer_manager.get_connected_peer(peer_id)
         if peer is None or not peer.supports(CAP_GROUP_CHAT):
@@ -356,12 +395,17 @@ class GroupRouter:
             return 0
         relayed_count = 0
         now = time.time()
+        last_sweep, last_capped = self._sweep_state.get(peer_id, (0, True))
+        if not last_capped and now - last_sweep < GROUP_SWEEP_COOLDOWN_SECONDS:
+            return 0
         self._recent_relays = {
             key: sent_at for key, sent_at in self._recent_relays.items()
             if now - sent_at < RELAY_RESEND_SUPPRESS_SECONDS
         }
         if len(self._recent_relays) > MAX_RECENT_RELAYS:
             self._recent_relays = dict(list(self._recent_relays.items())[-MAX_RECENT_RELAYS:])
+        if len(self._sweep_state) > MAX_RECENT_RELAYS:
+            self._sweep_state = dict(list(self._sweep_state.items())[-MAX_RECENT_RELAYS:])
         for group in await self.db.get_groups(self.identity.peer_id):
             if relayed_count >= MAX_RELAY_PER_SWEEP:
                 break
@@ -373,63 +417,69 @@ class GroupRouter:
             # Never relay pre-membership history: the target only receives
             # messages created at or after it joined the group.
             target_joined_at = target_member.get("joined_at") or 0
-            try:
-                messages = await self.db.get_group_messages(group_id, limit=200)
-            except Exception:
-                continue
-            for stored in messages:
-                if relayed_count >= MAX_RELAY_PER_SWEEP:
-                    break
+            examined = 0
+            while relayed_count < MAX_RELAY_PER_SWEEP and examined < MAX_RELAY_EXAMINE_PER_SWEEP:
                 try:
-                    if stored.get("kind", "message") != "message":
-                        continue
-                    if stored["created_at"] < target_joined_at:
-                        continue
-                    sender_id = stored["sender_id"]
-                    if sender_id == self.identity.peer_id or sender_id == peer_id:
-                        continue
-                    if await self.db.is_peer_blocked(sender_id):
-                        continue
-                    sender_member = await self.db.get_group_member(group_id, sender_id)
-                    if sender_member is None or not sender_member["active"]:
-                        continue
-                    origin_signature = stored.get("origin_signature")
-                    if not isinstance(origin_signature, (bytes, bytearray)) or len(origin_signature) != 64:
-                        continue
-                    if stored.get("reply_to_message_id") and not peer.supports(CAP_MESSAGE_REPLIES):
-                        continue
-                    relay_key = (stored["message_id"], peer_id)
-                    if now - self._recent_relays.get(relay_key, 0) < RELAY_RESEND_SUPPRESS_SECONDS:
-                        continue
-                    # Forward the exact bytes this member received: the origin
-                    # signature binds those bytes, so re-rendering mentions for
-                    # the target would break authentication. Legacy targets may
-                    # therefore see raw `<@id>` tokens on relayed copies, unlike
-                    # direct sends which are pre-rendered per recipient.
-                    canonical = stored.get("content") or ""
-                    if not isinstance(canonical, str):
-                        continue
-                    canonical_bytes = canonical.encode("utf-8")
-                    if len(canonical_bytes) > MAX_GROUP_MESSAGE_CONTENT_SIZE:
-                        continue
-                    payload = GroupMessagePayload(
-                        stored["message_id"], group_id, sender_id, peer_id,
-                        stored["created_at"], b"",
-                        reply_to_message_id=stored.get("reply_to_message_id"),
-                        origin_signature=bytes(origin_signature),
+                    messages = await self.db.get_group_messages_for_relay(
+                        group_id, target_joined_at,
+                        min(MAX_RELAY_PER_SWEEP - relayed_count, MAX_RELAY_EXAMINE_PER_SWEEP - examined),
+                        examined,
                     )
-                    payload.encrypted_content = encrypt_for_recipient(
-                        target_key, canonical_bytes, payload.associated_data()
-                    )
-                    payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
-                    encoded = payload.encode()
-                    if len(encoded) > MAX_PACKET_SIZE:
+                except Exception:
+                    break
+                if not messages:
+                    break
+                examined += len(messages)
+                for stored in messages:
+                    if relayed_count >= MAX_RELAY_PER_SWEEP:
+                        break
+                    try:
+                        sender_id = stored["sender_id"]
+                        if sender_id == self.identity.peer_id or sender_id == peer_id:
+                            continue
+                        if await self.db.is_peer_blocked(sender_id):
+                            continue
+                        sender_member = await self.db.get_group_member(group_id, sender_id)
+                        if sender_member is None or not sender_member["active"]:
+                            continue
+                        origin_signature = stored.get("origin_signature")
+                        if not isinstance(origin_signature, (bytes, bytearray)) or len(origin_signature) != 64:
+                            continue
+                        if stored.get("reply_to_message_id") and not peer.supports(CAP_MESSAGE_REPLIES):
+                            continue
+                        relay_key = (stored["message_id"], peer_id)
+                        if now - self._recent_relays.get(relay_key, 0) < RELAY_RESEND_SUPPRESS_SECONDS:
+                            continue
+                        # Forward the exact bytes this member received: the origin
+                        # signature binds those bytes, so re-rendering mentions for
+                        # the target would break authentication. Legacy targets may
+                        # therefore see raw `<@id>` tokens on relayed copies, unlike
+                        # direct sends which are pre-rendered per recipient.
+                        canonical = stored.get("content") or ""
+                        if not isinstance(canonical, str):
+                            continue
+                        canonical_bytes = canonical.encode("utf-8")
+                        if len(canonical_bytes) > MAX_GROUP_MESSAGE_CONTENT_SIZE:
+                            continue
+                        payload = GroupMessagePayload(
+                            stored["message_id"], group_id, sender_id, peer_id,
+                            stored["created_at"], b"",
+                            reply_to_message_id=stored.get("reply_to_message_id"),
+                            origin_signature=bytes(origin_signature),
+                        )
+                        payload.encrypted_content = encrypt_for_recipient(
+                            target_key, canonical_bytes, payload.associated_data()
+                        )
+                        payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+                        encoded = payload.encode()
+                        if len(encoded) > MAX_PACKET_SIZE:
+                            continue
+                        await self.peer_manager.send_packet(peer, Packet(PacketType.GROUP_MESSAGE, encoded))
+                        self._recent_relays[relay_key] = time.time()
+                        relayed_count += 1
+                    except Exception:  # noqa: BLE001
                         continue
-                    await self.peer_manager.send_packet(peer, Packet(PacketType.GROUP_MESSAGE, encoded))
-                    self._recent_relays[relay_key] = time.time()
-                    relayed_count += 1
-                except Exception:  # noqa: BLE001
-                    continue
+        self._sweep_state[peer_id] = (time.time(), relayed_count >= MAX_RELAY_PER_SWEEP)
         return relayed_count
 
     async def _handle_ack(self, peer: PeerConnection, acknowledgement: GroupAckPayload) -> None:
@@ -510,13 +560,16 @@ class GroupRouter:
         try:
             # A malicious recipient could replay the same ACK while the sender
             # is offline; the queue would grow without bound. Identical ACK
-            # bytes verify identically, so one queued copy suffices.
-            for item in await self.db.get_pending_outgoing(target_id):
-                if (
-                    item["packet_type"] == PacketType.GROUP_MESSAGE_ACK.value
-                    and bytes(item["encrypted_payload"]) == encoded
-                ):
-                    return
+            # bytes verify identically, so one queued copy suffices. The
+            # per-peer cap bounds distinct ACKs.
+            if await self.db.has_queued_payload(
+                target_id, PacketType.GROUP_MESSAGE_ACK.value, encoded
+            ):
+                return
+            if await self.db.count_queued_packets(
+                target_id, PacketType.GROUP_MESSAGE_ACK.value
+            ) >= MAX_QUEUED_ACKS_PER_PEER:
+                return
             await self.db.add_to_outqueue(
                 target_id, PacketType.GROUP_MESSAGE_ACK.value, encoded, None, message["group_id"]
             )

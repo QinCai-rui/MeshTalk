@@ -453,3 +453,72 @@ class GroupRelaySuppressionTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(manager.sent, 60)
         finally:
             await db.close()
+
+
+class GroupDoSGuardTest(unittest.IsolatedAsyncioTestCase):
+    """Inbound rate limit, history retention, and dead-queue reaping."""
+
+    async def test_inbound_rate_limit_trips(self):
+        from meshtalk.group_router import GROUP_INBOUND_BURST
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        relay = Identity.generate("R")
+        db = Database(root / "dos.db")
+        await db.connect()
+        try:
+            router = GroupRouter(relay, StubPeerManager(), db, Settings(root / "dos.json"))
+            sender = "s" * 64
+            for _ in range(GROUP_INBOUND_BURST):
+                self.assertTrue(router._check_inbound_rate(sender))
+            self.assertFalse(router._check_inbound_rate(sender))
+            self.assertTrue(router._check_inbound_rate("other" * 16))
+        finally:
+            await db.close()
+
+    async def test_history_retention_prunes(self):
+        import meshtalk.database as database_module
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        db = Database(root / "prune.db")
+        await db.connect()
+        try:
+            await db.upsert_group("g" * 32, "Prune")
+            old_limit, database_module.MAX_GROUP_HISTORY_ROWS = database_module.MAX_GROUP_HISTORY_ROWS, 10
+            try:
+                for index in range(250):
+                    await db.save_group_message({
+                        "message_id": f"p{index}", "group_id": "g" * 32,
+                        "sender_id": "s" * 64, "content": "x", "created_at": float(index),
+                    })
+            finally:
+                database_module.MAX_GROUP_HISTORY_ROWS = old_limit
+            remaining = await db.get_group_messages("g" * 32, limit=500)
+            # Retention bound holds with hysteresis: far fewer than inserted,
+            # oldest rows pruned first.
+            self.assertLessEqual(len(remaining), 120)
+            self.assertTrue(remaining[0]["message_id"] >= "p100")
+        finally:
+            await db.close()
+
+    async def test_cleanup_reaps_dead_queue_rows(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        db = Database(root / "purge.db")
+        await db.connect()
+        try:
+            await db.add_to_outqueue("r" * 64, 3, b"payload", "m1")
+            queued = await db.get_pending_outgoing("r" * 64)
+            self.assertEqual(len(queued), 1)
+            for _ in range(5):
+                await db.increment_outqueue_attempts(queued[0]["id"])
+            self.assertEqual(await db.get_pending_outgoing("r" * 64), [])
+            await db.cleanup_expired()
+            async with db._db.execute("SELECT COUNT(*) AS n FROM outgoing_queue") as cur:
+                self.assertEqual((await cur.fetchone())["n"], 0)
+        finally:
+            await db.close()

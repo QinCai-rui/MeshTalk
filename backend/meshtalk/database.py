@@ -243,7 +243,12 @@ CREATE TABLE IF NOT EXISTS file_received_chunks (
     chunk_index INTEGER NOT NULL,
     PRIMARY KEY (file_id, chunk_index)
 );
+
+CREATE INDEX IF NOT EXISTS idx_group_messages_group_created ON group_messages(group_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_outgoing_queue_recipient ON outgoing_queue(recipient_id, attempts);
 """
+
+MAX_GROUP_HISTORY_ROWS = 5000
 
 
 class Database:
@@ -640,12 +645,35 @@ class Database:
         await self._db.commit()
 
     async def cleanup_expired(self) -> None:
-        """Remove seen message IDs older than 24 hours."""
+        """Remove seen message IDs older than 24 hours and dead queue rows."""
         now = time.time()
         await self._db.execute(
             "DELETE FROM seen_messages WHERE seen_at < ?", (now - 86400,)
         )
+        # Queue rows that exhausted their retry budget are never selected
+        # again; reap them so a malicious peer cannot grow the table forever.
+        await self._db.execute("DELETE FROM outgoing_queue WHERE attempts >= 5")
         await self._db.commit()
+
+    async def has_queued_payload(self, recipient_id: str, packet_type: int, payload: bytes) -> bool:
+        """Whether an identical payload is already queued for the recipient."""
+        async with self._db.execute(
+            """SELECT 1 FROM outgoing_queue
+               WHERE recipient_id = ? AND packet_type = ? AND encrypted_payload = ? AND attempts < 5
+               LIMIT 1""",
+            (recipient_id, packet_type, payload),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def count_queued_packets(self, recipient_id: str, packet_type: int) -> int:
+        """Count pending queued packets of one type for a recipient."""
+        async with self._db.execute(
+            """SELECT COUNT(*) AS n FROM outgoing_queue
+               WHERE recipient_id = ? AND packet_type = ? AND attempts < 5""",
+            (recipient_id, packet_type),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row["n"]) if row else 0
 
     async def add_to_outqueue(
         self,
@@ -919,7 +947,28 @@ class Database:
             ),
         )
         await self._db.commit()
+        if cursor.rowcount > 0:
+            await self._prune_group_history(message["group_id"])
         return cursor.rowcount > 0
+
+    async def _prune_group_history(self, group_id: str) -> None:
+        """Drop oldest group history beyond the retention bound.
+
+        Bounds the table against inbound floods; recent history (far more
+        than any UI page or relay sweep reads) is always kept.
+        """
+        async with self._db.execute(
+            "SELECT COUNT(*) AS n FROM group_messages WHERE group_id = ?", (group_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row and row["n"] > MAX_GROUP_HISTORY_ROWS + 100:
+            await self._db.execute(
+                """DELETE FROM group_messages WHERE group_id = ? AND message_id NOT IN (
+                     SELECT message_id FROM group_messages WHERE group_id = ?
+                     ORDER BY rowid DESC LIMIT ?)""",
+                (group_id, group_id, MAX_GROUP_HISTORY_ROWS),
+            )
+            await self._db.commit()
 
     async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
         """Retrieve recent group messages with delivery status."""
@@ -933,7 +982,57 @@ class Database:
         for message in messages:
             message["content"] = self._decrypt_content(message["content"]) or ""
             message["mentions"] = extract_mentions(message["content"])
-            message["deliveries"] = await self.get_group_deliveries(message["message_id"])
+            message["deliveries"] = []
+        if messages:
+            by_id = {message["message_id"]: message for message in messages}
+            for message_id, deliveries in (await self.get_group_deliveries_many(list(by_id))).items():
+                by_id[message_id]["deliveries"] = deliveries
+        return messages
+
+    async def get_group_deliveries_many(self, message_ids: list[str]) -> dict[str, list[dict]]:
+        """Get delivery status for several group messages in one query."""
+        grouped: dict[str, list[dict]] = {}
+        if not message_ids:
+            return grouped
+        placeholders = ",".join("?" for _ in message_ids)
+        async with self._db.execute(
+            f"""SELECT d.message_id, d.recipient_id,
+                       COALESCE(p.display_name, gm.display_name, d.recipient_id) AS display_name,
+                       d.status, d.updated_at
+                FROM group_deliveries d
+                LEFT JOIN group_messages m ON m.message_id = d.message_id
+                LEFT JOIN group_members gm ON gm.group_id = m.group_id AND gm.peer_id = d.recipient_id
+                LEFT JOIN peers p ON p.peer_id = d.recipient_id
+                WHERE d.message_id IN ({placeholders}) ORDER BY display_name""",
+            tuple(message_ids),
+        ) as cursor:
+            async for row in cursor:
+                grouped.setdefault(row["message_id"], []).append(dict(row))
+        return grouped
+
+    async def get_group_messages_for_relay(
+        self, group_id: str, since: float, limit: int, offset: int = 0
+    ) -> list[dict]:
+        """Retrieve relayable messages SQL-side, oldest first.
+
+        Only real messages at/after ``since`` are returned (never system
+        events or pre-membership history), already bounded to ``limit`` rows,
+        so sweeps never decrypt or scan more than they can send. Delivery
+        rows are intentionally omitted: the relay does not need them and the
+        recipient tracks its own state by message_id.
+        """
+        if limit <= 0:
+            return []
+        async with self._db.execute(
+            """SELECT message_id, group_id, sender_id, content, created_at, reply_to_message_id, origin_signature
+               FROM group_messages
+               WHERE group_id = ? AND kind = 'message' AND created_at >= ?
+               ORDER BY created_at ASC, rowid ASC LIMIT ? OFFSET ?""",
+            (group_id, since, limit, offset),
+        ) as cursor:
+            messages = [dict(row) async for row in cursor]
+        for message in messages:
+            message["content"] = self._decrypt_content(message["content"]) or ""
         return messages
 
     async def get_group_message(self, message_id: str) -> dict | None:
