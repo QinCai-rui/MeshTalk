@@ -18,6 +18,7 @@ from .peer_manager import PeerConnection, PeerManager
 from .protocol import (
     CAP_AT_MENTIONS,
     CAP_GROUP_CHAT,
+    CAP_GROUP_RELAY,
     CAP_MESSAGE_REPLIES,
     MAX_PACKET_SIZE,
     GroupAckPayload,
@@ -425,6 +426,10 @@ class GroupRouter:
         peer = self.peer_manager.get_connected_peer(peer_id)
         if peer is None or not peer.supports(CAP_GROUP_CHAT):
             return 0
+        if not peer.supports(CAP_GROUP_RELAY):
+            # The target's client predates mesh relay and would reject a
+            # relayed copy (sender != transport peer) by disconnecting.
+            return 0
         if await self.db.is_peer_blocked(peer_id):
             return 0
         target_key = peer.encryption_public_key
@@ -598,6 +603,8 @@ class GroupRouter:
         them with the recipient's cached key even though the transport peer
         (this relay) differs. Live-send when connected, else hold one queue
         row (message_id unset so flush never touches delivery state).
+        Forwarded ACKs require CAP_GROUP_RELAY: an older sender would reject
+        the mismatched transport peer by disconnecting.
         """
         target_id = message["sender_id"]
         if target_id == self.identity.peer_id or target_id == peer.peer_id:
@@ -612,6 +619,8 @@ class GroupRouter:
             return
         target_peer = self.peer_manager.get_connected_peer(target_id)
         if target_peer is not None and target_peer.supports(CAP_GROUP_CHAT):
+            if not target_peer.supports(CAP_GROUP_RELAY):
+                return
             try:
                 await self.peer_manager.send_packet(
                     target_peer, Packet(PacketType.GROUP_MESSAGE_ACK, encoded)
@@ -619,6 +628,8 @@ class GroupRouter:
                 return
             except Exception:  # noqa: BLE001
                 pass
+        if not await self.db.peer_supports(target_id, CAP_GROUP_RELAY):
+            return
         try:
             # A malicious recipient could replay the same ACK while the sender
             # is offline; the queue would grow without bound. Identical ACK
@@ -674,6 +685,14 @@ class GroupRouter:
             return False
         if item["packet_type"] == PacketType.GROUP_LEAVE.value:
             return True
+        if (
+            item["packet_type"] == PacketType.GROUP_MESSAGE_ACK.value
+            and not item.get("message_id")
+            and not peer.supports(CAP_GROUP_RELAY)
+        ):
+            # Forwarded ACK (no local message row): an older sender would
+            # reject the mismatched transport peer by disconnecting.
+            return False
         room = self.settings.rooms.get(item["group_id"])
         member = await self.db.get_group_member(item["group_id"], peer.peer_id)
         return bool(room and room.group_name and member and member["active"] and not await self.db.is_peer_blocked(peer.peer_id))

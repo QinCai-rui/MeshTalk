@@ -15,6 +15,7 @@ from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerConnection, PeerManager
 from meshtalk.protocol import (
     CAP_GROUP_CHAT,
+    CAP_GROUP_RELAY,
     GroupAckPayload,
     GroupMessagePayload,
     Packet,
@@ -310,6 +311,11 @@ class GroupForwardAckQueueTest(unittest.IsolatedAsyncioTestCase):
             await self.db.upsert_group_member(
                 self.group_id, identity.peer_id, "Member", group_capable=True
             )
+            await self.db.upsert_peer(
+                identity.peer_id, "Member", identity.encryption_public_key_bytes(),
+                identity.signing_public_key_bytes(),
+                capabilities=[CAP_GROUP_CHAT, CAP_GROUP_RELAY],
+            )
         self.router = GroupRouter(self.relay, StubPeerManager(), self.db, self.settings)
         self.message_id = "ack-queue-1"
 
@@ -335,7 +341,7 @@ class GroupForwardAckQueueTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(GroupAckPayload.decode(row["encrypted_payload"]), ack)
 
         sender_peer = PeerConnection(self.sender.peer_id, "127.0.0.1", 1)
-        sender_peer.capabilities = [CAP_GROUP_CHAT]
+        sender_peer.capabilities = [CAP_GROUP_CHAT, CAP_GROUP_RELAY]
         self.assertTrue(await self.router.can_flush(sender_peer, dict(row)))
 
     async def test_replayed_ack_queues_only_once(self):
@@ -395,7 +401,7 @@ class GroupRelaySuppressionTest(unittest.IsolatedAsyncioTestCase):
                 "content": "hello", "created_at": created_at, "origin_signature": origin,
             })
             peer = PeerConnection(target.peer_id, "127.0.0.1", 1)
-            peer.capabilities = [CAP_GROUP_CHAT]
+            peer.capabilities = [CAP_GROUP_CHAT, CAP_GROUP_RELAY]
             peer.encryption_public_key = X25519PrivateKey.generate().public_key().public_bytes(
                 Encoding.Raw, PublicFormat.Raw)
             manager = CountingPeerManager(peer)
@@ -447,7 +453,7 @@ class GroupRelaySuppressionTest(unittest.IsolatedAsyncioTestCase):
                 "origin_signature": new_origin,
             })
             peer = PeerConnection(target.peer_id, "127.0.0.1", 1)
-            peer.capabilities = [CAP_GROUP_CHAT]
+            peer.capabilities = [CAP_GROUP_CHAT, CAP_GROUP_RELAY]
             peer.encryption_public_key = X25519PrivateKey.generate().public_key().public_bytes(
                 Encoding.Raw, PublicFormat.Raw)
             manager = CountingPeerManager(peer)
@@ -489,7 +495,7 @@ class GroupRelaySuppressionTest(unittest.IsolatedAsyncioTestCase):
                     "created_at": created_at, "origin_signature": origin,
                 })
             peer = PeerConnection(target.peer_id, "127.0.0.1", 1)
-            peer.capabilities = [CAP_GROUP_CHAT]
+            peer.capabilities = [CAP_GROUP_CHAT, CAP_GROUP_RELAY]
             peer.encryption_public_key = X25519PrivateKey.generate().public_key().public_bytes(
                 Encoding.Raw, PublicFormat.Raw)
             manager = CountingPeerManager(peer)
@@ -630,7 +636,7 @@ class GroupRelayCursorTest(unittest.IsolatedAsyncioTestCase):
 
     def _peer_for(self, target):
         peer = PeerConnection(target.peer_id, "127.0.0.1", 1)
-        peer.capabilities = [CAP_GROUP_CHAT]
+        peer.capabilities = [CAP_GROUP_CHAT, CAP_GROUP_RELAY]
         peer.encryption_public_key = X25519PrivateKey.generate().public_key().public_bytes(
             Encoding.Raw, PublicFormat.Raw)
         return peer
@@ -724,7 +730,7 @@ class GroupRelayCursorTest(unittest.IsolatedAsyncioTestCase):
                 target.encryption_public_key_bytes(), big, payload.associated_data())
             payload.signature = sender.signing_private_key.sign(payload.signed_bytes())
             peer = PeerConnection(sender.peer_id, "127.0.0.1", 1)
-            peer.capabilities = [CAP_GROUP_CHAT]
+            peer.capabilities = [CAP_GROUP_CHAT, CAP_GROUP_RELAY]
             peer.signing_public_key = sender.signing_public_key_bytes()
             with self.assertRaises(ValueError):
                 await router._handle_message(peer, payload)
@@ -813,5 +819,78 @@ class GroupRelayCursorTest(unittest.IsolatedAsyncioTestCase):
             # drains on the next sweep instead of stalling forever.
             self.assertEqual(first + second, 5)
             self.assertEqual(manager.sent, 5)
+        finally:
+            await db.close()
+
+    async def test_relay_skips_peers_without_relay_capability(self):
+        import time as _time
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        sender, relay, target = (Identity.generate(n) for n in ("S", "R", "T"))
+        db = Database(root / "nocap.db")
+        await db.connect()
+        try:
+            settings = Settings(root / "nocap.json")
+            room = settings.create_room("NoCap")
+            group_id = room.id
+            await db.upsert_group(group_id, "NoCap")
+            for identity in (relay, sender, target):
+                await db.upsert_group_member(group_id, identity.peer_id, "M", group_capable=True)
+            now = _time.time()
+            origin = sender.signing_private_key.sign(
+                group_origin_signed_bytes(
+                    "n1", group_id, sender.peer_id, now, None,
+                    hashlib.sha256(b"hello").hexdigest()))
+            await db.save_group_message({
+                "message_id": "n1", "group_id": group_id, "sender_id": sender.peer_id,
+                "content": "hello", "created_at": now, "origin_signature": origin,
+            })
+            peer = PeerConnection(target.peer_id, "127.0.0.1", 1)
+            peer.capabilities = [CAP_GROUP_CHAT]  # predates group_relay
+            peer.encryption_public_key = X25519PrivateKey.generate().public_key().public_bytes(
+                Encoding.Raw, PublicFormat.Raw)
+            manager = CountingPeerManager(peer)
+            sent = await GroupRouter(relay, manager, db, settings).relay_for_peer(target.peer_id)
+            self.assertEqual((sent, manager.sent), (0, 0))
+        finally:
+            await db.close()
+
+    async def test_ack_forward_skips_senders_without_relay_capability(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        sender, relay, recipient = (Identity.generate(n) for n in ("S", "R", "C"))
+        db = Database(root / "ackcap.db")
+        await db.connect()
+        try:
+            settings = Settings(root / "ackcap.json")
+            room = settings.create_room("AckCap")
+            group_id = room.id
+            await db.upsert_group(group_id, "AckCap")
+            for identity in (relay, recipient):
+                await db.upsert_group_member(group_id, identity.peer_id, "M", group_capable=True)
+            await db.upsert_group_member(group_id, sender.peer_id, "M", group_capable=True)
+            ack = GroupAckPayload("m9", group_id, recipient.peer_id)
+            ack.signature = recipient.signing_private_key.sign(ack.signed_bytes())
+            transport = PeerConnection(recipient.peer_id, "127.0.0.1", 1)
+            message = {"message_id": "m9", "group_id": group_id, "sender_id": sender.peer_id}
+            # Sender online but predates group_relay: must not send or queue.
+            legacy_peer = PeerConnection(sender.peer_id, "127.0.0.1", 1)
+            legacy_peer.capabilities = [CAP_GROUP_CHAT]
+
+            class LegacyPM(StubPeerManager):
+                def get_connected_peer(self, peer_id):
+                    return legacy_peer if peer_id == sender.peer_id else None
+
+            router = GroupRouter(relay, LegacyPM(), db, settings)
+            await router._forward_ack(transport, ack, message)
+            self.assertEqual(await db.get_pending_outgoing(sender.peer_id), [])
+            # Unknown sender (no cached capabilities): also skipped.
+            await db.upsert_group_member(group_id, "d" * 64, "Stranger", group_capable=True)
+            stranger_message = {"message_id": "m9", "group_id": group_id, "sender_id": "d" * 64}
+            await router._forward_ack(transport, ack, stranger_message)
+            self.assertEqual(await db.get_pending_outgoing("d" * 64), [])
         finally:
             await db.close()

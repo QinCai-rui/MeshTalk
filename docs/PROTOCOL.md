@@ -221,7 +221,7 @@ encrypted HANDSHAKE_CONFIRM ------------------------------>
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
 `file_transfer_v2`, `typing_indicators`, `message_replies`, `at_mentions`,
-`direct_route_recovery`). The agreed capability set is the **intersection** of
+`direct_route_recovery`, `group_relay`). The agreed capability set is the **intersection** of
 both peers' advertised sets, and higher-level code gates behaviour on it:
 `text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
 enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
@@ -235,7 +235,11 @@ peers stay readable instead of seeing raw tokens. `direct_route_recovery` enable
 direct UDP route while an established remote UDP session is using DERP. It does
 not gate the initial direct connection attempt or the existing LAN TCP takeover
 behavior, so older peers retain their established behavior; an older peer
-simply does not participate in DERP-to-direct UDP recovery.
+simply does not participate in DERP-to-direct UDP recovery. `group_relay`
+marks a peer as able to receive mesh-relayed group messages (where the
+original sender differs from the transport peer) and relay-forwarded
+`GROUP_MESSAGE_ACK`s; relays and ACK forwarders skip peers that do not
+negotiate it, since older clients reject such packets by disconnecting.
 A peer that does not advertise a capability will not be sent the corresponding
 packets. Missing capability lists are rejected. Unknown remote capabilities are
 retained for diagnostics but remain disabled locally. Each side reports both
@@ -501,7 +505,7 @@ JSON hello (canonical, then Ed25519-signed):
 
 ```json
 {
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer_v2", "typing_indicators", "message_replies", "direct_route_recovery"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer_v2", "typing_indicators", "message_replies", "direct_route_recovery", "group_relay"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -535,6 +539,7 @@ During the handshake, peers exchange signed lists of supported capabilities.
   - `typing_indicators`: Exchange encrypted, transient `TYPING` packets.
   - `message_replies`: Exchange messages that reference an original message or attachment.
   - `direct_route_recovery`: Probe and promote a direct UDP route after a DERP session is established; enabled only for the negotiated intersection.
+  - `group_relay`: Receive mesh-relayed group messages and relay-forwarded acknowledgements; peers without it are skipped by relays and ACK forwarders.
 
 ### 6.3 Session Key Derivation
 
@@ -1105,7 +1110,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer_v2, typing_indicators, message_replies, at_mentions, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer_v2, typing_indicators, message_replies, at_mentions, direct_route_recovery, group_relay | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |
