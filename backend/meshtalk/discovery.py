@@ -95,7 +95,12 @@ class DiscoveryService:
         await self.stop()
         self.discovery_id = secrets.token_hex(16)
         self._known_addresses.clear()
-        await self.start()
+        try:
+            await self.start()
+        except Exception:
+            # Keep refresh eligible for the next network-state poll.
+            self._running = True
+            raise
 
     async def _broadcast_loop(self) -> None:
         packet = DiscoveryPacket(
