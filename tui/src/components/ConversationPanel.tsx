@@ -224,7 +224,7 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
             {isBatch && attachmentRetryable && retryEnabled ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(attachment.file_id) } }}><text fg={theme.text}><u>Retry</u></text></HoverHighlight> : null}
             {isBatch && isLocal && selectedGroup ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(attachmentDeliveries, attachment.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(attachmentDeliveries)} <u>(click for details)</u></text></HoverHighlight> : null}
             {unavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
-            {!unavailable && attachment.file_path ? <ImageAttachment filePath={attachment.file_path} filename={attachment.filename} protocol={imageProtocol} expectedImage={isImageFile(attachment.filename)} scrollboxRef={handlers.current.scrollboxRef} maxWidth={imageMaxWidth} maxHeight={imageMaxHeight} version={attachment.completed_at ?? attachment.status} onOpen={() => handlers.current.openImage(attachment)} /> : null}
+            {!unavailable && attachment.file_path && isImageFile(attachment.filename) ? <ImageAttachment filePath={attachment.file_path} filename={attachment.filename} protocol={imageProtocol} expectedImage scrollboxRef={handlers.current.scrollboxRef} maxWidth={imageMaxWidth} maxHeight={imageMaxHeight} version={attachment.completed_at ?? attachment.status} onOpen={() => handlers.current.openImage(attachment)} /> : null}
           </box>
         })}
       </box>
