@@ -1046,6 +1046,8 @@ class Database:
             messages = [dict(row) async for row in cursor]
         for message in messages:
             message["content"] = self._decrypt_content(message["content"]) or ""
+            if message["origin_signature"] is not None:
+                message["origin_signature"] = message["origin_signature"].hex()
             message["mentions"] = extract_mentions(message["content"])
             message["deliveries"] = []
         if messages:

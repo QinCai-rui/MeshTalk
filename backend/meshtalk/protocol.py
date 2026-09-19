@@ -510,7 +510,7 @@ class GroupMessagePayload:
         try:
             origin_hex = obj.get("origin_signature", "")
             origin_signature = bytes.fromhex(origin_hex) if origin_hex else b""
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise ValueError("Invalid group message payload") from exc
         payload = cls(
             message_id=obj["message_id"],

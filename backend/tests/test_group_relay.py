@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +23,53 @@ from meshtalk.protocol import (
 )
 from meshtalk.encryption import encrypt_for_recipient
 from meshtalk.settings import Settings
+
+
+class GroupMessagePayloadTest(unittest.TestCase):
+    def test_invalid_origin_signature_is_normalized(self):
+        payload = GroupMessagePayload(
+            "message-1", "a" * 32, "b" * 64, "c" * 64,
+            1700000000.0, b"ciphertext", signature=b"s" * 64,
+        )
+        encoded = json.loads(payload.encode())
+
+        for invalid_signature in (123, "not-hex"):
+            with self.subTest(origin_signature=invalid_signature):
+                encoded["origin_signature"] = invalid_signature
+                with self.assertRaisesRegex(ValueError, "^Invalid group message payload$"):
+                    GroupMessagePayload.decode(json.dumps(encoded).encode())
+
+
+class GroupMessageHistoryTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.database = Database(Path(self.temporary.name) / "history.db")
+        await self.database.connect()
+
+    async def asyncTearDown(self):
+        await self.database.close()
+        self.temporary.cleanup()
+
+    async def test_origin_signature_is_json_serializable(self):
+        group_id = "a" * 32
+        signature = bytes(range(64))
+        for message_id, origin_signature in (("signed", signature), ("legacy", None)):
+            await self.database.save_group_message({
+                "message_id": message_id,
+                "group_id": group_id,
+                "sender_id": "b" * 64,
+                "content": message_id,
+                "created_at": 1700000000.0,
+                "origin_signature": origin_signature,
+            })
+
+        messages = {
+            message["message_id"]: message
+            for message in await self.database.get_group_messages(group_id)
+        }
+        self.assertEqual(messages["signed"]["origin_signature"], signature.hex())
+        self.assertIsNone(messages["legacy"]["origin_signature"])
+        json.dumps(messages)
 
 
 class GroupRelayTest(unittest.IsolatedAsyncioTestCase):

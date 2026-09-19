@@ -741,7 +741,8 @@ groups and control connectivity when STUN discovery fails.
   "created_at": 1700000000.0,
   "reply_to_message_id": "<uuid, optional>",
   "encrypted_content": "<hex>",
-  "signature": "<128 hex>"
+  "signature": "<128 hex>",
+  "origin_signature": "<128 hex or empty>"
 }
 ```
 
@@ -750,7 +751,9 @@ The AAD is canonical JSON of `message_id`, `group_id`, `sender_id`,
 X25519/AES-GCM construction as direct messages, independently for each
 recipient. The signature is Ed25519 over
 `SHA-256(AAD || encrypted_content)`. Content is limited to 30 KiB before
-encryption.
+encryption. Direct `GROUP_MESSAGE` deliveries may set `origin_signature` to
+the empty string; relayed group messages must include the original sender's
+64-byte signature.
 
 Receipt requires negotiated `group_chat`; authenticated peer ID equal to
 `sender_id`; the local ID equal to `recipient_id`; a locally joined named room;
