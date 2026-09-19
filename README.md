@@ -45,31 +45,23 @@ Python backend ---- LAN broadcast + TCP ---- LAN peers
 The quick installer downloads the latest release for your platform and places
 the binaries in `~/.local/bin` (or `%LOCALAPPDATA%\MeshTalk` on Windows):
 
-```bash
-bash <(curl -fssL https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.sh)
-```
-
-Pass `--non-interactive` to skip prompts and accept all defaults:
+#### Linux/macOS
 
 ```bash
-bash <(curl -fssL https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.sh) --non-interactive --yes
+bash <(curl -fssL getmeshtalk.raymont.dev/sh)
 ```
 
-Other options: `--version TAG`, `--install-dir DIR`, `--prerelease`, `--uninstall`, `--dry-run`. Run with `--help` for the full list.
+Run with `--help` for the full list of options
 
-On Windows (PowerShell):
+#### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.ps1 | iex
+irm getmeshtalk.raymont.dev/ps1 | iex
 ```
+Run with `-Help` for the full list of options
 
-Pass `-Simple` to accept defaults; `-NonInteractive` to skip prompts:
-
-```powershell
-irm https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.ps1 | iex - -NonInteractive -Simple
-```
-
-Other options: `-Version TAG`, `-InstallDir DIR`, `-Prerelease`, `-Uninstall`, `-DryRun`, `-Method auto|gh|webrequest`. Run with `-Help` for the full list.
+<ins>Open a new terminal</ins>, _then_ launch MeshTalk TUI with **`meshtalk`** 
+<sub><i>(type: `meshtalk` in terminal, then press Enter)</i></sub>
 
 ### Manual Install
 
@@ -77,25 +69,33 @@ Download the `.tar.gz` archive for your platform from the [latest release](../..
 extract it, and run the launcher. The archive contains the backend, CLI, TUI, and
 their runtimes, so it does not require Python, uv, Bun, or another package manager.
 
-Release binaries are provided for macOS (Intel and Apple Silicon), Linux (x64
-and ARM64), and Windows (x64). The Linux binaries require glibc 2.38 or newer
-(Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). Older distributions
-can run MeshTalk by building from source instead.
+Keep these files together in the extracted directory: `meshtalk` and `meshtalk-backend`
+(all end in `.exe` on Windows). Only the `meshtalk` launcher is invoked directly.
 
 ```bash
 ./meshtalk         # macOS or Linux: launches backend + TUI
 ```
 
+On Windows, run `meshtalk.exe` from the extracted archive. 
+
+> [!NOTE]
+> Release binaries are provided for macOS (Intel and Apple Silicon), Linux (x64
+> and ARM64), and Windows (x64). The Linux binaries require glibc 2.38 or newer
+> (Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). Older distributions
+> can run MeshTalk by [building from source](#compile-from-source) instead.
+
+### Updating
+
 To update the installation that launched MeshTalk, run:
 
 ```bash
-./meshtalk update --install
+meshtalk update --install
 ```
 
 To update a different existing MeshTalk installation, use its directory:
 
 ```bash
-./meshtalk update --install --dir /path/to/MeshTalk
+meshtalk update --install --dir /path/to/MeshTalk
 ```
 
 The target directory must contain the complete MeshTalk release binaries.
@@ -109,17 +109,13 @@ Updates use `QinCai-rui/MeshTalk` by default. To use releases from another
 GitHub repository, configure its user and repository name:
 
 ```bash
-./meshtalk update repo example-user example-repository
+meshtalk update repo example-user example-repository
 ```
 
-Run `./meshtalk update repo` to view the active repository, or
-`./meshtalk update repo clear` to restore the default. The environment
+Run `meshtalk update repo` to view the active repository, or
+`meshtalk update repo clear` to restore the default. The environment
 variables `MESHTALK_GITHUB_USER` and `MESHTALK_GITHUB_REPO` override the
 saved values for a single launch.
-
-On Windows, run `meshtalk.exe` from the extracted archive. Keep these files
-together in the extracted directory: `meshtalk` and `meshtalk-backend` (all end
-in `.exe` on Windows). Only the `meshtalk` launcher is invoked directly.
 
 ### First Launch
 
