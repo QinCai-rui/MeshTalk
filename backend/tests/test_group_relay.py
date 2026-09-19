@@ -719,3 +719,51 @@ class GroupRelayCursorTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((sent, manager.sent), (3, 3))
         finally:
             await db.close()
+
+    async def test_unsigned_head_rows_do_not_stall_backlog(self):
+        import time as _time
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        sender, relay, target = (Identity.generate(n) for n in ("S", "R", "T"))
+        db = Database(root / "stall55.db")
+        await db.connect()
+        try:
+            settings = Settings(root / "stall55.json")
+            room = settings.create_room("Stall55")
+            group_id = room.id
+            await db.upsert_group(group_id, "Stall55")
+            for identity in (relay, sender, target):
+                await db.upsert_group_member(group_id, identity.peer_id, "M", group_capable=True)
+            now = _time.time()
+            for index in range(55):
+                # Legacy rows without an origin signature: permanently
+                # unrelayable, and more than one fetch window.
+                await db.save_group_message({
+                    "message_id": f"legacy{index}", "group_id": group_id,
+                    "sender_id": sender.peer_id, "content": "old",
+                    "created_at": now + index, "origin_signature": None,
+                })
+            for index in range(5):
+                content = f"new{index}".encode()
+                created_at = now + 55 + index
+                await db.save_group_message({
+                    "message_id": f"fresh{index}", "group_id": group_id,
+                    "sender_id": sender.peer_id, "content": content.decode(),
+                    "created_at": created_at,
+                    "origin_signature": sender.signing_private_key.sign(
+                        group_origin_signed_bytes(
+                            f"fresh{index}", group_id, sender.peer_id, created_at, None,
+                            hashlib.sha256(content).hexdigest())),
+                })
+            manager = CountingPeerManager(self._peer_for(target))
+            router = GroupRouter(relay, manager, db, settings)
+            first = await router.relay_for_peer(target.peer_id)
+            second = await router.relay_for_peer(target.peer_id)
+            # First sweep covers the 50-row window of stale heads; the tail
+            # drains on the next sweep instead of stalling forever.
+            self.assertEqual(first + second, 5)
+            self.assertEqual(manager.sent, 5)
+        finally:
+            await db.close()

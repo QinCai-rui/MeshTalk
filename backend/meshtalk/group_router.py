@@ -465,10 +465,22 @@ class GroupRouter:
                 )
             except Exception:
                 continue
-            max_rowid: int | None = None
+            max_covered: int | None = None
             for stored in messages:
                 if relayed_count >= MAX_RELAY_PER_SWEEP:
                     break
+                if self._relay_budget_left(peer_id) <= 0:
+                    break
+                # Every examined row gets a terminal disposition here (sent or
+                # skipped), so the cursor advances past it. Only an actual
+                # send failure or a cap/budget stop leaves rows uncovered for
+                # the next sweep. In particular, permanently-unrelayable head
+                # rows (legacy rows without an origin signature, blocked or
+                # departed senders) must not pin newer backlog behind them.
+                covered_rowid = stored["rowid"]
+                prev_covered = max_covered
+                if max_covered is None or covered_rowid > max_covered:
+                    max_covered = covered_rowid
                 try:
                     sender_id = stored["sender_id"]
                     if sender_id == self.identity.peer_id or sender_id == peer_id:
@@ -515,18 +527,17 @@ class GroupRouter:
                 try:
                     await self.peer_manager.send_packet(peer, Packet(PacketType.GROUP_MESSAGE, encoded))
                 except Exception:  # noqa: BLE001
-                    # Transport is likely gone; stop this group rather than
-                    # advancing past unsent rows. They retry next connect.
+                    # Transport is likely gone; stop this group and roll the
+                    # failed row back out of the covered range so it retries
+                    # next connect instead of being skipped forever.
+                    max_covered = prev_covered
                     break
                 self._recent_relays[relay_key] = time.time()
                 self._relay_budgets.setdefault(peer_id, []).append(time.time())
                 relayed_count += 1
-                sent_rowid = stored["rowid"]
-                if max_rowid is None or sent_rowid > max_rowid:
-                    max_rowid = sent_rowid
-            if max_rowid is not None:
+            if max_covered is not None:
                 try:
-                    await self.db.set_relay_cursor(peer_id, group_id, max_rowid)
+                    await self.db.set_relay_cursor(peer_id, group_id, max_covered)
                 except Exception:  # noqa: BLE001
                     pass
         return relayed_count
