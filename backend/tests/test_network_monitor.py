@@ -42,6 +42,17 @@ class NetworkMonitorTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await monitor.stop()
 
+    async def test_probe_failure_does_not_abort_monitor_startup(self):
+        def state_provider():
+            raise OSError("network unavailable")
+
+        monitor = NetworkMonitor(lambda *_: None, state_provider=state_provider)
+        await monitor.start()
+        try:
+            self.assertIsNone(monitor._state)
+        finally:
+            await monitor.stop()
+
     async def test_failed_refresh_is_retried_for_the_same_state(self):
         states = iter([
             NetworkState("192.0.2.1", "192.0.2.20"),

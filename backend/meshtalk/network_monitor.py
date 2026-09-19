@@ -125,9 +125,9 @@ class NetworkMonitor:
         self._running = True
         try:
             self._state = await asyncio.to_thread(self.state_provider)
-        except Exception:
-            self._running = False
-            raise
+        except Exception as exc:
+            logger.warning("Initial network state probe failed: %s", exc)
+            self._state = None
         self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
