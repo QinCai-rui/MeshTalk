@@ -45,32 +45,57 @@ class DiscoveryService:
             maxsize=MAX_PENDING_DISCOVERY_PACKETS
         )
         self._workers: list[asyncio.Task[None]] = []
+        self._broadcast_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         """Start the discovery service and begin broadcasting presence."""
+        if self._running:
+            return
         self._running = True
-        loop = asyncio.get_event_loop()
-        self._transport, self._protocol = await loop.create_datagram_endpoint(
-            lambda: DiscoveryProtocol(self),
-            local_addr=("0.0.0.0", UDP_PORT),
-        )
-        sock = self._transport.get_extra_info("socket")
-        if sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        logger.info("Discovery started on UDP port %d", UDP_PORT)
-        asyncio.create_task(self._broadcast_loop())
-        self._workers = [asyncio.create_task(self._discovery_worker()) for _ in range(DISCOVERY_WORKERS)]
+        try:
+            loop = asyncio.get_event_loop()
+            self._transport, self._protocol = await loop.create_datagram_endpoint(
+                lambda: DiscoveryProtocol(self),
+                local_addr=("0.0.0.0", UDP_PORT),
+            )
+            sock = self._transport.get_extra_info("socket")
+            if sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            logger.info("Discovery started on UDP port %d", UDP_PORT)
+            self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+            self._workers = [asyncio.create_task(self._discovery_worker()) for _ in range(DISCOVERY_WORKERS)]
+        except Exception:
+            self._running = False
+            if self._transport:
+                self._transport.close()
+                self._transport = None
+            raise
 
     async def stop(self) -> None:
         """Stop the discovery service and clean up resources."""
         self._running = False
+        if self._broadcast_task:
+            self._broadcast_task.cancel()
         for worker in self._workers:
             worker.cancel()
-        if self._workers:
-            await asyncio.gather(*self._workers, return_exceptions=True)
+        await asyncio.gather(
+            *(task for task in [self._broadcast_task, *self._workers] if task),
+            return_exceptions=True,
+        )
+        self._broadcast_task = None
         self._workers.clear()
         if self._transport:
             self._transport.close()
+            self._transport = None
+
+    async def refresh(self) -> None:
+        """Rebind discovery after the host moves to a different network."""
+        if not self._running:
+            return
+        await self.stop()
+        self.discovery_id = secrets.token_hex(16)
+        self._known_addresses.clear()
+        await self.start()
 
     async def _broadcast_loop(self) -> None:
         packet = DiscoveryPacket(

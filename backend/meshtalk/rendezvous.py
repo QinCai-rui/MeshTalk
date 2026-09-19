@@ -187,6 +187,11 @@ class RendezvousService:
     def configuration_changed(self) -> None:
         self._reconnect.set()
 
+    def network_changed(self) -> None:
+        """Reconnect and refresh endpoint cards after the local route changes."""
+        self._last_published_endpoint = None
+        self._reconnect.set()
+
     def room_status(self) -> list[dict]:
         return [
             {
@@ -249,6 +254,7 @@ class RendezvousService:
                         await websocket.send(json.dumps({"type": "join", "room_id": room.id, "room_auth": _room_auth(room)}))
                     await self._discover_endpoint()
                     await self._announce_all(websocket)
+                    await self._fetch_peers(websocket)
                     receive_task = asyncio.create_task(self._receive_loop(websocket))
                     refresh_task = asyncio.create_task(self._refresh_loop(websocket))
                     fetch_task = asyncio.create_task(self._fetch_loop(websocket))
@@ -355,13 +361,17 @@ class RendezvousService:
     async def _fetch_loop(self, websocket) -> None:
         while True:
             await asyncio.sleep(PEER_FETCH_INTERVAL)
-            if not self._websocket:
-                continue
-            for room in self.settings.rooms.values():
-                try:
-                    await websocket.send(json.dumps({"type": "get_peers", "room_id": room.id}))
-                except Exception as exc:
-                    logger.debug("Failed to fetch peer roster: %s", exc)
+            await self._fetch_peers(websocket)
+
+    async def _fetch_peers(self, websocket) -> None:
+        """Request a fresh opaque peer roster for every joined room."""
+        if not self._websocket:
+            return
+        for room in self.settings.rooms.values():
+            try:
+                await websocket.send(json.dumps({"type": "get_peers", "room_id": room.id}))
+            except Exception as exc:
+                logger.debug("Failed to fetch peer roster: %s", exc)
 
     async def _discover_endpoint(self) -> None:
         host, port = self.settings.stun_server

@@ -30,6 +30,7 @@ from .protocol import Packet, PacketType, REMOVED_V1_FILE_PACKET_TYPES, capabili
 from .rendezvous import RendezvousService
 from .settings import Settings
 from .analytics import Analytics
+from .network_monitor import NetworkMonitor, NetworkState
 
 logger = logging.getLogger("meshtalk")
 
@@ -212,6 +213,17 @@ async def main(debug: bool = False) -> None:
         peer_manager.record_remote_candidate,
         group_router.record_room_member,
     )
+
+    network_refresh_lock = asyncio.Lock()
+
+    async def handle_network_change(previous: NetworkState, current: NetworkState) -> None:
+        """Rebind all network-bound services after the active route changes."""
+        async with network_refresh_lock:
+            rendezvous.network_changed()
+            await peer_manager.refresh_network()
+            await discovery.refresh()
+
+    network_monitor = NetworkMonitor(handle_network_change)
 
     async def handle_send(req: dict) -> dict:
         recipient = req.get("recipient_id")
@@ -1072,6 +1084,7 @@ async def main(debug: bool = False) -> None:
     await discovery.start()
     await rendezvous.start()
     await ipc.start()
+    await network_monitor.start()
 
     logger.info("MeshTalk backend running")
 
@@ -1111,6 +1124,7 @@ async def main(debug: bool = False) -> None:
             await asyncio.wait_for(analytics.flush(), timeout=1.5)
         except Exception:
             pass
+        await network_monitor.stop()
         await ipc.stop()
         await rendezvous.stop()
         await peer_manager.stop()

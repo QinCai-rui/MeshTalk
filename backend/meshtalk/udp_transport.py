@@ -223,6 +223,38 @@ class UdpTransport:
             *(task for task in [self._maintenance_task, *self._tasks] if task),
             return_exceptions=True,
         )
+        self._maintenance_task = None
+
+    async def restart(self) -> None:
+        """Rebind the socket and rebuild sessions after a network change.
+
+        Endpoint candidates are retained because they are still useful while
+        the rendezvous service reconnects and publishes fresh candidates.
+        Sessions and in-flight attempts are discarded: their source socket and
+        NAT mapping are no longer trustworthy after a route change.
+        """
+        if not self._transport:
+            return
+        direct_candidates = dict(self._direct_candidates)
+        relay_candidates = set(self._derp_candidates)
+        await self.stop()
+        self._transport = None
+        self._attempts.clear()
+        self._expected_endpoints.clear()
+        self._sessions.clear()
+        self._pending_sessions.clear()
+        self._retiring_sessions.clear()
+        self._sessions_by_id.clear()
+        self._pending.clear()
+        self._stun_waiters.clear()
+        await self.start()
+        for peer_id, endpoint in direct_candidates.items():
+            try:
+                self.expect_peer(peer_id, endpoint)
+            except (OSError, ValueError) as exc:
+                logger.debug("Could not restore direct route to %s: %s", peer_id, exc)
+        for peer_id in relay_candidates:
+            self.expect_derp_peer(peer_id)
 
     @property
     def local_endpoint(self) -> Endpoint:
