@@ -762,9 +762,25 @@ If the sender is locally blocked, the packet is suppressed without an ACK.
 Blocked members are also excluded from local outgoing fanout.
 
 `GROUP_MESSAGE_ACK` signs canonical JSON containing `message_id`, `group_id`,
-and the acknowledging `recipient_id`. The sender accepts it only from that
-authenticated recipient and only for a known delivery row in the same group,
-then records `delivered` and emits `group_delivered`.
+and the acknowledging `recipient_id`. The sender accepts it from that
+authenticated recipient (direct) or as a relay-forwarded copy verified with
+the recipient's cached signing key, and only for a known delivery row in the
+same group, then records `delivered` and emits `group_delivered`.
+
+Mesh relay (always-on): any active group member that holds a message may
+re-encrypt its canonical plaintext for another active member when that peer
+becomes reachable. Relayed copies keep the original `message_id`, `group_id`,
+`sender_id`, `created_at`, and `reply_to_message_id`, carry the sender's
+unmodified `origin_signature` (Ed25519 over canonical JSON of those fields
+plus `SHA-256(plaintext)`), and add a fresh per-hop `signature` from the
+relay. Recipients verify the hop signature with the connected relay key,
+decrypt, then verify the origin signature with the original sender's cached
+signing key before storing. Relays cannot modify content without breaking the
+origin signature and learn nothing beyond the group chat they already belong
+to. Relayed system events are never forwarded, relay sends are live-only
+(retried on the next connect), and the recipient ACKs the relay transport
+peer; the relay forwards that ACK toward the original sender (live or via one
+durably queued `GROUP_MESSAGE_ACK` row) so sender delivery converges.
 
 `GROUP_LEAVE` contains a UUID `event_id`, `group_id`, leaving `peer_id`,
 `created_at`, and an Ed25519 signature over those canonical fields. A receiver

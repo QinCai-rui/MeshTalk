@@ -152,14 +152,14 @@ async def main(debug: bool = False) -> None:
                 continue
             try:
                 packet = Packet(packet_type, item["encrypted_payload"])
-                if item["message_id"] and item.get("group_id"):
+                if item["message_id"] and item.get("group_id") and packet_type == PacketType.GROUP_MESSAGE:
                     await db.set_group_delivery(item["message_id"], peer_id, "sent")
                 await peer_manager.send_packet(peer, packet)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to flush queued packet for %s: %s", peer_id, exc)
                 await db.increment_outqueue_attempts(item["id"])
                 continue
-            if item["message_id"] and item.get("group_id"):
+            if item["message_id"] and item.get("group_id") and packet_type == PacketType.GROUP_MESSAGE:
                 await ipc.broadcast_event({
                     "event": "group_sent",
                     "message_id": item["message_id"],

@@ -453,7 +453,12 @@ class MessagePayload:
 
 @dataclass
 class GroupMessagePayload:
-    """Group chat message with routing metadata and encrypted content."""
+    """Group chat message with routing metadata and encrypted content.
+
+    ``signature`` authenticates the per-recipient envelope (transport hop);
+    ``origin_signature`` authenticates the original content for mesh relay and
+    is verified against the original sender's signing key after decryption.
+    """
 
     message_id: str
     group_id: str
@@ -463,6 +468,7 @@ class GroupMessagePayload:
     encrypted_content: bytes
     signature: bytes = b""
     reply_to_message_id: str | None = None
+    origin_signature: bytes = b""
 
     def associated_data(self) -> bytes:
         """Return routing metadata authenticated by AES-GCM."""
@@ -491,6 +497,7 @@ class GroupMessagePayload:
             "created_at": self.created_at,
             "encrypted_content": self.encrypted_content.hex(),
             "signature": self.signature.hex(),
+            "origin_signature": self.origin_signature.hex(),
         }
         if self.reply_to_message_id:
             data["reply_to_message_id"] = self.reply_to_message_id
@@ -500,6 +507,11 @@ class GroupMessagePayload:
     def decode(cls, data: bytes) -> GroupMessagePayload:
         """Decode and validate group message from JSON bytes."""
         obj = json.loads(data)
+        try:
+            origin_hex = obj.get("origin_signature", "")
+            origin_signature = bytes.fromhex(origin_hex) if origin_hex else b""
+        except ValueError as exc:
+            raise ValueError("Invalid group message payload") from exc
         payload = cls(
             message_id=obj["message_id"],
             group_id=obj["group_id"],
@@ -509,6 +521,7 @@ class GroupMessagePayload:
             encrypted_content=bytes.fromhex(obj["encrypted_content"]),
             signature=bytes.fromhex(obj.get("signature", "")),
             reply_to_message_id=obj.get("reply_to_message_id"),
+            origin_signature=origin_signature,
         )
         if (
             not _valid_request_id(payload.message_id)
@@ -521,10 +534,40 @@ class GroupMessagePayload:
             or not math.isfinite(payload.created_at)
             or payload.created_at <= 0
             or len(payload.signature) != 64
+            or len(payload.origin_signature) not in (0, 64)
             or (payload.reply_to_message_id is not None and not _valid_request_id(payload.reply_to_message_id))
         ):
             raise ValueError("Invalid group message payload")
         return payload
+
+
+def group_origin_signed_bytes(
+    message_id: str,
+    group_id: str,
+    sender_id: str,
+    created_at: float,
+    reply_to_message_id: str | None,
+    content_sha256_hex: str,
+) -> bytes:
+    """Return canonical bytes binding original content to its metadata.
+
+    The sender signs this (not the per-recipient ciphertext) so a mesh relay
+    can re-encrypt the same plaintext for an offline member without gaining
+    authorship. The hash covers the exact outgoing bytes for that recipient
+    (after any mention downgrade); relays forward those bytes unmodified and
+    recipients recompute the hash after decryption, verifying with the
+    original sender's cached signing key.
+    """
+    data: dict[str, object] = {
+        "message_id": message_id,
+        "group_id": group_id,
+        "sender_id": sender_id,
+        "created_at": created_at,
+        "content_sha256": content_sha256_hex,
+    }
+    if reply_to_message_id:
+        data["reply_to_message_id"] = reply_to_message_id
+    return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
 
 @dataclass

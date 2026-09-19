@@ -193,7 +193,8 @@ CREATE TABLE IF NOT EXISTS group_messages (
     created_at REAL NOT NULL,
     received_at REAL,
     kind TEXT NOT NULL DEFAULT 'message',
-    reply_to_message_id TEXT
+    reply_to_message_id TEXT,
+    origin_signature BLOB
 );
 
 CREATE TABLE IF NOT EXISTS group_deliveries (
@@ -341,6 +342,8 @@ class Database:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN content BLOB")
             if gm_columns and "reply_to_message_id" not in gm_columns:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN reply_to_message_id TEXT")
+            if gm_columns and "origin_signature" not in gm_columns:
+                await self._db.execute("ALTER TABLE group_messages ADD COLUMN origin_signature BLOB")
         except Exception:
             pass
         # Ensure group_deliveries exists (older DBs may lack it entirely - SCHEMA already handled)
@@ -872,13 +875,13 @@ class Database:
         content = message.get("content")
         cursor = await self._db.execute(
             """INSERT OR IGNORE INTO group_messages
-                (message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id, origin_signature)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 message["message_id"], message["group_id"], message["sender_id"],
                 self._encrypt_content(content) if content is not None else None,
                 message["created_at"], message.get("received_at"), message.get("kind", "message"),
-                message.get("reply_to_message_id"),
+                message.get("reply_to_message_id"), message.get("origin_signature"),
             ),
         )
         await self._db.commit()
@@ -887,7 +890,7 @@ class Database:
     async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
         """Retrieve recent group messages with delivery status."""
         async with self._db.execute(
-            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id
+            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id, origin_signature
                FROM (SELECT rowid AS sequence, * FROM group_messages WHERE group_id = ? ORDER BY rowid DESC LIMIT ?)
                ORDER BY sequence ASC""",
             (group_id, limit),
