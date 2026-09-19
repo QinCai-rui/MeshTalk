@@ -8,8 +8,15 @@ from meshtalk.database import Database
 from meshtalk.group_router import GroupRouter
 from meshtalk.identity import Identity
 from meshtalk.message_router import MessageRouter
-from meshtalk.peer_manager import PeerManager
-from meshtalk.protocol import GroupMessagePayload, Packet, PacketType, group_origin_signed_bytes
+from meshtalk.peer_manager import PeerConnection, PeerManager
+from meshtalk.protocol import (
+    CAP_GROUP_CHAT,
+    GroupAckPayload,
+    GroupMessagePayload,
+    Packet,
+    PacketType,
+    group_origin_signed_bytes,
+)
 from meshtalk.encryption import encrypt_for_recipient
 from meshtalk.settings import Settings
 
@@ -221,3 +228,61 @@ class GroupRelayTest(unittest.IsolatedAsyncioTestCase):
             Ed25519PublicKey.from_public_bytes(
                 self.identities[0].signing_public_key_bytes()
             ).verify(signature, tampered)
+
+
+class StubPeerManager:
+    """Minimal peer-manager stand-in: nothing connected, sends must not happen."""
+
+    def get_connected_peer(self, peer_id):
+        return None
+
+    async def send_packet(self, peer, packet):
+        raise AssertionError("relay test expected an offline sender (queue path)")
+
+
+class GroupForwardAckQueueTest(unittest.IsolatedAsyncioTestCase):
+    """_forward_ack must queue one flush-safe row when the sender is offline."""
+
+    async def asyncSetUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name)
+        self.sender = Identity.generate("Sender")
+        self.recipient = Identity.generate("Recipient")
+        self.relay = Identity.generate("Relay")
+        self.db = Database(root / "relay.db")
+        await self.db.connect()
+        self.settings = Settings(root / "relay.json")
+        room = self.settings.create_room("Ack Team")
+        self.group_id = room.id
+        await self.db.upsert_group(self.group_id, "Ack Team")
+        for identity in (self.sender, self.relay):
+            await self.db.upsert_group_member(
+                self.group_id, identity.peer_id, "Member", group_capable=True
+            )
+        self.router = GroupRouter(self.relay, StubPeerManager(), self.db, self.settings)
+        self.message_id = "ack-queue-1"
+
+    async def asyncTearDown(self):
+        await self.db.close()
+        self.temporary.cleanup()
+
+    async def test_offline_sender_ack_is_queued_flush_safe(self):
+        ack = GroupAckPayload(self.message_id, self.group_id, self.recipient.peer_id)
+        ack.signature = self.recipient.signing_private_key.sign(ack.signed_bytes())
+        transport = PeerConnection(self.recipient.peer_id, "127.0.0.1", 1)
+        message = {"message_id": self.message_id, "group_id": self.group_id,
+                   "sender_id": self.sender.peer_id}
+        await self.router._forward_ack(transport, ack, message)
+
+        queued = await self.db.get_pending_outgoing(self.sender.peer_id)
+        self.assertEqual(len(queued), 1)
+        row = queued[0]
+        self.assertEqual(row["packet_type"], PacketType.GROUP_MESSAGE_ACK.value)
+        self.assertIsNone(row["message_id"])
+        self.assertEqual(row["group_id"], self.group_id)
+        # message_id unset => __main__.flush_outgoing skips delivery bookkeeping.
+        self.assertEqual(GroupAckPayload.decode(row["encrypted_payload"]), ack)
+
+        sender_peer = PeerConnection(self.sender.peer_id, "127.0.0.1", 1)
+        sender_peer.capabilities = [CAP_GROUP_CHAT]
+        self.assertTrue(await self.router.can_flush(sender_peer, dict(row)))

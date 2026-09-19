@@ -71,7 +71,7 @@ class GroupRouter:
             "peer_id": self.identity.peer_id, "display_name": self.identity.display_name,
         })
 
-    async def record_room_member(self, group_id: str, peer_id: str, announce_join: bool) -> None:
+    async def record_room_member(self, group_id: str, peer_id: str, announce_join: bool, signing_public_key: bytes | None = None) -> None:
         room = self.settings.rooms.get(group_id)
         if room is None or room.group_name is None or peer_id == self.identity.peer_id:
             return
@@ -80,6 +80,14 @@ class GroupRouter:
         display_name = peer.display_name if peer else (stored or {}).get("display_name", "Anonymous")
         capable = peer.supports(CAP_GROUP_CHAT) if peer else None
         await self.db.upsert_group_member(group_id, peer_id, display_name, group_capable=capable)
+        if signing_public_key is not None:
+            # Endpoint cards are room-encrypted and carry a self-certifying
+            # signing key, so members learn each other's verify keys without a
+            # direct handshake. Relayed-message verification depends on this.
+            try:
+                await self.db.upsert_peer_signing_key(peer_id, signing_public_key)
+            except Exception:  # noqa: BLE001
+                pass
         if not announce_join:
             # Retained/fetched cards establish or refresh the roster. They do
             # not mean the peer joined after this device entered the group.
@@ -358,6 +366,11 @@ class GroupRouter:
                         continue
                     if stored.get("reply_to_message_id") and not peer.supports(CAP_MESSAGE_REPLIES):
                         continue
+                    # Forward the exact bytes this member received: the origin
+                    # signature binds those bytes, so re-rendering mentions for
+                    # the target would break authentication. Legacy targets may
+                    # therefore see raw `<@id>` tokens on relayed copies, unlike
+                    # direct sends which are pre-rendered per recipient.
                     canonical = stored.get("content") or ""
                     if not isinstance(canonical, str) or not canonical:
                         continue

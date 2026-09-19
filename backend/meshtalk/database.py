@@ -6,6 +6,7 @@ Stores: identity, peers, messages, outgoing queue, seen message IDs.
 from __future__ import annotations
 
 import time
+import hashlib
 import os
 import json
 import re
@@ -431,6 +432,40 @@ class Database:
             ),
         )
         await self._db.commit()
+
+    async def upsert_peer_signing_key(self, peer_id: str, signing_public_key: bytes) -> bool:
+        """Cache a verified signing key without touching other peer state.
+
+        Used for keys learned from room endpoint cards (which carry no
+        encryption key and say nothing about online status). The key must be
+        self-certifying (peer_id == SHA-256(key)); returns False otherwise.
+        Existing display names, encryption keys, and capabilities are kept.
+        """
+        if (
+            not isinstance(signing_public_key, (bytes, bytearray))
+            or len(signing_public_key) != 32
+            or hashlib.sha256(bytes(signing_public_key)).hexdigest() != peer_id
+        ):
+            return False
+        existing = await self.get_peer(peer_id)
+        if existing and existing.get("signing_public_key") == bytes(signing_public_key):
+            return True
+        await self._db.execute(
+            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online)
+               VALUES (?, ?, ?, ?, ?, 0)
+               ON CONFLICT(peer_id) DO UPDATE SET
+                 signing_public_key = excluded.signing_public_key,
+                 last_seen = excluded.last_seen""",
+            (
+                peer_id,
+                (existing or {}).get("display_name", "Anonymous"),
+                (existing or {}).get("public_key"),
+                bytes(signing_public_key),
+                time.time(),
+            ),
+        )
+        await self._db.commit()
+        return True
 
     async def peer_supports(self, peer_id: str, capability: str) -> bool:
         """Check a capability learned from the peer's most recent handshake."""

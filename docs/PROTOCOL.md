@@ -775,7 +775,9 @@ unmodified `origin_signature` (Ed25519 over canonical JSON of those fields
 plus `SHA-256(plaintext)`), and add a fresh per-hop `signature` from the
 relay. Recipients verify the hop signature with the connected relay key,
 decrypt, then verify the origin signature with the original sender's cached
-signing key before storing. Relays cannot modify content without breaking the
+signing key before storing. Sender verify keys are learned from verified room
+endpoint cards as well as direct handshakes, so relayed verification succeeds
+even without prior direct contact. Relays cannot modify content without breaking the
 origin signature and learn nothing beyond the group chat they already belong
 to. Relayed system events are never forwarded, relay sends are live-only
 (retried on the next connect), and the recipient ACKs the relay transport
