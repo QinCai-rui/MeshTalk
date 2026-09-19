@@ -72,9 +72,8 @@ their runtimes, so it does not require Python, uv, Bun, or another package manag
 Keep these files together in the extracted directory: `meshtalk` and `meshtalk-backend`
 (all end in `.exe` on Windows). Only the `meshtalk` launcher is invoked directly.
 
-```bash
-./meshtalk         # macOS or Linux: launches backend + TUI
-```
+
+On Linux/macOS, `cd` into where the binaries are extracted to, then run `./meshtalk`
 
 On Windows, run `meshtalk.exe` from the extracted archive. 
 
