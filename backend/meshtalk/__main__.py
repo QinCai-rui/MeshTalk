@@ -219,9 +219,9 @@ async def main(debug: bool = False) -> None:
     async def handle_network_change(previous: NetworkState, current: NetworkState) -> None:
         """Rebind all network-bound services after the active route changes."""
         async with network_refresh_lock:
-            rendezvous.network_changed()
             await peer_manager.refresh_network()
             await discovery.refresh()
+            rendezvous.network_changed()
 
     network_monitor = NetworkMonitor(handle_network_change)
 

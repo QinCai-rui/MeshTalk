@@ -141,8 +141,8 @@ class NetworkMonitor:
         """Poll once; return whether a change callback was invoked."""
         current = await asyncio.to_thread(self.state_provider)
         previous = self._state
-        self._state = current
         if previous is None or previous == current:
+            self._state = current
             return False
         logger.info(
             "Network path changed: gateway %s -> %s, local IP %s -> %s",
@@ -152,6 +152,7 @@ class NetworkMonitor:
             current.local_ip,
         )
         await self.on_change(previous, current)
+        self._state = current
         return True
 
     async def _run(self) -> None:

@@ -41,3 +41,28 @@ class NetworkMonitorTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(calls, 0)
         finally:
             await monitor.stop()
+
+    async def test_failed_refresh_is_retried_for_the_same_state(self):
+        states = iter([
+            NetworkState("192.0.2.1", "192.0.2.20"),
+            NetworkState("192.0.2.254", "192.0.2.21"),
+            NetworkState("192.0.2.254", "192.0.2.21"),
+        ])
+        attempts = 0
+
+        async def on_change(previous, current):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("refresh failed")
+
+        monitor = NetworkMonitor(on_change, state_provider=lambda: next(states))
+        await monitor.start()
+        try:
+            with self.assertRaises(RuntimeError):
+                await monitor.poll_once()
+            self.assertEqual(monitor._state, NetworkState("192.0.2.1", "192.0.2.20"))
+            self.assertTrue(await monitor.poll_once())
+            self.assertEqual(attempts, 2)
+        finally:
+            await monitor.stop()
