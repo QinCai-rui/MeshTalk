@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import inspect
 import ipaddress
 import json
 import logging
@@ -136,6 +137,26 @@ def decrypt_endpoint_card(room: Room, payload: str, now: float | None = None) ->
     value["candidates"] = candidates
     value["signature"] = signature.hex()
     return value
+
+
+def _accepts_signing_key(callback: RoomMemberCallback) -> bool:
+    """Whether a room-member handler takes the optional signing-key argument.
+
+    Inspected up front (rather than try/except around the call) so a TypeError
+    raised inside a 4-arg handler is never mistaken for an old 3-arg handler.
+    """
+    try:
+        parameters = inspect.signature(callback).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    positional = [
+        param for param in parameters
+        if param.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    return (
+        any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in parameters)
+        or len(positional) >= 4
+    )
 
 
 class RendezvousService:
@@ -412,7 +433,10 @@ class RendezvousService:
                 signing_key = bytes.fromhex(value["signing_public_key"])
             except (KeyError, TypeError, ValueError):
                 signing_key = None
-            await self.on_room_member(room.id, peer_id, announce_join, signing_key)
+            if _accepts_signing_key(self.on_room_member):
+                await self.on_room_member(room.id, peer_id, announce_join, signing_key)
+            else:
+                await self.on_room_member(room.id, peer_id, announce_join)
         candidates = value["candidates"]
         if not candidates:
             return

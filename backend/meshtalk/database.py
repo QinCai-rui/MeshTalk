@@ -439,7 +439,8 @@ class Database:
         Used for keys learned from room endpoint cards (which carry no
         encryption key and say nothing about online status). The key must be
         self-certifying (peer_id == SHA-256(key)); returns False otherwise.
-        Existing display names, encryption keys, and capabilities are kept.
+        Existing display names, encryption keys, capabilities, online state,
+        and last_seen are kept: a card sighting is not direct contact.
         """
         if (
             not isinstance(signing_public_key, (bytes, bytearray))
@@ -451,17 +452,15 @@ class Database:
         if existing and existing.get("signing_public_key") == bytes(signing_public_key):
             return True
         await self._db.execute(
-            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online)
-               VALUES (?, ?, ?, ?, ?, 0)
+            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, is_online)
+               VALUES (?, ?, ?, ?, 0)
                ON CONFLICT(peer_id) DO UPDATE SET
-                 signing_public_key = excluded.signing_public_key,
-                 last_seen = excluded.last_seen""",
+                 signing_public_key = excluded.signing_public_key""",
             (
                 peer_id,
                 (existing or {}).get("display_name", "Anonymous"),
                 (existing or {}).get("public_key"),
                 bytes(signing_public_key),
-                time.time(),
             ),
         )
         await self._db.commit()

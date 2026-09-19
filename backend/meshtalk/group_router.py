@@ -32,6 +32,12 @@ from .settings import Settings
 logger = logging.getLogger(__name__)
 
 MAX_GROUP_MESSAGE_CONTENT_SIZE = 30 * 1024
+# Suppress repeat relay sends to the same peer within this window. Sends use a
+# reliable transport, so a successful send means the recipient persists the
+# message; re-sending on every reconnect flap only wastes bandwidth (the
+# recipient would discard the duplicate by message_id anyway). In-memory only:
+# a restart may resend, which duplicates safely discard.
+RELAY_RESEND_SUPPRESS_SECONDS = 86400
 GroupEventCallback = Callable[[dict], Awaitable[None]]
 
 
@@ -49,6 +55,7 @@ class GroupRouter:
         self.db = db
         self.settings = settings
         self.on_event = on_event
+        self._recent_relays: dict[tuple[str, str], float] = {}
 
     async def sync_groups(self) -> None:
         for room in self.settings.rooms.values():
@@ -326,6 +333,8 @@ class GroupRouter:
         unmodified origin signature; recipients verify it with the sender's
         cached signing key and discard duplicates by message_id. Live sends
         only — no queue rows, so a failed send retries on the next connect.
+        Successful sends are remembered briefly to avoid re-sending the same
+        message on every reconnect flap.
         """
         peer = self.peer_manager.get_connected_peer(peer_id)
         if peer is None or not peer.supports(CAP_GROUP_CHAT):
@@ -339,6 +348,11 @@ class GroupRouter:
         if not target_key:
             return 0
         relayed_count = 0
+        now = time.time()
+        self._recent_relays = {
+            key: sent_at for key, sent_at in self._recent_relays.items()
+            if now - sent_at < RELAY_RESEND_SUPPRESS_SECONDS
+        }
         for group in await self.db.get_groups(self.identity.peer_id):
             group_id = group["group_id"]
             self_member = await self.db.get_group_member(group_id, self.identity.peer_id)
@@ -366,6 +380,9 @@ class GroupRouter:
                         continue
                     if stored.get("reply_to_message_id") and not peer.supports(CAP_MESSAGE_REPLIES):
                         continue
+                    relay_key = (stored["message_id"], peer_id)
+                    if now - self._recent_relays.get(relay_key, 0) < RELAY_RESEND_SUPPRESS_SECONDS:
+                        continue
                     # Forward the exact bytes this member received: the origin
                     # signature binds those bytes, so re-rendering mentions for
                     # the target would break authentication. Legacy targets may
@@ -391,6 +408,7 @@ class GroupRouter:
                     if len(encoded) > MAX_PACKET_SIZE:
                         continue
                     await self.peer_manager.send_packet(peer, Packet(PacketType.GROUP_MESSAGE, encoded))
+                    self._recent_relays[relay_key] = time.time()
                     relayed_count += 1
                 except Exception:  # noqa: BLE001
                     continue

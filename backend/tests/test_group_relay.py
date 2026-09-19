@@ -4,6 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
 from meshtalk.database import Database
 from meshtalk.group_router import GroupRouter
 from meshtalk.identity import Identity
@@ -286,3 +289,58 @@ class GroupForwardAckQueueTest(unittest.IsolatedAsyncioTestCase):
         sender_peer = PeerConnection(self.sender.peer_id, "127.0.0.1", 1)
         sender_peer.capabilities = [CAP_GROUP_CHAT]
         self.assertTrue(await self.router.can_flush(sender_peer, dict(row)))
+
+
+class CountingPeerManager:
+    """Peer manager stand-in with one connected peer; counts live sends."""
+
+    def __init__(self, peer):
+        self.peer = peer
+        self.sent = 0
+
+    def get_connected_peer(self, peer_id):
+        return self.peer if peer_id == self.peer.peer_id else None
+
+    async def send_packet(self, peer, packet):
+        self.sent += 1
+
+
+class GroupRelaySuppressionTest(unittest.IsolatedAsyncioTestCase):
+    """Repeat sweeps must not re-send an already-relayed message."""
+
+    async def test_second_sweep_suppresses_resend(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        sender, relay, target = (Identity.generate(name) for name in ("S", "R", "T"))
+        db = Database(root / "suppress.db")
+        await db.connect()
+        try:
+            settings = Settings(root / "suppress.json")
+            room = settings.create_room("Suppress")
+            group_id = room.id
+            await db.upsert_group(group_id, "Suppress")
+            for identity in (relay, sender, target):
+                await db.upsert_group_member(group_id, identity.peer_id, "M", group_capable=True)
+            created_at = 1700000000.0
+            origin = sender.signing_private_key.sign(
+                group_origin_signed_bytes(
+                    "m1", group_id, sender.peer_id, created_at, None,
+                    hashlib.sha256(b"hello").hexdigest(),
+                )
+            )
+            await db.save_group_message({
+                "message_id": "m1", "group_id": group_id, "sender_id": sender.peer_id,
+                "content": "hello", "created_at": created_at, "origin_signature": origin,
+            })
+            peer = PeerConnection(target.peer_id, "127.0.0.1", 1)
+            peer.capabilities = [CAP_GROUP_CHAT]
+            peer.encryption_public_key = X25519PrivateKey.generate().public_key().public_bytes(
+                Encoding.Raw, PublicFormat.Raw)
+            manager = CountingPeerManager(peer)
+            router = GroupRouter(relay, manager, db, settings)
+            first = await router.relay_for_peer(target.peer_id)
+            second = await router.relay_for_peer(target.peer_id)
+            self.assertEqual((first, second, manager.sent), (1, 0, 1))
+        finally:
+            await db.close()

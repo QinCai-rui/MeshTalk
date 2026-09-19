@@ -769,7 +769,10 @@ same group, then records `delivered` and emits `group_delivered`.
 
 Mesh relay (always-on): any active group member that holds a message may
 re-encrypt its canonical plaintext for another active member when that peer
-becomes reachable. Relayed copies keep the original `message_id`, `group_id`,
+becomes reachable. Participation is not configurable in v1: issue #155 asked
+for opt-out, but always-on was chosen for the mesh design (every member
+already holds the plaintext, so relaying exposes nothing new); opt-out
+remains a possible follow-up. Relayed copies keep the original `message_id`, `group_id`,
 `sender_id`, `created_at`, and `reply_to_message_id`, carry the sender's
 unmodified `origin_signature` (Ed25519 over canonical JSON of those fields
 plus `SHA-256(plaintext)`), and add a fresh per-hop `signature` from the
