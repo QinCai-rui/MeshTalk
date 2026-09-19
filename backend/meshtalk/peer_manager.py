@@ -191,6 +191,50 @@ class PeerManager:
             self._server.close()
             await self._server.wait_closed()
 
+    async def refresh_network(self) -> None:
+        """Drop network-bound sessions and rebind transports after a route change."""
+        if not self._running:
+            return
+
+        active_peers = dict(self.peers)
+        udp_peers = dict(self._udp_peers)
+        endpoint_peers = set(self._known_endpoints)
+        peer_ids = set(active_peers) | set(udp_peers) | endpoint_peers
+        stale_endpoints = {
+            peer_id: dict(endpoints)
+            for peer_id, endpoints in self._known_endpoints.items()
+        }
+        self._known_endpoints.clear()
+
+        # Remove entries before closing sockets so their receive callbacks do
+        # not race this refresh and emit a second offline transition.
+        self.peers.clear()
+        self._udp_peers.clear()
+        for peer in active_peers.values():
+            peer.state = PeerState.DISCONNECTED
+        for peer in udp_peers.values():
+            peer.state = PeerState.DISCONNECTED
+
+        writers = {
+            peer.writer
+            for peer in active_peers.values()
+            if peer.transport == "lan_tcp" and peer.writer is not None
+        }
+        if writers:
+            await asyncio.gather(*(self._close_writer(writer) for writer in writers))
+
+        for peer_id, endpoints in stale_endpoints.items():
+            for transport in endpoints:
+                await self.db.save_peer_endpoint(peer_id, transport, None)
+
+        try:
+            await self.udp.restart()
+        finally:
+            for peer_id in peer_ids:
+                if self.get_connected_peer(peer_id) is None:
+                    await self.db.set_peer_online(peer_id, False)
+                await self._notify_peer_changed(peer_id)
+
     def _should_initiate(self, remote_peer_id: str) -> bool:
         return self.identity.peer_id < remote_peer_id
 
