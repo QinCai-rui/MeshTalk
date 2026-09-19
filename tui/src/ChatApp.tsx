@@ -2609,7 +2609,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
         mentionSelected={mentionSelected}
         onMentionPick={(peerId) => completeMention(peerId)}
         openImage={(file) => {
-          if (file.file_path)
+          if (file.file_path && isImageFile(file.filename))
             actions.showDialog({
               kind: "image-view",
               filePath: file.file_path,

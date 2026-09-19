@@ -1,8 +1,11 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { act, createRef, useState, type ComponentProps } from "react"
 import { useTerminalDimensions } from "@opentui/react"
 import { testRender } from "@opentui/react/test-utils"
-import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
+import { NativeImage, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
+import { mkdir, rm } from "fs/promises"
+import { tmpdir } from "os"
+import { join } from "path"
 import { Sidebar } from "./Sidebar"
 import { ConversationPanel } from "./ConversationPanel"
 import { chatLayout, chatTheme } from "../chatTheme"
@@ -592,6 +595,28 @@ test("group history keeps system messages, replies, file status, and delivery de
     const frame = await settle(setup, "joined the group")
     for (const label of ["Group / 4 members", "joined the group", "Replying to Alex Morgan", "delivered 1/1", "notes.pdf", "1.0 KiB"]) expect(frame).toContain(label)
   } finally { await close(setup) }
+})
+
+test("does not decode or preview non-image attachments", async () => {
+  const directory = join(tmpdir(), `meshtalk-non-image-test-${crypto.randomUUID()}`)
+  const filePath = join(directory, "answers.pdf")
+  await mkdir(directory)
+  // Deliberately use image bytes: rendering must be gated by the attachment's
+  // filename, not whether a decoder happens to accept its contents.
+  await Bun.write(filePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64"))
+  const props = panelProps(80)
+  props.conversationItems = [{ type: "file", createdAt: 1788580860, file: { file_id: "pdf", filename: "answers.pdf", file_size: 1024, sender_id: "alex", recipient_id: "me", direction: "inbound", status: "completed", created_at: 1788580860, file_path: filePath }, allFiles: [] }]
+  const loadSpy = spyOn(NativeImage, "load")
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 20 })
+  try {
+    const frame = await settle(setup, "answers.pdf")
+    expect(frame).toContain("answers.pdf")
+    expect(loadSpy).not.toHaveBeenCalled()
+  } finally {
+    loadSpy.mockRestore()
+    await close(setup)
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 function ResizableChat({ props }: { props: ComponentProps<typeof ConversationPanel> }) {
