@@ -16,7 +16,7 @@ function hueOf(id: string) {
 function hueStyle(id: string): CSSProperties { return { "--h": String(hueOf(id)) } as CSSProperties }
 function initialOf(name: string) { return (name.trim().slice(0, 1) || "?").toUpperCase() }
 function timeOf(createdAt: number) { return new Date(createdAt * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }
-function discordTime(createdAt: number) {
+function messageTime(createdAt: number) {
   const date = new Date(createdAt * 1000)
   const now = new Date()
   const day = new Date(date.getFullYear(), date.getMonth(), date.getDate())
@@ -263,7 +263,7 @@ export function App() {
             const deliveredCount = deliveries.filter(d => d.status === "delivered").length
             const quote = row.reply_to_message_id ? messages.find(m => m.message_id === row.reply_to_message_id) : undefined
             return <article key={`${row.type}:${row.message_id ?? row.file_id}`} className={`msg ${compact ? "compact" : ""} ${isOwn ? "own" : ""}`}>
-              {!compact && <div className="msg-head"><span className="msg-author" style={hueStyle(row.sender_id ?? "?")}>{name(row.sender_id)}</span><span className="msg-time">{discordTime(row.created_at)}</span></div>}
+              {!compact && <div className="msg-head"><span className="msg-author" style={hueStyle(row.sender_id ?? "?")}>{name(row.sender_id)}</span><span className="msg-time">{messageTime(row.created_at)}</span></div>}
               {compact && <span className="msg-hovtime" title={new Date(row.created_at * 1000).toLocaleString()}>{timeOf(row.created_at)}</span>}
               <div className="msg-body">
                 {row.reply_to_message_id && <div className="msg-reply">↩ <strong>{quote ? name(quote.sender_id) : "Someone"}</strong> {quote?.content.slice(0, 120) ?? "an earlier message"}</div>}
