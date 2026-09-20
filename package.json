@@ -2,11 +2,13 @@
   "name": "meshtalk",
   "version": "0.32.3",
   "private": true,
-  "workspaces": ["tui", "cli", "control"],
+  "workspaces": ["tui", "cli", "control", "desktop"],
   "bin": {
     "meshtalk": "bin/meshtalk.ts"
   },
   "scripts": {
+    "dev:desktop": "bun run --cwd desktop dev",
+    "build:desktop": "bun run --cwd desktop package",
     "meshtalk": "bun run ./bin/meshtalk.ts",
     "dev:tui": "bun run --filter meshtalk-tui dev",
     "dev:cli": "bun run --filter meshtalk-cli dev",

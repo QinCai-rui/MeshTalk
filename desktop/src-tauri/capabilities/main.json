@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Local MeshTalk desktop window",
+  "windows": ["main"],
+  "permissions": ["core:default", "notification:allow-is-permission-granted"]
+}

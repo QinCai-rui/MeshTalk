@@ -44,6 +44,7 @@ jobs:
           done
           sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" backend/pyproject.toml
           sed -i "s/__version__ = \"[^\"]*\"/__version__ = \"${VERSION}\"/" backend/meshtalk/__init__.py
+          python3 desktop/scripts/version.py "$VERSION"
           uv lock --directory backend
 
       - name: Commit version bump
@@ -55,9 +56,49 @@ jobs:
           git commit -m "[ci skip] chore: bump version to ${{ inputs.version }}"
           git push origin HEAD:main
 
-  build:
+  prepare:
     needs: bump-version
     if: always() && (needs.bump-version.result == 'success' || needs.bump-version.result == 'skipped')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      sha: ${{ steps.meta.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.version != '' && 'main' || github.sha }}
+      - id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          VERSION="$REQUESTED_VERSION"
+          if [ -z "$VERSION" ]; then
+            LATEST=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo 0.0.0)
+            LATEST=${LATEST#v}
+            if [[ "$LATEST" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+              X="${BASH_REMATCH[1]}"
+              Y="${BASH_REMATCH[2]}"
+              Z=$((10#${BASH_REMATCH[3]} + 1))
+            else
+              X=0; Y=1; Z=0
+            fi
+            VERSION="${X}.${Y}.${Z}-SNAPSHOT+${{ github.run_number }}-${SHA:0:7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: prepare
+    if: always() && needs.prepare.result == 'success'
     strategy:
       matrix:
         include:
@@ -65,22 +106,42 @@ jobs:
             target: bun-linux-x64
             artifact: meshtalk-linux-x64
             suffix: ""
+            triple: x86_64-unknown-linux-gnu
+            desktop-platform: linux
+            desktop-arch: x64
+            bundle: appimage
           - os: ubuntu-24.04-arm
             target: bun-linux-arm64
             artifact: meshtalk-linux-arm64
             suffix: ""
+            triple: aarch64-unknown-linux-gnu
+            desktop-platform: linux
+            desktop-arch: arm64
+            bundle: appimage
           - os: macos-26-intel
             target: bun-darwin-x64
             artifact: meshtalk-macos-x64
             suffix: ""
+            triple: x86_64-apple-darwin
+            desktop-platform: macos
+            desktop-arch: x64
+            bundle: dmg
           - os: macos-latest
             target: bun-darwin-arm64
             artifact: meshtalk-macos-arm64
             suffix: ""
+            triple: aarch64-apple-darwin
+            desktop-platform: macos
+            desktop-arch: arm64
+            bundle: dmg
           - os: windows-latest
             target: bun-windows-x64
             artifact: meshtalk-windows-x64.exe
             suffix: ".exe"
+            triple: x86_64-pc-windows-msvc
+            desktop-platform: windows
+            desktop-arch: x64
+            bundle: nsis
 
     runs-on: ${{ matrix.os }}
 
@@ -95,7 +156,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -120,34 +181,17 @@ jobs:
       - name: Install dependencies
         run: bun install --os="*" --cpu="*"
 
-      - name: Determine version
-        id: version
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
-            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-            if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[^0-9] ]]; then
-              echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            SHORT_SHA="${GITHUB_SHA::7}"
-            LATEST_TAG="$(gh release view --json tagName --jq .tagName 2>/dev/null || echo 'v0.0.0')"
-            LATEST_TAG="${LATEST_TAG#v}"
-            if [[ "$LATEST_TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-              X="${BASH_REMATCH[1]}"
-              Y="${BASH_REMATCH[2]}"
-              Z=$((10#${BASH_REMATCH[3]} + 1))
-            else
-              X=0; Y=1; Z=0
-            fi
-            echo "version=${X}.${Y}.${Z}-SNAPSHOT+${{ github.run_number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "desktop/src-tauri"
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -182,7 +226,29 @@ jobs:
         run: cp build/nuitka/meshtalk-backend${{ matrix.suffix }} dist/release/meshtalk-backend${{ matrix.suffix }}
 
       - name: Build launcher binary
-        run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --define 'MESHTALK_PRERELEASE=${{ steps.version.outputs.prerelease }}' --outfile dist/release/meshtalk${{ matrix.suffix }}
+        run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ needs.prepare.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --define 'MESHTALK_PRERELEASE=${{ needs.prepare.outputs.prerelease }}' --outfile dist/release/meshtalk${{ matrix.suffix }}
+
+      - name: Prepare desktop sidecar and version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python desktop/scripts/version.py "$RELEASE_VERSION"
+          mkdir -p desktop/src-tauri/binaries
+          cp dist/release/meshtalk-backend${{ matrix.suffix }} desktop/src-tauri/binaries/meshtalk-backend-${{ matrix.triple }}${{ matrix.suffix }}
+
+      - name: Build unsigned desktop installer
+        working-directory: desktop
+        run: bun run package --bundles ${{ matrix.bundle }}
+
+      - name: Collect desktop installer
+        run: python desktop/scripts/package-assets.py ${{ matrix.desktop-platform }} ${{ matrix.desktop-arch }}
+
+      - name: Upload desktop installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.desktop-platform }}-${{ matrix.desktop-arch }}
+          path: dist/meshtalk-desktop-*
 
       - name: Package standalone release
         run: tar -czf dist/${{ matrix.artifact }}.tar.gz -C dist/release .
@@ -194,7 +260,7 @@ jobs:
           path: dist/${{ matrix.artifact }}.tar.gz
 
   release:
-    needs: build
+    needs: [prepare, build]
     if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
 
@@ -209,40 +275,14 @@ jobs:
         with:
           path: dist
 
-      - name: Determine version
-        id: version
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
-            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-            if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[^0-9] ]]; then
-              echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            SHORT_SHA="${GITHUB_SHA::7}"
-            LATEST_TAG="$(gh release view --json tagName --jq .tagName 2>/dev/null || echo 'v0.0.0')"
-            LATEST_TAG="${LATEST_TAG#v}"
-            if [[ "$LATEST_TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-              X="${BASH_REMATCH[1]}"
-              Y="${BASH_REMATCH[2]}"
-              Z=$((10#${BASH_REMATCH[3]} + 1))
-            else
-              X=0; Y=1; Z=0
-            fi
-            echo "version=${X}.${Y}.${Z}-SNAPSHOT+${{ github.run_number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
         run: |
-          V="${{ steps.version.outputs.version }}"
+          V="$RELEASE_VERSION"
           if gh release view "$V" --json tagName > /dev/null 2>&1; then
             echo "Release ${V} already exists - skipping creation"
           else
@@ -254,8 +294,8 @@ jobs:
           **Linux:** The precompiled binaries require **glibc 2.38** or newer (Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). If your distribution ships an older glibc, [compile from source](https://github.com/QinCai-rui/MeshTalk#compile-from-source) instead.
           EOF
           )
-            RELEASE_ARGS=("$V" dist/*/* --title "$V" "$NOTES_FLAG" --notes "$EXTRA_NOTES")
-            if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
+            RELEASE_ARGS=("$V" dist/*/* --target "$RELEASE_SHA" --title "$V" "$NOTES_FLAG" --notes "$EXTRA_NOTES")
+            if [ "$RELEASE_PRERELEASE" = "true" ]; then
               RELEASE_ARGS+=(--prerelease)
             fi
             gh release create "${RELEASE_ARGS[@]}"

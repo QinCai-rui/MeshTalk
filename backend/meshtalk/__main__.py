@@ -459,6 +459,20 @@ async def main(debug: bool = False) -> None:
             "dnd_enabled": settings.dnd_enabled,
         }
 
+    async def handle_desktop_info(req: dict) -> dict:
+        from . import __version__
+        return {
+            "ipc_version": 1,
+            "backend_version": os.environ.get("MESHTALK_APP_VERSION", __version__),
+        }
+
+    async def handle_desktop_release(req: dict) -> dict:
+        # The requesting desktop connection is still counted until it exits.
+        if ipc.client_count <= 1:
+            stop_event.set()
+            return {"stopping": True}
+        return {"stopping": False}
+
     async def handle_dnd(req: dict) -> dict:
         enabled = req.get("enabled")
         if enabled is not None:
@@ -1018,6 +1032,8 @@ async def main(debug: bool = False) -> None:
         return {"files_dir": str(settings.files_dir), "configured": settings._files_dir, "env": os.environ.get("MESHTALK_FILES_DIR"), "data_dir": str(DATA_DIR)}
 
     ipc_handlers = {
+        "desktop_info": handle_desktop_info,
+        "desktop_release": handle_desktop_release,
         "send": handle_send,
         "peers": handle_peers,
         "remove_peer": handle_remove_peer,
@@ -1139,7 +1155,9 @@ async def main(debug: bool = False) -> None:
 
 def run() -> None:
     debug = "--debug" in sys.argv[1:]
-    asyncio.run(main(debug))
+    from .instance_lock import InstanceLock
+    with InstanceLock(DATA_DIR):
+        asyncio.run(main(debug))
 
 
 if __name__ == "__main__":

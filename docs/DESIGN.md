@@ -310,6 +310,26 @@ The TUI is a local React (React 19 over `@opentui/react`) client of the Python
 backend. It talks to the backend exclusively over the owner-only Unix-domain IPC
 socket (`meshtalk.sock`) using a request/response protocol with event streaming.
 
+## Desktop Client
+
+The desktop client uses Tauri 2 with a React renderer. A deliberately small Rust
+host owns native windows, tray behavior, deep links, notifications, file dialogs,
+autostart, backend lifecycle, and authenticated IPC. The webview receives only
+allowlisted MeshTalk actions and backend events; it has no shell, arbitrary
+filesystem, or direct socket access.
+
+Installers bundle the same Nuitka backend executable as terminal releases. The
+desktop host first attaches to an existing backend for the active data directory
+and launches its sidecar only when needed. A data-directory lock prevents two
+backends from opening the same encrypted database, while multiple authenticated
+TUI, CLI, and desktop clients may coexist on one backend. `desktop_info` carries
+the IPC compatibility version independently from the application version.
+
+Desktop packages and terminal archives share one release tag and semantic
+version. Stable and unstable update channels inspect the corresponding GitHub
+releases. Automatic replacement remains disabled until signed Tauri update
+artifacts are available; unsigned clients direct users to the selected release.
+
 The screen is a single row: a sidebar (your identity, peer and group lists with
 presence/unread indicators) and a conversation pane with a message log and a
 composer.

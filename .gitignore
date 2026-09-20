@@ -56,3 +56,7 @@ docs/superpowers/
 
 # local worktrees
 .worktrees/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/binaries/
+desktop/src-tauri/icons/

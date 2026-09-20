@@ -1,0 +1,27 @@
+{
+  "name": "meshtalk-desktop",
+  "version": "0.32.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run icons && tauri dev --config src-tauri/tauri.dev.json",
+    "icons": "tauri icon icon.svg --output src-tauri/icons",
+    "web": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "package": "bun run icons && tauri build",
+    "test": "bun test src"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "bun-types": "latest",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}

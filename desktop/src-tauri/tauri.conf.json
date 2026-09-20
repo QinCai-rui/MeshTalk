@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MeshTalk",
+  "version": "0.32.3",
+  "identifier": "dev.raymont.meshtalk",
+  "build": {
+    "beforeDevCommand": "bun run web",
+    "beforeBuildCommand": "bun run build",
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "MeshTalk", "width": 1100, "height": 760, "minWidth": 640, "minHeight": 480 }],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["appimage", "dmg", "nsis"],
+    "category": "SocialNetworking",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "shortDescription": "Private peer-to-peer messaging",
+    "externalBin": ["binaries/meshtalk-backend"],
+    "windows": { "nsis": { "installMode": "currentUser" } }
+  },
+  "plugins": {
+    "deep-link": { "desktop": { "schemes": ["meshtalk", "meshtalk-group"] } }
+  }
+}
