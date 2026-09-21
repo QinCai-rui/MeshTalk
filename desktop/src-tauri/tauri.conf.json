@@ -25,6 +25,12 @@
     "windows": { "nsis": { "installMode": "currentUser" } }
   },
   "plugins": {
-    "deep-link": { "desktop": { "schemes": ["meshtalk", "meshtalk-group"] } }
+    "deep-link": { "desktop": { "schemes": ["meshtalk", "meshtalk-group"] } },
+    "updater": {
+      "active": false,
+      "endpoints": [],
+      "dialog": false,
+      "pubkey": ""
+    }
   }
 }

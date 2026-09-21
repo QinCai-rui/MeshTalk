@@ -622,6 +622,86 @@ class Database:
                 message["content"] = message["content"].decode("utf-8", errors="replace")
         return messages
 
+    async def search_local_messages(self, local_peer_id: str, query: str, offset: int = 0,
+                                    peer_id: str | None = None, group_id: str | None = None) -> dict:
+        """Search a bounded encrypted-history page without creating a plaintext index.
+
+        Offset addresses scanned rows, not matches; a caller can continue through
+        empty pages. Reading/searching never advances conversation read markers.
+        """
+        clauses = ["1 = 1"]
+        args: list = [local_peer_id, local_peer_id, local_peer_id]
+        if peer_id:
+            clauses.append("kind = 'peer' AND conversation_id = ?")
+            args.append(peer_id)
+        if group_id:
+            clauses.append("kind = 'group' AND conversation_id = ?")
+            args.append(group_id)
+        args.extend([501, offset])
+        async with self._db.execute(
+            f"""SELECT * FROM (
+                SELECT 'peer' AS kind, CASE WHEN sender_id = ? THEN recipient_id ELSE sender_id END AS conversation_id,
+                       message_id, sender_id, content, created_at, reply_to_message_id
+                FROM messages WHERE sender_id = ? OR recipient_id = ?
+                UNION ALL
+                SELECT 'group', group_id, message_id, sender_id, content, created_at, reply_to_message_id
+                FROM group_messages
+            ) WHERE {' AND '.join(clauses)} ORDER BY created_at DESC, kind, message_id DESC LIMIT ? OFFSET ?""", args
+        ) as cursor:
+            rows = [dict(row) async for row in cursor]
+        results = []
+        needle = query.casefold()
+        for row in rows[:500]:
+            row["content"] = self._decrypt_content(row["content"]) or ""
+            if needle in row["content"].casefold():
+                results.append(row)
+        return {"results": results, "next_offset": offset + 500 if len(rows) > 500 else None}
+
+    async def set_desktop_drafts(self, drafts: dict[str, str]) -> None:
+        value = self._encrypt_content(json.dumps({key: text for key, text in drafts.items() if text}))
+        await self._db.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('desktop_drafts', ?)", (value,))
+        await self._db.commit()
+
+    async def get_desktop_drafts(self) -> dict[str, str]:
+        async with self._db.execute("SELECT value FROM config WHERE key = 'desktop_drafts'") as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return {}
+        try:
+            value = json.loads(self._decrypt_content(row[0]) or "{}")
+            return value if isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()) else {}
+        except (ValueError, TypeError, InvalidTag):
+            return {}
+
+    async def desktop_history(self, local_peer_id: str, peer_id: str | None, group_id: str | None,
+                              before: int | None = None, around: str | None = None) -> dict:
+        """Read history by stable local insertion sequence, without marking it read."""
+        table = "group_messages" if group_id else "messages"
+        where = "group_id = ?" if group_id else "((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))"
+        args = [group_id] if group_id else [local_peer_id, peer_id, peer_id, local_peer_id]
+        if around:
+            async with self._db.execute(f"SELECT rowid FROM {table} WHERE {where} AND message_id = ?", [*args, around]) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return {"messages": [], "next_before": None}
+            before = row[0] + 51
+        if before is not None:
+            where += " AND rowid < ?"
+            args.append(before)
+        async with self._db.execute(f"SELECT rowid AS sequence, * FROM {table} WHERE {where} ORDER BY rowid DESC LIMIT 101", args) as cursor:
+            rows = [dict(row) async for row in cursor]
+        more = len(rows) > 100
+        rows = rows[:100]
+        for row in rows:
+            row["content"] = self._decrypt_content(row["content"]) or ""
+            row.pop("encrypted_content", None)
+            row.pop("origin_signature", None)
+        if group_id:
+            deliveries = await self.get_group_deliveries_many([r["message_id"] for r in rows])
+            for row in rows:
+                row["deliveries"] = deliveries.get(row["message_id"], [])
+        return {"messages": list(reversed(rows)), "next_before": rows[-1]["sequence"] if rows and more else None}
+
     async def save_message(self, msg: dict) -> None:
         """Store a message in the database with encrypted content."""
         await self._db.execute(

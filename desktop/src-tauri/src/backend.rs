@@ -94,6 +94,7 @@ impl Backend {
 }
 
 pub fn allowed(action: &str) -> bool {
+    if matches!(action, "search_messages" | "history_page" | "files_dir" | "desktop_drafts") { return true; }
     matches!(action, "identity" | "desktop_info" | "status" | "peers" | "messages" | "send" | "groups" | "group_members" | "group_messages" | "group_send" | "room_create" | "room_join" | "room_leave" | "room_invite" | "rooms" | "group_leave" | "set_display_name" | "friend_send" | "friend_respond" | "friend_cancel" | "friends" | "friend_requests" | "unfriend" | "block_peer" | "unblock_peer" | "blocked_peers" | "remove_peer" | "mute" | "unmute" | "muted_peers" | "dnd" | "tui_presence" | "typing" | "control" | "advanced_config" | "analytics" | "accessibility" | "notifications" | "debug_info" | "debug_re_stun" | "files" | "file_info" | "file_retry" | "delete_message")
 }
 

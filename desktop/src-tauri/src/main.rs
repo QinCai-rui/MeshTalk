@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod backend;
+mod files;
 
 use backend::Backend;
 use serde::{Deserialize, Serialize};
@@ -167,6 +168,27 @@ fn notify(app: tauri::AppHandle, title: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_link(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(&url).map_err(|_| "Invalid URL")?;
+    if !["https", "http"].contains(&parsed.scheme()) { return Err("Only web links can be opened".into()); }
+    app.opener().open_url(parsed.to_string(), None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn unread_badge(app: tauri::AppHandle, count: i64) -> Result<(), String> {
+    if let Some(tray) = app.tray_by_id("main") { let _ = tray.set_tooltip(Some(if count > 0 { format!("MeshTalk — {count} unread conversations") } else { "MeshTalk".into() })); }
+    #[cfg(target_os = "macos")]
+    if let Some(window) = app.get_webview_window("main") { window.set_badge_count(if count > 0 { Some(count) } else { None }).map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
+#[tauri::command]
+fn updater_available() -> bool {
+    option_env!("MESHTALK_UPDATER_PUBLIC_KEY").is_some() && option_env!("MESHTALK_UPDATER_ENDPOINT").is_some()
+}
+
+
+#[tauri::command]
 async fn quit(app: tauri::AppHandle, host: State<'_, Host>) -> Result<(), String> {
     if host.child.lock().await.is_some() {
         if let Ok(client) = connection(&host).await {
@@ -185,14 +207,30 @@ fn show(app: &tauri::AppHandle) {
 fn main() {
     tauri::Builder::default()
         .manage(Host::default())
+        .manage(files::Staging::default())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![connect_backend, request, pick_files, save_file, preferences, notify, quit, check_update, open_release])
+        .invoke_handler(tauri::generate_handler![connect_backend, request, pick_files, save_file, preferences, notify, quit, check_update, open_release, open_link, unread_badge, updater_available, files::choose_attachments, files::paste_attachment, files::send_attachments, files::discard_attachments, files::preview_attachment, files::reveal_attachment, files::choose_download_directory])
         .setup(|app| {
+            use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+            let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+            let app_menu = Submenu::with_items(app, "MeshTalk", true, &[&settings, &PredefinedMenuItem::separator(app)?, &PredefinedMenuItem::hide(app, None)?, &PredefinedMenuItem::quit(app, None)?])?;
+            let mut commands = Vec::new();
+            for (id, label, shortcut) in [("quick", "Jump to…", "CmdOrCtrl+K"), ("search", "Search messages…", "CmdOrCtrl+F"), ("people", "People", "CmdOrCtrl+Shift+P"), ("files", "Files & transfers", "CmdOrCtrl+Shift+F"), ("new-group", "New group…", "CmdOrCtrl+Shift+N"), ("join", "Join with invite…", "CmdOrCtrl+J"), ("help", "Keyboard shortcuts", "CmdOrCtrl+/")] {
+                commands.push(MenuItem::with_id(app, id, label, true, Some(shortcut))?);
+            }
+            let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = commands.iter().map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
+            let navigate = Submenu::with_items(app, "Navigate", true, &refs)?;
+            let edit = Submenu::with_items(app, "Edit", true, &[&PredefinedMenuItem::undo(app, None)?, &PredefinedMenuItem::redo(app, None)?, &PredefinedMenuItem::separator(app)?, &PredefinedMenuItem::cut(app, None)?, &PredefinedMenuItem::copy(app, None)?, &PredefinedMenuItem::paste(app, None)?, &PredefinedMenuItem::select_all(app, None)?])?;
+            app.set_menu(Menu::with_items(app, &[&app_menu, &edit, &navigate])?)?;
+            app.on_menu_event(|app, event| { let _ = app.emit("desktop-action", event.id.as_ref()); });
             let path = app.path().app_config_dir()?.join("desktop.json");
             let prefs = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<Preferences>(&b).ok()).unwrap_or(Preferences { close_mode: "ask".into(), update_channel: if app.package_info().version.pre.is_empty() { "stable".into() } else { "unstable".into() } });
             *app.state::<Host>().close_mode.lock().unwrap() = prefs.close_mode;
@@ -203,13 +241,23 @@ fn main() {
             let exit = tauri::menu::MenuItem::with_id(app, "quit", "Quit MeshTalk", true, None::<&str>)?;
             let menu = tauri::menu::Menu::with_items(app, &[&open, &exit])?;
             let pixels = vec![80u8, 190, 150, 255].repeat(32 * 32);
-            tauri::tray::TrayIconBuilder::new().icon(tauri::image::Image::new_owned(pixels, 32, 32)).tooltip("MeshTalk").menu(&menu).on_menu_event(|app, event| {
+            tauri::tray::TrayIconBuilder::with_id("main").icon(tauri::image::Image::new_owned(pixels, 32, 32)).tooltip("MeshTalk").menu(&menu).on_menu_event(|app, event| {
                 if event.id.as_ref() == "open" { show(app); }
                 if event.id.as_ref() == "quit" { let handle = app.clone(); tauri::async_runtime::spawn(async move { let _ = quit(handle.clone(), handle.state::<Host>()).await; }); }
             }).build(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                let paths = paths.clone();
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    match files::stage(&app, paths, false).await {
+                        Ok(value) => { let _ = app.emit("attachments-staged", value); },
+                        Err(error) => { let _ = app.emit("attachment-error", error); },
+                    }
+                });
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let mode = window.state::<Host>().close_mode.lock().unwrap().clone();

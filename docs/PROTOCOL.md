@@ -970,6 +970,9 @@ over IPC.
 
 ### 10.1 Commands
 
+These are local authenticated client/backend calls, not peer-to-peer wire
+messages. Adding a command here does not change network compatibility.
+
 | Action | Params | Returns |
 |--------|--------|---------|
 | send | recipient_id, content, reply_to_message_id? | message_id |
@@ -989,6 +992,9 @@ over IPC.
 | identity | - | peer_id, display_name, setup state, DND state. |
 | status | - | peer_id, connected peers + network info, control URL/connected, public endpoint, rooms. |
 | messages | peer_id | Conversation history (marks read). |
+| history_page | peer_id or group_id, before? or around? | Up to 100 local messages around or before a stable local sequence. Does not change read state; used for desktop jump-to-result and older-history views. |
+| search_messages | query, peer_id? or group_id?, offset? | Searches bounded local encrypted-history batches in memory. No plaintext search index is created and read state is unchanged. |
+| desktop_drafts | drafts? | Gets or stores up to 200 encrypted local desktop drafts (30 KiB per draft). Never transmitted to peers. |
 | set_display_name | display_name | New name; broadcasts PROFILE. |
 | control | url?, dismiss_setup? | Control/STUN config + connection state. |
 | room_create | name | room_id, group_id, name, invite |
@@ -1001,8 +1007,8 @@ over IPC.
 | group_messages | group_id | Last 200 local messages/system events, per-message `mentions`, and per-recipient deliveries; marks read. |
 | group_send | group_id, content, reply_to_message_id? | message_id, per-recipient `sent`, `delivered`, `queued`, or `unavailable` status, and `mentions`. |
 | group_leave | group_id | Sends/queues signed leave events, removes local room/group state, returns group_id. |
-| file_send | recipient_id, file_path | file_id — send a file to a direct peer. |
-| group_file_send | group_id, file_path | Per-recipient results — send a file to all active group members. |
+| file_send | recipient_id, file_path or paths[], caption? | file_id or per-file results — send one or a batch of files to a direct peer. |
+| group_file_send | group_id, file_path or paths[], caption? | Per-recipient results — send one or a batch of files to all active group members. |
 | files | - | List all file transfers (inbound and outbound) with status and metadata. |
 | file_info | file_id | Detailed metadata for one transfer. |
 | file_download | file_id, dest_path? | dest_path — save a received file to a user-chosen location. |

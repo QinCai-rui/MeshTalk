@@ -26,6 +26,7 @@ from .message_router import MessageRouter
 from .typing_router import TypingRouter
 from .file_transfer import FileTransferManager
 from .ipc import IPCServer
+from .desktop_queries import handlers as desktop_query_handlers
 from .protocol import Packet, PacketType, REMOVED_V1_FILE_PACKET_TYPES, capability_for_packet
 from .rendezvous import RendezvousService
 from .settings import Settings
@@ -1032,6 +1033,7 @@ async def main(debug: bool = False) -> None:
         return {"files_dir": str(settings.files_dir), "configured": settings._files_dir, "env": os.environ.get("MESHTALK_FILES_DIR"), "data_dir": str(DATA_DIR)}
 
     ipc_handlers = {
+        **desktop_query_handlers(db, identity.peer_id),
         "desktop_info": handle_desktop_info,
         "desktop_release": handle_desktop_release,
         "send": handle_send,
