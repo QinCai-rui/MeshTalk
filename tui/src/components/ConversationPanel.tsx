@@ -6,7 +6,7 @@ import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable, type Textare
 import { useTimeline } from "@opentui/react"
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, ReplyTarget, UnreadMessageState } from "../types"
-import { chatTheme as theme } from "../chatTheme"
+import { chatTheme as theme, presenceIndicator } from "../chatTheme"
 import { clipTextToWidth, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryLabel, inlineFriendActions, isImageFile, isMuteActive, MAX_MESSAGE_BYTES, normalizeDeliveryStatus, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
 import { renderMentionedContent, payloadMentions, segmentMentionedContent, splitMentionBody, parseInlineMarkdown, type MentionCandidate, type MentionBodyBlock } from "../mentions"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
@@ -797,19 +797,33 @@ const replySender = replySenderId === identity?.peer_id ? "You"
           contentOptions={{ flexDirection: "column" }}
           verticalScrollbarOptions={{ showArrows: true, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.surface }, arrowOptions: { foregroundColor: theme.line } }}
         >
-        {mentionCandidates.map((candidate, index) => (
-          <HoverHighlight
-            id={`mention-pick-${candidate.peerId}`}
-            key={candidate.peerId}
-            onMouseDown={(event) => { event.preventDefault(); onMentionPick?.(candidate.peerId); }}
-            active={index === mentionSelected}
-            style={{ width: "100%", paddingLeft: 1, paddingRight: 1, backgroundColor: index === mentionSelected ? theme.selected : undefined }}
-          >
-            <text fg={index === mentionSelected ? theme.text : theme.muted} wrapMode="none">
-              {index === mentionSelected ? "> " : "  "}@{candidate.displayName}{candidate.isSelf ? " (you)" : ""}
-            </text>
-          </HoverHighlight>
-        ))}
+        {mentionCandidates.map((candidate, index) => {
+          const isEveryone = candidate.peerId === "everyone"
+          const peer = isEveryone ? undefined : peers.find((p) => p.peer_id === candidate.peerId)
+          const presence = candidate.isSelf ? "active" as const : peer ? peerPresence(peer) : "offline" as const
+          const isDnd = peer ? Boolean(peer.dnd) : false
+          const indicator = isEveryone ? "●" : presenceIndicator(presence, isDnd)
+          const color = candidate.isSelf
+            ? theme.presence.self
+            : isEveryone
+              ? theme.accent
+              : isDnd && presence !== "offline"
+                ? theme.presence.dnd
+                : theme.presence[presence]
+          return (
+            <HoverHighlight
+              id={`mention-pick-${candidate.peerId}`}
+              key={candidate.peerId}
+              onMouseDown={(event) => { event.preventDefault(); onMentionPick?.(candidate.peerId); }}
+              active={index === mentionSelected}
+              style={{ width: "100%", paddingLeft: 1, paddingRight: 1, backgroundColor: index === mentionSelected ? theme.selected : undefined }}
+            >
+              <text fg={color} wrapMode="none">
+                {index === mentionSelected ? "> " : "  "}{indicator} @{candidate.displayName}{candidate.isSelf ? " (you)" : ""}
+              </text>
+            </HoverHighlight>
+          )
+        })}
         </scrollbox>
       </box>
       )}
