@@ -1201,10 +1201,12 @@ class Database:
             return [dict(row) async for row in cursor]
 
     async def has_active_file_transfers(self) -> bool:
-        """Return True when any transfer is pending, transferring, or queued.
+        """Return True while any transfer is actively moving chunks.
 
-        Storage migration refuses to run while this is true: in-flight
-        transfers resolve their paths up front and would otherwise complete
+        Only the ``transferring`` status counts: ``pending`` (offer not yet
+        accepted) and ``queued`` (waiting for a peer) hold no open files, so
+        migrating around them is safe. Storage migration refuses to run while
+        this is true, since an in-flight transfer would otherwise complete
         into the old location (or be deleted with it).
         """
         async with self._db.execute(

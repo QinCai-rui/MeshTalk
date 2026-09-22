@@ -187,6 +187,69 @@ class StorageMigrationTest(unittest.TestCase):
         self.assertEqual(self.settings.files_dir, self.storage / "files")
         self.assertEqual((self.storage / "files" / "peer" / "photo.bin").read_bytes(), b"p" * 64)
 
+    def test_files_migrate_rejects_nested_target(self):
+        nested = self.storage / "files" / "archive"
+        with self.assertRaisesRegex(RuntimeError, "nested"):
+            _run(migrate_files_location(db=self.db, settings=self.settings, target=nested))
+        # Nothing moved: setting and old files intact.
+        self.assertIsNone(self.settings._files_dir)
+        self.assertEqual((self.storage / "files" / "peer" / "photo.bin").read_bytes(), b"p" * 64)
+
+    def test_switch_rejects_nested_target(self):
+        nested = self.storage / "sub"
+        nested.mkdir()
+        with self.assertRaisesRegex(RuntimeError, "nested"):
+            _run(
+                switch_storage_location(
+                    db=self.db, settings=self.settings, file_manager=self.file_manager,
+                    identity=self.identity, target=nested, migrate=True,
+                )
+            )
+        self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
+        self.assertIsNone(self.settings._storage_dir)
+
+    def test_switch_rolls_back_when_persist_fails(self):
+        _run(self._seed_message())
+        target = Path(self.tempdir.name) / "new-storage"
+        with patch.object(self.settings, "set_storage_dir", side_effect=ValueError("disk full")):
+            with self.assertRaisesRegex(RuntimeError, "Rolled back"):
+                _run(
+                    switch_storage_location(
+                        db=self.db, settings=self.settings, file_manager=self.file_manager,
+                        identity=self.identity, target=target, migrate=True,
+                    )
+                )
+        # In-memory state restored: old database live with its data.
+        self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
+        self.assertEqual(self.file_manager.data_dir, self.storage)
+        self.assertIsNone(self.settings._storage_dir)
+        async def _count():
+            async with self.db._db.execute("SELECT COUNT(*) FROM messages") as cursor:
+                return (await cursor.fetchone())[0]
+        self.assertEqual(_run(_count()), 1)
+
+    def test_adopt_rolls_back_when_persist_fails(self):
+        target, adopted = self._make_adopt_target()
+        old_peer_id = self.identity.peer_id
+        with patch.object(self.settings, "set_storage_dir", side_effect=ValueError("disk full")):
+            with self.assertRaisesRegex(RuntimeError, "Rolled back"):
+                _run(
+                    switch_storage_location(
+                        db=self.db, settings=self.settings, file_manager=self.file_manager,
+                        identity=self.identity, target=target, migrate=False,
+                    )
+                )
+        # Everything restored: old database, old key, old identity, old setting.
+        self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
+        self.assertEqual(self.file_manager.data_dir, self.storage)
+        self.assertEqual(self.identity.peer_id, old_peer_id)
+        self.assertEqual(self.identity.display_name, "Old")
+        self.assertIsNone(self.settings._storage_dir)
+        async def _count():
+            async with self.db._db.execute("SELECT COUNT(*) FROM messages") as cursor:
+                return (await cursor.fetchone())[0]
+        self.assertEqual(_run(_count()), 0)
+
     def test_files_migrate_respects_files_env_override(self):
         target = Path(self.tempdir.name) / "new-files"
         with patch.dict(os.environ, {"MESHTALK_FILES_DIR": str(self.storage / "files")}):

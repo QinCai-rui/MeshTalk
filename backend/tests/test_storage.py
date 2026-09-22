@@ -190,5 +190,31 @@ class SettingsStorageDirTest(unittest.TestCase):
                 self.assertEqual(Settings(self.path).files_dir, Path(custom).resolve())
 
 
+class LocationsNestedTest(unittest.TestCase):
+    def test_same_location_counts_as_nested(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            self.assertTrue(storage.locations_nested(base, base))
+
+    def test_child_and_parent_count_as_nested(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            child = base / "sub" / "dir"
+            self.assertTrue(storage.locations_nested(base, child))
+            self.assertTrue(storage.locations_nested(child, base))
+
+    def test_dotdot_spelling_still_detected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            tricky = base / "sub" / ".." / "sub"
+            self.assertTrue(storage.locations_nested(base / "sub", tricky))
+
+    def test_siblings_are_not_nested(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            self.assertFalse(storage.locations_nested(base / "aaa", base / "aab"))
+            self.assertFalse(storage.locations_nested(base / "aa", base / "aa-b"))
+
+
 if __name__ == "__main__":
     unittest.main()

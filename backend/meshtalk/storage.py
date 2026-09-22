@@ -81,6 +81,33 @@ def same_location(first: Path, second: Path) -> bool:
         return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
 
 
+def _resolved_text(path: Path) -> str:
+    try:
+        resolved = path.resolve()
+    except Exception:
+        resolved = path.absolute()
+    return os.path.normcase(str(resolved))
+
+
+def locations_nested(first: Path, second: Path) -> bool:
+    """Return True when two locations are identical or one contains the other.
+
+    Paths are resolved (symlinks, ``..``, case/separators) before comparing,
+    so nesting is caught even when spelled differently. Used to reject a
+    migration target that would be deleted along with the old location
+    during post-verification cleanup.
+    """
+    first_text, second_text = _resolved_text(first), _resolved_text(second)
+    if first_text == second_text:
+        return True
+    parent, child = (
+        (first_text, second_text)
+        if len(first_text) <= len(second_text)
+        else (second_text, first_text)
+    )
+    return child.startswith(parent.rstrip(os.sep) + os.sep)
+
+
 def dir_has_content(path: Path) -> bool:
     """Return True when a directory exists and holds any non-runtime entries."""
     try:
@@ -217,6 +244,43 @@ def delete_tree_contents(base: Path, *, remove_base: bool = False) -> list[str]:
     return problems
 
 
+async def _rollback_db_switch(
+    *,
+    db,
+    file_manager,
+    previous_db_path: Path,
+    previous_key: bytes | None,
+    previous_data_dir: Path,
+) -> str | None:
+    """Best-effort rollback to the previous database location.
+
+    Reopens the previous database (restoring its encryption key when given)
+    and restores the file manager path. Returns None when the old location
+    is live again, otherwise details of what failed so the caller can report
+    that the backend may need a restart.
+    """
+    problems: list[str] = []
+    try:
+        await db.close()
+    except Exception as exc:
+        problems.append(f"close failed: {exc}")
+    db.db_path = previous_db_path
+    if previous_key is not None:
+        try:
+            db.set_storage_key(previous_key)
+        except Exception as exc:
+            problems.append(f"rekey failed: {exc}")
+    try:
+        await db.connect()
+    except Exception as exc:
+        problems.append(f"reconnect failed: {exc}")
+    try:
+        file_manager.data_dir = previous_data_dir
+    except Exception as exc:
+        problems.append(f"data_dir restore failed: {exc}")
+    return "; ".join(problems) if problems else None
+
+
 async def migrate_files_location(*, db, settings, target: Path) -> dict:
     """Move the effective files directory to target with copy-verify-delete.
 
@@ -237,6 +301,12 @@ async def migrate_files_location(*, db, settings, target: Path) -> dict:
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
         return {"migrated": False, "cleanup_warning": None}
+    if locations_nested(old_base, target):
+        raise RuntimeError(
+            f"Target '{target}' must not be the same as or nested inside '{old_base}' "
+            "(or vice versa); deleting the old files afterwards would remove the "
+            "new location. Location unchanged."
+        )
     if dir_has_content(old_base):
         if await db.has_active_file_transfers():
             raise RuntimeError("A file transfer is in progress; wait for it to finish before migrating.")
@@ -293,6 +363,12 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
     old_storage = settings.storage_dir
     if same_location(old_storage, target):
         return {"migrated": False, "files_migrated": False, "cleanup_warning": None, "noop": True}
+    if locations_nested(old_storage, target):
+        raise RuntimeError(
+            f"Target '{target}' must not be the same as or nested inside '{old_storage}' "
+            "(or vice versa); choose a separate location. Location unchanged."
+        )
+    previous_data_dir = file_manager.data_dir
     old_db = old_storage / DB_FILENAME
     new_db = target / DB_FILENAME
     old_identity = old_storage / IDENTITY_FILENAME
@@ -391,6 +467,12 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
                     )
             new_key = (adopted_identity or identity).storage_key()
             old_key = identity.storage_key()
+            previous_identity_fields = (
+                identity.signing_private_key,
+                identity.encryption_private_key,
+                identity.peer_id,
+                identity.display_name,
+            )
             previous_db_path = db.db_path
             await db.close()
             db.db_path = new_db
@@ -422,7 +504,30 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
             try:
                 settings.set_storage_dir(str(target))
             except ValueError as exc:
-                raise RuntimeError(str(exc)) from exc
+                # Undo the in-memory identity adoption as well: persisted
+                # settings still point at the old location and its identity.
+                (
+                    identity.signing_private_key,
+                    identity.encryption_private_key,
+                    identity.peer_id,
+                    identity.display_name,
+                ) = previous_identity_fields
+                rollback_problem = await _rollback_db_switch(
+                    db=db,
+                    file_manager=file_manager,
+                    previous_db_path=previous_db_path,
+                    previous_key=old_key,
+                    previous_data_dir=previous_data_dir,
+                )
+                if rollback_problem is None:
+                    raise RuntimeError(
+                        f"Could not save the new storage location: {exc}. "
+                        "Rolled back; old location still active."
+                    ) from exc
+                raise RuntimeError(
+                    f"Could not save the new storage location: {exc}. "
+                    f"Rollback also failed ({rollback_problem}); restart the backend."
+                ) from exc
             summary = {
                 "migrated": False,
                 "files_migrated": False,
@@ -465,7 +570,22 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
     try:
         settings.set_storage_dir(str(target))
     except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
+        rollback_problem = await _rollback_db_switch(
+            db=db,
+            file_manager=file_manager,
+            previous_db_path=previous_db_path,
+            previous_key=None,
+            previous_data_dir=previous_data_dir,
+        )
+        if rollback_problem is None:
+            raise RuntimeError(
+                f"Could not save the new storage location: {exc}. "
+                "Rolled back; old location still active."
+            ) from exc
+        raise RuntimeError(
+            f"Could not save the new storage location: {exc}. "
+            f"Rollback also failed ({rollback_problem}); restart the backend."
+        ) from exc
     summary: dict = {"migrated": migrate, "files_migrated": bool(migrate_files), "cleanup_warning": None, "noop": False}
     cleanup_problems: list[str] = []
     if migrate:
