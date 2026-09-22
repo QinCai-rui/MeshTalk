@@ -48,7 +48,7 @@ the binaries in `~/.local/bin` (or `%LOCALAPPDATA%\MeshTalk` on Windows):
 #### Linux/macOS
 
 ```bash
-bash <(curl -fssL getmeshtalk.raymont.dev/sh)
+bash <(curl -fsSL getmeshtalk.raymont.dev/sh)
 ```
 
 Run with `--help` for the full list of options
