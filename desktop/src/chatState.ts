@@ -1,11 +1,13 @@
-import type { Conversation, Row } from "./api"
+import { demoMode, type Conversation, type Row } from "./api"
+
+export function storage() { return demoMode ? sessionStorage : localStorage }
 
 export const MAX_MESSAGE_BYTES = 30 * 1024
 export function isMuted(until: number | undefined, now = Date.now() / 1000) { return until !== undefined && (until === 0 || until > now) }
 export function restore<T>(key: string, fallback: T): T {
-  try { return JSON.parse(localStorage.getItem(key) ?? "null") ?? fallback } catch { return fallback }
+  try { return JSON.parse(storage().getItem(key) ?? "null") ?? fallback } catch { return fallback }
 }
-export function persist(key: string, value: unknown) { try { localStorage.setItem(key, JSON.stringify(value)) } catch {} }
+export function persist(key: string, value: unknown) { try { storage().setItem(key, JSON.stringify(value)) } catch {} }
 export function conversations(peers: Row[], groups: Row[], self: string): Conversation[] {
   return [...peers.filter(p => p.peer_id !== self && !p.is_blocked).map(p => ({ kind: "peer" as const, id: p.peer_id, name: p.display_name })), ...groups.map(g => ({ kind: "group" as const, id: g.group_id, name: g.name }))]
 }

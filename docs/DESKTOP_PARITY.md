@@ -29,3 +29,29 @@ window layouts.
 New local desktop IPC calls (`search_messages`, `history_page`, and
 `desktop_drafts`) are documented in `PROTOCOL.md`; they neither alter the
 peer-to-peer wire protocol nor send new data to the control service.
+
+## Desktop interface
+
+The chat window has a conversation sidebar and a message area. The sidebar
+contains Chats and Groups filters, an unread filter, search, and a New conversation
+button. People and Files remain accessible below the conversation list.
+
+Settings occupy the app window and use the native dialog's focus handling.
+The sections are Profile, Appearance, Notifications, Privacy, People, Rooms,
+Connection, Diagnostics, and About. Connection exposes the control server URL,
+remote discovery status, public endpoint, STUN server, and address pinning.
+Appearance supports system, light, and dark themes with teal or blue accents.
+Theme and accent preferences belong to the desktop frontend.
+
+## Design demo
+
+The development server supports `/?demo=teal` and `/?demo=blue` in a browser.
+The demo uses in-memory sample data and session storage rather than desktop
+preferences. It cannot access the backend, local identity, attachments, or native
+desktop actions. The demo is disabled inside Tauri and excluded from production
+builds. Its switches and forms update only sample data.
+
+`desktop/tests/redesign.spec.ts` covers the demo, settings saves and errors,
+keyboard dismissal, focus restoration, and narrow settings layouts.
+`desktop/tests/messenger.spec.ts` covers the Tauri IPC bridge, legacy backend
+compatibility, sending, appearance persistence, and narrow chat layouts.

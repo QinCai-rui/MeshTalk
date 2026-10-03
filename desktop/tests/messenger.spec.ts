@@ -17,6 +17,7 @@ test.beforeEach(async ({ page }) => {
       unregisterCallback: (id: number) => callbacks.delete(id),
       invoke: async (command: string, args: any) => {
         if (command === "plugin:event|listen") return ++callbackId
+        if (command === "preferences") return { close_mode: "tray", autostart: false, version: "test", update_channel: "stable" }
         if (command !== "request") return {}
         switch (args.action) {
           case "desktop_drafts": throw new Error("Unknown action: desktop_drafts")
@@ -25,6 +26,12 @@ test.beforeEach(async ({ page }) => {
           case "groups": return { groups: [] }
           case "friend_requests": return { requests: [] }
           case "muted_peers": return { muted_peers: {}, muted_groups: {} }
+          case "control": return { url: "wss://example.test", connected: true, stun_server: "stun.example.test:3478" }
+          case "analytics": return { analytics_level: "off" }
+          case "notifications": return { delivery: "native", events: { messages: true } }
+          case "blocked_peers": return { blocked: [] }
+          case "rooms": return { rooms: [] }
+          case "advanced_config": return { control_pinned_ips: [], stun_pinned_ips: [] }
           case "files": return { files: [] }
           case "messages": return { messages: [...messages] }
           case "send": {
@@ -62,4 +69,21 @@ test("narrow window keeps the composer visible without horizontal overflow", asy
   await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.screenshot({ path: "test-results/messenger-narrow.png" })
+})
+
+test("settings use the desktop IPC bridge and keep appearance preferences", async ({ page }) => {
+  await page.goto("/")
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Settings", exact: true }).click()
+  await page.getByRole("button", { name: "Connection", exact: true }).click()
+  await expect(page.getByLabel("Server URL")).toHaveValue("wss://example.test")
+  await page.getByRole("button", { name: "Appearance", exact: true }).click()
+  await page.getByRole("button", { name: "Dark", exact: true }).click()
+  await page.getByRole("button", { name: "Signal-inspired blue", exact: true }).click()
+  expect(await page.evaluate(() => localStorage.getItem("meshtalk-accent"))).toBe('"blue"')
+  await page.getByRole("button", { name: "Back to chats" }).click()
+  await page.reload()
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark")
+  await expect(page.locator("html")).toHaveAttribute("data-accent", "blue")
+  await expect(page.getByText("Design demo", { exact: true })).not.toBeVisible()
 })

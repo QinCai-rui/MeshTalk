@@ -3,7 +3,7 @@ import { request, type Row, type Conversation } from "../api"
 import { Dialog } from "./Dialog"
 
 export function People({ onClose, onSelect, onRefresh }: { onClose: () => void; onSelect: (c: Conversation) => void; onRefresh: () => Promise<void> }) {
-  const [tab, setTab] = useState("Requests")
+  const [tab, setTab] = useState("Friends")
   const [data, setData] = useState<Row>({ peers: [], requests: [], blocked: [] })
   const [error, setError] = useState("")
   const [note, setNote] = useState("")

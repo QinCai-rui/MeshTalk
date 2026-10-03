@@ -18,6 +18,12 @@ const paths: Record<string, string> = {
   trash: "M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-9 0 1 14h10l1-14",
   reply: "m9 17-5-5 5-5m-5 5h10a5 5 0 0 1 5 5v1",
   close: "m6 6 12 12M18 6 6 18",
+  filter: "M4 7h16M7 12h10m-7 5h4",
+  chevron: "m9 5 7 7-7 7",
+  back: "m12 5-7 7 7 7M5 12h15",
+  shield: "M12 3 3 7v6c0 5 9 9 9 9s9-4 9-9V7Zm-4 9 3 3 5-6",
+  connection: "M8 12h8m-5-7H7a7 7 0 0 0 0 14h4m2-14h4a7 7 0 0 1 0 14h-4",
+  appearance: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 0v18",
 }
 export function Icon({ name, size = 18, ...props }: { name: keyof typeof paths; size?: number } & SVGProps<SVGSVGElement>) {
   return <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false" {...props}><path d={paths[name]} /></svg>
