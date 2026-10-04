@@ -80,6 +80,10 @@ class IPCServer:
         os.chmod(str(IPC_PORT_PATH), 0o600)
         logger.info("IPC server listening on TCP 127.0.0.1:%d", port)
 
+    @property
+    def client_count(self) -> int:
+        return len(self._clients)
+
     async def stop(self) -> None:
         for writer in self._clients:
             writer.close()
