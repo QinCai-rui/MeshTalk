@@ -68,6 +68,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.version != '' && 'main' || github.sha }}
+          persist-credentials: false
       - id: meta
         shell: bash
         env:

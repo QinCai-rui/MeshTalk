@@ -80,17 +80,18 @@ async fn connect_backend(app: tauri::AppHandle, host: State<'_, Host>) -> Result
 #[tauri::command]
 async fn request(host: State<'_, Host>, action: String, params: Value) -> Result<Value, String> {
     if !backend::allowed(&action) { return Err("Unsupported desktop action".into()); }
+    // The renderer may only read the files directory. Writes go through the
+    // native folder picker (choose_download_directory -> set_files_dir).
+    let params = if action == "files_dir" {
+        match params {
+            Value::Object(map) => {
+                let filtered: serde_json::Map<String, Value> = map.into_iter().filter(|(key, _)| key != "path" && key != "files_dir" && key != "dir").collect();
+                Value::Object(filtered)
+            }
+            other => other,
+        }
+    } else { params };
     connection(&host).await?.request(&action, params).await
-}
-
-#[tauri::command]
-async fn pick_files(app: tauri::AppHandle, host: State<'_, Host>, target: String, group: bool, caption: String) -> Result<Value, String> {
-    let files = tauri::async_runtime::spawn_blocking(move || app.dialog().file().blocking_pick_files()).await.map_err(|e| e.to_string())?;
-    let Some(files) = files else { return Ok(json!({"cancelled":true})); };
-    let paths: Result<Vec<_>, _> = files.into_iter().map(|f| f.into_path()).collect();
-    let paths = paths.map_err(|_| "Unsupported file location")?;
-    let params = if group { json!({"group_id":target,"paths":paths,"caption":caption}) } else { json!({"recipient_id":target,"paths":paths,"caption":caption}) };
-    connection(&host).await?.request(if group {"group_file_send"} else {"file_send"}, params).await
 }
 
 #[tauri::command]
@@ -217,7 +218,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![connect_backend, request, pick_files, save_file, preferences, notify, quit, check_update, open_release, open_link, unread_badge, updater_available, files::choose_attachments, files::paste_attachment, files::send_attachments, files::discard_attachments, files::preview_attachment, files::reveal_attachment, files::choose_download_directory])
+        .invoke_handler(tauri::generate_handler![connect_backend, request, save_file, preferences, notify, quit, check_update, open_release, open_link, unread_badge, updater_available, files::choose_attachments, files::paste_attachment, files::send_attachments, files::discard_attachments, files::preview_attachment, files::reveal_attachment, files::choose_download_directory])
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;

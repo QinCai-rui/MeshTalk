@@ -5,6 +5,7 @@ import "./style.css"
 
 function showBootError(error: unknown) {
   const root = document.getElementById("root")
+  if (root && root.childElementCount > 0) return
   const detail = error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}` : String(error)
   if (root) {
     root.innerHTML = ""

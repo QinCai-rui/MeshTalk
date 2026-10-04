@@ -14,7 +14,11 @@ def stamp(root: Path, version: str):
         value["version"] = version
         path.write_text(json.dumps(value, indent=2) + "\n")
     cargo = root / "src-tauri/Cargo.toml"
-    cargo.write_text(re.sub(r'^version = "[^"]+"', f'version = "{version}"', cargo.read_text(), count=1, flags=re.M))
+    cargo_text = cargo.read_text()
+    stamped, count = re.subn(r'^version = "[^"]+"', f'version = "{version}"', cargo_text, count=1, flags=re.M)
+    if count != 1:
+        raise ValueError("Expected exactly one Cargo.toml version line to update")
+    cargo.write_text(stamped)
     lock = root / "src-tauri/Cargo.lock"
     if lock.exists():
         lock.write_text(re.sub(r'(name = "meshtalk-desktop"\nversion = ")[^"]+', lambda m: m[1] + version, lock.read_text()))

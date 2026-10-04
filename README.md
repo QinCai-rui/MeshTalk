@@ -72,6 +72,16 @@ their runtimes, so it does not require Python, uv, Bun, or another package manag
 Keep these files together in the extracted directory: `meshtalk` and `meshtalk-backend`
 (all end in `.exe` on Windows). Only the `meshtalk` launcher is invoked directly.
 
+On Linux/macOS, `cd` into where the binaries are extracted to, then run `./meshtalk`
+
+On Windows, run `meshtalk.exe` from the extracted archive.
+
+> [!NOTE]
+> Release binaries are provided for macOS (Intel and Apple Silicon), Linux (x64
+> and ARM64), and Windows (x64). The Linux binaries require glibc 2.38 or newer
+> (Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). Older distributions
+> can run MeshTalk by [building from source](#compile-from-source) instead.
+
 ### Desktop App
 
 Each GitHub release also includes an unsigned desktop installer with the same
@@ -90,17 +100,6 @@ warning during installation.
 Desktop Settings can follow stable releases or opt into the same unstable
 snapshot channel as the TUI. Unsigned builds open the matching GitHub release
 for installation rather than replacing themselves automatically.
-
-
-On Linux/macOS, `cd` into where the binaries are extracted to, then run `./meshtalk`
-
-On Windows, run `meshtalk.exe` from the extracted archive. 
-
-> [!NOTE]
-> Release binaries are provided for macOS (Intel and Apple Silicon), Linux (x64
-> and ARM64), and Windows (x64). The Linux binaries require glibc 2.38 or newer
-> (Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). Older distributions
-> can run MeshTalk by [building from source](#compile-from-source) instead.
 
 ### Updating
 

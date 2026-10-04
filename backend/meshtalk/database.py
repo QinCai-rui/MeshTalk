@@ -652,7 +652,11 @@ class Database:
         results = []
         needle = query.casefold()
         for row in rows[:500]:
-            row["content"] = self._decrypt_content(row["content"]) or ""
+            try:
+                row["content"] = self._decrypt_content(row["content"]) or ""
+            except (InvalidTag, ValueError, UnicodeDecodeError):
+                # A corrupt row must not hide matches in the remaining rows.
+                continue
             if needle in row["content"].casefold():
                 results.append(row)
         return {"results": results, "next_offset": offset + 500 if len(rows) > 500 else None}
@@ -684,7 +688,10 @@ class Database:
                 row = await cursor.fetchone()
             if row is None:
                 return {"messages": [], "next_before": None}
-            before = row[0] + 51
+            anchor = row[0]
+            async with self._db.execute(f"SELECT rowid FROM {table} WHERE {where} AND rowid > ? ORDER BY rowid ASC LIMIT 50", [*args, anchor]) as cursor:
+                later = [later_row[0] async for later_row in cursor]
+            before = (later[-1] + 1) if later else (anchor + 1)
         if before is not None:
             where += " AND rowid < ?"
             args.append(before)

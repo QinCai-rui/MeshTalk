@@ -312,7 +312,7 @@ export function App() {
   }
   async function copy(text: string) { await run(async () => { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000) }) }
   async function jump(c: Conversation, id: string) {
-    jumpTarget.current = id; chooseConversation(c)
+    jumpTarget.current = id; chooseConversation({ ...c })
     // Applied after the selection's ordinary history load to avoid stale updates.
   }
   useEffect(() => {
