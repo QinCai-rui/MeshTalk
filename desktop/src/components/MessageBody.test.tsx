@@ -12,3 +12,10 @@ test("plain URLs outside mentions still link", () => {
   const html = renderToStaticMarkup(<MessageBody content="see https://example.test" name={id => id} />)
   expect(html).toContain('href="https://example.test"')
 })
+
+test("non-http links render as plain text without an href", () => {
+  for (const content of ["[x](javascript:alert(1))", "[y](data:text/html,<b>hi</b>)", "[z](mailto:a@example.test)", "[w](/relative/path)"]) {
+    const html = renderToStaticMarkup(<MessageBody content={content} name={id => id} />)
+    expect(html).not.toContain("href=")
+  }
+})

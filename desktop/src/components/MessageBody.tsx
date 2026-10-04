@@ -13,6 +13,6 @@ export function MessageBody({ content, name }: { content: string; name: (id: str
   const text = content.replace(/(?<!\\)<@([A-Za-z0-9_-]+)>/g, (_, id: string) => `@${escapeMention(id === "everyone" ? "everyone" : name(id))}`)
   return <div className="markdown"><Markdown remarkPlugins={[remarkGfm]} skipHtml components={{
     img: ({ alt }) => <span>{alt ? `[Image: ${alt}]` : "[External image]"}</span>,
-    a: ({ href, children }) => <a href={href} onClick={e => { e.preventDefault(); if (href && /^https?:\/\//i.test(href)) void invoke("open_link", { url: href }).catch(() => {}) }}>{children}</a>,
+    a: ({ href, children }) => /^https?:\/\//i.test(href ?? "") ? <a href={href} onClick={e => { e.preventDefault(); void invoke("open_link", { url: href! }).catch(() => {}) }}>{children}</a> : <span>{children}</span>,
   }}>{text}</Markdown></div>
 }

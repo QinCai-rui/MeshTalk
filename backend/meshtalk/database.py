@@ -699,10 +699,17 @@ class Database:
             rows = [dict(row) async for row in cursor]
         more = len(rows) > 100
         rows = rows[:100]
+        messages = []
         for row in rows:
-            row["content"] = self._decrypt_content(row["content"]) or ""
+            try:
+                row["content"] = self._decrypt_content(row["content"]) or ""
+            except (InvalidTag, ValueError, UnicodeDecodeError):
+                # A corrupt row must not break history loading for the rest.
+                continue
             row.pop("encrypted_content", None)
             row.pop("origin_signature", None)
+            messages.append(row)
+        rows = messages
         if group_id:
             deliveries = await self.get_group_deliveries_many([r["message_id"] for r in rows])
             for row in rows:

@@ -46,3 +46,15 @@ class DesktopQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["message_id"] for row in result["messages"]], ["message-0", "message-1", "message-2"])
         async with self.db._db.execute("SELECT read_at FROM messages") as cursor:
             self.assertTrue(all(row[0] is None for row in await cursor.fetchall()))
+
+    async def test_history_page_skips_corrupt_content_blob(self):
+        for message_id, content in (("good", "Readable message"), ("bad", "Corrupt blob")):
+            await self.db.save_message({
+                "message_id": message_id, "sender_id": "alice", "recipient_id": "me",
+                "content": content, "encrypted_content": b"", "created_at": 1,
+                "hop_count": 0, "max_hops": 10,
+            })
+        await self.db._db.execute("UPDATE messages SET content = ? WHERE message_id = 'bad'", (b"\x00" * 30,))
+        await self.db._db.commit()
+        result = await self.db.desktop_history("me", "alice", None)
+        self.assertEqual([row["message_id"] for row in result["messages"]], ["good"])
