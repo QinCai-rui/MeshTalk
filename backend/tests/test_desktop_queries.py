@@ -58,3 +58,19 @@ class DesktopQueryTests(unittest.IsolatedAsyncioTestCase):
         await self.db._db.commit()
         result = await self.db.desktop_history("me", "alice", None)
         self.assertEqual([row["message_id"] for row in result["messages"]], ["good"])
+
+    async def test_history_page_continues_past_fully_corrupt_page(self):
+        for index in range(101):
+            await self.db.save_message({
+                "message_id": f"page-{index}", "sender_id": "alice", "recipient_id": "me",
+                "content": f"Message {index}", "encrypted_content": b"", "created_at": index,
+                "hop_count": 0, "max_hops": 10,
+            })
+        await self.db._db.execute("UPDATE messages SET content = ? WHERE message_id != 'page-0'", (b"\x00" * 30,))
+        await self.db._db.commit()
+        first = await self.db.desktop_history("me", "alice", None)
+        self.assertEqual(first["messages"], [])
+        self.assertIsNotNone(first["next_before"])
+        second = await self.db.desktop_history("me", "alice", None, before=first["next_before"])
+        self.assertEqual([row["message_id"] for row in second["messages"]], ["page-0"])
+        self.assertIsNone(second["next_before"])
