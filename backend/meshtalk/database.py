@@ -698,9 +698,9 @@ class Database:
         async with self._db.execute(f"SELECT rowid AS sequence, * FROM {table} WHERE {where} ORDER BY rowid DESC LIMIT 101", args) as cursor:
             rows = [dict(row) async for row in cursor]
         more = len(rows) > 100
-        rows = rows[:100]
+        page = rows[:100]
         messages = []
-        for row in rows:
+        for row in page:
             try:
                 row["content"] = self._decrypt_content(row["content"]) or ""
             except (InvalidTag, ValueError, UnicodeDecodeError):
@@ -714,7 +714,10 @@ class Database:
             deliveries = await self.get_group_deliveries_many([r["message_id"] for r in rows])
             for row in rows:
                 row["deliveries"] = deliveries.get(row["message_id"], [])
-        return {"messages": list(reversed(rows)), "next_before": rows[-1]["sequence"] if rows and more else None}
+        # The continuation boundary comes from the raw page, not the filtered
+        # messages: a fully corrupt page must still paginate to older history.
+        oldest = page[-1]["sequence"] if page else None
+        return {"messages": list(reversed(rows)), "next_before": oldest if more else None}
 
     async def save_message(self, msg: dict) -> None:
         """Store a message in the database with encrypted content."""
