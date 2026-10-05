@@ -204,6 +204,35 @@ docker compose build
 docker compose run -it client
 ```
 
+## Website
+
+The marketing site in `web/` builds to static files in `web/dist` and is
+deployed to Cloudflare Pages (project `meshtalk-site`, custom domain
+`https://meshtalk-site.qincai.xyz`). The status page's `/api/health` route is a
+Pages Function that proxies the control server health check, so it works even
+when the control server sends no CORS headers.
+
+Build locally with Node.js 22:
+
+```bash
+cd web
+npm ci
+npm run build     # writes web/dist and regenerates the sitemap
+npm start         # optional: serve locally through the Express proxy
+```
+
+Deploys run from `.github/workflows/deploy-web.yml` on pushes to `main` that
+touch `web/**`, or manually from the Actions tab. Set two repository secrets:
+
+- `CLOUDFLARE_API_TOKEN` — an API token with the *Cloudflare Pages: Edit*
+  permission.
+- `CLOUDFLARE_ACCOUNT_ID` — the Cloudflare account ID that owns the project.
+
+The first deploy creates the `meshtalk-site` project. After that, add
+`meshtalk-site.qincai.xyz` as a custom domain for the project in the Cloudflare
+dashboard and point the existing DNS record at it. The control server probed by
+`/api/health` is configured by `CONTROL_DEFAULT` in `web/wrangler.toml`.
+
 ## Group Chats And Remote Rooms
 
 Run the control service locally for development:
@@ -284,7 +313,32 @@ preferred; if direct HELLO/READY setup expires, clients carry their authenticate
 and encrypted MeshTalk datagrams through the existing control `wss://` connection.
 
 Deploy only the `control` service. It needs no UDP relay ports or shared secrets.
-Cloudflare Tunnel can expose it directly because clients use WebSocket traffic:
+
+### Cloudflare Workers
+
+The primary deployment runs the control service on Cloudflare Workers, serving
+`wss://meshtalk-control.qincai.xyz/v1/rendezvous`. `control/src/worker.ts`
+speaks the same wire protocol as the Bun server and keeps connection, room, and
+relay state in a single `ControlRoom` Durable Object, because one WebSocket can
+join several rooms and relay routes by peer ID across them.
+
+`.github/workflows/deploy-control.yml` deploys on pushes to `main` that touch
+`control/**`, or manually from the Actions tab. It uses the same
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets as the
+website workflow. The Worker, its Durable Object migration, and the
+`meshtalk-control.qincai.xyz` custom domain are all defined in
+`control/wrangler.toml`. To deploy by hand:
+
+```bash
+cd control
+bun x wrangler deploy
+```
+
+### Docker and Cloudflare Tunnel
+
+The image on GitHub Container Registry remains available as an alternative. It
+needs no UDP relay ports or shared secrets, and Cloudflare Tunnel can expose it
+directly because clients use WebSocket traffic:
 
 ```bash
 docker compose up -d control

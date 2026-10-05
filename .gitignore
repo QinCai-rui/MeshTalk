@@ -19,6 +19,10 @@ tui/dist/
 __pycache__/
 *.egg-info/
 
+# Cloudflare / Wrangler local state
+.wrangler/
+**/.wrangler/
+
 # Local binaries / packages
 /meshtalk
 /meshtalk-backend

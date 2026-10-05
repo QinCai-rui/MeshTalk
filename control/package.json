@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build src/index.ts --target=bun --outfile dist/meshtalk-control",
-    "test": "bun test"
+    "test": "bun test",
+    "worker:dev": "bun x wrangler dev",
+    "worker:deploy": "bun x wrangler deploy"
   },
   "devDependencies": {
     "bun-types": "latest",

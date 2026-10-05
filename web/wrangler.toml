@@ -1,0 +1,12 @@
+# Cloudflare Pages configuration for the MeshTalk website.
+#
+# The site is a static build (web/dist) plus one Pages Function at /api/health
+# (web/functions) that proxies the control server health check. Local
+# development and Docker continue to use web/server.js.
+name = "meshtalk-site"
+compatibility_date = "2025-01-01"
+pages_build_output_dir = "dist"
+
+[vars]
+# Only this control server may be probed through /api/health.
+CONTROL_DEFAULT = "https://meshtalk-control.qincai.xyz"

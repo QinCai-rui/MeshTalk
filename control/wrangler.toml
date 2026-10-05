@@ -1,0 +1,25 @@
+# Cloudflare Workers deployment for the MeshTalk control service.
+#
+# `src/worker.ts` speaks the same wire protocol as the Bun server in
+# `src/index.ts`; both share limits from `src/config.ts`. Connection state lives
+# in the single ControlRoom Durable Object, so `wrangler deploy` needs the
+# Durable Object binding and migration below.
+name = "meshtalk-control"
+main = "src/worker.ts"
+compatibility_date = "2025-01-01"
+
+[[durable_objects.bindings]]
+name = "CONTROL"
+class_name = "ControlRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ControlRoom"]
+
+[vars]
+# Set to "false" to disable MeshTalk Relay forwarding.
+CONTROL_RELAY_ENABLED = "true"
+
+[[routes]]
+pattern = "meshtalk-control.qincai.xyz"
+custom_domain = true
