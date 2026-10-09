@@ -249,7 +249,8 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         env:
-          LDAI_UPDATE_INFORMATION: zsync|https://github.com/${{ github.repository }}/releases/latest/download/meshtalk-desktop-${{ matrix.desktop-arch }}.AppImage.zsync
+          LDAI_UPDATE_INFORMATION: >-
+            gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|${{ needs.prepare.outputs.prerelease == 'true' && 'latest-pre' || 'latest' }}|meshtalk-desktop-${{ matrix.desktop-arch }}.AppImage.zsync
         run: |
           set -euo pipefail
           APPIMAGE_DIR=desktop/src-tauri/target/release/bundle/appimage
@@ -257,6 +258,7 @@ jobs:
           APPIMAGE=$(find "$APPIMAGE_DIR" -maxdepth 1 -type f -name '*.AppImage' -print -quit)
           test -n "$APPDIR" && test -n "$APPIMAGE"
           test -f "$APPDIR/AppRun.wrapped"
+          rm -f "${APPIMAGE}.zsync"
 
           sudo chmod -R a+rX "$APPDIR"
           sudo chmod a+x "$APPDIR/AppRun" "$APPDIR/AppRun.wrapped"
@@ -271,6 +273,9 @@ jobs:
 
           APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" OUTPUT="$APPIMAGE" "$LINUXDEPLOY" \
             --appimage-extract-and-run --verbosity 1 --appdir "$APPDIR" --plugin gtk --output appimage
+
+          test -f "${APPIMAGE}.zsync"
+          readelf --string-dump=.upd_info "$APPIMAGE" | grep -F -- "$LDAI_UPDATE_INFORMATION"
 
       - name: Collect desktop installer
         run: python desktop/scripts/package-assets.py ${{ matrix.desktop-platform }} ${{ matrix.desktop-arch }}
