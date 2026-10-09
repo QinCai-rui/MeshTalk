@@ -14,3 +14,9 @@ platform_name = "" if platform == "linux" else f"{platform}-"
 destination = Path("dist") / f"meshtalk-desktop-{platform_name}{arch}.{extension}"
 destination.parent.mkdir(exist_ok=True)
 shutil.copy2(matches[0], destination)
+
+if platform == "linux":
+    zsync = matches[0].with_suffix(matches[0].suffix + ".zsync")
+    if not zsync.is_file():
+        raise RuntimeError(f"Expected AppImage update metadata at {zsync}")
+    shutil.copy2(zsync, destination.with_suffix(destination.suffix + ".zsync"))

@@ -16,3 +16,10 @@ signature plus a channel-specific manifest. Test update installation from a
 separate install before enabling it for stable users. Snapshot/unstable and
 stable channels must use independently generated manifests and must never allow
 an unsigned fallback.
+
+Linux AppImages use AppImageUpdate's external zsync format separately from
+Tauri's signed updater. Stable AppImages point to the latest stable GitHub
+release; snapshot AppImages point to the latest prerelease. Both publish their
+`.zsync` metadata beside the AppImage. This external update path is unsigned
+and relies on GitHub's HTTPS delivery. It does not enable in-app updates or
+provide a fallback for Tauri's signed updater.
