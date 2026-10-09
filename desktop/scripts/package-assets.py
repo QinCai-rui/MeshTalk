@@ -10,6 +10,7 @@ subdirectory = {"linux": "appimage", "macos": "dmg", "windows": "nsis"}[platform
 matches = list((bundle / subdirectory).glob(f"*.{extension}"))
 if len(matches) != 1:
     raise RuntimeError(f"Expected one {platform} installer; found {len(matches)}")
-destination = Path("dist") / f"meshtalk-desktop-{platform}-{arch}.{extension}"
+platform_name = "" if platform == "linux" else f"{platform}-"
+destination = Path("dist") / f"meshtalk-desktop-{platform_name}{arch}.{extension}"
 destination.parent.mkdir(exist_ok=True)
 shutil.copy2(matches[0], destination)
