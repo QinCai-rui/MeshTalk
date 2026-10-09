@@ -103,7 +103,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          # Ubuntu 22.04 is the oldest Tauri v2 build base with WebKitGTK 4.1.
+          - os: ubuntu-22.04
             target: bun-linux-x64
             artifact: meshtalk-linux-x64
             suffix: ""
@@ -111,7 +112,7 @@ jobs:
             desktop-platform: linux
             desktop-arch: x64
             bundle: appimage
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             target: bun-linux-arm64
             artifact: meshtalk-linux-arm64
             suffix: ""
@@ -317,7 +318,7 @@ jobs:
 
           ## Platform Notes
 
-          **Linux:** The precompiled binaries require **glibc 2.38** or newer (Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). If your distribution ships an older glibc, [compile from source](https://github.com/QinCai-rui/MeshTalk#compile-from-source) instead.
+          **Linux:** The precompiled binaries require **glibc 2.35** or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, or equivalent). If your distribution ships an older glibc, [compile from source](https://github.com/QinCai-rui/MeshTalk#compile-from-source) instead.
           EOF
           )
             RELEASE_ARGS=("$V" dist/*/* --target "$RELEASE_SHA" --title "$V" "$NOTES_FLAG" --notes "$EXTRA_NOTES")

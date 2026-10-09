@@ -78,8 +78,8 @@ On Windows, run `meshtalk.exe` from the extracted archive.
 
 > [!NOTE]
 > Release binaries are provided for macOS (Intel and Apple Silicon), Linux (x64
-> and ARM64), and Windows (x64). The Linux binaries require glibc 2.38 or newer
-> (Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). Older distributions
+> and ARM64), and Windows (x64). The Linux binaries require glibc 2.35 or newer
+> (Ubuntu 22.04+, Debian 12+, Fedora 36+, or equivalent). Older distributions
 > can run MeshTalk by [building from source](#compile-from-source) instead.
 
 ### Desktop App
