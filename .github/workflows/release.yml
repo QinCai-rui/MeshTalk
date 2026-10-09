@@ -250,8 +250,7 @@ jobs:
           APPIMAGE_DIR=desktop/src-tauri/target/release/bundle/appimage
           APPDIR=$(find "$APPIMAGE_DIR" -maxdepth 1 -type d -name '*.AppDir' -print -quit)
           APPIMAGE=$(find "$APPIMAGE_DIR" -maxdepth 1 -type f -name '*.AppImage' -print -quit)
-          LINUXDEPLOY=$(find "$HOME/.cache/tauri" -maxdepth 1 -type f -name 'linuxdeploy-*.AppImage' -print -quit)
-          test -n "$APPDIR" && test -n "$APPIMAGE" && test -n "$LINUXDEPLOY"
+          test -n "$APPDIR" && test -n "$APPIMAGE"
           test -f "$APPDIR/AppRun.wrapped"
 
           sudo chmod -R a+rX "$APPDIR"
@@ -262,6 +261,8 @@ jobs:
             arm64) ARCH=aarch64 ;;
             *) echo "Unsupported AppImage architecture: ${{ matrix.desktop-arch }}" >&2; exit 1 ;;
           esac
+          LINUXDEPLOY=$(find "$HOME/.cache/tauri" -maxdepth 1 -type f -name 'linuxdeploy-*.AppImage' ! -name '*plugin*' -print -quit)
+          test -n "$LINUXDEPLOY"
 
           APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" OUTPUT="$APPIMAGE" "$LINUXDEPLOY" \
             --appimage-extract-and-run --verbosity 1 --appdir "$APPDIR" --plugin gtk --output appimage
