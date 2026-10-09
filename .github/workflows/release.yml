@@ -238,6 +238,10 @@ jobs:
           mkdir -p desktop/src-tauri/binaries
           cp dist/release/meshtalk-backend${{ matrix.suffix }} desktop/src-tauri/binaries/meshtalk-backend-${{ matrix.triple }}${{ matrix.suffix }}
 
+      - name: Refresh cached AppRun permissions
+        if: runner.os == 'Linux'
+        run: rm -f "$HOME/.cache/tauri/AppRun-x86_64" "$HOME/.cache/tauri/AppRun-aarch64"
+
       - name: Build unsigned desktop installer
         working-directory: desktop
         run: bun run package --bundles ${{ matrix.bundle }}

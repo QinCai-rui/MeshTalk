@@ -89,7 +89,7 @@ MeshTalk version and bundled backend:
 
 - `meshtalk-desktop-macos-arm64.dmg` or `meshtalk-desktop-macos-x64.dmg`
 - `meshtalk-desktop-windows-x64.exe`
-- `meshtalk-desktop-linux-x64.AppImage` or `meshtalk-desktop-linux-arm64.AppImage`
+- `meshtalk-desktop-x64.AppImage` or `meshtalk-desktop-arm64.AppImage`
 
 The desktop app shares the identity, contacts, rooms, and history under
 `~/.meshtalk` with the TUI and CLI. It connects to an existing backend when one
