@@ -13,7 +13,7 @@
     },
     "cli": {
       "name": "meshtalk-cli",
-      "version": "0.32.3",
+      "version": "0.33.0",
       "devDependencies": {
         "bun-types": "latest",
         "typescript": "^7.0.2",
@@ -21,7 +21,7 @@
     },
     "control": {
       "name": "meshtalk-control",
-      "version": "0.32.3",
+      "version": "0.33.0",
       "devDependencies": {
         "bun-types": "latest",
         "typescript": "^7.0.2",
@@ -34,6 +34,7 @@
         "@tauri-apps/api": "^2.11.1",
         "@tauri-apps/plugin-process": "^2.3.1",
         "@tauri-apps/plugin-updater": "^2.12.0",
+        "lucide-react": "^1.54.0",
         "react": "19.2.8",
         "react-dom": "19.2.8",
         "react-markdown": "^10.1.0",
@@ -52,7 +53,7 @@
     },
     "tui": {
       "name": "meshtalk-tui",
-      "version": "0.32.3",
+      "version": "0.33.0",
       "dependencies": {
         "@opentui/core": "^0.5.10",
         "@opentui/react": "^0.5.10",
@@ -306,6 +307,8 @@
     "lightningcss-win32-x64-msvc": ["lightningcss-win32-x64-msvc@1.33.0", "", { "os": "win32", "cpu": "x64" }, "sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA=="],
 
     "longest-streak": ["longest-streak@3.1.0", "", {}, "sha512-9Ri+o0JYgehTaVBBDoMqIl8GXtbWg711O3srftcHhZ0dqnETqLaoIK0x17fUw9rFSlK/0NlsKe0Ahhyl5pXE2g=="],
+
+    "lucide-react": ["lucide-react@1.54.0", "", { "peerDependencies": { "@types/react": "*", "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0" }, "optionalPeers": ["@types/react"] }, "sha512-kVmnVCBoLztTGe3S76xu8utwxijRLOinknNq9e8btZ0R2fm6WCgxY+weaLiA50odo/yi+apm/4B2A/LsFZhTrw=="],
 
     "markdown-table": ["markdown-table@3.0.4", "", {}, "sha512-wiYz4+JrLyb/DqW2hkFJxP7Vd7JuTDm77fvbM8VfEQdmSMqcImWeeRbHwZjBjIFki/VaMK2BhFi7oUUZeM5bqw=="],
 
