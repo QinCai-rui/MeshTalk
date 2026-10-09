@@ -238,13 +238,33 @@ jobs:
           mkdir -p desktop/src-tauri/binaries
           cp dist/release/meshtalk-backend${{ matrix.suffix }} desktop/src-tauri/binaries/meshtalk-backend-${{ matrix.triple }}${{ matrix.suffix }}
 
-      - name: Refresh cached AppRun permissions
-        if: runner.os == 'Linux'
-        run: rm -f "$HOME/.cache/tauri/AppRun-x86_64" "$HOME/.cache/tauri/AppRun-aarch64"
-
       - name: Build unsigned desktop installer
         working-directory: desktop
         run: bun run package --bundles ${{ matrix.bundle }}
+
+      - name: Fix AppImage permissions and rebuild
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APPIMAGE_DIR=desktop/src-tauri/target/release/bundle/appimage
+          APPDIR=$(find "$APPIMAGE_DIR" -maxdepth 1 -type d -name '*.AppDir' -print -quit)
+          APPIMAGE=$(find "$APPIMAGE_DIR" -maxdepth 1 -type f -name '*.AppImage' -print -quit)
+          LINUXDEPLOY=$(find "$HOME/.cache/tauri" -maxdepth 1 -type f -name 'linuxdeploy-*.AppImage' -print -quit)
+          test -n "$APPDIR" && test -n "$APPIMAGE" && test -n "$LINUXDEPLOY"
+          test -f "$APPDIR/AppRun.wrapped"
+
+          sudo chmod -R a+rX "$APPDIR"
+          sudo chmod a+x "$APPDIR/AppRun" "$APPDIR/AppRun.wrapped"
+
+          case "${{ matrix.desktop-arch }}" in
+            x64) ARCH=x86_64 ;;
+            arm64) ARCH=aarch64 ;;
+            *) echo "Unsupported AppImage architecture: ${{ matrix.desktop-arch }}" >&2; exit 1 ;;
+          esac
+
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" OUTPUT="$APPIMAGE" "$LINUXDEPLOY" \
+            --appimage-extract-and-run --verbosity 1 --appdir "$APPDIR" --plugin gtk --output appimage
 
       - name: Collect desktop installer
         run: python desktop/scripts/package-assets.py ${{ matrix.desktop-platform }} ${{ matrix.desktop-arch }}
