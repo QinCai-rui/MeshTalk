@@ -190,6 +190,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "desktop/src-tauri"
+          # Native build artifacts must not cross Ubuntu/glibc baselines.
+          key: ${{ matrix.os }}
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
