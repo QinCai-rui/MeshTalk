@@ -248,6 +248,8 @@ jobs:
       - name: Fix AppImage permissions and rebuild
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          LDAI_UPDATE_INFORMATION: zsync|https://github.com/${{ github.repository }}/releases/latest/download/meshtalk-desktop-${{ matrix.desktop-arch }}.AppImage.zsync
         run: |
           set -euo pipefail
           APPIMAGE_DIR=desktop/src-tauri/target/release/bundle/appimage
