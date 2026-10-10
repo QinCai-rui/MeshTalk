@@ -258,7 +258,7 @@ jobs:
           APPIMAGE=$(find "$APPIMAGE_DIR" -maxdepth 1 -type f -name '*.AppImage' -print -quit)
           test -n "$APPDIR" && test -n "$APPIMAGE"
           test -f "$APPDIR/AppRun.wrapped"
-          rm -f "${APPIMAGE}.zsync"
+          find "$APPIMAGE_DIR" -maxdepth 1 -type f -name '*.zsync' -delete
 
           sudo chmod -R a+rX "$APPDIR"
           sudo chmod a+x "$APPDIR/AppRun" "$APPDIR/AppRun.wrapped"
@@ -274,8 +274,23 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" OUTPUT="$APPIMAGE" "$LINUXDEPLOY" \
             --appimage-extract-and-run --verbosity 1 --appdir "$APPDIR" --plugin gtk --output appimage
 
-          test -f "${APPIMAGE}.zsync"
-          readelf --string-dump=.upd_info "$APPIMAGE" | grep -F -- "$LDAI_UPDATE_INFORMATION"
+          ZSYNC="${APPIMAGE}.zsync"
+          if [[ ! -f "$ZSYNC" ]]; then
+            mapfile -t generated_zsyncs < <(find "$APPIMAGE_DIR" -maxdepth 1 -type f -name '*.zsync' -print)
+            if [[ ${#generated_zsyncs[@]} -eq 1 ]]; then
+              mv "${generated_zsyncs[0]}" "$ZSYNC"
+            else
+              echo "Expected one generated zsync file for $APPIMAGE; found ${#generated_zsyncs[@]}" >&2
+              printf 'Found: %s\n' "${generated_zsyncs[@]}" >&2
+              exit 1
+            fi
+          fi
+
+          if ! readelf --string-dump=.upd_info "$APPIMAGE" | grep -Fq -- "$LDAI_UPDATE_INFORMATION"; then
+            echo "AppImage update information does not match the configured value" >&2
+            readelf --string-dump=.upd_info "$APPIMAGE" >&2 || true
+            exit 1
+          fi
 
       - name: Collect desktop installer
         run: python desktop/scripts/package-assets.py ${{ matrix.desktop-platform }} ${{ matrix.desktop-arch }}
