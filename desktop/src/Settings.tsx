@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { invoke, request, target, type Conversation, type Row } from "./api"
 import { Dialog } from "./components/Dialog"
-import { Icon } from "./components/Icon"
+import { Icon, type IconName } from "./components/Icon"
 import { Updater } from "./components/Updater"
 
 const PUBLIC_CONTROL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
-const sections = [
+const sections: { name: string; icon: IconName; description: string }[] = [
   { name: "Profile", icon: "people", description: "Choose how people see you and manage this desktop app." },
   { name: "Appearance", icon: "appearance", description: "Make MeshTalk comfortable to read and use." },
   { name: "Notifications", icon: "bell", description: "Decide which activity gets your attention." },

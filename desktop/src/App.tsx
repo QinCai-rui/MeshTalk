@@ -12,7 +12,7 @@ import { Search } from "./components/Search"
 import { MessageBody } from "./components/MessageBody"
 import { AttachmentComposer, Files, ImagePreview, formatSize, type AttachmentBatch, type StagedFile } from "./components/Attachments"
 import { conversations, groupFiles, isMuted, mentionAt, MAX_MESSAGE_BYTES, persist, restore, storage } from "./chatState"
-import { Icon } from "./components/Icon"
+import { Icon, type IconName } from "./components/Icon"
 import { MessageStatus } from "./components/MessageStatus"
 
 const clientId = crypto.randomUUID()
@@ -358,8 +358,14 @@ export function App() {
     if (!content) return
     if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) { setError("Message is too long (30 KB maximum)."); return }
     const row: Row = { message_id: `local:${crypto.randomUUID()}`, sender_id: identity.peer_id, content, created_at: Date.now() / 1000, pending: true, reply_to_message_id: reply?.message_id }
+    archiveRef.current = false; setArchive(false); setBefore(null)
+    atBottom.current = true; setNewBelow(false)
     cache.current[key] = [...(cache.current[key] ?? []), row]
     setMessages(cache.current[key]); setDrafts(current => ({ ...current, [key]: "" })); setReply(undefined); setMention(undefined)
+    // An archive page can have the same count as the latest history plus this row.
+    requestAnimationFrame(() => {
+      if (selected.current && conversationKey(selected.current) === key && !archiveRef.current) historyEnd.current?.scrollIntoView({ behavior: "auto" })
+    })
     const previous = sendQueues.current.get(key) ?? Promise.resolve()
     const task = previous.catch(() => {}).then(async () => {
     try {
@@ -370,6 +376,10 @@ export function App() {
       cache.current[key] = cache.current[key].map(m => m.message_id === row.message_id ? { ...m, pending: false, failed: true } : m)
       if (selected.current && conversationKey(selected.current) === key) setMessages(cache.current[key])
       setError(String(e))
+      // Failure text changes the layout without changing the message count.
+      requestAnimationFrame(() => {
+        if (selected.current && conversationKey(selected.current) === key && !archiveRef.current && atBottom.current) historyEnd.current?.scrollIntoView({ behavior: "auto" })
+      })
     } finally { if (selected.current && conversationKey(selected.current) === key) composer.current?.focus() }
     })
     sendQueues.current.set(key, task)
@@ -426,7 +436,7 @@ export function App() {
       </nav>
       <div className="sidebar-utilities"><button title="People" aria-label={`People, ${friendCount} friend requests`} onClick={() => setPanel("people")}><Icon name="people" size={17} />People{friendCount > 0 && <span className="count-badge">{friendCount}</span>}</button><button title="Files and transfers" aria-label="Files and transfers" onClick={() => setPanel("files")}><Icon name="files" size={17} />Files</button><button className="icon-button" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" onClick={() => setPanel("help")}><Icon name="help" size={17} /></button></div>
       {demo && <div className="demo-controls"><span>Design demo</span><div role="group" aria-label="Demo accent"><button aria-pressed={accent === "teal"} onClick={() => setAccent("teal")}>Teal</button><button aria-pressed={accent === "blue"} onClick={() => setAccent("blue")}>Blue</button></div></div>}
-      <footer className="user-panel"><span className="avatar sm" style={hueStyle(identity.peer_id ?? "?")}>{initialOf(identity.display_name ?? "")}{ready && !identity.dnd_enabled && <span className="online-dot" />}</span><span className="conversation-body"><span className="conversation-name">{identity.display_name ?? "Connecting…"}</span><span className="conversation-sub">{ready ? identity.dnd_enabled ? "Do not disturb" : "Connected" : "Disconnected"}</span></span><button className="icon-button" title={identity.dnd_enabled ? "Turn off Do not disturb" : "Turn on Do not disturb"} aria-label="Toggle do not disturb" aria-pressed={Boolean(identity.dnd_enabled)} onClick={() => run(async () => { await request("dnd", { enabled: !identity.dnd_enabled }); await refresh() })}><Icon name="bell" /></button><button className="icon-button" title="Settings" aria-label="Settings" onClick={() => setSettings(true)}><Icon name="settings" /></button></footer>
+      <footer className="user-panel"><span className="avatar sm" style={hueStyle(identity.peer_id ?? "?")}>{initialOf(identity.display_name ?? "")}{ready && !identity.dnd_enabled && <span className="online-dot" />}</span><span className="conversation-body"><span className="conversation-name">{identity.display_name ?? "Connecting…"}</span><span className="conversation-sub">{ready ? identity.dnd_enabled ? "Do not disturb" : "Connected" : "Disconnected"}</span></span><button className="icon-button" title={identity.dnd_enabled ? "Turn off Do not disturb" : "Turn on Do not disturb"} aria-label="Toggle do not disturb" aria-pressed={Boolean(identity.dnd_enabled)} onClick={() => run(async () => { await request("dnd", { enabled: !identity.dnd_enabled }); await refresh() })}><Icon name={identity.dnd_enabled ? "bellOff" : "bell"} /></button><button className="icon-button" title="Settings" aria-label="Settings" onClick={() => setSettings(true)}><Icon name="settings" /></button></footer>
     </aside>
     <main>
       {error && <div role="alert" className="error">{error}<button onClick={() => setError("")}>Dismiss</button>{!ready && <button onClick={start}>Reconnect</button>}</div>}
@@ -523,11 +533,11 @@ export function App() {
       </div>
     })()}
     {settings && <Settings selection={selection} onClose={() => setSettings(false)} onRefresh={refresh} theme={theme} onTheme={setTheme} accent={accent} onAccent={setAccent} />}
-    {newConversation && <Dialog title="Start a conversation" onClose={() => setNewConversation(false)}><p className="muted">Choose how you'd like to connect.</p><div className="start-options">{[
+    {newConversation && <Dialog title="Start a conversation" onClose={() => setNewConversation(false)}><p className="muted">Choose how you'd like to connect.</p><div className="start-options">{([
       { icon: "people", title: "Find a person", detail: "Find friends or someone discovered on your local network.", action: () => setPanel("people") },
       { icon: "group", title: "Create a group", detail: "Make a group and share an invite with others.", action: () => setNewGroup("") },
       { icon: "invite", title: "Join with an invite", detail: "Paste a room or group invite someone shared with you.", action: () => setJoin("") },
-    ].map(item => <button key={item.title} onClick={() => { setNewConversation(false); item.action() }}><Icon name={item.icon} size={24} /><span><strong>{item.title}</strong><small>{item.detail}</small></span><Icon name="chevron" size={17} /></button>)}</div></Dialog>}
+    ] as { icon: IconName; title: string; detail: string; action: () => void }[]).map(item => <button key={item.title} onClick={() => { setNewConversation(false); item.action() }}><Icon name={item.icon} size={24} /><span><strong>{item.title}</strong><small>{item.detail}</small></span><Icon name="chevron" size={17} /></button>)}</div></Dialog>}
     {join !== null && <Dialog title="Join with an invite" onClose={() => setJoin(null)}><form onSubmit={e => { e.preventDefault(); void run(async () => { await request("room_join", { invite: join.trim() }); setJoin(null); await refresh() }) }}><p>Paste a room or group invite shared with you.</p>{error && <p role="alert" className="error">{error}</p>}<label className="field-label">Invite<textarea required aria-label="Room invite" placeholder="meshtalk://…" value={join} onChange={e => setJoin(e.target.value)} /></label><div className="actions"><button type="button" onClick={() => setJoin(null)}>Cancel</button><button className="primary" disabled={!join.trim()}>Join room</button></div></form></Dialog>}
     {newGroup !== null && <Dialog title="Create a group" onClose={() => setNewGroup(null)}><form onSubmit={e => { e.preventDefault(); void run(async () => { const result = await request("room_create", { name: newGroup.trim() }); setNewGroup(null); setShareInvite(result.invite); await refresh(); if (result.group_id) chooseConversation({ kind: "group", id: result.group_id, name: newGroup.trim() }) }) }}><p>You'll get an invite to share after creating your group.</p>{error && <p role="alert" className="error">{error}</p>}<label className="field-label">Group name<input aria-label="Group name" placeholder="Give your group a name" required maxLength={80} value={newGroup} onChange={e => setNewGroup(e.target.value)} /></label><div className="actions"><button type="button" onClick={() => setNewGroup(null)}>Cancel</button><button className="primary" disabled={!newGroup.trim()}>Create group</button></div></form></Dialog>}
     {shareInvite && <Dialog title="Share room invite" onClose={() => setShareInvite(undefined)}><p>Send this invite to someone you want to connect with.</p><textarea readOnly aria-label="Invite to share" value={shareInvite} /><button className="primary" onClick={() => copy(shareInvite)}>Copy invite</button></Dialog>}
