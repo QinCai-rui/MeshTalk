@@ -236,7 +236,7 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; background:
 .msg:hover .msg-hover, .msg:focus-within .msg-hover { display: flex; }
 .msg-hover button { color: var(--text-secondary); padding: 7px 9px; border-radius: 8px; }
 .msg-hover button:hover { color: var(--text-strong); }
-.date-divider { position: sticky; top: 0; z-index: 2; text-align: center; margin: 20px auto 12px; padding: 5px 14px; width: fit-content; color: var(--text-secondary); font-size: 12px; font-weight: 600; background: var(--card); border: 1px solid var(--border); border-radius: 999px; box-shadow: var(--panel-shadow); }
+.date-divider { text-align: center; margin: 20px auto 12px; padding: 5px 14px; width: fit-content; color: var(--text-secondary); font-size: 12px; font-weight: 600; background: var(--card); border: 1px solid var(--border); border-radius: 999px; box-shadow: var(--panel-shadow); }
 .date-divider::before, .date-divider::after { content: none; }
 .unread-divider { color: var(--accent-contrast); background: var(--accent); border-color: transparent; font-weight: 700; }
 .jump-latest { position: absolute; left: 50%; bottom: 118px; transform: translateX(-50%); z-index: 3; background: var(--text-strong); color: var(--bg); border-radius: 999px; padding: 9px 16px; font-size: 12.5px; font-weight: 650; box-shadow: var(--shadow); border: 1px solid transparent; user-select: none; }
