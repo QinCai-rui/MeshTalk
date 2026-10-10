@@ -258,7 +258,9 @@ jobs:
           APPIMAGE=$(find "$APPIMAGE_DIR" -maxdepth 1 -type f -name '*.AppImage' -print -quit)
           test -n "$APPDIR" && test -n "$APPIMAGE"
           test -f "$APPDIR/AppRun.wrapped"
-          find "$APPIMAGE_DIR" -maxdepth 1 -type f -name '*.zsync' -delete
+          ZSYNC="${APPIMAGE}.zsync"
+          UPDATE_ASSET="meshtalk-desktop-${{ matrix.desktop-arch }}.AppImage"
+          rm -f "$ZSYNC"
 
           sudo chmod -R a+rX "$APPDIR"
           sudo chmod a+x "$APPDIR/AppRun" "$APPDIR/AppRun.wrapped"
@@ -274,17 +276,13 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" OUTPUT="$APPIMAGE" "$LINUXDEPLOY" \
             --appimage-extract-and-run --verbosity 1 --appdir "$APPDIR" --plugin gtk --output appimage
 
-          ZSYNC="${APPIMAGE}.zsync"
-          if [[ ! -f "$ZSYNC" ]]; then
-            mapfile -t generated_zsyncs < <(find "$APPIMAGE_DIR" -maxdepth 1 -type f -name '*.zsync' -print)
-            if [[ ${#generated_zsyncs[@]} -eq 1 ]]; then
-              mv "${generated_zsyncs[0]}" "$ZSYNC"
-            else
-              echo "Expected one generated zsync file for $APPIMAGE; found ${#generated_zsyncs[@]}" >&2
-              printf 'Found: %s\n' "${generated_zsyncs[@]}" >&2
-              exit 1
-            fi
-          fi
+          # Generate the sidecar in the release directory and point it at the
+          # published asset name, rather than appimagetool's temporary working directory.
+          (
+            cd "$APPIMAGE_DIR"
+            zsyncmake -u "$UPDATE_ASSET" "$(basename "$APPIMAGE")"
+          )
+          test -f "$ZSYNC" || { echo "zsyncmake did not create $ZSYNC" >&2; exit 1; }
 
           if ! readelf --string-dump=.upd_info "$APPIMAGE" | grep -Fq -- "$LDAI_UPDATE_INFORMATION"; then
             echo "AppImage update information does not match the configured value" >&2
