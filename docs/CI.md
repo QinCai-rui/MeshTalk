@@ -12,7 +12,7 @@
 | Desktop frontend | Typecheck, build, unit tests, and Chromium Playwright tests against demo data |
 | Common | Unit tests; dependent clients cover shared types |
 | Launcher | Bundle local imports with third-party packages left external |
-| Backend | Locked Python 3.12 environment and serial pytest tests with temporary application state |
+| Backend | Locked Python 3.12 environment and serial pytest tests with temporary application state, verbose names, slowest-test durations, and a 120 second per-test timeout |
 | Containers | Build affected client, control, or analytics images locally without pushing them |
 | Installers | Bash syntax check and PowerShell parser check for the release installers |
 | Native desktop | Linux Rust compilation and tests, generated icons, and the development sidecar override |

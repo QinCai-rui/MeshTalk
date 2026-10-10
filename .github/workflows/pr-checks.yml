@@ -134,7 +134,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --project backend --locked --python 3.12
       - name: Run pytest without parallel network fixtures
-        run: uv run --project backend --locked python -m pytest backend/tests -q
+        run: uv run --project backend --locked --with pytest-timeout python -m pytest backend/tests -vv --durations=20 --timeout=120
         env:
           MESHTALK_DATA_DIR: ${{ runner.temp }}/meshtalk-test-data
 
