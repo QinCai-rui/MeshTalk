@@ -12,7 +12,7 @@ import { Search } from "./components/Search"
 import { MessageBody } from "./components/MessageBody"
 import { AttachmentComposer, Files, ImagePreview, formatSize, type AttachmentBatch, type StagedFile } from "./components/Attachments"
 import { conversations, groupFiles, isMuted, mentionAt, MAX_MESSAGE_BYTES, persist, restore, storage } from "./chatState"
-import { Icon } from "./components/Icon"
+import { Icon, type IconName } from "./components/Icon"
 import { MessageStatus } from "./components/MessageStatus"
 
 const clientId = crypto.randomUUID()
@@ -523,11 +523,11 @@ export function App() {
       </div>
     })()}
     {settings && <Settings selection={selection} onClose={() => setSettings(false)} onRefresh={refresh} theme={theme} onTheme={setTheme} accent={accent} onAccent={setAccent} />}
-    {newConversation && <Dialog title="Start a conversation" onClose={() => setNewConversation(false)}><p className="muted">Choose how you'd like to connect.</p><div className="start-options">{[
+    {newConversation && <Dialog title="Start a conversation" onClose={() => setNewConversation(false)}><p className="muted">Choose how you'd like to connect.</p><div className="start-options">{([
       { icon: "people", title: "Find a person", detail: "Find friends or someone discovered on your local network.", action: () => setPanel("people") },
       { icon: "group", title: "Create a group", detail: "Make a group and share an invite with others.", action: () => setNewGroup("") },
       { icon: "invite", title: "Join with an invite", detail: "Paste a room or group invite someone shared with you.", action: () => setJoin("") },
-    ].map(item => <button key={item.title} onClick={() => { setNewConversation(false); item.action() }}><Icon name={item.icon} size={24} /><span><strong>{item.title}</strong><small>{item.detail}</small></span><Icon name="chevron" size={17} /></button>)}</div></Dialog>}
+    ] as { icon: IconName; title: string; detail: string; action: () => void }[]).map(item => <button key={item.title} onClick={() => { setNewConversation(false); item.action() }}><Icon name={item.icon} size={24} /><span><strong>{item.title}</strong><small>{item.detail}</small></span><Icon name="chevron" size={17} /></button>)}</div></Dialog>}
     {join !== null && <Dialog title="Join with an invite" onClose={() => setJoin(null)}><form onSubmit={e => { e.preventDefault(); void run(async () => { await request("room_join", { invite: join.trim() }); setJoin(null); await refresh() }) }}><p>Paste a room or group invite shared with you.</p>{error && <p role="alert" className="error">{error}</p>}<label className="field-label">Invite<textarea required aria-label="Room invite" placeholder="meshtalk://…" value={join} onChange={e => setJoin(e.target.value)} /></label><div className="actions"><button type="button" onClick={() => setJoin(null)}>Cancel</button><button className="primary" disabled={!join.trim()}>Join room</button></div></form></Dialog>}
     {newGroup !== null && <Dialog title="Create a group" onClose={() => setNewGroup(null)}><form onSubmit={e => { e.preventDefault(); void run(async () => { const result = await request("room_create", { name: newGroup.trim() }); setNewGroup(null); setShareInvite(result.invite); await refresh(); if (result.group_id) chooseConversation({ kind: "group", id: result.group_id, name: newGroup.trim() }) }) }}><p>You'll get an invite to share after creating your group.</p>{error && <p role="alert" className="error">{error}</p>}<label className="field-label">Group name<input aria-label="Group name" placeholder="Give your group a name" required maxLength={80} value={newGroup} onChange={e => setNewGroup(e.target.value)} /></label><div className="actions"><button type="button" onClick={() => setNewGroup(null)}>Cancel</button><button className="primary" disabled={!newGroup.trim()}>Create group</button></div></form></Dialog>}
     {shareInvite && <Dialog title="Share room invite" onClose={() => setShareInvite(undefined)}><p>Send this invite to someone you want to connect with.</p><textarea readOnly aria-label="Invite to share" value={shareInvite} /><button className="primary" onClick={() => copy(shareInvite)}>Copy invite</button></Dialog>}

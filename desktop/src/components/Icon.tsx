@@ -58,7 +58,7 @@ const icons = {
 
 export type IconName = keyof typeof icons
 
-export function Icon({ name, size = 18, ...props }: { name: IconName | string; size?: number } & SVGProps<SVGSVGElement> & LucideProps) {
-  const Component = (icons as Record<string, typeof Search>)[name] ?? Info
-  return <Component className={`icon ${props.className ?? ""}`} size={size} strokeWidth={2} aria-hidden="true" focusable="false" {...props} />
+export function Icon({ name, size = 18, className, ...props }: { name: IconName; size?: number } & SVGProps<SVGSVGElement> & LucideProps) {
+  const Component = icons[name]
+  return <Component size={size} strokeWidth={2} aria-hidden="true" focusable="false" {...props} className={`icon ${className ?? ""}`.trim()} />
 }
