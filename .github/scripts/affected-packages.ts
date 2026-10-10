@@ -5,13 +5,17 @@ export const typescriptPackages = ["tui", "cli", "control", "desktop", "common",
 
 export function affectedPackages(paths: string[], all = false) {
   const selected = new Set<string>()
+  const containers = new Set<string>()
   let backend = all
   let web = all
   let analytics = all
   let native = all
+  let installers = all
   const selectAll = () => {
     typescriptPackages.forEach(name => selected.add(name))
+    for (const name of ["client", "control", "analytics"]) containers.add(name)
     backend = web = analytics = native = true
+    installers = true
   }
   if (all) selectAll()
   for (const path of paths) {
@@ -19,14 +23,19 @@ export function affectedPackages(paths: string[], all = false) {
       selectAll()
     } else if (path === "package.json" || path === "bun.lock") {
       typescriptPackages.forEach(name => selected.add(name))
+      containers.add("client")
+      containers.add("control")
       native = true
     } else if (path.startsWith("common/")) {
       for (const name of ["common", "tui", "cli", "launcher"]) selected.add(name)
+      containers.add("client")
     } else if (path.startsWith("tui/") || path.startsWith("cli/")) {
       selected.add(path.split("/")[0])
       selected.add("launcher")
+      containers.add("client")
     } else if (path.startsWith("control/")) {
       selected.add("control")
+      containers.add("control")
     } else if (path.startsWith("desktop/")) {
       selected.add("desktop")
       if (path.startsWith("desktop/src-tauri/") || path.startsWith("desktop/scripts/") || path === "desktop/icon.svg" || path === "desktop/package.json") native = true
@@ -34,13 +43,23 @@ export function affectedPackages(paths: string[], all = false) {
       selected.add("launcher")
     } else if (path.startsWith("backend/")) {
       backend = true
+      containers.add("client")
     } else if (path.startsWith("web/")) {
       web = true
     } else if (path.startsWith("analytics/")) {
       analytics = true
+      containers.add("analytics")
+    } else if (path === "Dockerfile.client" || path.startsWith("docker/")) {
+      containers.add("client")
+    } else if (path === "Dockerfile.control") {
+      containers.add("control")
+    } else if (path === ".dockerignore") {
+      for (const name of ["client", "control", "analytics"]) containers.add(name)
+    } else if (path === "scripts/install.sh" || path === "scripts/install.ps1") {
+      installers = true
     }
   }
-  return { typescript: typescriptPackages.filter(name => selected.has(name)), backend, web, analytics, native, desktop_browser: selected.has("desktop") }
+  return { typescript: typescriptPackages.filter(name => selected.has(name)), containers: ["client", "control", "analytics"].filter(name => containers.has(name)), installers, backend, web, analytics, native, desktop_browser: selected.has("desktop") }
 }
 
 if (import.meta.main) {

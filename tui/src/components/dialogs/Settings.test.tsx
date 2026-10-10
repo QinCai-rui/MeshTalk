@@ -32,7 +32,7 @@ for (const [width, height] of [[96, 28], [60, 20], [32, 12]]) {
       await act(async () => { setup.mockInput.pressEnter(); await setup.renderOnce() })
       expect(command).toBe("customisation")
       await act(async () => { await setup.renderOnce() })
-      expect(setup.captureCharFrame()).toContain("Splash screen")
+      expect(setup.captureCharFrame()).toContain("Settings / Customisation")
     } finally { await act(async () => { setup.renderer.destroy() }) }
   })
 }

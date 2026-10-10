@@ -5,8 +5,10 @@ export function checkResults(jobs: Record<string, Job>) {
   const outputs = jobs.changes.outputs ?? {}
   const targets = JSON.parse(outputs.typescript ?? "null")
   if (!Array.isArray(targets)) throw new Error("Missing TypeScript selection")
-  const expected: Record<string, boolean> = { typescript: targets.length > 0 }
-  for (const [job, key] of Object.entries({ backend: "backend", web: "web", analytics: "analytics", desktop_browser: "desktop_browser", native: "native" })) {
+  const containers = JSON.parse(outputs.containers ?? "null")
+  if (!Array.isArray(containers)) throw new Error("Missing container selection")
+  const expected: Record<string, boolean> = { typescript: targets.length > 0, containers: containers.length > 0 }
+  for (const [job, key] of Object.entries({ installers: "installers", backend: "backend", web: "web", analytics: "analytics", desktop_browser: "desktop_browser", native: "native" })) {
     if (outputs[key] !== "true" && outputs[key] !== "false") throw new Error(`Invalid selection for ${job}`)
     expected[job] = outputs[key] === "true"
   }

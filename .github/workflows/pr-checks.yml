@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       typescript: ${{ steps.select.outputs.typescript }}
+      containers: ${{ steps.select.outputs.containers }}
+      installers: ${{ steps.select.outputs.installers }}
       backend: ${{ steps.select.outputs.backend }}
       web: ${{ steps.select.outputs.web }}
       analytics: ${{ steps.select.outputs.analytics }}
@@ -68,6 +70,56 @@ jobs:
         env:
           PACKAGE: ${{ matrix.package }}
         run: bash .github/scripts/check-typescript.sh "$PACKAGE"
+
+  containers:
+    name: Container image (${{ matrix.image }})
+    needs: changes
+    if: needs.changes.outputs.containers != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.changes.outputs.containers) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build image without pushing
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          case "$IMAGE" in
+            client) dockerfile=Dockerfile.client ;;
+            control) dockerfile=Dockerfile.control ;;
+            analytics) dockerfile=analytics/Dockerfile ;;
+            *) echo "Unknown container image" >&2; exit 1 ;;
+          esac
+          docker build --file "$dockerfile" --tag "meshtalk-ci-${IMAGE}" .
+
+  installers:
+    name: Installer syntax
+    needs: changes
+    if: needs.changes.outputs.installers == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check Bash installer syntax
+        run: bash -n scripts/install.sh
+      - name: Parse PowerShell installer
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          $path = (Resolve-Path "scripts/install.ps1").Path
+          [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
 
   backend:
     name: Backend tests
@@ -187,7 +239,7 @@ jobs:
 
   ci:
     name: CI
-    needs: [changes, typescript, backend, desktop_browser, native, web, analytics]
+    needs: [changes, typescript, containers, installers, backend, desktop_browser, native, web, analytics]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
