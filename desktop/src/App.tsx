@@ -358,8 +358,14 @@ export function App() {
     if (!content) return
     if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) { setError("Message is too long (30 KB maximum)."); return }
     const row: Row = { message_id: `local:${crypto.randomUUID()}`, sender_id: identity.peer_id, content, created_at: Date.now() / 1000, pending: true, reply_to_message_id: reply?.message_id }
+    archiveRef.current = false; setArchive(false); setBefore(null)
+    atBottom.current = true; setNewBelow(false)
     cache.current[key] = [...(cache.current[key] ?? []), row]
     setMessages(cache.current[key]); setDrafts(current => ({ ...current, [key]: "" })); setReply(undefined); setMention(undefined)
+    // An archive page can have the same count as the latest history plus this row.
+    requestAnimationFrame(() => {
+      if (selected.current && conversationKey(selected.current) === key && !archiveRef.current) historyEnd.current?.scrollIntoView({ behavior: "auto" })
+    })
     const previous = sendQueues.current.get(key) ?? Promise.resolve()
     const task = previous.catch(() => {}).then(async () => {
     try {
@@ -370,6 +376,10 @@ export function App() {
       cache.current[key] = cache.current[key].map(m => m.message_id === row.message_id ? { ...m, pending: false, failed: true } : m)
       if (selected.current && conversationKey(selected.current) === key) setMessages(cache.current[key])
       setError(String(e))
+      // Failure text changes the layout without changing the message count.
+      requestAnimationFrame(() => {
+        if (selected.current && conversationKey(selected.current) === key && !archiveRef.current && atBottom.current) historyEnd.current?.scrollIntoView({ behavior: "auto" })
+      })
     } finally { if (selected.current && conversationKey(selected.current) === key) composer.current?.focus() }
     })
     sendQueues.current.set(key, task)
