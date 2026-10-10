@@ -11,6 +11,7 @@
     "worker:deploy": "bun x wrangler deploy"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261010.1",
     "bun-types": "latest",
     "typescript": "^7.0.2"
   }

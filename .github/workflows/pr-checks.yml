@@ -1,0 +1,204 @@
+name: PR checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+
+jobs:
+  changes:
+    name: Select affected packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      typescript: ${{ steps.select.outputs.typescript }}
+      backend: ${{ steps.select.outputs.backend }}
+      web: ${{ steps.select.outputs.web }}
+      analytics: ${{ steps.select.outputs.analytics }}
+      native: ${{ steps.select.outputs.native }}
+      desktop_browser: ${{ steps.select.outputs.desktop_browser }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Test job selection and aggregate status
+        run: bun test ./.github/scripts/affected-packages.test.ts
+      - name: Test native check preparation
+        run: python3 -m unittest discover -s .github/scripts -p test_check_desktop_native.py -v
+      - id: select
+        name: Select changed packages
+        env:
+          CI_ALL: ${{ github.event_name == 'workflow_dispatch' }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bun .github/scripts/affected-packages.ts
+
+  typescript:
+    name: TypeScript (${{ matrix.package }})
+    needs: changes
+    if: needs.changes.outputs.typescript != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.changes.outputs.typescript) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - name: Build, typecheck, and test
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: bash .github/scripts/check-typescript.sh "$PACKAGE"
+
+  backend:
+    name: Backend tests
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --project backend --locked --python 3.12
+      - name: Run pytest without parallel network fixtures
+        run: uv run --project backend --locked python -m pytest backend/tests -q
+        env:
+          MESHTALK_DATA_DIR: ${{ runner.temp }}/meshtalk-test-data
+
+  desktop_browser:
+    name: Desktop browser tests
+    needs: changes
+    if: needs.changes.outputs.desktop_browser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - name: Install Chromium and runner libraries
+        working-directory: desktop
+        run: bunx --no-install playwright install --with-deps chromium
+      - name: Run browser tests with sample data
+        run: bun run --cwd desktop test:e2e -- --trace retain-on-failure --output "$RUNNER_TEMP/desktop-playwright"
+      - name: Upload failed browser captures
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-browser-failures
+          path: |
+            ${{ runner.temp }}/desktop-playwright
+            desktop/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+  native:
+    name: Desktop native tests
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+          key: ubuntu-24.04-native-test
+      - name: Install native libraries on the disposable runner
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: bun install --frozen-lockfile
+      - name: Check and test native code without packaging
+        run: bash .github/scripts/check-desktop-native.sh
+
+  web:
+    name: Website build and tests
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      # This independent package retains its existing npm lockfile.
+      - run: npm ci
+      - run: bun run build
+      - run: bun test ./test
+
+  analytics:
+    name: Analytics syntax checks
+    needs: changes
+    if: needs.changes.outputs.analytics == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Parse Python without initializing the service database
+        run: python -c 'import ast, pathlib; [ast.parse(p.read_text(), filename=str(p)) for p in pathlib.Path("analytics").rglob("*.py")]'
+      - name: Check Worker JavaScript syntax
+        run: bun build analytics/worker/worker.js --target=browser --outdir "$RUNNER_TEMP/analytics-worker-check"
+
+  ci:
+    name: CI
+    needs: [changes, typescript, backend, desktop_browser, native, web, analytics]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Require every selected check to succeed
+        env:
+          CI_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: bun .github/scripts/check-ci-results.ts

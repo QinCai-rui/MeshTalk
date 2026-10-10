@@ -29,7 +29,6 @@ for (const [width, height] of [[96, 28], [60, 20], [32, 12]]) {
       expect(setup.captureCharFrame()).toContain("Settings")
       await act(async () => { setup.mockInput.pressTab(); await setup.renderOnce() })
       await act(async () => { setup.mockInput.pressArrow("down"); await setup.renderOnce() })
-      await act(async () => { setup.mockInput.pressArrow("down"); await setup.renderOnce() })
       await act(async () => { setup.mockInput.pressEnter(); await setup.renderOnce() })
       expect(command).toBe("customisation")
       await act(async () => { await setup.renderOnce() })
@@ -111,7 +110,7 @@ for (const dialog of [
       expect(panel.screenY).toBeGreaterThan(0)
       expect(panel.screenX + panel.width).toBeLessThan(120)
       expect(panel.screenY + panel.height).toBeLessThan(36)
-      expect(setup.captureCharFrame()).toContain(dialog.kind === "settings" ? "Control server" : dialog.kind === "advanced" ? "Image protocol" : "Enable and test")
+      expect(setup.captureCharFrame()).toContain(dialog.kind === "settings" ? "Choose a settings section" : dialog.kind === "advanced" ? "Image protocol" : "Enable and test")
       if ("firstRun" in dialog) expect(setup.renderer.root.findDescendantById("settings-categories")).toBeUndefined()
     } finally { await act(async () => { setup.renderer.destroy() }) }
   })
