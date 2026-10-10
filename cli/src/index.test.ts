@@ -19,7 +19,7 @@ test("failed batches report errors without success; partial batches retain succe
   } finally {
     log.mockRestore();
     error.mockRestore();
-    process.exitCode = exitCode;
+    process.exitCode = exitCode ?? 0;
   }
 });
 
