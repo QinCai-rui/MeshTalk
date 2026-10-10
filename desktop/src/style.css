@@ -121,9 +121,9 @@ small, .muted { color: var(--text-secondary); }
 .icon-button[aria-pressed="true"] { color: var(--accent); background: var(--selected); border-color: color-mix(in srgb, var(--accent) 34%, transparent); }
 .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-/* Desktop scrollbars stay inside their panel and stay thin. */
+/* Panels stop at their edges without bouncing or passing scrolls to a parent. */
 .sidebar nav, .history, .settings-content, .settings-sidebar, .dialog, .quick-results, .mention-picker, .diagnostic-output, .search-result p {
-  overscroll-behavior: contain;
+  overscroll-behavior: none;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
@@ -162,7 +162,7 @@ small, .muted { color: var(--text-secondary); }
 .view-tabs .unread-filter[aria-pressed="true"] { background: var(--selected); color: var(--accent); }
 .tab-count { font-size: 11px; font-weight: 700; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-strong); border-radius: 999px; padding: 1px 7px; }
 :root[data-theme="dark"] .tab-count { color: var(--accent); }
-.sidebar nav { flex: 1; overflow-y: auto; min-height: 0; padding: 6px 10px 10px; overscroll-behavior: contain; }
+.sidebar nav { flex: 1; overflow-y: auto; min-height: 0; padding: 6px 10px 10px; overscroll-behavior: none; }
 .conversation { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 74px; text-align: left; padding: 11px 12px; border-radius: 13px; border: 1px solid transparent; }
 .conversation:hover { background: var(--hover); border-color: var(--border); }
 .conversation.selected { background: var(--selected); border-color: color-mix(in srgb, var(--accent) 28%, transparent); box-shadow: var(--panel-shadow); }
@@ -208,7 +208,7 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; background:
 .empty p { color: var(--text-secondary); margin: 14px 0 24px; }
 .empty .actions { justify-content: center; }
 .empty small { display: block; font-size: 12px; margin-top: 28px; line-height: 1.6; }
-.history { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px max(24px, calc((100% - 840px) / 2)) 96px; scroll-padding-bottom: 24px; background: radial-gradient(1200px 320px at 50% -80px, color-mix(in srgb, var(--accent) 7%, transparent), transparent 70%), var(--bg); }
+.history { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none; padding: 18px max(24px, calc((100% - 840px) / 2)) 96px; scroll-padding-bottom: 24px; background: radial-gradient(1200px 320px at 50% -80px, color-mix(in srgb, var(--accent) 7%, transparent), transparent 70%), var(--bg); }
 .history-more { display: block; margin: 0 auto 14px; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); border: 1px solid var(--border-strong); border-radius: 999px; padding: 7px 14px; background: var(--card); box-shadow: var(--panel-shadow); user-select: none; }
 .msg { position: relative; display: flex; flex-direction: column; align-items: flex-start; padding: 4px 0 4px 42px; margin-top: 14px; }
 .msg.compact { margin-top: 0; padding-top: 2px; }
@@ -264,7 +264,7 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; background:
 .notice button { font-weight: 650; text-decoration: underline; color: inherit; padding: 4px 6px; }
 .capability-note { padding: 8px 24px; color: var(--text-secondary); font-size: 12px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--warning-bg) 55%, transparent); }
 .overlay { position: fixed; inset: 0; background: rgb(14 26 33 / .5); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 10; }
-.dialog { background: var(--sidebar-bg); border: 1px solid var(--border-strong); color: var(--text); border-radius: 17px; width: 480px; max-width: calc(100vw - 32px); max-height: calc(100dvh - 48px); overflow: auto; overscroll-behavior: contain; padding: 26px; box-shadow: var(--shadow); }
+.dialog { background: var(--sidebar-bg); border: 1px solid var(--border-strong); color: var(--text); border-radius: 17px; width: 480px; max-width: calc(100vw - 32px); max-height: calc(100dvh - 48px); overflow: auto; overscroll-behavior: none; padding: 26px; box-shadow: var(--shadow); }
 .native-dialog { margin: auto; }
 .native-dialog::backdrop { background: rgb(14 26 33 / .5); }
 .native-dialog.wide { width: 760px; }
@@ -283,7 +283,7 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; background:
 .start-options small { display: block; line-height: 1.5; margin-top: 4px; color: var(--text-secondary); }
 fieldset { padding: 0; border: 0; min-width: 0; margin: 0; }
 .full-width { width: 100%; }
-.tabs { display: flex; gap: 4px; padding: 8px 0 14px; border-bottom: 1px solid var(--border); overflow-x: auto; margin-bottom: 14px; overscroll-behavior: contain; }
+.tabs { display: flex; gap: 4px; padding: 8px 0 14px; border-bottom: 1px solid var(--border); overflow-x: auto; margin-bottom: 14px; overscroll-behavior: none; }
 .tabs button { white-space: nowrap; color: var(--text-secondary); font-weight: 550; }
 .selected { background: var(--selected); }
 .tabs button.selected { color: var(--text-strong); font-weight: 700; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent); }
@@ -291,7 +291,7 @@ fieldset { padding: 0; border: 0; min-width: 0; margin: 0; }
 .card h3 { margin: 0 0 6px; }
 .card .actions { justify-content: flex-start; margin-top: 12px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; background: var(--bg); padding: 14px; border-radius: 9px; border: 1px solid var(--border); }
-.quick-results { max-height: 50vh; overflow-y: auto; margin-top: 12px; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 12px; }
+.quick-results { max-height: 50vh; overflow-y: auto; margin-top: 12px; overscroll-behavior: none; border: 1px solid var(--border); border-radius: 12px; }
 .quick-results button { display: flex; flex-direction: column; text-align: left; width: 100%; padding: 11px 12px; gap: 3px; border-radius: 9px; }
 .shortcut-list > div { display: grid; grid-template-columns: minmax(120px, 1fr) 2fr; padding: 11px 0; border-bottom: 1px solid var(--border); gap: 12px; }
 .shortcut-list dd { margin: 0; }
@@ -301,7 +301,7 @@ kbd { border: 1px solid var(--border-strong); border-bottom-width: 2px; border-r
 .search-result { display: block; width: 100%; text-align: left; border-bottom: 1px solid var(--border); padding: 12px; border-radius: 10px; }
 .search-result:hover { background: var(--hover); }
 .search-result small { display: block; margin-top: 4px; }
-.search-result p { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; overscroll-behavior: contain; }
+.search-result p { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; overscroll-behavior: none; }
 .image-preview { display: block; max-width: 100%; max-height: 65vh; object-fit: contain; margin: auto; border-radius: 12px; }
 progress { display: block; max-width: 100%; height: 8px; accent-color: var(--accent); margin: 8px 0; }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--text-strong); color: var(--bg); border-radius: 999px; padding: 11px 18px; z-index: 100; font-weight: 600; box-shadow: var(--shadow); }
@@ -329,7 +329,7 @@ summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .native-dialog.settings-screen { position: fixed; inset: 0; margin: 0; padding: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; border: 0; border-radius: 0; background: var(--bg); overflow: hidden; box-shadow: none; }
 .settings-screen > .panel-title { display: none; }
 .settings-workspace { display: flex; height: 100%; min-height: 0; }
-.settings-sidebar { display: flex; flex-direction: column; width: 248px; padding: 22px 14px; flex-shrink: 0; border-right: 1px solid var(--border); background: var(--sidebar-bg); overflow-y: auto; overscroll-behavior: contain; user-select: none; }
+.settings-sidebar { display: flex; flex-direction: column; width: 248px; padding: 22px 14px; flex-shrink: 0; border-right: 1px solid var(--border); background: var(--sidebar-bg); overflow-y: auto; overscroll-behavior: none; user-select: none; }
 .settings-back { display: flex; align-items: center; gap: 8px; width: fit-content; color: var(--text-secondary); margin-bottom: 22px; font-size: 13px; font-weight: 600; }
 .settings-sidebar h1 { padding: 0 12px; margin-bottom: 18px; font-size: 25px; letter-spacing: -.025em; }
 .settings-sidebar nav { display: flex; flex-direction: column; gap: 3px; }
@@ -339,7 +339,7 @@ summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 :root[data-theme="dark"] .settings-sidebar nav button.selected { color: var(--accent); }
 .settings-local { display: flex; align-items: flex-start; gap: 8px; margin-top: auto; padding: 24px 12px 0; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
 .settings-local .icon { margin-top: 2px; }
-.settings-content { flex: 1; min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 40px clamp(24px, 5vw, 72px) 64px; }
+.settings-content { flex: 1; min-width: 0; overflow-y: auto; overscroll-behavior: none; padding: 40px clamp(24px, 5vw, 72px) 64px; }
 .settings-page-heading, .settings-fields, .settings-feedback, .save-status { max-width: 720px; margin-left: auto; margin-right: auto; }
 .settings-page-heading h2 { font-size: 27px; letter-spacing: -.025em; }
 .settings-page-heading > p { color: var(--text-secondary); font-size: 14px; margin: 10px 0 0; }
@@ -418,7 +418,7 @@ summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
 .settings-screen .pinning-service .settings-form { margin-bottom: 0; }
 .inline-prompt { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 12px; font-size: 13px; }
 .settings-screen .inline-prompt .actions { justify-content: flex-start; }
-.diagnostic-output { max-height: 400px; overflow: auto; overscroll-behavior: contain; }
+.diagnostic-output { max-height: 400px; overflow: auto; overscroll-behavior: none; }
 .about-brand { display: flex; align-items: center; gap: 18px; color: var(--accent); margin-bottom: 18px; }
 .about-brand h3 { margin: 0; font-size: 25px; }
 .about-brand p { color: var(--text-secondary); font-size: 13px; margin: 4px 0 0; }

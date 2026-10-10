@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Locator } from "@playwright/test"
 
 test.beforeEach(async ({ page }, testInfo) => {
   if (testInfo.title === "settings save failures retain the edited value and allow retry") {
@@ -115,6 +115,73 @@ test("empty conversation searches explain how to recover", async ({ page }) => {
   await page.getByRole("textbox", { name: "Search conversations" }).fill("Nobody with this name")
   await expect(page.getByRole("heading", { name: "No matches", exact: true })).toBeVisible()
   await expect(page.getByText("Try a different name.")).toBeVisible()
+})
+
+// Browser checks verify CSS and wheel routing, not macOS native rubber-banding.
+test("scroll panels disable boundary effects without blocking wheel scrolling", async ({ page }) => {
+  async function wheelOver(panel: Locator, delta: number) {
+    await panel.evaluate(el => {
+      el.removeAttribute("data-wheel-settled")
+      el.addEventListener("wheel", () => {
+        requestAnimationFrame(() => requestAnimationFrame(() => el.setAttribute("data-wheel-settled", "true")))
+      }, { once: true, passive: true })
+    })
+    await page.mouse.wheel(0, delta)
+    await expect(panel).toHaveAttribute("data-wheel-settled", "true")
+  }
+  const rows = Array.from({ length: 28 }, (_, index) => ({
+    message_id: `scroll-${index}`,
+    sender_id: "alice",
+    content: index === 0 ? Array.from({ length: 18 }, (_, line) => `Sample checklist line ${line + 1}`).join("\n") : `Sample message ${index + 1}`,
+    created_at: 1791626400 + index * 90,
+  }))
+  await page.route("**/src/demo.ts*", async route => {
+    const response = await route.fetch()
+    const original = await response.text()
+    expect(original).toContain("const preferences =")
+    await route.fulfill({ response, body: original.replace("const preferences =", `messages.alice = ${JSON.stringify(rows)};\nconst preferences =`) })
+  })
+  await page.reload()
+  const history = page.locator(".history")
+  await expect(history.locator(".msg")).toHaveCount(rows.length)
+  const maximum = await history.evaluate(el => el.scrollHeight - el.clientHeight)
+  expect(maximum).toBeGreaterThan(1000)
+  for (const selector of ["html", "body", "#root", ".sidebar nav", ".history"]) {
+    await expect(page.locator(selector)).toHaveCSS("overscroll-behavior-y", "none")
+  }
+  await history.evaluate(el => { el.scrollTop = 0 })
+  const box = (await history.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await wheelOver(history, 180)
+  await expect.poll(() => history.evaluate(el => el.scrollTop)).toBeGreaterThan(0)
+  await history.evaluate(el => { el.scrollTop = el.scrollHeight })
+  await wheelOver(history, 180)
+  expect(await history.evaluate(el => el.scrollTop)).toBe(maximum)
+  await wheelOver(history, -180)
+  await expect.poll(() => history.evaluate(el => el.scrollTop)).toBeLessThan(maximum)
+  await history.evaluate(el => { el.scrollTop = 0 })
+  await wheelOver(history, -180)
+  expect(await history.evaluate(el => el.scrollTop)).toBe(0)
+
+  await page.getByRole("button", { name: "Search messages", exact: true }).click()
+  await page.getByRole("textbox", { name: "Search text", exact: true }).fill("Sample")
+  await page.getByRole("button", { name: "Search", exact: true }).click()
+  const result = page.locator(".search-result p").first()
+  const dialog = page.getByRole("dialog", { name: "Search messages", exact: true })
+  await expect(result).toBeVisible()
+  await expect(result).toHaveCSS("overscroll-behavior-y", "none")
+  await expect(dialog).toHaveCSS("overscroll-behavior-y", "none")
+  const resultMaximum = await result.evaluate(el => el.scrollHeight - el.clientHeight)
+  expect(resultMaximum).toBeGreaterThan(0)
+  expect(await dialog.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0)
+  const resultBox = (await result.boundingBox())!
+  await page.mouse.move(resultBox.x + resultBox.width / 2, resultBox.y + resultBox.height / 2)
+  await wheelOver(result, 60)
+  await expect.poll(() => result.evaluate(el => el.scrollTop)).toBeGreaterThan(0)
+  await result.evaluate(el => { el.scrollTop = el.scrollHeight })
+  await wheelOver(result, 240)
+  expect(await result.evaluate(el => el.scrollTop)).toBe(resultMaximum)
+  expect(await dialog.evaluate(el => el.scrollTop)).toBe(0)
 })
 
 test("settings save failures retain the edited value and allow retry", async ({ page }) => {
