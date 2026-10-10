@@ -106,7 +106,7 @@ input, textarea, select { background: var(--composer-bg); border: 1px solid var(
 input::placeholder, textarea::placeholder { color: var(--text-secondary); opacity: 1; }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, article:focus-visible, summary:focus-visible, .history:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+input[type="checkbox"]:not(.switch) { accent-color: var(--accent); width: 16px; height: 16px; }
 h1, h2, h3, h4 { margin: 0; font-weight: 650; color: var(--text-strong); letter-spacing: -.01em; }
 h1 { font-size: 22px; }
 h2 { font-size: 19px; }
