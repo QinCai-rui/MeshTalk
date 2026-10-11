@@ -2254,7 +2254,7 @@ dependencies = [
 
 [[package]]
 name = "meshtalk-desktop"
-version = "0.32.3"
+version = "0.33.0-1"
 dependencies = [
  "base64 0.22.1",
  "reqwest 0.12.28",
