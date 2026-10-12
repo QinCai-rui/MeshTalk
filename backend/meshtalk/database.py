@@ -5,6 +5,7 @@ Stores: identity, peers, messages, outgoing queue, seen message IDs.
 
 from __future__ import annotations
 
+import sqlite3
 import time
 import hashlib
 import os
@@ -1122,7 +1123,15 @@ class Database:
                    AND message_id NOT IN (SELECT message_id FROM group_messages)""",
                 (group_id,),
             )
-            await self._db.execute("RELEASE group_prune")
+            try:
+                await self._db.execute("RELEASE group_prune")
+            except sqlite3.OperationalError as exc:
+                if "no such savepoint" not in str(exc):
+                    raise
+                # Another coroutine committed on this shared connection
+                # mid-prune, which already closed our savepoint (and
+                # committed the deletes executed so far). The commit below
+                # persists the rest; the next insert prunes again.
             await self._db.commit()
         except Exception:
             try:

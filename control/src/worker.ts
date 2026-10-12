@@ -101,7 +101,7 @@ function toHex(bytes: Uint8Array): string {
   return hex
 }
 
-function fromHex(hex: string): Uint8Array {
+function fromHex(hex: string): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(hex.length / 2)
   for (let index = 0; index < bytes.length; index += 1) {
     bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16)
@@ -132,7 +132,7 @@ function toBase64Url(bytes: Uint8Array): string {
   return toBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
 }
 
-function canonical(value: object): Uint8Array {
+function canonical(value: object): Uint8Array<ArrayBuffer> {
   return encoder.encode(JSON.stringify(value, Object.keys(value as object).sort()))
 }
 
@@ -143,11 +143,11 @@ function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return difference === 0
 }
 
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
+async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   return toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
 }
 
-async function verifyEd25519(signingPublicKeyHex: string, signatureHex: string, message: Uint8Array): Promise<boolean> {
+async function verifyEd25519(signingPublicKeyHex: string, signatureHex: string, message: Uint8Array<ArrayBuffer>): Promise<boolean> {
   // SPKI DER prefix for an Ed25519 public key, followed by the raw 32-byte key.
   const spki = new Uint8Array([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00, ...fromHex(signingPublicKeyHex)])
   const key = await crypto.subtle.importKey("spki", spki, { name: "Ed25519" }, false, ["verify"])

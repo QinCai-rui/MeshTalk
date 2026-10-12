@@ -189,7 +189,16 @@ class PeerManager:
             await asyncio.gather(*remaining_tasks, return_exceptions=True)
         if self._server:
             self._server.close()
-            await self._server.wait_closed()
+            try:
+                await asyncio.wait_for(self._server.wait_closed(), 5)
+            except asyncio.TimeoutError:
+                # A half-torn-down connection can keep the server's client
+                # set non-empty forever. Shutdown must not hang on it: the
+                # listening socket is already closed, so the port is free.
+                logger.warning(
+                    "LAN TCP server on port %d still has open connections during shutdown",
+                    self.tcp_port,
+                )
 
     async def refresh_network(self) -> None:
         """Drop network-bound sessions and rebind transports after a route change."""
