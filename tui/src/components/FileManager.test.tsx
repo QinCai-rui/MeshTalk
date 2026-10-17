@@ -193,6 +193,26 @@ test("file manager peer picker filters, group picker clears peer", async () => {
   }
 })
 
+test("backspace returns to the settings panel instead of closing the file manager", async () => {
+  let returned = 0
+  let closed = 0
+  const managerProps = props([])
+  Object.assign(managerProps, {
+    loadFilesSettings: () => { returned += 1 },
+    closeDialog: () => { closed += 1 },
+  })
+  const setup = await testRender(<FileListDialogContent {...managerProps} />, { width: 100, height: 28 })
+  try {
+    await settle(setup)
+    await act(async () => { setup.mockInput.pressBackspace(); await new Promise(resolve => setTimeout(resolve, 50)) })
+    await settle(setup)
+    expect(returned).toBe(1)
+    expect(closed).toBe(0)
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
+
 test("file manager picker supports keyboard select and escape", async () => {
   const setup = await testRender(<FileListDialogContent {...filterPropsWithBob(filterTransfers())} />, { width: 100, height: 28 })
   try {

@@ -898,7 +898,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
     // While the search field is focused, the input handles all editing keys
     // natively (Backspace/Delete included); shortcuts stay quiet.
     if (searchFocused) return
-    if (key.name === "backspace") { closeDialog(); return }
+    if (key.name === "backspace") { key.preventDefault(); backToSettings(); return }
     const index = filtered.findIndex((f) => f.file_id === selectedId)
     if (key.name === "up" || key.name === "k") { if (index > 0) setSelectedId(filtered[index - 1].file_id) }
     else if (key.name === "down" || key.name === "j") { if (index >= 0 && index < filtered.length - 1) setSelectedId(filtered[index + 1].file_id) }
@@ -1097,12 +1097,12 @@ export function FilesSettingsContent({ dialog, dialogHeight, dialogBusy, loadFil
   }
   useKeyboard((key) => {
     if (!pendingMigrate || key.ctrl || key.meta) return
-    if (key.name === "y") confirmMigrate(true)
-    else if (key.name === "n") confirmMigrate(false)
-    else if (key.name === "escape") setPendingMigrate(null)
+    if (key.name === "y") { key.preventDefault(); confirmMigrate(true) }
+    else if (key.name === "n") { key.preventDefault(); confirmMigrate(false) }
+    else if (key.name === "escape") { key.preventDefault(); setPendingMigrate(null) }
   })
   const openManager = () => { if (!dialogBusy) void loadFiles() }
-  const defaultFilesPath = dialog.dataDir ? `${dialog.dataDir}/files` : ""
+  const defaultFilesPath = storageCurrent ? `${storageCurrent}/files` : ""
   const defaultStoragePath = dialog.dataDir ?? ""
   const canDefaultFiles = filesIsCustom && !filesIsEnv
   const canDefaultStorage = storageIsCustom && !storageIsEnv
@@ -1209,8 +1209,9 @@ export function FilesDirDialogContent({ dialog, dialogDraft, setDialogDraft, set
   }
   useKeyboard((key) => {
     if (!pendingMigrate || key.ctrl || key.meta) return
-    if (key.name === "y") confirmMigrate(true)
-    else if (key.name === "n") confirmMigrate(false)
+    if (key.name === "y") { key.preventDefault(); confirmMigrate(true) }
+    else if (key.name === "n") { key.preventDefault(); confirmMigrate(false) }
+    else if (key.name === "escape") { key.preventDefault(); setPendingMigrate(null) }
   })
   const tabs = [{ id: "files", label: "Files location" }, { id: "storage", label: "Storage location" }] as const
   return <>

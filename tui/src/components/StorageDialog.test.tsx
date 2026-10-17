@@ -207,3 +207,51 @@ test("files-settings storage edit shows inline editor independently", async () =
     await act(async () => setup.renderer.destroy())
   }
 })
+
+async function clickText(setup: Awaited<ReturnType<typeof testRender>>, needle: string) {
+  const lines = setup.captureCharFrame().split("\n")
+  for (let row = 0; row < lines.length; row++) {
+    const col = lines[row]!.indexOf(needle)
+    if (col >= 0) {
+      await act(async () => {
+        await setup.mockMouse.click(col + 1, row)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      })
+      return
+    }
+  }
+  throw new Error(`text not found for click: ${needle}`)
+}
+
+test("set files to default targets the storage root and Esc cancels the prompt", async () => {
+  const clearCalls: (boolean | undefined)[] = []
+  const setup = await testRender(
+    <FilesSettingsContent
+      dialog={{ kind: "files-settings", ...payload(), filesDir: "/custom/files", configured: "/custom/files", storageDir: "/srv/meshtalk", storageConfigured: "/srv/meshtalk" } as Extract<Dialog, { kind: "files-settings" }>}
+      dialogHeight={40}
+      dialogBusy={false}
+      loadFiles={noop}
+      setFilesDir={noop}
+      setStorageDir={noop}
+      clearFilesDir={(migrate) => { clearCalls.push(migrate) }}
+    />,
+    { width: 110, height: 70 },
+  )
+  try {
+    await settle(setup)
+    await clickText(setup, "Set to default")
+    let frame = setup.captureCharFrame()
+    expect(frame).toContain("Transfer existing files")
+    // The reset destination follows the effective storage root, not DATA_DIR.
+    expect(frame).toContain("/srv/meshtalk/files")
+    expect(clearCalls).toEqual([])
+    // Esc cancels the prompt without invoking the reset.
+    await act(async () => { setup.mockInput.pressEscape(); await new Promise(resolve => setTimeout(resolve, 50)) })
+    await settle(setup)
+    frame = setup.captureCharFrame()
+    expect(frame).not.toContain("Transfer existing files")
+    expect(clearCalls).toEqual([])
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
