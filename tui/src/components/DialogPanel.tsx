@@ -11,7 +11,7 @@ import { SettingsConfirm, SettingsField, SettingsMenu, SettingsNotice, SettingsS
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useKeyboard } from "@opentui/react"
 import type { ScrollBoxRenderable } from "@opentui/core"
-import { addablePeers, isImageFile, peerPresence, sortPeersByInteraction } from "../utils"
+import { addablePeers, isImageFile, normalizeDeliveryStatus, peerPresence, sortPeersByInteraction } from "../utils"
 import { statSync } from "fs"
 import { detectImageFormat, ImageAttachment, isLocalFileMissing } from "./ImageAttachment"
 import { chatTheme as theme } from "../chatTheme"
@@ -141,7 +141,7 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "about" && <AboutDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} isReleaseBuild={isReleaseBuild} checkForUpdates={checkForUpdatesFromAbout} updateChannel={readUpdateChannel()} saveUpdateChannel={saveUpdateChannel} />}
       {dialog.kind === "update" && <UpdateDialog appReleaseVersion={appReleaseVersion} dialog={dialog} dialogError={dialogError} dialogHeight={dialogHeight} dialogWidth={dialogWidth} closeDialog={closeDialog} installing={dialogBusy} installUpdate={installUpdate} restartUpdate={restartUpdate} chooseUpdateDestination={(release) => { setDialogError(""); setDialogDraft(""); showDialog({ kind: "update-directory", release }) }} />}
       {dialog.kind === "update-directory" && <UpdateDestinationDialog dialog={dialog} dialogHeight={dialogHeight} dialogError={dialogError} dialogWidth={dialogWidth} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} installUpdate={installUpdate} />}
-      {dialog.kind === "update-token" && <UpdateTokenDialog dialog={dialog} dialogHeight={dialogHeight} dialogError={dialogError} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} saveUpdateToken={saveUpdateToken} />}
+      {dialog.kind === "update-token" && <UpdateTokenDialog dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidth} dialogError={dialogError} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} saveUpdateToken={saveUpdateToken} />}
       {dialog.kind === "control" && <ControlDialogContent dialog={dialog} dialogHeight={dialogHeight} configureControl={configureControl} dismissControlSetup={dismissControlSetup} loadControlStatus={loadControlStatus} showDialog={showDialog} />}
       {dialog.kind === "control-custom" && <ControlCustomDialogContent dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} configureControl={configureControl} />}
       {dialog.kind === "control-status" && <ControlStatusDialogContent dialog={dialog} dialogHeight={dialogHeight} showDialog={showDialog} />}
@@ -178,13 +178,13 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "debug-endpoints" && <DebugEndpointsDialogContent debugInfo={debugInfo} dialogHeight={dialogHeight} showDialog={showDialog} />}
       {dialog.kind === "debug-peer" && <DebugPeerDialogContent dialog={dialog} debugInfo={debugInfo} dialogHeight={dialogHeight} />}
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
-      {dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} screenWidth={dialogWidthFor("file-list") + 2} screenHeight={dialogHeight + 4} imageProtocol={imageProtocol} peers={peers} groups={groups} closeDialog={closeDialog} showDialog={showDialog} confirmPendingFileSend={confirmPendingFileSend} />}
+{dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} dialogError={dialogError} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} screenWidth={dialogWidthFor("file-list") + 2} screenHeight={dialogHeight + 4} imageProtocol={imageProtocol} peers={peers} groups={groups} closeDialog={closeDialog} showDialog={showDialog} confirmPendingFileSend={confirmPendingFileSend} />}
       {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} loadFilesSettings={loadFilesSettings} openPath={openPath} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} onRetryFile={onRetryFile} />}
       {dialog.kind === "files-settings" && <FilesSettingsContent dialog={dialog} dialogHeight={dialogHeight} dialogBusy={dialogBusy} loadFiles={loadFiles} setFilesDir={setFilesDir} setStorageDir={setStorageDir} clearFilesDir={clearFilesDir} clearStorageDir={clearStorageDir} openPath={openPath} />}
       {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} setStorageDir={setStorageDir} loadFiles={loadFiles} />}
       {dialog.kind === "storage-dir" && <FilesDirDialogContent dialog={dialog} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} setStorageDir={setStorageDir} loadFiles={loadFiles} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
-      {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} bytes={dialog.bytes} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} />}
+      {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} bytes={dialog.bytes} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} version={dialog.version ?? null} />}
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} onRetryFile={onRetryFile} />}
   </>
   if (usesSettingsPanel(dialog)) return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center" onMouseDown={dismissOnOverlay}>
@@ -206,38 +206,80 @@ type ImageViewerDialogContentProps = {
   dialogWidth: number
   dialogHeight: number
   imageProtocol: ImageProtocol
+  // Transfer lifecycle marker (e.g. completion timestamp). A viewer opened
+  // mid-transfer must retry its load once the file completes.
+  version?: number | null
 }
 
 export function imageViewerPropsEqual(previous: ImageViewerDialogContentProps, next: ImageViewerDialogContentProps): boolean {
-  return previous.filePath === next.filePath && previous.bytes === next.bytes && previous.filename === next.filename && previous.dialogWidth === next.dialogWidth && previous.dialogHeight === next.dialogHeight && previous.imageProtocol === next.imageProtocol
+  return previous.filePath === next.filePath && previous.bytes === next.bytes && previous.filename === next.filename && previous.dialogWidth === next.dialogWidth && previous.dialogHeight === next.dialogHeight && previous.imageProtocol === next.imageProtocol && previous.version === next.version
 }
 
-const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePath, bytes, filename, dialogWidth, dialogHeight, imageProtocol }: ImageViewerDialogContentProps) {
+const ImageViewerDialogContent = memo(function ImageViewerDialogContent({ filePath, bytes, filename, dialogWidth, dialogHeight, imageProtocol, version }: ImageViewerDialogContentProps) {
   return (
     <>
-      <text wrapMode="none"><span fg={theme.success}>{filename}</span></text>
+      <MarqueeText width={Math.max(1, dialogWidth - 4)} fg={theme.success} text={filename} />
       <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, alignItems: "center", justifyContent: "center" }}>
-        <ImageAttachment filePath={filePath} bytes={bytes} filename={filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} />
+        <ImageAttachment filePath={filePath} bytes={bytes} filename={filename} protocol={imageProtocol} expectedImage fullSize lazy={false} maxWidth={Math.max(1, dialogWidth - 4)} maxHeight={Math.max(1, dialogHeight - 5)} version={version} />
       </box>
       <text fg={theme.muted}>Esc returns.</text>
     </>
   )
 }, imageViewerPropsEqual)
 
+export type ImageViewOverlayProps = ImageViewerDialogContentProps & {
+  onClose: () => void
+}
+
+export function imageViewOverlayPropsEqual(previous: ImageViewOverlayProps, next: ImageViewOverlayProps): boolean {
+  // onClose is intentionally ignored: it is invoked via ref so chat-state
+  // re-renders (new callback identities) do not remount the fullscreen image.
+  return imageViewerPropsEqual(previous, next)
+}
+
+export const ImageViewOverlay = memo(function ImageViewOverlay({ filePath, bytes, filename, dialogWidth, dialogHeight, imageProtocol, version, onClose }: ImageViewOverlayProps) {
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  return <box position="absolute" left={0} top={0} width="100%" height="100%" backgroundColor={theme.overlay} alignItems="center" justifyContent="center" onMouseDown={(event: { button?: number }) => { if (event.button === undefined || event.button === 0) onCloseRef.current() }}>
+    <box width={dialogWidth} height={dialogHeight} border borderColor={theme.line} backgroundColor={theme.surfaceRaised} padding={1} gap={1} overflow="hidden" flexDirection="column" onMouseDown={(event) => event.stopPropagation()}>
+      <ImageViewerDialogContent filePath={filePath} bytes={bytes} filename={filename} dialogWidth={dialogWidth} dialogHeight={dialogHeight} imageProtocol={imageProtocol} version={version} />
+    </box>
+  </box>
+}, imageViewOverlayPropsEqual)
+
+const DELIVERY_STATUS_ORDER = ["delivered", "sent", "queued", "pending", "failed", "blocked", "unavailable"]
+
+export function groupDeliveriesForDisplay(deliveries: GroupDelivery[]): Array<readonly [string, GroupDelivery[]]> {
+  const normalized = deliveries.map((delivery) => ({ ...delivery, status: normalizeDeliveryStatus(delivery.status) }))
+  const grouped = DELIVERY_STATUS_ORDER.map((status) => [status, normalized.filter((delivery) => delivery.status === status)] as const).filter(([, groupedDeliveries]) => groupedDeliveries.length)
+  const known = new Set(DELIVERY_STATUS_ORDER)
+  const extra = new Map<string, GroupDelivery[]>()
+  for (const delivery of normalized) {
+    if (known.has(delivery.status)) continue
+    const list = extra.get(delivery.status)
+    if (list) list.push(delivery)
+    else extra.set(delivery.status, [delivery])
+  }
+  for (const [, extraDeliveries] of extra) grouped.push([extraDeliveries[0].status, extraDeliveries] as const)
+  return grouped
+}
+
 function DeliveryDetailsDialogContent({ dialog, onRetryFile }: { dialog: Extract<Dialog, { kind: "delivery-details" }>; onRetryFile?: (fileId: string, recipientId?: string) => void }) {
   const nowSec = Date.now() / 1000
-  const statusOrder = ["delivered", "sent", "queued", "pending", "failed", "blocked", "unavailable"]
   const statusColor: Record<string, string> = { delivered: theme.success, sent: theme.markdown.heading, queued: theme.warning, pending: theme.muted, failed: theme.danger, blocked: theme.danger, unavailable: theme.danger }
-  const grouped = statusOrder.map((status) => [status, dialog.deliveries.filter((delivery) => delivery.status === status)] as const).filter(([, deliveries]) => deliveries.length)
+  const grouped = groupDeliveriesForDisplay(dialog.deliveries)
   const retryable = (status: string, awaitingAckAt?: number | null) => ["failed", "blocked", "unavailable", "queued"].includes(status) || (status === "sent" && (!awaitingAckAt || nowSec >= awaitingAckAt + 30))
   return <scrollbox style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ trackOptions: { foregroundColor: theme.link, backgroundColor: theme.surface } }}>
     {!dialog.deliveries.length ? <text fg={theme.muted}>No delivery details are available yet.</text> : null}
-    {grouped.map(([status, deliveries]) => <box key={status} style={{ flexDirection: "column", marginBottom: 1 }}>
-      <text fg={statusColor[status]}><b>{status[0].toUpperCase() + status.slice(1)} ({deliveries.length})</b></text>
-      {deliveries.map((delivery: GroupDelivery) => <box key={delivery.recipient_id} style={{ flexDirection: "row", gap: 2 }}>
-        <text>  {delivery.display_name}</text>
-        {retryable(status, delivery.awaiting_ack_at) && dialog.fileId && onRetryFile ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile(dialog.fileId!, delivery.recipient_id) } }}><text fg={theme.text}><u>Retry</u></text></HoverHighlight> : null}
-      </box>)}
+    {grouped.map(([status, deliveries]) => <box key={status || "unknown"} style={{ flexDirection: "column", marginBottom: 1 }}>
+      <text fg={statusColor[status] ?? theme.muted}><b>{status ? status[0].toUpperCase() + status.slice(1) : "Unknown"} ({deliveries.length})</b></text>
+      {deliveries.map((delivery: GroupDelivery) => {
+        const canRetry = retryable(status, delivery.awaiting_ack_at) && Boolean(dialog.fileId && onRetryFile)
+        return <box key={delivery.recipient_id} style={{ flexDirection: "row", gap: 2 }}>
+          <text style={{ flexGrow: 1, flexShrink: 1 }} wrapMode="word">  {delivery.display_name}</text>
+          {canRetry ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); onRetryFile!(dialog.fileId!, delivery.recipient_id) } }}><text fg={theme.text}><u>Retry</u></text></HoverHighlight> : null}
+        </box>
+      })}
     </box>)}
   </scrollbox>
 }
@@ -659,7 +701,7 @@ function DebugPeerDialogContent({ dialog, debugInfo, dialogHeight }: { dialog: E
   )
 }
 
-export function FileConfirmDialogContent({ dialog, dialogWidth, dialogHeight, screenWidth, screenHeight, imageProtocol, peers, groups, closeDialog, showDialog, confirmPendingFileSend }: { dialog: Extract<Dialog, { kind: "file-confirm" }>; dialogWidth: number; dialogHeight: number; screenWidth: number; screenHeight: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; closeDialog: () => void; showDialog: (dialog: Dialog) => void; confirmPendingFileSend: () => void }) {
+export function FileConfirmDialogContent({ dialog, dialogError, dialogWidth, dialogHeight, screenWidth, screenHeight, imageProtocol, peers, groups, closeDialog, showDialog, confirmPendingFileSend }: { dialog: Extract<Dialog, { kind: "file-confirm" }>; dialogError: string; dialogWidth: number; dialogHeight: number; screenWidth: number; screenHeight: number; imageProtocol: ImageProtocol; peers: Peer[]; groups: Group[]; closeDialog: () => void; showDialog: (dialog: Dialog) => void; confirmPendingFileSend: () => void }) {
   const targetName = dialog.target.kind === "peer"
     ? peers.find((p) => p.peer_id === dialog.target.id)?.display_name ?? dialog.target.id.slice(0, 8)
     : groups.find((g) => g.group_id === dialog.target.id)?.name ?? "group"
@@ -692,6 +734,7 @@ export function FileConfirmDialogContent({ dialog, dialogWidth, dialogHeight, sc
   return (
     <>
       <text><b>{title}</b></text>
+      {dialogError ? <MarqueeText width={Math.max(1, dialogWidth - 4)} fg={theme.danger} text={dialogError} /> : null}
       {dialog.caption ? <text wrapMode="word"><span fg={theme.muted}>Caption: </span>{dialog.caption}</text> : null}
       {(dialog.image || imagePath) && previewFilename ? <>
         <box style={{ height: previewBounds.maxHeight, minHeight: previewBounds.maxHeight, flexShrink: 0, alignItems: "center", justifyContent: "center" }}>
@@ -884,14 +927,9 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
     return `Sent to ${peerLabel(file.recipient_id)}`
   }
   const wide = dialogWidth >= 92
-  // Keep row filenames on one line: long unbroken names would otherwise
-  // wrap mid-word across rows and garble the fixed title/size layout.
-  // The full name stays visible in the details pane (wide) or the expanded
-  // path line (narrow).
-  const rowNameLimit = Math.max(8, Math.floor((wide ? 38 : dialogWidth) - 18))
-  const rowFilename = (name: string) => name.length > rowNameLimit ? `${name.slice(0, rowNameLimit - 1)}…` : name
+const detailTextWidth = Math.max(1, dialogWidth - Math.floor(dialogWidth * 0.44) - 5)
   const renderSelectedImage = (file: FileTransfer, maxWidth: number) => isImageFile(file.filename) && file.status === "completed" && file.file_path && !isLocalFileMissing(file.file_path)
-    ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage lazy={false} maxWidth={maxWidth} maxHeight={Math.max(4, Math.min(14, dialogHeight - 14))} onOpen={() => showDialog({ kind: "image-view", filePath: file.file_path!, filename: file.filename, version: file.completed_at, returnTo: "files" })} />
+    ? <ImageAttachment filePath={file.file_path} filename={file.filename} protocol={imageProtocol} expectedImage lazy={false} maxWidth={maxWidth} maxHeight={Math.max(4, Math.min(14, dialogHeight - 14))} version={file.completed_at ?? file.status} onOpen={() => showDialog({ kind: "image-view", filePath: file.file_path!, filename: file.filename, version: file.completed_at, returnTo: "files" })} />
     : null
   // Clicking anywhere outside the search field blurs it, so the typing
   // cursor never lingers after the mouse moves on.
@@ -934,10 +972,10 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
           const selected = f.file_id === selectedId
           const progress = f.total_chunks && f.received_chunks !== undefined ? Math.round(f.received_chunks / f.total_chunks * 100) : undefined
           const direction = transferDirection(f)
-          return <HoverHighlight key={f.file_id} id={f.file_id} active={selected} onMouseDown={() => setSelectedId(f.file_id)} style={{ width: "100%", flexDirection: "column", paddingLeft: 2, paddingRight: 1, paddingTop: 1, paddingBottom: 1, backgroundColor: selected ? theme.selected : undefined, minWidth: 0, overflow: "hidden" }}>
-            <box style={{ flexDirection: "row", justifyContent: "space-between", gap: 1, minWidth: 0, overflow: "hidden" }}>
-              <text fg={selected ? theme.accent : theme.text} style={{ flexGrow: 1, flexShrink: 1, minWidth: 0 }} wrapMode="none" overflow="hidden">{selected ? "> " : "  "}<b>{rowFilename(f.filename)}</b></text>
-              <text fg={theme.muted} flexShrink={0} wrapMode="none">{formatSize(f.file_size)}</text>
+return <HoverHighlight key={f.file_id} id={f.file_id} active={selected} onMouseDown={() => setSelectedId(f.file_id)} style={{ width: "100%", flexDirection: "column", paddingLeft: 2, paddingRight: 1, paddingTop: 1, paddingBottom: 1, backgroundColor: selected ? theme.selected : undefined }}>
+            <box style={{ flexDirection: "row", justifyContent: "space-between", gap: 1 }}>
+              <MarqueeText width={Math.max(1, (wide ? Math.floor(dialogWidth * 0.44) : dialogWidth) - 6)} fg={selected ? theme.accent : theme.text} text={`${selected ? "> " : "  "}${f.filename}`} animateOnHover />
+              <text fg={theme.muted} flexShrink={0}>{formatSize(f.file_size)}</text>
             </box>
             <text fg={theme.muted} wrapMode="word">  {direction}{f.group_id ? " / group" : ""} / <span fg={status.color}>{status.label}</span>{progress !== undefined && !["completed", "sent"].includes(f.status) ? ` / ${progress}%` : ""}</text>
             {missing ? <text fg={theme.danger}>  File unavailable: moved or deleted locally</text> : null}
@@ -952,7 +990,7 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
           const status = statusStyle(selectedFile.status)
           const missing = ["completed", "sent"].includes(selectedFile.status) && isLocalFileMissing(selectedFile.file_path)
           return <>
-            <text fg={theme.text} wrapMode="char"><b>{selectedFile.filename}</b></text>
+<MarqueeText width={detailTextWidth} fg={theme.text} text={selectedFile.filename} />
             <text fg={theme.muted}>{formatSize(selectedFile.file_size)} / <span fg={status.color}>{status.label}</span>{isImageFile(selectedFile.filename) ? " / image" : ""}</text>
             <text fg={theme.muted}>{transferDirection(selectedFile)}{selectedFile.group_id ? " / group" : ""}</text>
             {selectedFile.caption ? <text wrapMode="word">{selectedFile.caption}</text> : null}
@@ -1232,7 +1270,7 @@ function FileDownloadDialogContent({ dialog, dialogWidth, dialogHeight, dialogDr
   useKeyboard((key) => { if (key.name === "s") void downloadFile(dialog.fileId, dialogDraft || suggested) })
   return <>
     <box style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingBottom: 1, flexShrink: 0 }}>
-      <text><span fg={theme.link}><b>Save File</b></span> <span fg={theme.muted}>· {dialog.filename}</span></text>
+      <box style={{ flexDirection: "row", gap: 1 }}><text flexShrink={0}><span fg={theme.link}><b>Save File</b></span></text><MarqueeText width={Math.max(1, dialogWidth - 15)} fg={theme.muted} text={`· ${dialog.filename}`} /></box>
       <text fg={theme.subdued}>Enter saves · Esc back</text>
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: "column", gap: 1 }}>
@@ -1241,7 +1279,7 @@ function FileDownloadDialogContent({ dialog, dialogWidth, dialogHeight, dialogDr
         <box style={{ flexDirection: "column", padding: 1, border: true, borderColor: theme.selected, backgroundColor: theme.surfaceRaised }}>
           <box style={{ flexDirection: "row", gap: 1 }}>
             <text fg={isImage ? theme.warning : theme.link}>{isImage ? "◉" : "▭"}</text>
-            <text><b fg={theme.text}>{dialog.filename}</b> <span fg={theme.subdued}>· {dialog.fileId.slice(0, 8)}</span></text>
+            <MarqueeText width={Math.max(1, dialogWidth - 8)} fg={theme.text} text={`${dialog.filename} · ${dialog.fileId.slice(0, 8)}`} />
           </box>
           {dialog.filePath ? <text fg={theme.subdued} wrapMode="word">{dialog.filePath}</text> : <text fg={theme.muted}>No local path</text>}
           {sourceMissing ? <text fg={theme.danger}>Source unavailable — file was moved or deleted locally</text> : null}

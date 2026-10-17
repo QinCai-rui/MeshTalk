@@ -192,6 +192,7 @@ class UdpTransport:
         self._pending: dict[tuple[bytes, int], asyncio.Event] = {}
         self._tasks: set[asyncio.Task] = set()
         self._maintenance_task: asyncio.Task | None = None
+        self._started = False
         if self.force_relay:
             logger.info("Direct remote UDP is disabled; DERP relay is required")
 
@@ -200,6 +201,7 @@ class UdpTransport:
         self._transport, _ = await loop.create_datagram_endpoint(
             lambda: _UdpProtocol(self), local_addr=("0.0.0.0", port)
         )
+        self._started = True
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
         logger.info("Remote UDP transport listening on port %d", self.local_endpoint[1])
 
@@ -223,6 +225,46 @@ class UdpTransport:
             *(task for task in [self._maintenance_task, *self._tasks] if task),
             return_exceptions=True,
         )
+        self._maintenance_task = None
+        self._started = False
+        self._transport = None
+
+    async def restart(self) -> None:
+        """Rebind the socket and rebuild sessions after a network change.
+
+        Endpoint candidates are retained because they are still useful while
+        the rendezvous service reconnects and publishes fresh candidates.
+        Sessions and in-flight attempts are discarded: their source socket and
+        NAT mapping are no longer trustworthy after a route change.
+        """
+        was_started = self._started or self._transport is not None
+        if not was_started:
+            return
+        direct_candidates = dict(self._direct_candidates)
+        relay_candidates = set(self._derp_candidates)
+        await self.stop()
+        self._transport = None
+        self._attempts.clear()
+        self._expected_endpoints.clear()
+        self._sessions.clear()
+        self._pending_sessions.clear()
+        self._retiring_sessions.clear()
+        self._sessions_by_id.clear()
+        self._pending.clear()
+        self._stun_waiters.clear()
+        try:
+            await self.start()
+        except Exception:
+            # Preserve restart eligibility so the next network poll retries.
+            self._started = was_started
+            raise
+        for peer_id, endpoint in direct_candidates.items():
+            try:
+                self.expect_peer(peer_id, endpoint)
+            except (OSError, ValueError) as exc:
+                logger.debug("Could not restore direct route to %s: %s", peer_id, exc)
+        for peer_id in relay_candidates:
+            self.expect_derp_peer(peer_id)
 
     @property
     def local_endpoint(self) -> Endpoint:

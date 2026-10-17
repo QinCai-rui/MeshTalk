@@ -1,43 +1,41 @@
-<nav class="fixed top-0 left-0 right-0 z-40 backdrop-blur-xl bg-mesh-bg/80 border-b border-mesh-border">
-  <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-    <a href="index.html" class="flex items-center gap-3 group">
-      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-400 to-emerald-400 flex items-center justify-center text-mesh-bg font-bold text-sm">
-        M
-      </div>
-      <span class="text-lg font-semibold tracking-tight text-white group-hover:text-mesh-accent transition-colors">
-        MeshTalk
+<header class="masthead">
+  <div class="container masthead__inner">
+    <a class="brand" href="index.html">
+      <span class="brand__mark">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
+          <circle cx="4" cy="5" r="1.7" fill="currentColor"/>
+          <circle cx="20" cy="5" r="1.7" fill="currentColor"/>
+          <circle cx="4" cy="19" r="1.7" fill="currentColor"/>
+          <circle cx="20" cy="19" r="1.7" fill="currentColor"/>
+          <path d="M10.4 10.4 5.4 6.4M13.6 10.4l5-4M10.4 13.6l-5 4M13.6 13.6l5 4" stroke="currentColor" stroke-width="1.3"/>
+        </svg>
       </span>
+      <span class="brand__name">MeshTalk</span>
     </a>
 
-    <div class="hidden md:flex items-center gap-1">
-      <a href="index.html" class="px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5 transition-all">Home</a>
-      <a href="features.html" class="px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5 transition-all">Features</a>
-      <a href="docs.html" class="px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5 transition-all">Docs</a>
-      <a href="https://github.com/QinCai-rui/MeshTalk" target="_blank" rel="noopener" class="ml-2 px-4 py-2 text-sm font-medium text-mesh-bg bg-mesh-accent hover:bg-cyan-300 rounded-lg transition-all">
-        GitHub
-      </a>
+    <div class="masthead__end">
+      <nav class="nav" id="site-nav" aria-label="Primary">
+        <ul>
+          <li><a href="index.html"{{#if (eq meta.canonical "/")}} aria-current="page"{{/if}}>Home</a></li>
+          <li><a href="features.html"{{#if (eq meta.canonical "/features.html")}} aria-current="page"{{/if}}>Features</a></li>
+          <li><a href="docs.html"{{#if (eq meta.canonical "/docs")}} aria-current="page"{{/if}}>Docs</a></li>
+          <li><a href="status.html"{{#if (eq meta.canonical "/status")}} aria-current="page"{{/if}}>Status</a></li>
+          <li><a class="nav__cta" href="https://github.com/QinCai-rui/MeshTalk" target="_blank" rel="noopener">GitHub</a></li>
+        </ul>
+      </nav>
+
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to dark theme" title="Switch to dark theme">
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+        </svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+        </svg>
+      </button>
+
+      <button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">menu</button>
     </div>
-
-    <button id="mobile-menu-btn" class="md:hidden text-mesh-muted hover:text-white p-2">
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
-      </svg>
-    </button>
   </div>
-
-  <div id="mobile-menu" class="hidden md:hidden border-t border-mesh-border bg-mesh-bg/95 backdrop-blur-xl">
-    <div class="px-6 py-4 space-y-1">
-      <a href="index.html" class="block px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5">Home</a>
-      <a href="features.html" class="block px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5">Features</a>
-      <a href="docs.html" class="block px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5">Docs</a>
-      <a href="status.html" class="block px-4 py-2 text-sm text-mesh-muted hover:text-white rounded-lg hover:bg-white/5">Status</a>
-      <a href="https://github.com/QinCai-rui/MeshTalk" target="_blank" rel="noopener" class="block px-4 py-2 text-sm font-medium text-mesh-accent">GitHub</a>
-    </div>
-  </div>
-</nav>
-
-<script>
-  const btn = document.getElementById('mobile-menu-btn');
-  const menu = document.getElementById('mobile-menu');
-  btn?.addEventListener('click', () => menu?.classList.toggle('hidden'));
-</script>
+</header>

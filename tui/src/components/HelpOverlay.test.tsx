@@ -19,13 +19,14 @@ async function close(setup: Awaited<ReturnType<typeof testRender>>) {
   await act(async () => setup.renderer.destroy());
 }
 
-test("help hotkey matches Ctrl+/ and the 0x1F fallback", () => {
-  expect(isHelpHotkey({ name: "/", ctrl: true, sequence: "/", raw: "/" })).toBe(true);
-  expect(isHelpHotkey({ name: "/", ctrl: false, sequence: "/", raw: "/" })).toBe(false);
+test("help hotkey matches Ctrl+H", () => {
+  expect(isHelpHotkey({ name: "h", ctrl: true, sequence: "\x08", raw: "\x08" })).toBe(true);
+  expect(isHelpHotkey({ name: "h", ctrl: false, sequence: "h", raw: "h" })).toBe(false);
+  expect(isHelpHotkey({ name: "/", ctrl: true, sequence: "\x1f", raw: "\x1f" })).toBe(false);
   expect(isHelpHotkey({ name: "p", ctrl: true, sequence: "\x10", raw: "\x10" })).toBe(false);
   expect(
     isHelpHotkey({ name: "unknown", ctrl: true, sequence: "\x1f", raw: "\x1f" }),
-  ).toBe(true);
+  ).toBe(false);
 });
 
 test("help focus derivation prefers dialog, naming, then history", () => {
@@ -68,7 +69,7 @@ test("help data covers the required shortcuts and groups", () => {
     "Ctrl+U",
     "Ctrl+P",
     "Esc",
-    "Ctrl+/",
+    "Ctrl+H",
   ]) {
     expect(corpus).toContain(required);
   }
@@ -93,7 +94,7 @@ test("help overlay renders the visible groups with a close affordance", async ()
     }
     expect(frame).toContain("NOW  Composing");
     expect(frame.replace(/\s+/g, " ")).toContain("Enter Send message");
-    expect(frame).toContain("Esc / Ctrl+/ close");
+    expect(frame).toContain("Esc / Ctrl+H close");
     expect(setup.renderer.root.findDescendantById("help-overlay")).toBeDefined();
     expect(setup.renderer.root.findDescendantById("help-close")).toBeDefined();
     expect(setup.renderer.root.findDescendantById("help-content")).toBeDefined();
@@ -128,7 +129,7 @@ for (const width of [64, 48, 32]) {
       // Narrow widths clip long titles, so assert on tokens that survive wrapping.
       expect(frame).toContain("Keyboard");
       expect(frame).toContain("Close");
-      expect(frame).toContain("Ctrl+/");
+      expect(frame).toContain("Ctrl+H");
       expect(frame).toContain("closes");
       const overlay = setup.renderer.root.findDescendantById("help-overlay")!;
       expect(overlay).toBeDefined();
@@ -152,7 +153,7 @@ test("footer exposes a clickable help shortcut without removing settings", async
   try {
     const frame = await settle(setup);
     expect(frame).toContain("Ctrl+P settings");
-    expect(frame).toContain("Ctrl+/ help");
+    expect(frame).toContain("Ctrl+H help");
     expect(setup.renderer.root.findDescendantById("help-shortcut")).toBeDefined();
     expect(
       setup.renderer.root.findDescendantById("settings-shortcut"),

@@ -44,6 +44,7 @@ jobs:
           done
           sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" backend/pyproject.toml
           sed -i "s/__version__ = \"[^\"]*\"/__version__ = \"${VERSION}\"/" backend/meshtalk/__init__.py
+          python3 desktop/scripts/version.py "$VERSION"
           uv lock --directory backend
 
       - name: Commit version bump
@@ -55,40 +56,109 @@ jobs:
           git commit -m "[ci skip] chore: bump version to ${{ inputs.version }}"
           git push origin HEAD:main
 
-  build:
+  prepare:
     needs: bump-version
     if: always() && (needs.bump-version.result == 'success' || needs.bump-version.result == 'skipped')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      sha: ${{ steps.meta.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.version != '' && 'main' || github.sha }}
+          persist-credentials: false
+      - id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          VERSION="$REQUESTED_VERSION"
+          if [ -z "$VERSION" ]; then
+            LATEST=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo 0.0.0)
+            LATEST=${LATEST#v}
+            if [[ "$LATEST" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+              X="${BASH_REMATCH[1]}"
+              Y="${BASH_REMATCH[2]}"
+              Z=$((10#${BASH_REMATCH[3]} + 1))
+            else
+              X=0; Y=1; Z=0
+            fi
+            VERSION="${X}.${Y}.${Z}-SNAPSHOT+${{ github.run_number }}-${SHA:0:7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: prepare
+    if: always() && needs.prepare.result == 'success'
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          # Ubuntu 22.04 is the oldest Tauri v2 build base with WebKitGTK 4.1.
+          - os: ubuntu-22.04
             target: bun-linux-x64
             artifact: meshtalk-linux-x64
             suffix: ""
-          - os: ubuntu-24.04-arm
+            triple: x86_64-unknown-linux-gnu
+            desktop-platform: linux
+            desktop-arch: x64
+            bundle: appimage
+          - os: ubuntu-22.04-arm
             target: bun-linux-arm64
             artifact: meshtalk-linux-arm64
             suffix: ""
+            triple: aarch64-unknown-linux-gnu
+            desktop-platform: linux
+            desktop-arch: arm64
+            bundle: appimage
           - os: macos-26-intel
             target: bun-darwin-x64
             artifact: meshtalk-macos-x64
             suffix: ""
+            triple: x86_64-apple-darwin
+            desktop-platform: macos
+            desktop-arch: x64
+            bundle: dmg
           - os: macos-latest
             target: bun-darwin-arm64
             artifact: meshtalk-macos-arm64
             suffix: ""
+            triple: aarch64-apple-darwin
+            desktop-platform: macos
+            desktop-arch: arm64
+            bundle: dmg
           - os: windows-latest
             target: bun-windows-x64
             artifact: meshtalk-windows-x64.exe
             suffix: ".exe"
+            triple: x86_64-pc-windows-msvc
+            desktop-platform: windows
+            desktop-arch: x64
+            bundle: nsis
 
     runs-on: ${{ matrix.os }}
+
+    env:
+      # Keep build caches in the workspace so actions/cache can restore them
+      # consistently on macOS, Linux, and Windows.
+      UV_CACHE_DIR: ${{ github.workspace }}/.cache/uv
+      NUITKA_CACHE_DIR: ${{ github.workspace }}/.cache/nuitka
+      CCACHE_DIR: ${{ github.workspace }}/.cache/nuitka/ccache
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -96,30 +166,36 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
 
+      - name: Cache uv and Nuitka build data
+        uses: actions/cache@v6
+        with:
+          path: |
+            .cache/uv
+            .cache/nuitka
+          # Keep a new entry per commit so newly compiled objects can be
+          # saved, while restore-keys reuses the latest previous build.
+          # The artifact name keeps Intel and Apple Silicon caches separate.
+          key: ${{ runner.os }}-${{ matrix.artifact }}-python-3.12-${{ hashFiles('backend/uv.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.artifact }}-python-3.12-${{ hashFiles('backend/uv.lock') }}-
+            ${{ runner.os }}-${{ matrix.artifact }}-python-3.12-
+
       - name: Install dependencies
         run: bun install --os="*" --cpu="*"
 
-      - name: Determine version
-        id: version
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            SHORT_SHA="${GITHUB_SHA::7}"
-            LATEST_TAG="$(gh release view --json tagName --jq .tagName 2>/dev/null || echo 'v0.0.0')"
-            LATEST_TAG="${LATEST_TAG#v}"
-            if [[ "$LATEST_TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-              X="${BASH_REMATCH[1]}"
-              Y="${BASH_REMATCH[2]}"
-              Z=$((10#${BASH_REMATCH[3]} + 1))
-            else
-              X=0; Y=1; Z=0
-            fi
-            echo "version=${X}.${Y}.${Z}-SNAPSHOT+${{ github.run_number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "desktop/src-tauri"
+          # Native build artifacts must not cross Ubuntu/glibc baselines.
+          key: ${{ matrix.os }}
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils zsync
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -129,7 +205,7 @@ jobs:
       - name: Configure static OpenSSL build (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install openssl@3
+          brew install openssl@3 ccache
           echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
           echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
           echo "UV_NO_BINARY_PACKAGE=cryptography" >> "$GITHUB_ENV"
@@ -154,7 +230,74 @@ jobs:
         run: cp build/nuitka/meshtalk-backend${{ matrix.suffix }} dist/release/meshtalk-backend${{ matrix.suffix }}
 
       - name: Build launcher binary
-        run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ steps.version.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --outfile dist/release/meshtalk${{ matrix.suffix }}
+        run: bun build ./bin/meshtalk.ts --compile --target=${{ matrix.target }} --define 'APP_VERSION="${{ needs.prepare.outputs.version }}"' --define 'MESHTALK_RELEASE=true' --define 'MESHTALK_PRERELEASE=${{ needs.prepare.outputs.prerelease }}' --outfile dist/release/meshtalk${{ matrix.suffix }}
+
+      - name: Prepare desktop sidecar and version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python desktop/scripts/version.py "$RELEASE_VERSION"
+          mkdir -p desktop/src-tauri/binaries
+          cp dist/release/meshtalk-backend${{ matrix.suffix }} desktop/src-tauri/binaries/meshtalk-backend-${{ matrix.triple }}${{ matrix.suffix }}
+
+      - name: Build unsigned desktop installer
+        working-directory: desktop
+        run: bun run package --bundles ${{ matrix.bundle }}
+
+      - name: Fix AppImage permissions and rebuild
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          LDAI_UPDATE_INFORMATION: >-
+            gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|${{ needs.prepare.outputs.prerelease == 'true' && 'latest-pre' || 'latest' }}|meshtalk-desktop-${{ matrix.desktop-arch }}.AppImage.zsync
+        run: |
+          set -euo pipefail
+          APPIMAGE_DIR=desktop/src-tauri/target/release/bundle/appimage
+          APPDIR=$(find "$APPIMAGE_DIR" -maxdepth 1 -type d -name '*.AppDir' -print -quit)
+          APPIMAGE=$(find "$APPIMAGE_DIR" -maxdepth 1 -type f -name '*.AppImage' -print -quit)
+          test -n "$APPDIR" && test -n "$APPIMAGE"
+          test -f "$APPDIR/AppRun.wrapped"
+          ZSYNC="${APPIMAGE}.zsync"
+          UPDATE_ASSET="meshtalk-desktop-${{ matrix.desktop-arch }}.AppImage"
+          rm -f "$ZSYNC"
+
+          sudo chmod -R a+rX "$APPDIR"
+          sudo chmod a+x "$APPDIR/AppRun" "$APPDIR/AppRun.wrapped"
+
+          case "${{ matrix.desktop-arch }}" in
+            x64) ARCH=x86_64 ;;
+            arm64) ARCH=aarch64 ;;
+            *) echo "Unsupported AppImage architecture: ${{ matrix.desktop-arch }}" >&2; exit 1 ;;
+          esac
+          LINUXDEPLOY=$(find "$HOME/.cache/tauri" -maxdepth 1 -type f -name 'linuxdeploy-*.AppImage' ! -name '*plugin*' -print -quit)
+          test -n "$LINUXDEPLOY"
+
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" OUTPUT="$APPIMAGE" "$LINUXDEPLOY" \
+            --appimage-extract-and-run --verbosity 1 --appdir "$APPDIR" --plugin gtk --output appimage
+
+          # Generate the sidecar in the release directory and point it at the
+          # published asset name, rather than appimagetool's temporary working directory.
+          (
+            cd "$APPIMAGE_DIR"
+            zsyncmake -u "$UPDATE_ASSET" "$(basename "$APPIMAGE")"
+          )
+          test -f "$ZSYNC" || { echo "zsyncmake did not create $ZSYNC" >&2; exit 1; }
+
+          if ! readelf --string-dump=.upd_info "$APPIMAGE" | grep -Fq -- "$LDAI_UPDATE_INFORMATION"; then
+            echo "AppImage update information does not match the configured value" >&2
+            readelf --string-dump=.upd_info "$APPIMAGE" >&2 || true
+            exit 1
+          fi
+
+      - name: Collect desktop installer
+        run: python desktop/scripts/package-assets.py ${{ matrix.desktop-platform }} ${{ matrix.desktop-arch }}
+
+      - name: Upload desktop installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.desktop-platform }}-${{ matrix.desktop-arch }}
+          path: dist/meshtalk-desktop-*
 
       - name: Package standalone release
         run: tar -czf dist/${{ matrix.artifact }}.tar.gz -C dist/release .
@@ -166,7 +309,7 @@ jobs:
           path: dist/${{ matrix.artifact }}.tar.gz
 
   release:
-    needs: build
+    needs: [prepare, build]
     if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
 
@@ -181,35 +324,14 @@ jobs:
         with:
           path: dist
 
-      - name: Determine version
-        id: version
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          else
-            SHORT_SHA="${GITHUB_SHA::7}"
-            LATEST_TAG="$(gh release view --json tagName --jq .tagName 2>/dev/null || echo 'v0.0.0')"
-            LATEST_TAG="${LATEST_TAG#v}"
-            if [[ "$LATEST_TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-              X="${BASH_REMATCH[1]}"
-              Y="${BASH_REMATCH[2]}"
-              Z=$((10#${BASH_REMATCH[3]} + 1))
-            else
-              X=0; Y=1; Z=0
-            fi
-            echo "version=${X}.${Y}.${Z}-SNAPSHOT+${{ github.run_number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
         run: |
-          V="${{ steps.version.outputs.version }}"
+          V="$RELEASE_VERSION"
           if gh release view "$V" --json tagName > /dev/null 2>&1; then
             echo "Release ${V} already exists - skipping creation"
           else
@@ -218,11 +340,11 @@ jobs:
 
           ## Platform Notes
 
-          **Linux:** The precompiled binaries require **glibc 2.38** or newer (Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). If your distribution ships an older glibc, [compile from source](https://github.com/QinCai-rui/MeshTalk#compile-from-source) instead.
+          **Linux:** The precompiled binaries require **glibc 2.35** or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, or equivalent). If your distribution ships an older glibc, [compile from source](https://github.com/QinCai-rui/MeshTalk#compile-from-source) instead.
           EOF
           )
-            RELEASE_ARGS=("$V" dist/*/* --title "$V" "$NOTES_FLAG" --notes "$EXTRA_NOTES")
-            if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then
+            RELEASE_ARGS=("$V" dist/*/* --target "$RELEASE_SHA" --title "$V" "$NOTES_FLAG" --notes "$EXTRA_NOTES")
+            if [ "$RELEASE_PRERELEASE" = "true" ]; then
               RELEASE_ARGS+=(--prerelease)
             fi
             gh release create "${RELEASE_ARGS[@]}"

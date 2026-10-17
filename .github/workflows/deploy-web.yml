@@ -1,4 +1,4 @@
-name: Deploy website to GitHub Pages
+name: Deploy website to Cloudflare Pages
 
 on:
   push:
@@ -10,16 +10,17 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -33,16 +34,12 @@ jobs:
         working-directory: web
         env:
           SITE_URL: https://meshtalk-site.qincai.xyz
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: web/dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Create Cloudflare Pages project (first run only)
+        continue-on-error: true
+        working-directory: web
+        run: npx --yes wrangler@4 pages project create meshtalk-site --production-branch=main
+      - name: Deploy to Cloudflare Pages
+        working-directory: web
+        # wrangler reads the project name and build output directory from
+        # web/wrangler.toml, so it takes no directory argument here.
+        run: npx --yes wrangler@4 pages deploy --commit-dirty=true

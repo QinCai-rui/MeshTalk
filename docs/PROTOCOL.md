@@ -221,7 +221,7 @@ encrypted HANDSHAKE_CONFIRM ------------------------------>
 `capabilities` is a list of feature strings (`text_chat`, `profile_sync`,
 `friend_requests`, `delivery_receipts`, `block_reports`, `group_chat`,
 `file_transfer_v2`, `typing_indicators`, `message_replies`, `at_mentions`,
-`direct_route_recovery`). The agreed capability set is the **intersection** of
+`direct_route_recovery`, `group_relay`). The agreed capability set is the **intersection** of
 both peers' advertised sets, and higher-level code gates behaviour on it:
 `text_chat` enables `MESSAGE`, `delivery_receipts` enables `MESSAGE_ACK`, `block_reports`
 enables `MESSAGE_BLOCKED`, `profile_sync` enables presence/display-name updates,
@@ -235,7 +235,11 @@ peers stay readable instead of seeing raw tokens. `direct_route_recovery` enable
 direct UDP route while an established remote UDP session is using DERP. It does
 not gate the initial direct connection attempt or the existing LAN TCP takeover
 behavior, so older peers retain their established behavior; an older peer
-simply does not participate in DERP-to-direct UDP recovery.
+simply does not participate in DERP-to-direct UDP recovery. `group_relay`
+marks a peer as able to receive mesh-relayed group messages (where the
+original sender differs from the transport peer) and relay-forwarded
+`GROUP_MESSAGE_ACK`s; relays and ACK forwarders skip peers that do not
+negotiate it, since older clients reject such packets by disconnecting.
 A peer that does not advertise a capability will not be sent the corresponding
 packets. Missing capability lists are rejected. Unknown remote capabilities are
 retained for diagnostics but remain disabled locally. Each side reports both
@@ -501,7 +505,7 @@ JSON hello (canonical, then Ed25519-signed):
 
 ```json
 {
-  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer_v2", "typing_indicators", "message_replies", "direct_route_recovery"],
+  "capabilities": ["text_chat", "profile_sync", "friend_requests", "delivery_receipts", "block_reports", "group_chat", "file_transfer_v2", "typing_indicators", "message_replies", "direct_route_recovery", "group_relay"],
   "peer_id": "<64 hex>",
   "display_name": "...",
   "signing_public_key": "<64 hex>",
@@ -535,6 +539,7 @@ During the handshake, peers exchange signed lists of supported capabilities.
   - `typing_indicators`: Exchange encrypted, transient `TYPING` packets.
   - `message_replies`: Exchange messages that reference an original message or attachment.
   - `direct_route_recovery`: Probe and promote a direct UDP route after a DERP session is established; enabled only for the negotiated intersection.
+  - `group_relay`: Receive mesh-relayed group messages and relay-forwarded acknowledgements; peers without it are skipped by relays and ACK forwarders.
 
 ### 6.3 Session Key Derivation
 
@@ -741,7 +746,8 @@ groups and control connectivity when STUN discovery fails.
   "created_at": 1700000000.0,
   "reply_to_message_id": "<uuid, optional>",
   "encrypted_content": "<hex>",
-  "signature": "<128 hex>"
+  "signature": "<128 hex>",
+  "origin_signature": "<128 hex or empty>"
 }
 ```
 
@@ -750,7 +756,9 @@ The AAD is canonical JSON of `message_id`, `group_id`, `sender_id`,
 X25519/AES-GCM construction as direct messages, independently for each
 recipient. The signature is Ed25519 over
 `SHA-256(AAD || encrypted_content)`. Content is limited to 30 KiB before
-encryption.
+encryption. Direct `GROUP_MESSAGE` deliveries may set `origin_signature` to
+the empty string; relayed group messages must include the original sender's
+64-byte signature.
 
 Receipt requires negotiated `group_chat`; authenticated peer ID equal to
 `sender_id`; the local ID equal to `recipient_id`; a locally joined named room;
@@ -762,9 +770,43 @@ If the sender is locally blocked, the packet is suppressed without an ACK.
 Blocked members are also excluded from local outgoing fanout.
 
 `GROUP_MESSAGE_ACK` signs canonical JSON containing `message_id`, `group_id`,
-and the acknowledging `recipient_id`. The sender accepts it only from that
-authenticated recipient and only for a known delivery row in the same group,
-then records `delivered` and emits `group_delivered`.
+and the acknowledging `recipient_id`. The sender accepts it from that
+authenticated recipient (direct) or as a relay-forwarded copy verified with
+the recipient's cached signing key, and only for a known delivery row in the
+same group, then records `delivered` and emits `group_delivered`.
+
+Mesh relay (always-on): any active group member that holds a message may
+re-encrypt its canonical plaintext for another active member when that peer
+becomes reachable. Participation is not configurable in v1: issue #155 asked
+for opt-out, but always-on was chosen for the mesh design (every member
+already holds the plaintext, so relaying exposes nothing new); opt-out
+remains a possible follow-up. Relayed copies keep the original `message_id`, `group_id`,
+`sender_id`, `created_at`, and `reply_to_message_id`, carry the sender's
+unmodified `origin_signature` (Ed25519 over canonical JSON of those fields
+plus `SHA-256(plaintext)`), and add a fresh per-hop `signature` from the
+relay. Recipients verify the hop signature with the connected relay key,
+decrypt, then verify the origin signature with the original sender's cached
+signing key before storing. Sender verify keys are learned from verified room
+endpoint cards as well as direct handshakes, so relayed verification succeeds
+even without prior direct contact. Relays cannot modify content without breaking the
+origin signature and learn nothing beyond the group chat they already belong
+to. Relayed system events are never forwarded, and only messages created at
+or after the target's group join time are relayed, so new members never
+receive pre-membership history. Relay sends are live-only
+(retried on the next connect), fetched SQL-side already bounded to the
+per-sweep cap with repeat sends suppressed, a persistent per-peer rowid
+resume cursor (immune to sender-clock games), and a per-minute send budget
+shared across sweeps, so a flapping peer cannot force repeated full-history
+work;
+the recipient ACKs the relay transport
+peer; the relay forwards that ACK toward the original sender (live or via one
+durably queued `GROUP_MESSAGE_ACK` row, deduplicated by exact bytes) so sender delivery converges.
+Inbound group messages are rate-limited per sender (with a roomier separate
+bucket for relayed bursts, plus a coarse per-transport-peer limiter checked
+before any database I/O) and size-checked after decryption, group history is
+retention-bounded without evicting in-flight undelivered rows, and dead queue
+rows are reaped by periodic cleanup, so malicious members cannot grow local
+state or CPU cost without bound.
 
 `GROUP_LEAVE` contains a UUID `event_id`, `group_id`, leaving `peer_id`,
 `created_at`, and an Ed25519 signature over those canonical fields. A receiver
@@ -928,6 +970,9 @@ over IPC.
 
 ### 10.1 Commands
 
+These are local authenticated client/backend calls, not peer-to-peer wire
+messages. Adding a command here does not change network compatibility.
+
 | Action | Params | Returns |
 |--------|--------|---------|
 | send | recipient_id, content, reply_to_message_id? | message_id |
@@ -947,6 +992,9 @@ over IPC.
 | identity | - | peer_id, display_name, setup state, DND state. |
 | status | - | peer_id, connected peers + network info, control URL/connected, public endpoint, rooms. |
 | messages | peer_id | Conversation history (marks read). |
+| history_page | peer_id or group_id, before? or around? | Up to 100 local messages around or before a stable local sequence. Does not change read state; used for desktop jump-to-result and older-history views. |
+| search_messages | query, peer_id? or group_id?, offset? | Searches bounded local encrypted-history batches in memory. No plaintext search index is created and read state is unchanged. |
+| desktop_drafts | drafts? | Gets or stores up to 200 encrypted local desktop drafts (30 KiB per draft). Never transmitted to peers. |
 | set_display_name | display_name | New name; broadcasts PROFILE. |
 | control | url?, dismiss_setup? | Control/STUN config + connection state. |
 | room_create | name | room_id, group_id, name, invite |
@@ -959,8 +1007,8 @@ over IPC.
 | group_messages | group_id | Last 200 local messages/system events, per-message `mentions`, and per-recipient deliveries; marks read. |
 | group_send | group_id, content, reply_to_message_id? | message_id, per-recipient `sent`, `delivered`, `queued`, or `unavailable` status, and `mentions`. |
 | group_leave | group_id | Sends/queues signed leave events, removes local room/group state, returns group_id. |
-| file_send | recipient_id, file_path | file_id — send a file to a direct peer. |
-| group_file_send | group_id, file_path | Per-recipient results — send a file to all active group members. |
+| file_send | recipient_id, file_path or paths[], caption? | file_id or per-file results — send one or a batch of files to a direct peer. |
+| group_file_send | group_id, file_path or paths[], caption? | Per-recipient results — send one or a batch of files to all active group members. |
 | files | - | List all file transfers (inbound and outbound) with status and metadata. |
 | file_info | file_id | Detailed metadata for one transfer. |
 | file_download | file_id, dest_path? | dest_path — save a received file to a user-chosen location. |
@@ -1068,7 +1116,7 @@ the current code (per TODO.md):
 |----------|-------|--------|
 | Discovery UDP port | 24890 | protocol.UDP_PORT |
 | LAN TCP port | 24891 | protocol.TCP_PORT |
-| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer_v2, typing_indicators, message_replies, at_mentions, direct_route_recovery | protocol.DEFAULT_CAPABILITIES |
+| Default capabilities | text_chat, profile_sync, friend_requests, delivery_receipts, block_reports, group_chat, file_transfer_v2, typing_indicators, message_replies, at_mentions, direct_route_recovery, group_relay | protocol.DEFAULT_CAPABILITIES |
 | Max file size | 50 MiB | protocol.MAX_FILE_SIZE |
 | Max file chunk size | 28 KiB | protocol.MAX_FILE_CHUNK_SIZE |
 | Max filename length | 255 | protocol.MAX_FILENAME_LENGTH |

@@ -143,7 +143,7 @@ export function MouseSelect(props: MouseSelectProps) {
         {sectionChanged ? <text fg={theme.subdued}><b>{option.section!.toUpperCase()}</b></text> : null}
         {props.marqueeNames ? <box style={{ flexDirection: "row", width: "100%", height: 1, overflow: "hidden" }}>
           <box width={showSelectionIndicator ? 3 : 1} height={1} overflow="hidden"><text wrapMode="none" fg={nameColor}>{showSelectionIndicator ? highlighted ? " ▶" : "  " : ""}</text></box>
-          <MarqueeText width={nameWidth} fg={nameColor} text={option.name} />
+          <MarqueeText width={nameWidth} fg={nameColor} text={option.name} animateOnHover />
         </box> : <box style={{ width: "100%", height: 1, flexDirection: "row", paddingRight: 1 }}>
           <text fg={nameColor} style={{ flexGrow: 1, flexShrink: 1 }} truncate>{showSelectionIndicator ? highlighted ? " > " : "   " : " "}{option.name}</text>
           {option.status ? <text fg={toneColor(option.tone)} flexShrink={0}>[{option.status}]</text> : null}

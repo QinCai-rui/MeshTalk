@@ -27,10 +27,12 @@ from .message_router import MessageRouter
 from .typing_router import TypingRouter
 from .file_transfer import FileTransferManager
 from .ipc import IPCServer
+from .desktop_queries import handlers as desktop_query_handlers
 from .protocol import Packet, PacketType, REMOVED_V1_FILE_PACKET_TYPES, capability_for_packet
 from .rendezvous import RendezvousService
 from .settings import Settings
 from .analytics import Analytics
+from .network_monitor import NetworkMonitor, NetworkState
 from .storage import (
     DB_FILENAME,
     STORAGE_ENV_VAR,
@@ -188,14 +190,14 @@ async def main(debug: bool = False) -> None:
                 continue
             try:
                 packet = Packet(packet_type, item["encrypted_payload"])
-                if item["message_id"] and item.get("group_id"):
+                if item["message_id"] and item.get("group_id") and packet_type == PacketType.GROUP_MESSAGE:
                     await db.set_group_delivery(item["message_id"], peer_id, "sent")
                 await peer_manager.send_packet(peer, packet)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to flush queued packet for %s: %s", peer_id, exc)
                 await db.increment_outqueue_attempts(item["id"])
                 continue
-            if item["message_id"] and item.get("group_id"):
+            if item["message_id"] and item.get("group_id") and packet_type == PacketType.GROUP_MESSAGE:
                 await ipc.broadcast_event({
                     "event": "group_sent",
                     "message_id": item["message_id"],
@@ -248,6 +250,21 @@ async def main(debug: bool = False) -> None:
         peer_manager.record_remote_candidate,
         group_router.record_room_member,
     )
+
+    network_refresh_lock = asyncio.Lock()
+
+    async def handle_network_change(previous: NetworkState, current: NetworkState) -> None:
+        """Rebind all network-bound services after the active route changes."""
+        async with network_refresh_lock:
+            try:
+                try:
+                    await peer_manager.refresh_network()
+                finally:
+                    await discovery.refresh()
+            finally:
+                rendezvous.network_changed()
+
+    network_monitor = NetworkMonitor(handle_network_change)
 
     async def handle_send(req: dict) -> dict:
         recipient = req.get("recipient_id")
@@ -478,6 +495,20 @@ async def main(debug: bool = False) -> None:
             "flashing_enabled": settings.flashing_enabled,
             "dnd_enabled": settings.dnd_enabled,
         }
+
+    async def handle_desktop_info(req: dict) -> dict:
+        from . import __version__
+        return {
+            "ipc_version": 1,
+            "backend_version": os.environ.get("MESHTALK_APP_VERSION", __version__),
+        }
+
+    async def handle_desktop_release(req: dict) -> dict:
+        # The requesting desktop connection is still counted until it exits.
+        if ipc.client_count <= 1:
+            stop_event.set()
+            return {"stopping": True}
+        return {"stopping": False}
 
     async def handle_dnd(req: dict) -> dict:
         enabled = req.get("enabled")
@@ -1255,6 +1286,9 @@ async def main(debug: bool = False) -> None:
         }
 
     ipc_handlers = {
+        **desktop_query_handlers(db, identity.peer_id),
+        "desktop_info": handle_desktop_info,
+        "desktop_release": handle_desktop_release,
         "send": handle_send,
         "peers": handle_peers,
         "remove_peer": handle_remove_peer,
@@ -1328,6 +1362,7 @@ async def main(debug: bool = False) -> None:
     await discovery.start()
     await rendezvous.start()
     await ipc.start()
+    await network_monitor.start()
 
     logger.info("MeshTalk backend running")
 
@@ -1367,6 +1402,7 @@ async def main(debug: bool = False) -> None:
             await asyncio.wait_for(analytics.flush(), timeout=1.5)
         except Exception:
             pass
+        await network_monitor.stop()
         await ipc.stop()
         await rendezvous.stop()
         await peer_manager.stop()
@@ -1377,7 +1413,9 @@ async def main(debug: bool = False) -> None:
 
 def run() -> None:
     debug = "--debug" in sys.argv[1:]
-    asyncio.run(main(debug))
+    from .instance_lock import InstanceLock
+    with InstanceLock(DATA_DIR):
+        asyncio.run(main(debug))
 
 
 if __name__ == "__main__":

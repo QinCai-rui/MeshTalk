@@ -80,7 +80,16 @@ class MessageRouter:
         })
         await self.db.mark_message_seen(message.message_id)
         if peer is not None:
-            await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE, encoded_message))
+            try:
+                await self.peer_manager.send_packet(peer, Packet(PacketType.MESSAGE, encoded_message))
+            except Exception as exc:
+                # The peer disconnected between the lookup and the write.
+                # Queue for the outqueue flusher instead of dropping the
+                # message: the row is already persisted above.
+                logger.warning("Direct send to %s failed, queueing: %s", recipient_id, exc)
+                await self.db.add_to_outqueue(recipient_id, PacketType.MESSAGE.value, encoded_message, message.message_id)
+                await self.db.mark_message_queued(message.message_id)
+                return message.message_id, True
             return message.message_id, False
         await self.db.add_to_outqueue(recipient_id, PacketType.MESSAGE.value, encoded_message, message.message_id)
         return message.message_id, True

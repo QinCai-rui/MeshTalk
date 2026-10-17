@@ -1,8 +1,11 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { act, createRef, useState, type ComponentProps } from "react"
 import { useTerminalDimensions } from "@opentui/react"
 import { testRender } from "@opentui/react/test-utils"
-import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
+import { NativeImage, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
+import { mkdir, rm } from "fs/promises"
+import { tmpdir } from "os"
+import { join } from "path"
 import { Sidebar } from "./Sidebar"
 import { ConversationPanel } from "./ConversationPanel"
 import { chatLayout, chatTheme } from "../chatTheme"
@@ -111,6 +114,21 @@ test("sidebar uses friend/request markers and mouse selection retains the conver
     const row = setup.renderer.root.findDescendantById("nav-peer-alex")!
     await act(async () => { await setup.mockMouse.click(row.screenX + 1, row.screenY) })
     expect(selection).toEqual({ kind: "peer", id: "alex" })
+  } finally { await close(setup) }
+})
+
+test("keeps friend markers visible beside long peer names", async () => {
+  const props = sidebarProps(120)
+  const displayName = "A-very-long-peer-name-that-must-wrap-without-hiding-markers"
+  props.peers = [{ ...peers[0]!, display_name: displayName, friend_request: "both" }]
+  props.mutedPeers = {}
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup)
+    expect(frame.replace(/[\s♥↙↗]/g, "")).toContain(displayName)
+    expect(frame).toContain("♥")
+    expect(frame).toContain("↙")
+    expect(frame).toContain("↗")
   } finally { await close(setup) }
 })
 
@@ -579,6 +597,28 @@ test("group history keeps system messages, replies, file status, and delivery de
   } finally { await close(setup) }
 })
 
+test("does not decode or preview non-image attachments", async () => {
+  const directory = join(tmpdir(), `meshtalk-non-image-test-${crypto.randomUUID()}`)
+  const filePath = join(directory, "answers.pdf")
+  await mkdir(directory)
+  // Deliberately use image bytes: rendering must be gated by the attachment's
+  // filename, not whether a decoder happens to accept its contents.
+  await Bun.write(filePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64"))
+  const props = panelProps(80)
+  props.conversationItems = [{ type: "file", createdAt: 1788580860, file: { file_id: "pdf", filename: "answers.pdf", file_size: 1024, sender_id: "alex", recipient_id: "me", direction: "inbound", status: "completed", created_at: 1788580860, file_path: filePath }, allFiles: [] }]
+  const loadSpy = spyOn(NativeImage, "load")
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 20 })
+  try {
+    const frame = await settle(setup, "answers.pdf")
+    expect(frame).toContain("answers.pdf")
+    expect(loadSpy).not.toHaveBeenCalled()
+  } finally {
+    loadSpy.mockRestore()
+    await close(setup)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 function ResizableChat({ props }: { props: ComponentProps<typeof ConversationPanel> }) {
   const { width, height } = useTerminalDimensions()
   const { stacked, panelWidth } = chatLayout(width)
@@ -714,6 +754,51 @@ test("delivery details are shown for group messages, not direct messages", async
     const frame = await settle(groupSetup, "Looks good")
     expect(frame).toContain("click for details")
   } finally { await close(groupSetup) }
+})
+
+test("group file rows count completed deliveries as delivered", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [
+    { peer_id: "alex", display_name: "Alex Morgan" },
+    { peer_id: "sam", display_name: "Sam Chen" },
+    { peer_id: "jo", display_name: "Jo Park" },
+    { peer_id: "max", display_name: "Max Ray" },
+  ] }
+  props.conversationItems = [
+    { type: "file", createdAt: 1788580860, file: { file_id: "file1", filename: "photo.png", file_size: 29200, sender_id: "me", recipient_id: "", group_id: "team", direction: "outbound", status: "transferring", created_at: 1788580860, file_path: "/tmp/photo.png", deliveries: [
+      { recipient_id: "alex", display_name: "Alex Morgan", status: "completed", updated_at: 1788580861 },
+      { recipient_id: "sam", display_name: "Sam Chen", status: "completed", updated_at: 1788580861 },
+      { recipient_id: "jo", display_name: "Jo Park", status: "queued", updated_at: 1788580861 },
+      { recipient_id: "max", display_name: "Max Ray", status: "unavailable", updated_at: 1788580861 },
+    ] }, allFiles: [] },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
+  try {
+    const frame = await settle(setup, "photo.png")
+    expect(frame).toContain("delivered 2/4 · queued 1 · unavailable 1")
+  } finally { await close(setup) }
+})
+
+test("synthesized file deliveries keep failed distinct from unavailable", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }] }
+  const file = { file_id: "file2", filename: "broken.zip", file_size: 100, sender_id: "me", recipient_id: "", group_id: "team", direction: "outbound", status: "failed", created_at: 1788580860 }
+  props.conversationItems = [
+    { type: "file", createdAt: 1788580860, file, allFiles: [file] },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
+  try {
+    const frame = await settle(setup, "broken.zip")
+    expect(frame).toContain("delivered 0/1 · failed 1")
+  } finally { await close(setup) }
 })
 
 test("sidebar no-peers empty state offers friend, connection, and LAN help actions", async () => {
@@ -930,3 +1015,19 @@ for (const width of [80, 48, 32]) {
     } finally { await close(setup) }
   })
 }
+
+test("still-sending messages show a sending indicator instead of blocking", async () => {
+  const props = panelProps(80)
+  props.conversationItems = [
+    ...props.conversationItems,
+    { type: "message", createdAt: 1788580920, message: { message_id: "pending-abc", sender_id: "me", recipient_id: "alex", content: "On its way", created_at: 1788580920, pending: 1 } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    const frame = await settle(setup, "On its way")
+    // "sending…" (ellipsis) is the row-level pending status; the footer uses
+    // "Sending... /" (ascii dots), so this cannot match the footer.
+    expect(frame).toContain("sending…")
+    expect(frame).toContain("On its way")
+  } finally { await close(setup) }
+})

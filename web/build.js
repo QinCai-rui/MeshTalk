@@ -3,6 +3,8 @@ const path = require("path");
 const Handlebars = require("handlebars");
 const site = require("./pages.json");
 
+Handlebars.registerHelper("eq", (a, b) => a === b);
+
 const root = __dirname;
 const dist = path.join(root, "dist");
 

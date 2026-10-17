@@ -195,6 +195,28 @@ class DirectMessageTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["packet_type"], PacketType.MESSAGE.value)
 
+    async def test_send_failure_to_connected_peer_queues_instead_of_dropping(self):
+        await self._become_friends()
+        self.assertIsNotNone(self.manager_a.get_connected_peer(self.identity_b.peer_id))
+        original = self.manager_a.send_packet
+
+        async def boom(*_args, **_kwargs):
+            raise ConnectionError("simulated write failure")
+
+        self.manager_a.send_packet = boom
+        try:
+            message_id, queued = await self.router_a.send_message(self.identity_b.peer_id, b"race hello")
+        finally:
+            self.manager_a.send_packet = original
+        self.assertTrue(queued)
+        async with self.router_a.db._db.execute(
+            "SELECT queued FROM messages WHERE message_id = ?", (message_id,)
+        ) as cursor:
+            self.assertEqual((await cursor.fetchone())[0], 1)
+        pending = await self.router_a.db.get_pending_outgoing(self.identity_b.peer_id)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["message_id"], message_id)
+
     async def test_friendship_persists_across_database_reload(self):
         await self._become_friends()
         reopened = Database(self.db_a_path)

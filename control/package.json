@@ -1,14 +1,17 @@
 {
   "name": "meshtalk-control",
-  "version": "0.32.0",
+  "version": "0.33.0-1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build src/index.ts --target=bun --outfile dist/meshtalk-control",
-    "test": "bun test"
+    "test": "bun test",
+    "worker:dev": "bun x wrangler dev",
+    "worker:deploy": "bun x wrangler deploy"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261010.1",
     "bun-types": "latest",
     "typescript": "^7.0.2"
   }
