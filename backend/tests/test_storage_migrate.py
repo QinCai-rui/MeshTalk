@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from meshtalk import storage as storage_module
 from meshtalk.database import Database
 from meshtalk.identity import Identity
 from meshtalk.settings import Settings
@@ -195,6 +196,138 @@ class StorageMigrationTest(unittest.TestCase):
         self.assertIsNone(self.settings._files_dir)
         self.assertEqual((self.storage / "files" / "peer" / "photo.bin").read_bytes(), b"p" * 64)
 
+    def test_files_migrate_refuses_files_dir_that_contains_storage(self):
+        custom = Path(self.tempdir.name) / "custom-files"
+        custom.mkdir()
+        self.settings.set_files_dir(str(self.storage))
+        with self.assertRaisesRegex(RuntimeError, "contains the storage location"):
+            _run(migrate_files_location(db=self.db, settings=self.settings, target=custom))
+        self.assertEqual((self.storage / "meshtalk.db").parent, self.storage)
+        self.assertTrue((self.storage / "identity.json").exists())
+
+    def test_switch_refuses_target_inside_custom_files_dir(self):
+        custom = Path(self.tempdir.name) / "custom-files"
+        custom.mkdir()
+        self.settings.set_files_dir(str(custom))
+        target = custom / "storage"
+        with self.assertRaisesRegex(RuntimeError, "inside the files location"):
+            _run(
+                switch_storage_location(
+                    db=self.db, settings=self.settings, file_manager=self.file_manager,
+                    identity=self.identity, target=target, migrate=True,
+                )
+            )
+        self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
+
+    def _seed_transfer(self, file_path: Path) -> None:
+        async def _insert():
+            await self.db._db.execute(
+                "INSERT INTO file_transfers (file_id, filename, file_size, chunk_size, total_chunks, sender_id, recipient_id, direction, status, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("f1", "photo.bin", 64, 64, 1, "a", "b", "inbound", "completed", str(file_path), 1.0),
+            )
+            await self.db._db.commit()
+        _run(_insert())
+
+    async def _file_paths(self) -> list[str]:
+        async with self.db._db.execute("SELECT file_path FROM file_transfers ORDER BY file_id") as cursor:
+            return [row[0] async for row in cursor]
+
+    def test_switch_with_migrate_rewrites_file_paths(self):
+        self._seed_transfer(self.storage / "files" / "peer" / "photo.bin")
+        target = Path(self.tempdir.name) / "new-storage"
+        _run(
+            switch_storage_location(
+                db=self.db, settings=self.settings, file_manager=self.file_manager,
+                identity=self.identity, target=target, migrate=True,
+            )
+        )
+        expected = target.resolve() / "files" / "peer" / "photo.bin"
+        self.assertEqual(_run(self._file_paths()), [str(expected)])
+        self.assertTrue(expected.is_file())
+
+    def test_files_migrate_rewrites_file_paths(self):
+        self._seed_transfer(self.storage / "files" / "peer" / "photo.bin")
+        target = Path(self.tempdir.name) / "new-files"
+        _run(migrate_files_location(db=self.db, settings=self.settings, target=target))
+        expected = target.resolve() / "peer" / "photo.bin"
+        self.assertEqual(_run(self._file_paths()), [str(expected)])
+        self.assertTrue(expected.is_file())
+
+    def test_switch_verification_failure_cleans_target_artifacts(self):
+        _run(self._seed_message())
+        target = Path(self.tempdir.name) / "new-storage"
+        with patch("meshtalk.storage.verify_tree_copy", return_value=["content mismatch after copy: peer/photo.bin"]):
+            with self.assertRaisesRegex(RuntimeError, "Verification"):
+                _run(
+                    switch_storage_location(
+                        db=self.db, settings=self.settings, file_manager=self.file_manager,
+                        identity=self.identity, target=target, migrate=True,
+                    )
+                )
+        # A failed migration must not leave a half-populated target that would
+        # make a retry fail with "already contains data".
+        self.assertFalse((target / "meshtalk.db").exists())
+        self.assertFalse((target / "identity.json").exists())
+        self.assertFalse((target / "files" / "peer" / "photo.bin").exists())
+        self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
+        self.assertEqual(self.settings.storage_dir, self.storage.resolve())
+        # A retry now succeeds without manual cleanup of the target.
+        summary = _run(
+            switch_storage_location(
+                db=self.db, settings=self.settings, file_manager=self.file_manager,
+                identity=self.identity, target=target, migrate=True,
+            )
+        )
+        self.assertTrue(summary["migrated"])
+        self.assertTrue((target / "meshtalk.db").exists())
+
+    def test_switch_with_migrate_merges_unrelated_target_files(self):
+        target = Path(self.tempdir.name) / "files-only"
+        (target / "files").mkdir(parents=True)
+        (target / "files" / "other.bin").write_bytes(b"x")
+        summary = _run(
+            switch_storage_location(
+                db=self.db, settings=self.settings, file_manager=self.file_manager,
+                identity=self.identity, target=target, migrate=True,
+            )
+        )
+        self.assertTrue(summary["migrated"])
+        # Pre-existing target content is preserved and migrated files are added.
+        self.assertEqual((target / "files" / "other.bin").read_bytes(), b"x")
+        self.assertEqual((target / "files" / "peer" / "photo.bin").read_bytes(), b"p" * 64)
+
+    def test_switch_with_migrate_aborts_on_target_file_collision(self):
+        target = Path(self.tempdir.name) / "collision"
+        keep = target / "files" / "peer" / "photo.bin"
+        keep.parent.mkdir(parents=True)
+        keep.write_bytes(b"keep me")
+        with self.assertRaisesRegex(RuntimeError, "already contains"):
+            _run(
+                switch_storage_location(
+                    db=self.db, settings=self.settings, file_manager=self.file_manager,
+                    identity=self.identity, target=target, migrate=True,
+                )
+            )
+        # The pre-existing target file survives and the copied db/identity were
+        # cleaned up, so nothing was overwritten.
+        self.assertEqual(keep.read_bytes(), b"keep me")
+        self.assertFalse((target / "meshtalk.db").exists())
+        self.assertFalse((target / "identity.json").exists())
+        self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
+
+    def test_vacuum_into_flushes_pending_transaction(self):
+        async def _snapshot(dest: Path):
+            # Leave an uncommitted INSERT behind (file progress uses commit=False).
+            await self.db._db.execute(
+                "INSERT INTO messages (message_id, sender_id, recipient_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("pending", "a", "b", b"enc", 1.0),
+            )
+            await self.db.vacuum_into(dest)
+            return dest
+
+        dest = _run(_snapshot(Path(self.tempdir.name) / "snapshot.db"))
+        self.assertIsNone(storage_module.sqlite_integrity_ok(dest))
+
     def test_switch_rejects_nested_target(self):
         nested = self.storage / "sub"
         nested.mkdir()
@@ -223,10 +356,35 @@ class StorageMigrationTest(unittest.TestCase):
         self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
         self.assertEqual(self.file_manager.data_dir, self.storage)
         self.assertIsNone(self.settings._storage_dir)
+        # The target copies created by this run were removed on rollback.
+        self.assertFalse((target / "meshtalk.db").exists())
+        self.assertFalse((target / "identity.json").exists())
+        self.assertFalse((target / "files" / "peer" / "photo.bin").exists())
         async def _count():
             async with self.db._db.execute("SELECT COUNT(*) FROM messages") as cursor:
                 return (await cursor.fetchone())[0]
         self.assertEqual(_run(_count()), 1)
+
+    def test_switch_rolls_back_when_settings_save_fails(self):
+        _run(self._seed_message())
+        target = Path(self.tempdir.name) / "new-storage"
+        # Simulate Settings.set_storage_dir assigning the new value and then
+        # failing to persist it (e.g. disk full), not failing validation.
+        with patch.object(self.settings, "save", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(RuntimeError, "Rolled back"):
+                _run(
+                    switch_storage_location(
+                        db=self.db, settings=self.settings, file_manager=self.file_manager,
+                        identity=self.identity, target=target, migrate=True,
+                    )
+                )
+        self.assertIsNone(self.settings._storage_dir)
+        self.assertEqual(self.settings.storage_dir, self.storage.resolve())
+        self.assertEqual(self.db.db_path, self.storage / "meshtalk.db")
+        self.assertEqual(self.file_manager.data_dir, self.storage)
+        self.assertFalse((target / "meshtalk.db").exists())
+        self.assertFalse((target / "identity.json").exists())
+        self.assertFalse((target / "files" / "peer" / "photo.bin").exists())
 
     def test_adopt_rolls_back_when_persist_fails(self):
         target, adopted = self._make_adopt_target()

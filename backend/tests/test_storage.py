@@ -71,6 +71,41 @@ class CopyVerifyDeleteTest(unittest.TestCase):
             problems = storage.verify_tree_copy(src / "files", dst / "files", copied)
             self.assertTrue(any("mismatch" in problem for problem in problems))
 
+    def test_verify_detects_same_size_corruption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            src = Path(temporary) / "src"
+            dst = Path(temporary) / "dst"
+            _make_tree(src)
+            copied = storage.copy_tree_merge(src / "files", dst / "files")
+            # Same length as the source (100 bytes) but different content.
+            (dst / "files" / "peer" / "a.bin").write_bytes(b"z" * 100)
+            problems = storage.verify_tree_copy(src / "files", dst / "files", copied)
+            self.assertTrue(any("content mismatch" in problem for problem in problems))
+
+    def test_verify_file_copy_accepts_identical_and_rejects_corrupt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            src = Path(temporary) / "src.bin"
+            dst = Path(temporary) / "dst.bin"
+            src.write_bytes(b"payload" * 10)
+            storage.copy_file(src, dst)
+            self.assertIsNone(storage.verify_file_copy(src, dst))
+            dst.write_bytes(b"payloac" * 10)
+            self.assertEqual(storage.verify_file_copy(src, dst), "content mismatch after copy")
+
+    def test_copy_merge_refuses_to_overwrite_existing_destination(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            src = Path(temporary) / "src"
+            dst = Path(temporary) / "dst"
+            _make_tree(src)
+            existing = dst / "files" / "peer" / "a.bin"
+            existing.parent.mkdir(parents=True)
+            existing.write_bytes(b"keep me")
+            with self.assertRaises(FileExistsError):
+                storage.copy_tree_merge(src / "files", dst / "files")
+            # The pre-existing file is untouched and no other copy was left.
+            self.assertEqual(existing.read_bytes(), b"keep me")
+            self.assertFalse((dst / "files" / "sent" / "x" / "b.bin").exists())
+
     def test_copy_failure_cleans_partial_destination(self):
         with tempfile.TemporaryDirectory() as temporary:
             src = Path(temporary) / "src"
@@ -88,6 +123,9 @@ class CopyVerifyDeleteTest(unittest.TestCase):
                     storage.copy_tree_merge(src / "files", dst / "files")
             remaining = [path for path in (dst / "files").rglob("*") if path.is_file()] if (dst / "files").exists() else []
             self.assertEqual(remaining, [])
+            # Created directories are pruned too, so a retry is not blocked by
+            # an empty "already contains files" target.
+            self.assertFalse((dst / "files").exists())
 
     def test_missing_source_copies_nothing(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -101,9 +139,13 @@ class CopyVerifyDeleteTest(unittest.TestCase):
             src.mkdir()
             (src / "meshtalk.sock").write_text("socket")
             (src / "keep.bin").write_bytes(b"k")
+            # A nested file that happens to share a runtime name is user data.
+            (src / "sub").mkdir()
+            (src / "sub" / "settings.json").write_bytes(b"received")
             copied = storage.copy_tree_merge(src, dst)
-            self.assertEqual(copied, ["keep.bin"])
+            self.assertEqual(sorted(copied), ["keep.bin", "sub/settings.json"])
             self.assertFalse((dst / "meshtalk.sock").exists())
+            self.assertEqual((dst / "sub" / "settings.json").read_bytes(), b"received")
             self.assertEqual(storage.delete_tree_contents(src), [])
             self.assertTrue((src / "meshtalk.sock").exists())
             self.assertFalse((src / "keep.bin").exists())
@@ -116,6 +158,22 @@ class CopyVerifyDeleteTest(unittest.TestCase):
             (base / "backend.log").write_text("log")
             self.assertFalse(storage.dir_has_content(base))
             (base / "meshtalk.db").write_bytes(b"x")
+            self.assertTrue(storage.dir_has_content(base))
+
+    def test_dir_has_content_ignores_empty_directories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary) / "base"
+            (base / "files" / "peer").mkdir(parents=True)
+            self.assertFalse(storage.dir_has_content(base))
+            (base / "files" / "peer" / "photo.bin").write_bytes(b"x")
+            self.assertTrue(storage.dir_has_content(base))
+
+    def test_nested_runtime_named_file_counts_as_content(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary) / "base"
+            (base / "peer").mkdir(parents=True)
+            # Only a top-level name like settings.json is runtime metadata.
+            (base / "peer" / "settings.json").write_bytes(b"received")
             self.assertTrue(storage.dir_has_content(base))
 
     def test_same_location(self):
@@ -180,6 +238,17 @@ class SettingsStorageDirTest(unittest.TestCase):
             with patch.dict(os.environ, {"MESHTALK_STORAGE_DIR": self.tempdir.name}):
                 self.assertEqual(settings.storage_dir, Path(self.tempdir.name))
             self.assertEqual(Settings(self.path).storage_dir, Path(other).resolve())
+
+    def test_relative_env_storage_is_anchored_to_data_dir(self):
+        settings = Settings(self.path)
+        with patch.dict(os.environ, {"MESHTALK_STORAGE_DIR": "nested-data"}, clear=False):
+            self.assertEqual(settings.storage_dir, (self.path.parent / "nested-data").resolve())
+            self.assertEqual(settings.files_dir, (self.path.parent / "nested-data" / "files").resolve())
+
+    def test_relative_env_files_dir_is_anchored_to_data_dir(self):
+        settings = Settings(self.path)
+        with patch.dict(os.environ, {"MESHTALK_FILES_DIR": "nested-files"}, clear=False):
+            self.assertEqual(settings.files_dir, (self.path.parent / "nested-files").resolve())
 
     def test_custom_files_dir_survives_storage_change(self):
         settings = Settings(self.path)
