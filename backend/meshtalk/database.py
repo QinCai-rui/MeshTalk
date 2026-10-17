@@ -1573,10 +1573,52 @@ class Database:
         """Write a transaction-consistent snapshot of the database to dest.
 
         Used by storage migration while the live connection stays open; the
-        caller verifies the snapshot before switching over to it.
+        caller verifies the snapshot before switching over to it. Any pending
+        batched write (file-progress rows use ``commit=False``) is flushed
+        first, both to fold it into the snapshot and because ``VACUUM`` cannot
+        run from within an open transaction.
         """
         dest.parent.mkdir(parents=True, exist_ok=True)
+        await self._db.commit()
         await self._db.execute("VACUUM INTO ?", (str(dest),))
+
+    async def rewrite_file_paths(self, old_base: Path, new_base: Path) -> int:
+        """Re-root stored file paths after the files directory moves.
+
+        Transfer rows keep absolute ``file_path`` values, so moving the files
+        tree would otherwise leave every completed transfer pointing at the
+        deleted old location. Paths outside ``old_base`` and unreadable paths
+        are left untouched. Returns the number of rows updated.
+        """
+        try:
+            old_root = old_base.resolve()
+        except OSError:
+            old_root = old_base
+        try:
+            new_root = new_base.resolve()
+        except OSError:
+            new_root = new_base
+        async with self._db.execute(
+            "SELECT file_id, file_path FROM file_transfers WHERE file_path IS NOT NULL"
+        ) as cursor:
+            rows = [dict(row) async for row in cursor]
+        updated = 0
+        for row in rows:
+            raw = row["file_path"]
+            if not raw:
+                continue
+            try:
+                rel = Path(raw).resolve().relative_to(old_root)
+            except (OSError, ValueError):
+                continue
+            await self._db.execute(
+                "UPDATE file_transfers SET file_path = ? WHERE file_id = ?",
+                (str(new_root / rel), row["file_id"]),
+            )
+            updated += 1
+        if updated:
+            await self._db.commit()
+        return updated
 
     async def is_file_chunk_received(self, file_id: str, chunk_index: int) -> bool:
         """Check if a specific file chunk has been received."""

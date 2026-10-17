@@ -167,6 +167,21 @@ class Settings:
         self._analytics_dirty = False
         self._load()
 
+    def _normalize_dir(self, value: str) -> Path:
+        """Resolve a configured directory to an absolute path.
+
+        Relative values are anchored to the data directory (the settings
+        file's parent) rather than the process working directory, so the
+        launcher, backend, and CLI all agree on the same location.
+        """
+        candidate = Path(value.strip()).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.path.parent / candidate
+        try:
+            return candidate.resolve()
+        except OSError:
+            return candidate.absolute()
+
     @property
     def storage_dir(self) -> Path:
         """Return the storage directory for the database, files, and identity.
@@ -177,9 +192,9 @@ class Settings:
         """
         env = os.environ.get(STORAGE_ENV_VAR)
         if env and env.strip():
-            return Path(env.strip()).expanduser()
+            return self._normalize_dir(env)
         if self._storage_dir:
-            return Path(self._storage_dir).expanduser()
+            return self._normalize_dir(self._storage_dir)
         return self.path.parent
 
     def set_storage_dir(self, path_str: str) -> Path:
@@ -195,9 +210,9 @@ class Settings:
         # Env var takes precedence (cross-platform: C:\, E:\, /mnt/e, ~/ )
         env = os.environ.get("MESHTALK_FILES_DIR")
         if env and env.strip():
-            return Path(env.strip()).expanduser()
+            return self._normalize_dir(env)
         if self._files_dir:
-            return Path(self._files_dir).expanduser()
+            return self._normalize_dir(self._files_dir)
         # Default: alongside the database under the storage directory - respects
         # MESHTALK_STORAGE_DIR / the storage_dir setting (== DATA_DIR by default).
         return self.storage_dir / "files"

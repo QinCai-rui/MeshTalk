@@ -62,13 +62,32 @@ def _is_valid_mute_timeout(timeout: object) -> bool:
 
 
 def _get_data_dir() -> Path:
-    import os
+    """Return the data directory, normalizing a relative MESHTALK_DATA_DIR."""
     env = os.environ.get("MESHTALK_DATA_DIR")
     if env and env.strip():
-        return Path(env.strip()).expanduser()
+        candidate = Path(env.strip()).expanduser()
+        if not candidate.is_absolute():
+            candidate = (Path.cwd() / candidate).resolve()
+        return candidate
     return Path.home() / ".meshtalk"
 
 DATA_DIR = _get_data_dir()
+
+
+def _is_allowed_open_path(path: Path, roots: tuple[Path, ...]) -> bool:
+    """Return True when path is one of the allowed roots or lives inside one."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path.absolute()
+    for root in roots:
+        try:
+            root_resolved = root.resolve()
+        except OSError:
+            root_resolved = root.absolute()
+        if resolved == root_resolved or resolved.is_relative_to(root_resolved):
+            return True
+    return False
 
 
 async def main(debug: bool = False) -> None:
@@ -1106,11 +1125,17 @@ async def main(debug: bool = False) -> None:
                 payload = _storage_payload()
                 payload["note"] = "Files location reset to default. Existing files stay in the old location."
                 return payload
-            old_base = Path(settings._files_dir)
+            if os.environ.get("MESHTALK_FILES_DIR", "").strip():
+                settings.clear_files_dir()
+                payload = _storage_payload()
+                payload["note"] = "Files location reset to default. MESHTALK_FILES_DIR still overrides it."
+                return payload
+            old_base = settings._normalize_dir(settings._files_dir)
             target = settings.storage_dir / "files"
             if same_location(old_base, target):
                 settings.clear_files_dir()
                 return _storage_payload()
+            copied: list[str] = []
             if dir_has_content(old_base):
                 if await db.has_active_file_transfers():
                     return {"error": "A file transfer is in progress; wait for it to finish before resetting."}
@@ -1119,6 +1144,8 @@ async def main(debug: bool = False) -> None:
                 except Exception as exc:
                     return {"error": f"Could not copy files to '{target}': {exc}. Location unchanged."}
                 problems = verify_tree_copy(old_base, target, copied)
+                if not problems and await db.has_active_file_transfers():
+                    problems = ["a file transfer started during the migration"]
                 if problems:
                     for rel in reversed(copied):
                         try:
@@ -1128,6 +1155,9 @@ async def main(debug: bool = False) -> None:
                     detail = "; ".join(problems[:5])
                     return {"error": f"Verification failed ({detail}). Location unchanged."}
             settings.clear_files_dir()
+            if copied:
+                # Re-root absolute transfer paths before the old files vanish.
+                await db.rewrite_file_paths(old_base, target)
             # Files are now at default location; remove old after successful copy
             if dir_has_content(old_base):
                 problems = delete_tree_contents(old_base)
@@ -1152,7 +1182,7 @@ async def main(debug: bool = False) -> None:
                 payload["note"] = f"Files storage is already set to '{payload['files_dir']}'."
                 return payload
             try:
-                settings.set_files_dir(new_path)
+                settings.set_files_dir(str(target))
             except ValueError as exc:
                 return {"error": str(exc)}
             payload = _storage_payload()
@@ -1187,26 +1217,36 @@ async def main(debug: bool = False) -> None:
                 payload["note"] = "Storage location is already set to default."
                 return payload
             migrate = _wants_migrate(req)
-            if not migrate:
+            target = settings.path.parent
+            if os.environ.get(STORAGE_ENV_VAR, "").strip():
                 settings.clear_storage_dir()
                 payload = _storage_payload()
-                payload["note"] = "Storage location reset to default. Existing data stays in the old location."
+                payload["note"] = "Storage location reset to default. MESHTALK_STORAGE_DIR still overrides it."
                 return payload
-            target = settings.path.parent
             if same_location(settings.storage_dir, target):
                 settings.clear_storage_dir()
                 return _storage_payload()
+            # Route through the normal switch so the live database, identity,
+            # and file manager follow the persisted setting immediately
+            # instead of diverging until the next restart.
             try:
-                summary = await switch_storage_location(db=db, settings=settings, file_manager=file_manager, target=target, migrate=True)
+                summary = await switch_storage_location(
+                    db=db, settings=settings, file_manager=file_manager,
+                    identity=identity, target=target, migrate=migrate,
+                )
             except RuntimeError as exc:
                 return {"error": str(exc)}
             except Exception as exc:
-                logger.exception("storage change failed")
+                logger.exception("storage reset failed")
                 return {"error": f"Could not reset storage location: {exc}. Location unchanged."}
             settings.clear_storage_dir()
             payload = _storage_payload()
-            payload["migrated"] = True
+            payload["migrated"] = summary.get("migrated", False)
             payload["files_migrated"] = summary.get("files_migrated", False)
+            if not migrate:
+                payload["note"] = "Storage location reset to default. Existing data stays in the old location."
+            if summary.get("files_note"):
+                payload["files_note"] = summary["files_note"]
             if summary.get("cleanup_warning"):
                 payload["cleanup_warning"] = summary["cleanup_warning"]
             return payload
@@ -1252,6 +1292,10 @@ async def main(debug: bool = False) -> None:
         if not target.exists():
             return {"error": f"Path does not exist: {target}"}
         directory = target if target.is_dir() else target.parent
+        # Confine local IPC callers to the MeshTalk storage roots: otherwise any
+        # local client could probe the filesystem or pop open arbitrary folders.
+        if not _is_allowed_open_path(directory, (settings.storage_dir, settings.files_dir, DATA_DIR)):
+            return {"error": f"Path is outside the MeshTalk storage locations: {directory}"}
         if sys.platform == "win32":
             try:
                 os.startfile(str(directory))  # type: ignore[attr-defined]
@@ -1275,7 +1319,16 @@ async def main(debug: bool = False) -> None:
         last_exc: Exception | None = None
         for cmd in available:
             try:
-                await asyncio.create_subprocess_exec(*cmd, str(directory))
+                # Detach fully so the opener's lifetime is independent of the
+                # backend and it can never be mistaken for an IPC child.
+                await asyncio.create_subprocess_exec(
+                    *cmd,
+                    str(directory),
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    start_new_session=True,
+                )
                 return {"opened": str(directory)}
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc

@@ -16,6 +16,7 @@ created, never pre-existing destination content).
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import sqlite3
@@ -45,9 +46,6 @@ RUNTIME_FILES = frozenset(
         ".data_dir",
     }
 )
-
-# Top-level entries eligible for storage migration.
-MIGRATABLE_ENTRIES = (DB_FILENAME, IDENTITY_FILENAME, FILES_SUBDIR)
 
 
 def validate_target_dir(raw: str, *, base: Path | None = None) -> Path:
@@ -97,77 +95,96 @@ def locations_nested(first: Path, second: Path) -> bool:
     migration target that would be deleted along with the old location
     during post-verification cleanup.
     """
-    first_text, second_text = _resolved_text(first), _resolved_text(second)
-    if first_text == second_text:
-        return True
-    parent, child = (
-        (first_text, second_text)
-        if len(first_text) <= len(second_text)
-        else (second_text, first_text)
-    )
-    return child.startswith(parent.rstrip(os.sep) + os.sep)
+    return location_contains(first, second) or location_contains(second, first)
+
+
+def location_contains(parent: Path, child: Path) -> bool:
+    """Return True when child is parent or lives inside parent."""
+    parent_text, child_text = _resolved_text(parent), _resolved_text(child)
+    return child_text == parent_text or child_text.startswith(parent_text.rstrip(os.sep) + os.sep)
 
 
 def dir_has_content(path: Path) -> bool:
-    """Return True when a directory exists and holds any non-runtime entries."""
-    try:
-        entries = list(path.iterdir())
-    except OSError:
+    """Return True when a directory contains any non-runtime file or symlink.
+
+    Runtime names are only ignored at the top level (the storage root).
+    Empty subdirectories do not count, so a target left with only empty
+    folders (for example after an aborted copy) is still reusable.
+    """
+
+    def check(directory: Path, *, top: bool) -> bool:
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            return False
+        for entry in entries:
+            if top and entry.name in RUNTIME_FILES:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                if check(entry, top=False):
+                    return True
+                continue
+            return True
         return False
-    return any(entry.name not in RUNTIME_FILES for entry in entries)
 
-
-def snapshot_tree(base: Path) -> dict[str, int]:
-    """Map relative file paths under base to their sizes (excludes runtime files)."""
-    snapshot: dict[str, int] = {}
-    if not base.is_dir():
-        return snapshot
-    for root, dirs, files in os.walk(base):
-        # Prune nothing: files/ tree has no runtime files, but keep the guard.
-        dirs[:] = [name for name in dirs if name not in RUNTIME_FILES]
-        for name in files:
-            if name in RUNTIME_FILES:
-                continue
-            full = Path(root) / name
-            try:
-                rel = str(full.relative_to(base))
-                snapshot[rel] = full.stat().st_size
-            except OSError:
-                continue
-    return snapshot
+    return check(path, top=True)
 
 
 def copy_tree_merge(src: Path, dst: Path) -> list[str]:
     """Copy all files under src into dst (merge), returning copied relative paths.
 
-    Raises on the first failure after best-effort removal of files copied by
-    this call. Pre-existing destination files are overwritten by copy2 and are
-    NOT removed on abort (only paths in the returned list are cleaned, and the
-    list is only returned on full success; on failure the partial list is
-    cleaned internally).
+    Refuses to overwrite a file that already exists at the destination: a
+    collision means the destination is not a safe migration target, and
+    overwriting (then deleting on abort) would destroy pre-existing data.
+    Raises on the first failure after best-effort removal of files and
+    directories created by this call, so a failed copy never leaves a partial
+    merge behind.
     """
     copied: list[str] = []
+    created_dirs: list[Path] = []
+
+    def ensure_dir(path: Path) -> None:
+        if path.is_dir():
+            return
+        missing: list[Path] = []
+        current = path
+        while not current.exists() and current != current.parent:
+            missing.append(current)
+            current = current.parent
+        path.mkdir(parents=True, exist_ok=True)
+        created_dirs.extend(missing)
+
     try:
         if not src.is_dir():
             return copied
-        dst.mkdir(parents=True, exist_ok=True)
+        ensure_dir(dst)
         for root, dirs, files in os.walk(src):
             rel_root = Path(root).relative_to(src)
             target_root = dst / rel_root if str(rel_root) != "." else dst
-            target_root.mkdir(parents=True, exist_ok=True)
+            ensure_dir(target_root)
             for name in files:
-                if name in RUNTIME_FILES:
+                # Runtime files are only special at the storage root. Nested
+                # files (e.g. a received attachment named "settings.json")
+                # are user data and must be copied like any other file.
+                if str(rel_root) == "." and name in RUNTIME_FILES:
                     continue
                 source = Path(root) / name
                 rel = str((rel_root / name) if str(rel_root) != "." else Path(name))
                 target = dst / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    raise FileExistsError(f"destination already contains '{rel}'")
+                ensure_dir(target.parent)
                 shutil.copy2(source, target)
                 copied.append(rel)
     except Exception:
         for rel in reversed(copied):
             try:
                 (dst / rel).unlink()
+            except OSError:
+                pass
+        for directory in sorted(created_dirs, key=lambda item: len(item.parts), reverse=True):
+            try:
+                directory.rmdir()
             except OSError:
                 pass
         raise
@@ -188,19 +205,40 @@ def copy_file(source: Path, dest: Path) -> None:
         raise
 
 
+def _file_digest(path: Path) -> str:
+    """Return the SHA-256 hex digest of a file, streaming so large files stay bounded."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(block)
+    return hasher.hexdigest()
+
+
+def verify_file_copy(source: Path, target: Path) -> str | None:
+    """Verify a single copied file by content. Returns None when identical, else a reason."""
+    try:
+        if not target.is_file():
+            return "missing after copy"
+        if source.stat().st_size != target.stat().st_size:
+            return "size mismatch after copy"
+        if _file_digest(source) != _file_digest(target):
+            return "content mismatch after copy"
+    except OSError as exc:
+        return f"cannot verify: {exc}"
+    return None
+
+
 def verify_tree_copy(src: Path, dst: Path, copied: list[str]) -> list[str]:
-    """Verify copied files exist at dst with matching sizes. Returns error strings."""
+    """Verify copied files match their sources byte-for-byte. Returns error strings.
+
+    Compares SHA-256 digests rather than sizes alone, so same-size corruption
+    introduced during the copy is caught before the source is deleted.
+    """
     problems: list[str] = []
     for rel in copied:
-        source, target = src / rel, dst / rel
-        try:
-            if not target.is_file():
-                problems.append(f"missing after copy: {rel}")
-                continue
-            if source.stat().st_size != target.stat().st_size:
-                problems.append(f"size mismatch after copy: {rel}")
-        except OSError as exc:
-            problems.append(f"cannot verify {rel}: {exc}")
+        problem = verify_file_copy(src / rel, dst / rel)
+        if problem:
+            problems.append(f"{problem}: {rel}")
     return problems
 
 
@@ -281,10 +319,52 @@ async def _rollback_db_switch(
     return "; ".join(problems) if problems else None
 
 
+def remove_created_artifacts(
+    *, db_path: Path, identity_path: Path, files_base: Path, copied: list[str]
+) -> None:
+    """Best-effort removal of artifacts a migration created at the target.
+
+    Only call this for files this migration created: an aborted or rolled-back
+    migrate must not leave a half-populated target behind (a retry would then
+    see "already contains data"), but pre-existing target content is never
+    touched. Errors are ignored since this runs on failure paths.
+    """
+    for sidecar in ("", "-wal", "-shm", "-journal"):
+        candidate = db_path if not sidecar else Path(str(db_path) + sidecar)
+        try:
+            candidate.unlink()
+        except OSError:
+            pass
+    try:
+        identity_path.unlink()
+    except OSError:
+        pass
+    removed_dirs: set[Path] = set()
+    for rel in copied:
+        target = files_base / rel
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        removed_dirs.add(target.parent)
+    for directory in sorted(removed_dirs, key=lambda item: len(str(item)), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    try:
+        # Remove the files root too when this migration created it; an empty
+        # directory should not make a retry look like an occupied target.
+        files_base.rmdir()
+    except OSError:
+        pass
+
+
 async def migrate_files_location(*, db, settings, target: Path) -> dict:
     """Move the effective files directory to target with copy-verify-delete.
 
-    ``db`` needs ``has_active_file_transfers()``; ``settings`` needs
+    ``db`` needs ``has_active_file_transfers()`` and
+    ``rewrite_file_paths()``; ``settings`` needs
     ``files_dir``/``_files_dir``/``set_files_dir()``. Raises RuntimeError when
     the move cannot be completed: the old location stays active and partially
     copied files are removed. Returns ``{"migrated", "cleanup_warning"}``.
@@ -295,10 +375,17 @@ async def migrate_files_location(*, db, settings, target: Path) -> dict:
             "unset it before migrating."
         )
     old_base = settings.files_dir
+    previous_files_setting = settings._files_dir
+    if location_contains(old_base, settings.storage_dir):
+        raise RuntimeError(
+            f"The configured files location '{old_base}' contains the storage location "
+            f"'{settings.storage_dir}'; choose a dedicated files directory before migrating."
+        )
     if same_location(old_base, target):
         try:
             settings.set_files_dir(str(target))
-        except ValueError as exc:
+        except Exception as exc:
+            settings._files_dir = previous_files_setting
             raise RuntimeError(str(exc)) from exc
         return {"migrated": False, "cleanup_warning": None}
     if locations_nested(old_base, target):
@@ -307,6 +394,7 @@ async def migrate_files_location(*, db, settings, target: Path) -> dict:
             "(or vice versa); deleting the old files afterwards would remove the "
             "new location. Location unchanged."
         )
+    copied: list[str] = []
     if dir_has_content(old_base):
         if await db.has_active_file_transfers():
             raise RuntimeError("A file transfer is in progress; wait for it to finish before migrating.")
@@ -323,10 +411,28 @@ async def migrate_files_location(*, db, settings, target: Path) -> dict:
                     pass
             detail = "; ".join(problems[:5])
             raise RuntimeError(f"Verification of the copied files failed ({detail}). Location unchanged.")
+        # Re-check right before committing the switch: a queued transfer that
+        # started during the copy would otherwise keep writing to the old
+        # location, which is deleted immediately below.
+        if await db.has_active_file_transfers():
+            for rel in reversed(copied):
+                try:
+                    (target / rel).unlink()
+                except OSError:
+                    pass
+            raise RuntimeError(
+                "A file transfer started during the migration; wait for it to finish and retry. Location unchanged."
+            )
     try:
         settings.set_files_dir(str(target))
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
+    except Exception as exc:
+        # Leave the old setting in effect: no files moved, nothing deleted.
+        settings._files_dir = previous_files_setting
+        raise RuntimeError(f"Could not save the new files location: {exc}. Location unchanged.") from exc
+    if copied:
+        # Re-root absolute transfer paths so existing rows resolve under the
+        # new files directory before the old one is removed.
+        await db.rewrite_file_paths(old_base, target)
     cleanup_warning = None
     if dir_has_content(old_base):
         problems = delete_tree_contents(old_base)
@@ -361,6 +467,7 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
             "unset it before changing the storage location."
         )
     old_storage = settings.storage_dir
+    previous_storage_setting = settings._storage_dir
     if same_location(old_storage, target):
         return {"migrated": False, "files_migrated": False, "cleanup_warning": None, "noop": True}
     if locations_nested(old_storage, target):
@@ -391,6 +498,11 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
     old_files_base = settings.files_dir
     files_follow_storage = not settings._files_dir and not os.environ.get("MESHTALK_FILES_DIR", "").strip()
     new_files_base = target / FILES_SUBDIR
+    if location_contains(old_files_base, target):
+        raise RuntimeError(
+            f"Target '{target}' is inside the files location '{old_files_base}'; "
+            "choose a separate location. Location unchanged."
+        )
     migrate_files = (
         migrate
         and files_follow_storage
@@ -399,40 +511,48 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
     )
     copied_files: list[str] = []
     if migrate:
-        if old_db.exists():
-            try:
-                await db.vacuum_into(new_db)
-            except Exception as exc:
-                raise RuntimeError(f"Could not copy the messages database: {exc}") from exc
-            problem = sqlite_integrity_ok(new_db)
-            if problem:
+        try:
+            if old_db.exists():
                 try:
-                    new_db.unlink()
-                except OSError:
-                    pass
-                raise RuntimeError(f"Database copy verification failed ({problem}). Location unchanged.")
-        if old_identity.exists():
-            copy_file(old_identity, new_identity)
-            if old_identity.stat().st_size != new_identity.stat().st_size:
+                    await db.vacuum_into(new_db)
+                except Exception as exc:
+                    raise RuntimeError(f"Could not copy the messages database: {exc}") from exc
+                problem = sqlite_integrity_ok(new_db)
+                if problem:
+                    raise RuntimeError(f"Database copy verification failed ({problem}). Location unchanged.")
+            if old_identity.exists():
+                copy_file(old_identity, new_identity)
+                problem = verify_file_copy(old_identity, new_identity)
+                if problem:
+                    raise RuntimeError(
+                        f"Identity copy verification failed ({problem}). Location unchanged."
+                    )
+            if migrate_files:
                 try:
-                    new_identity.unlink()
-                except OSError:
-                    pass
-                raise RuntimeError("Identity copy verification failed (size mismatch). Location unchanged.")
-        if migrate_files:
-            try:
-                copied_files = copy_tree_merge(old_files_base, new_files_base)
-            except Exception as exc:
-                raise RuntimeError(f"Could not copy stored files: {exc}. Location unchanged.") from exc
-            problems = verify_tree_copy(old_files_base, new_files_base, copied_files)
-            if problems:
-                for rel in reversed(copied_files):
-                    try:
-                        (new_files_base / rel).unlink()
-                    except OSError:
-                        pass
-                detail = "; ".join(problems[:5])
-                raise RuntimeError(f"Verification of the copied files failed ({detail}). Location unchanged.")
+                    copied_files = copy_tree_merge(old_files_base, new_files_base)
+                except Exception as exc:
+                    raise RuntimeError(f"Could not copy stored files: {exc}. Location unchanged.") from exc
+                problems = verify_tree_copy(old_files_base, new_files_base, copied_files)
+                if not problems and await db.has_active_file_transfers():
+                    # A queued or pending transfer started during the copy and
+                    # may be writing to the old location, which is removed
+                    # below; abort rather than lose its data.
+                    problems = ["a file transfer started during the migration"]
+                if problems:
+                    raise RuntimeError(
+                        f"Verification of the copied files failed ({'; '.join(problems[:5])}). "
+                        "Location unchanged."
+                    )
+        except Exception:
+            # Never leave a half-populated target behind: a retry would
+            # otherwise be rejected as "already contains data".
+            remove_created_artifacts(
+                db_path=new_db,
+                identity_path=new_identity,
+                files_base=new_files_base,
+                copied=copied_files,
+            )
+            raise
     else:
         if target_has_data:
             # Adopt the data already at the target: use its database (after a
@@ -503,9 +623,10 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
             file_manager.data_dir = target
             try:
                 settings.set_storage_dir(str(target))
-            except ValueError as exc:
+            except Exception as exc:
                 # Undo the in-memory identity adoption as well: persisted
                 # settings still point at the old location and its identity.
+                settings._storage_dir = previous_storage_setting
                 (
                     identity.signing_private_key,
                     identity.encryption_private_key,
@@ -563,13 +684,21 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
             await db.connect()
         except Exception:
             pass
+        if migrate:
+            remove_created_artifacts(
+                db_path=new_db,
+                identity_path=new_identity,
+                files_base=new_files_base,
+                copied=copied_files,
+            )
         raise RuntimeError(
             f"Could not open the database at the new location: {exc}. Location unchanged."
         ) from exc
     file_manager.data_dir = target
     try:
         settings.set_storage_dir(str(target))
-    except ValueError as exc:
+    except Exception as exc:
+        settings._storage_dir = previous_storage_setting
         rollback_problem = await _rollback_db_switch(
             db=db,
             file_manager=file_manager,
@@ -577,6 +706,15 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
             previous_key=None,
             previous_data_dir=previous_data_dir,
         )
+        if migrate:
+            # The target copies were created by this run; drop them so the
+            # location can be retried cleanly after the rollback.
+            remove_created_artifacts(
+                db_path=new_db,
+                identity_path=new_identity,
+                files_base=new_files_base,
+                copied=copied_files,
+            )
         if rollback_problem is None:
             raise RuntimeError(
                 f"Could not save the new storage location: {exc}. "
@@ -589,6 +727,10 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
     summary: dict = {"migrated": migrate, "files_migrated": bool(migrate_files), "cleanup_warning": None, "noop": False}
     cleanup_problems: list[str] = []
     if migrate:
+        if migrate_files:
+            # Re-root absolute transfer paths before the old files are removed,
+            # so completed transfers still resolve at the new location.
+            await db.rewrite_file_paths(old_files_base, new_files_base)
         for sidecar in ("", "-wal", "-shm", "-journal"):
             candidate = old_db if not sidecar else Path(str(old_db) + sidecar)
             if candidate.exists():
