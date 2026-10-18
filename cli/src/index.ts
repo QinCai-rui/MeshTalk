@@ -164,11 +164,14 @@ async function confirmTransfer(label: string): Promise<boolean> {
   }
 }
 
-function splitMigrateFlags(args: string[]): { paths: string[]; migrate: boolean; noMigrate: boolean } {
+export function splitMigrateFlags(args: string[]): { paths: string[]; migrate: boolean; noMigrate: boolean } {
+  const migrate = args.includes("--migrate");
+  const noMigrate = args.includes("--no-migrate");
+  if (migrate && noMigrate) throw new Error("Specify either --migrate or --no-migrate, not both");
   return {
     paths: args.filter((a) => a !== "--migrate" && a !== "--no-migrate"),
-    migrate: args.includes("--migrate"),
-    noMigrate: args.includes("--no-migrate"),
+    migrate,
+    noMigrate,
   };
 }
 
