@@ -138,12 +138,13 @@ function groupingIsSystem(item: ConversationItem, isGroup: boolean): boolean {
 
 const FAILED_DELIVERY_STATUSES = new Set(["failed", "blocked", "unavailable"]);
 
-// Shown in place of a delivery summary: a failure count when any recipient failed, or "sending" while any recipient is still in progress. Routine states return undefined.
+// Shown in place of a delivery summary: a failure count when any recipient failed (plus "· sending" if others are still in progress), or "sending" alone. Routine states return undefined.
 export function groupDeliveryStatusSummary(deliveries: GroupDelivery[] = []): { text: string; failed: boolean } | undefined {
   const statuses = deliveries.map((delivery) => normalizeDeliveryStatus(delivery.status))
   const failed = statuses.filter((status) => FAILED_DELIVERY_STATUSES.has(status)).length
-  if (failed) return { text: `Failed for ${failed} of ${deliveries.length}`, failed: true }
-  if (statuses.includes("pending")) return { text: "sending", failed: false }
+  const sending = statuses.includes("pending")
+  if (failed) return { text: `Failed for ${failed} of ${deliveries.length}${sending ? " · sending" : ""}`, failed: true }
+  if (sending) return { text: "sending", failed: false }
   return undefined
 }
 

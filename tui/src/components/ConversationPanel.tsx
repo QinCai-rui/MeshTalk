@@ -727,7 +727,7 @@ senderName={selectedGroup ? groupMemberNames.get(file.sender_id) ?? peerNames.ge
           const unread = !isLocal ? unreadMessageStates[message.message_id] : undefined
           const replyHighlightStartedAt = replyHighlight?.id === message.message_id ? replyHighlight.startedAt : undefined
           const replyHighlightGenerationForRow = replyHighlight?.id === message.message_id ? replyHighlight.generation : undefined
-   const selectedRow = scrollFocused && selectedReplyTargetId === message.message_id
+           const selectedRow = scrollFocused && selectedReplyTargetId === message.message_id
            const unreadHighlightStartedAt = unread?.visibleAt !== undefined && !replyHighlightStartedAt && !selectedRow ? unread.visibleAt : undefined
            const isSystem = Boolean(selectedGroup && message.kind && message.kind !== "message" && message.kind !== "text")
            const senderName = selectedGroup ? groupMemberNames.get(message.sender_id) ?? peerNames.get(message.sender_id) ?? "Unknown member" : selected?.display_name ?? "Unknown member"

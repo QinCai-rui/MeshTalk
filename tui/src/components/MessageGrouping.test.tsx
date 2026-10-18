@@ -126,7 +126,7 @@ test("compact group follow-up with a failed recipient keeps its failure line", a
 test("group messages with a recipient still in flight show sending, not a failure", async () => {
   const props = burstProps(120)
   const at = 1788580800
-  const inFlight = { recipient_id: "sam", display_name: "Sam", status: "transferring", updated_at: at }
+  const inFlight = { recipient_id: "sam", display_name: "Sam", status: "pending", updated_at: at }
   props.selected = undefined
   props.selectedGroup = { group_id: "team", name: "Team", member_count: 3, unread_count: 0 }
   props.selectedGroupId = "team"

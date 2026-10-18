@@ -757,7 +757,7 @@ test("delivery details are shown for group messages, not direct messages", async
   } finally { await close(groupSetup) }
 })
 
-test("group file rows show a failure count only for failed recipients", async () => {
+test("group file rows show a failure count only for failed or unavailable recipients", async () => {
   const props = panelProps(80)
   props.selected = undefined
   props.selectedGroup = group
@@ -791,7 +791,7 @@ test("synthesized file deliveries count an unavailable recipient as a failure", 
   props.selectedGroupId = group.group_id
   props.selectionKey = "group:team"
   props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }] }
-  const file = { file_id: "file2", filename: "broken.zip", file_size: 100, sender_id: "me", recipient_id: "", group_id: "team", direction: "outbound", status: "failed", created_at: 1788580860 }
+  const file = { file_id: "file2", filename: "broken.zip", file_size: 100, sender_id: "me", recipient_id: "", group_id: "team", direction: "outbound", status: "unavailable", created_at: 1788580860 }
   props.conversationItems = [
     { type: "file", createdAt: 1788580860, file, allFiles: [file] },
   ]

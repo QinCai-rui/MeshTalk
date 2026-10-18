@@ -213,5 +213,5 @@ test("groupDeliveryStatusSummary shows failures and in-flight sends, and nothing
   expect(groupDeliveryStatusSummary([delivery("delivered"), delivery("failed")])).toEqual({ text: "Failed for 1 of 2", failed: true });
   expect(groupDeliveryStatusSummary([delivery("completed"), delivery("unavailable"), delivery("blocked")])).toEqual({ text: "Failed for 2 of 3", failed: true });
   expect(groupDeliveryStatusSummary([delivery("completed"), delivery("transferring")])).toEqual({ text: "sending", failed: false });
-  expect(groupDeliveryStatusSummary([delivery("receiving"), delivery("failed")])).toEqual({ text: "Failed for 1 of 2", failed: true });
+  expect(groupDeliveryStatusSummary([delivery("receiving"), delivery("failed")])).toEqual({ text: "Failed for 1 of 2 · sending", failed: true });
 });
