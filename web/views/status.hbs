@@ -1,0 +1,57 @@
+<section class="section">
+  <div class="container">
+    <div class="head head--split">
+      <div>
+        <p class="kicker">Status</p>
+        <h1 class="h2">Control server status.</h1>
+      </div>
+      <p class="head__note">The control server introduces remote peers and relays encrypted frames. It never holds messages, keys, or room secrets.</p>
+    </div>
+
+    <div data-status>
+      <div class="status-grid">
+        <article class="card status-card">
+          <div class="status-card__top"><span class="dot" id="server-dot"></span><h2 class="h4">Through this site</h2></div>
+          <p class="muted" id="server-status">Checking…</p>
+          <dl class="status-dl">
+            <dt>Status</dt><dd id="server-field-status">-</dd>
+            <dt>Rooms</dt><dd id="server-field-rooms">-</dd>
+            <dt>Connections</dt><dd id="server-field-connections">-</dd>
+            <dt>Endpoint</dt><dd id="server-field-endpoint">-</dd>
+          </dl>
+          <p class="faint mono" id="server-error" hidden></p>
+          <p class="faint" style="font-size:.85rem">Fetched by the website's server, so it works even when the control server blocks cross-origin requests.</p>
+        </article>
+
+        <article class="card status-card">
+          <div class="status-card__top"><span class="dot" id="client-dot"></span><h2 class="h4">Direct from your browser</h2></div>
+          <p class="muted" id="client-status">Checking…</p>
+          <dl class="status-dl">
+            <dt>Status</dt><dd id="client-field-status">-</dd>
+            <dt>Rooms</dt><dd id="client-field-rooms">-</dd>
+            <dt>Connections</dt><dd id="client-field-connections">-</dd>
+            <dt>Endpoint</dt><dd id="client-field-endpoint">-</dd>
+          </dl>
+          <p class="faint mono" id="client-error" hidden></p>
+          <p class="faint" style="font-size:.85rem">Fetched by your browser straight from the control server's /health route.</p>
+        </article>
+      </div>
+      <p class="faint mono" id="client-verdict" hidden style="margin-top:1rem"></p>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="head">
+      <p class="kicker">What it does</p>
+      <h2 class="h2">A signpost, not a mailbox.</h2>
+    </div>
+    <div class="explain">
+      <div><h3>Peer discovery</h3><p>Two clients on different networks need a place to swap connection details. The control server holds encrypted endpoint cards and never sees their contents.</p></div>
+      <div><h3>Relay fallback</h3><p>When hole punching fails, the server relays already-encrypted datagrams over a WebSocket. It cannot decrypt the traffic passing through.</p></div>
+      <div><h3>Room coordination</h3><p>Named rooms use the server to find members. Only opaque room IDs and HMAC-derived capabilities are stored; room secrets stay on your device.</p></div>
+      <div><h3>No message storage</h3><p>Chat, files, and keys travel peer to peer. The control server is signalling and relay only, with no access to any of it.</p></div>
+    </div>
+  </div>
+</section>

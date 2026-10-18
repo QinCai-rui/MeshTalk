@@ -11,7 +11,7 @@ from meshtalk.identity import Identity
 from meshtalk.peer_manager import PeerConnection, PeerManager, PeerState
 from meshtalk.protocol import (
     CAP_DIRECT_ROUTE_RECOVERY,
-    CAP_FILE_TRANSFER,
+    CAP_FILE_TRANSFER_V2,
     CAP_PROFILE_SYNC,
     CAP_TEXT_CHAT,
     DEFAULT_CAPABILITIES,
@@ -38,7 +38,7 @@ class CapabilityTest(unittest.TestCase):
         self.assertEqual(
             intersect_capabilities(
                 [CAP_TEXT_CHAT, CAP_PROFILE_SYNC, FUTURE_CAPABILITY],
-                [CAP_TEXT_CHAT, CAP_FILE_TRANSFER],
+                [CAP_TEXT_CHAT, CAP_FILE_TRANSFER_V2],
             ),
             [CAP_TEXT_CHAT],
         )
@@ -269,8 +269,8 @@ class CapabilityGapTest(unittest.TestCase):
                 confirmed=True,
             )
             await manager.send_packet(peer, Packet(PacketType.MESSAGE, b"works"))
-            with self.assertRaisesRegex(ValueError, CAP_FILE_TRANSFER):
-                await manager.send_packet(peer, Packet(PacketType.FILE_OFFER, b"blocked"))
+            with self.assertRaisesRegex(ValueError, CAP_FILE_TRANSFER_V2):
+                await manager.send_packet(peer, Packet(PacketType.FILE_OFFER_V2, b"blocked"))
             self.assertEqual(len(sent), 1)
 
         asyncio.run(run())
@@ -280,7 +280,7 @@ class CapabilityGapTest(unittest.TestCase):
         peer = PeerConnection("peer", "127.0.0.1", 1, PeerState.CONNECTED)
         peer.capabilities = [CAP_TEXT_CHAT]
         self.assertTrue(manager._accept_packet(peer, Packet(PacketType.MESSAGE)))
-        self.assertFalse(manager._accept_packet(peer, Packet(PacketType.FILE_OFFER)))
+        self.assertFalse(manager._accept_packet(peer, Packet(PacketType.FILE_OFFER_V2)))
         self.assertEqual(peer.state, PeerState.CONNECTED)
 
     def test_tcp_handshake_advertises_configured_capabilities(self):

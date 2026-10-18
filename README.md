@@ -45,31 +45,23 @@ Python backend ---- LAN broadcast + TCP ---- LAN peers
 The quick installer downloads the latest release for your platform and places
 the binaries in `~/.local/bin` (or `%LOCALAPPDATA%\MeshTalk` on Windows):
 
-```bash
-bash <(curl -fssL https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.sh)
-```
-
-Pass `--non-interactive` to skip prompts and accept all defaults:
+#### Linux/macOS
 
 ```bash
-bash <(curl -fssL https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.sh) --non-interactive --yes
+bash <(curl -fsSL getmeshtalk.raymont.dev/sh)
 ```
 
-Other options: `--version TAG`, `--install-dir DIR`, `--prerelease`, `--uninstall`, `--dry-run`. Run with `--help` for the full list.
+Run with `--help` for the full list of options
 
-On Windows (PowerShell):
+#### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.ps1 | iex
+irm getmeshtalk.raymont.dev/ps1 | iex
 ```
+Run with `-Help` for the full list of options
 
-Pass `-Simple` to accept defaults; `-NonInteractive` to skip prompts:
-
-```powershell
-irm https://raw.githubusercontent.com/QinCai-rui/MeshTalk/refs/heads/main/scripts/install.ps1 | iex - -NonInteractive -Simple
-```
-
-Other options: `-Version TAG`, `-InstallDir DIR`, `-Prerelease`, `-Uninstall`, `-DryRun`, `-Method auto|gh|webrequest`. Run with `-Help` for the full list.
+<ins>Open a new terminal</ins>, _then_ launch MeshTalk TUI with **`meshtalk`** 
+<sub><i>(type: `meshtalk` in terminal, then press Enter)</i></sub>
 
 ### Manual Install
 
@@ -77,25 +69,50 @@ Download the `.tar.gz` archive for your platform from the [latest release](../..
 extract it, and run the launcher. The archive contains the backend, CLI, TUI, and
 their runtimes, so it does not require Python, uv, Bun, or another package manager.
 
-Release binaries are provided for macOS (Intel and Apple Silicon), Linux (x64
-and ARM64), and Windows (x64). The Linux binaries require glibc 2.38 or newer
-(Ubuntu 24.04+, Debian 13+, Fedora 39+, or equivalent). Older distributions
-can run MeshTalk by building from source instead.
+Keep these files together in the extracted directory: `meshtalk` and `meshtalk-backend`
+(all end in `.exe` on Windows). Only the `meshtalk` launcher is invoked directly.
 
-```bash
-./meshtalk         # macOS or Linux: launches backend + TUI
-```
+On Linux/macOS, `cd` into where the binaries are extracted to, then run `./meshtalk`
+
+On Windows, run `meshtalk.exe` from the extracted archive.
+
+> [!NOTE]
+> Release binaries are provided for macOS (Intel and Apple Silicon), Linux (x64
+> and ARM64), and Windows (x64). The Linux binaries require glibc 2.35 or newer
+> (Ubuntu 22.04+, Debian 12+, Fedora 36+, or equivalent). Older distributions
+> can run MeshTalk by [building from source](#compile-from-source) instead.
+
+### Desktop App
+
+Each GitHub release also includes an unsigned desktop installer with the same
+MeshTalk version and bundled backend:
+
+- `meshtalk-desktop-macos-arm64.dmg` or `meshtalk-desktop-macos-x64.dmg`
+- `meshtalk-desktop-windows-x64.exe`
+- `meshtalk-desktop-x64.AppImage` or `meshtalk-desktop-arm64.AppImage`
+
+The desktop app shares the identity, contacts, rooms, and history under
+`~/.meshtalk` with the TUI and CLI. It connects to an existing backend when one
+is running and otherwise starts its bundled backend. Because current desktop
+packages are unsigned, operating systems may display an unverified-developer
+warning during installation.
+
+Desktop Settings can follow stable releases or opt into the same unstable
+snapshot channel as the TUI. Unsigned builds open the matching GitHub release
+for installation rather than replacing themselves automatically.
+
+### Updating
 
 To update the installation that launched MeshTalk, run:
 
 ```bash
-./meshtalk update --install
+meshtalk update --install
 ```
 
 To update a different existing MeshTalk installation, use its directory:
 
 ```bash
-./meshtalk update --install --dir /path/to/MeshTalk
+meshtalk update --install --dir /path/to/MeshTalk
 ```
 
 The target directory must contain the complete MeshTalk release binaries.
@@ -109,17 +126,13 @@ Updates use `QinCai-rui/MeshTalk` by default. To use releases from another
 GitHub repository, configure its user and repository name:
 
 ```bash
-./meshtalk update repo example-user example-repository
+meshtalk update repo example-user example-repository
 ```
 
-Run `./meshtalk update repo` to view the active repository, or
-`./meshtalk update repo clear` to restore the default. The environment
+Run `meshtalk update repo` to view the active repository, or
+`meshtalk update repo clear` to restore the default. The environment
 variables `MESHTALK_GITHUB_USER` and `MESHTALK_GITHUB_REPO` override the
 saved values for a single launch.
-
-On Windows, run `meshtalk.exe` from the extracted archive. Keep these files
-together in the extracted directory: `meshtalk` and `meshtalk-backend` (all end
-in `.exe` on Windows). Only the `meshtalk` launcher is invoked directly.
 
 ### First Launch
 
@@ -190,6 +203,35 @@ To build images locally instead of pulling from GHCR:
 docker compose build
 docker compose run -it client
 ```
+
+## Website
+
+The marketing site in `web/` builds to static files in `web/dist` and is
+deployed to Cloudflare Pages (project `meshtalk-site`, custom domain
+`https://meshtalk-site.qincai.xyz`). The status page's `/api/health` route is a
+Pages Function that proxies the control server health check, so it works even
+when the control server sends no CORS headers.
+
+Build locally with Node.js 22:
+
+```bash
+cd web
+npm ci
+npm run build     # writes web/dist and regenerates the sitemap
+npm start         # optional: serve locally through the Express proxy
+```
+
+Deploys run from `.github/workflows/deploy-web.yml` on pushes to `main` that
+touch `web/**`, or manually from the Actions tab. Set two repository secrets:
+
+- `CLOUDFLARE_API_TOKEN` — an API token with the *Cloudflare Pages: Edit*
+  permission.
+- `CLOUDFLARE_ACCOUNT_ID` — the Cloudflare account ID that owns the project.
+
+The first deploy creates the `meshtalk-site` project. After that, add
+`meshtalk-site.qincai.xyz` as a custom domain for the project in the Cloudflare
+dashboard and point the existing DNS record at it. The control server probed by
+`/api/health` is configured by `CONTROL_DEFAULT` in `web/wrangler.toml`.
 
 ## Group Chats And Remote Rooms
 
@@ -271,7 +313,32 @@ preferred; if direct HELLO/READY setup expires, clients carry their authenticate
 and encrypted MeshTalk datagrams through the existing control `wss://` connection.
 
 Deploy only the `control` service. It needs no UDP relay ports or shared secrets.
-Cloudflare Tunnel can expose it directly because clients use WebSocket traffic:
+
+### Cloudflare Workers
+
+The primary deployment runs the control service on Cloudflare Workers, serving
+`wss://meshtalk-control.qincai.xyz/v1/rendezvous`. `control/src/worker.ts`
+speaks the same wire protocol as the Bun server and keeps connection, room, and
+relay state in a single `ControlRoom` Durable Object, because one WebSocket can
+join several rooms and relay routes by peer ID across them.
+
+`.github/workflows/deploy-control.yml` deploys on pushes to `main` that touch
+`control/**`, or manually from the Actions tab. It uses the same
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets as the
+website workflow. The Worker, its Durable Object migration, and the
+`meshtalk-control.qincai.xyz` custom domain are all defined in
+`control/wrangler.toml`. To deploy by hand:
+
+```bash
+cd control
+bun x wrangler deploy
+```
+
+### Docker and Cloudflare Tunnel
+
+The image on GitHub Container Registry remains available as an alternative. It
+needs no UDP relay ports or shared secrets, and Cloudflare Tunnel can expose it
+directly because clients use WebSocket traffic:
 
 ```bash
 docker compose up -d control

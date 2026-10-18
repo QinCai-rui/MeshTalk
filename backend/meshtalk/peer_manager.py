@@ -24,6 +24,7 @@ from .protocol import (
     Packet,
     PacketType,
     ProfilePayload,
+    REMOVED_V1_FILE_PACKET_TYPES,
     TCP_TRANSPORT_VERSION,
     TCP_PORT,
     DEFAULT_CAPABILITIES,
@@ -80,6 +81,7 @@ class PeerConnection:
         self.writer: asyncio.StreamWriter | None = None
         self.display_name = "Anonymous"
         self.tui_active = False
+        self.dnd = False
         self.signing_public_key: bytes | None = None
         self.encryption_public_key: bytes | None = None
         self.capabilities: list[str] = []
@@ -135,6 +137,7 @@ class PeerManager:
         self._server: asyncio.Server | None = None
         self._running = False
         self.tui_active = False
+        self.dnd_enabled = False
         self.capabilities = validate_capabilities(
             list(DEFAULT_CAPABILITIES if capabilities is None else capabilities)
         )
@@ -186,7 +189,60 @@ class PeerManager:
             await asyncio.gather(*remaining_tasks, return_exceptions=True)
         if self._server:
             self._server.close()
-            await self._server.wait_closed()
+            try:
+                await asyncio.wait_for(self._server.wait_closed(), 5)
+            except asyncio.TimeoutError:
+                # A half-torn-down connection can keep the server's client
+                # set non-empty forever. Shutdown must not hang on it: the
+                # listening socket is already closed, so the port is free.
+                logger.warning(
+                    "LAN TCP server on port %d still has open connections during shutdown",
+                    self.tcp_port,
+                )
+
+    async def refresh_network(self) -> None:
+        """Drop network-bound sessions and rebind transports after a route change."""
+        if not self._running:
+            return
+
+        active_peers = dict(self.peers)
+        udp_peers = dict(self._udp_peers)
+        endpoint_peers = set(self._known_endpoints)
+        peer_ids = set(active_peers) | set(udp_peers) | endpoint_peers
+        stale_endpoints = {
+            peer_id: dict(endpoints)
+            for peer_id, endpoints in self._known_endpoints.items()
+        }
+        self._known_endpoints.clear()
+
+        # Remove entries before closing sockets so their receive callbacks do
+        # not race this refresh and emit a second offline transition.
+        self.peers.clear()
+        self._udp_peers.clear()
+        for peer in active_peers.values():
+            peer.state = PeerState.DISCONNECTED
+        for peer in udp_peers.values():
+            peer.state = PeerState.DISCONNECTED
+
+        writers = {
+            peer.writer
+            for peer in active_peers.values()
+            if peer.transport == "lan_tcp" and peer.writer is not None
+        }
+        if writers:
+            await asyncio.gather(*(self._close_writer(writer) for writer in writers))
+
+        for peer_id, endpoints in stale_endpoints.items():
+            for transport in endpoints:
+                await self.db.save_peer_endpoint(peer_id, transport, None)
+
+        try:
+            await self.udp.restart()
+        finally:
+            for peer_id in peer_ids:
+                if self.get_connected_peer(peer_id) is None:
+                    await self.db.set_peer_online(peer_id, False)
+                await self._notify_peer_changed(peer_id)
 
     def _should_initiate(self, remote_peer_id: str) -> bool:
         return self.identity.peer_id < remote_peer_id
@@ -240,6 +296,11 @@ class PeerManager:
                 self._known_endpoints[peer_id] = {}
             self._known_endpoints[peer_id].update(endpoints)
 
+    async def _seed_peer_dnd(self, peer: PeerConnection) -> None:
+        """Restore the last verified DND state until a profile update arrives."""
+        stored = await self.db.get_peer(peer.peer_id)
+        peer.dnd = bool(stored["dnd"]) if stored else False
+
     async def connect_to_peer(self, peer_id: str | None, address: str, tcp_port: int) -> None:
         if peer_id:
             self.record_lan_candidate(peer_id, address, tcp_port)
@@ -275,6 +336,7 @@ class PeerManager:
                 return
             if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
                 raise ValueError("Connected peer limit reached")
+            await self._seed_peer_dnd(peer)
             peer.state = PeerState.CONNECTED
             self.peers[peer.peer_id] = peer
             self.record_lan_candidate(peer.peer_id, address, tcp_port)
@@ -322,6 +384,7 @@ class PeerManager:
                 return
             if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
                 raise ValueError("Connected peer limit reached")
+            await self._seed_peer_dnd(peer)
             self.peers[peer.peer_id] = peer
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, capabilities=peer.remote_capabilities)
             self._start_receive_loop(peer)
@@ -365,6 +428,17 @@ class PeerManager:
         if peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
             logger.warning("Rejecting remote UDP peer %s: peer limit reached", peer_id)
             return
+        # Freshness guard for the relay->direct handoff race: async connected
+        # callbacks may arrive out of order. Drop callbacks whose session is no
+        # longer the current active UDP session so a stale relay object cannot
+        # overwrite the newer direct route.
+        try:
+            active_session_id = self.udp.active_session_id(peer_id)
+        except Exception:
+            active_session_id = None
+        if active_session_id is not None and active_session_id != session_id:
+            logger.debug("Ignoring stale UDP connected callback for %s", peer_id)
+            return
         old = self._udp_peers.get(peer_id)
         old_endpoint = old.endpoint if old else None
         peer = PeerConnection(peer_id, address, port, PeerState.CONNECTED, "remote_derp" if via_relay else "remote_udp")
@@ -376,6 +450,7 @@ class PeerManager:
         gaps = self.udp.get_capability_gaps(peer_id)
         if gaps is not None:
             peer.remote_capabilities, peer.peer_missing_capabilities, peer.local_missing_capabilities = gaps
+        await self._seed_peer_dnd(peer)
         self._udp_peers[peer_id] = peer
         self._known_endpoints.setdefault(peer_id, {})[peer.transport] = peer.endpoint
         active = self.peers.get(peer_id)
@@ -473,14 +548,21 @@ class PeerManager:
         return payload
 
     def _profile_payload(self) -> ProfilePayload:
-        payload = ProfilePayload(self.identity.peer_id, self.identity.display_name, self.tui_active, b"")
+        payload = ProfilePayload(self.identity.peer_id, self.identity.display_name, self.tui_active, b"", self.dnd_enabled, b"")
         payload.signature = self.identity.signing_private_key.sign(payload.signed_bytes())
+        payload.dnd_signature = self.identity.signing_private_key.sign(payload.dnd_signed_bytes())
         return payload
 
     async def set_tui_active(self, active: bool) -> None:
         if self.tui_active == active:
             return
         self.tui_active = active
+        await self.broadcast_profile_update()
+
+    async def set_dnd_enabled(self, enabled: bool) -> None:
+        if self.dnd_enabled == enabled:
+            return
+        self.dnd_enabled = enabled
         await self.broadcast_profile_update()
 
     async def _send_profile_update(self, peer: PeerConnection) -> None:
@@ -623,6 +705,13 @@ class PeerManager:
                 if packet is None:
                     break
                 peer.last_seen = time.time()
+                if packet.type in REMOVED_V1_FILE_PACKET_TYPES:
+                    logger.info(
+                        "Ignoring retired %s packet from %s",
+                        REMOVED_V1_FILE_PACKET_TYPES[packet.type],
+                        peer.peer_id,
+                    )
+                    continue
                 if packet.type in (
                     PacketType.HANDSHAKE,
                     PacketType.HANDSHAKE_ACK,
@@ -680,12 +769,22 @@ class PeerManager:
             raise ValueError("Invalid profile signature") from exc
         peer.display_name = Identity.normalize_display_name(payload.display_name)
         peer.tui_active = payload.tui_active
+        try:
+            Ed25519PublicKey.from_public_bytes(peer.signing_public_key).verify(
+                payload.dnd_signature, payload.dnd_signed_bytes()
+            )
+            peer.dnd = payload.dnd
+        except (InvalidSignature, ValueError):
+            # Preserve the last verified DND state when a legacy or malformed
+            # profile omits a valid DND signature.
+            pass
         active = self.peers.get(peer.peer_id)
         if active:
             active.display_name = peer.display_name
             active.tui_active = peer.tui_active
+            active.dnd = peer.dnd
         await self.db.upsert_peer(
-            peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, peer.tui_active, peer.remote_capabilities
+            peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, peer.tui_active, peer.remote_capabilities, peer.dnd
         )
         await self._notify_peer_changed(peer.peer_id)
 

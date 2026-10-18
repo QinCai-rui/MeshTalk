@@ -19,6 +19,10 @@ tui/dist/
 __pycache__/
 *.egg-info/
 
+# Cloudflare / Wrangler local state
+.wrangler/
+**/.wrangler/
+
 # Local binaries / packages
 /meshtalk
 /meshtalk-backend
@@ -48,3 +52,15 @@ Thumbs.db
 
 # opencode config
 opencode.json
+.review-context/
+
+# superpowers working docs (never commit)
+docs/superpowers/
+.superpowers/
+
+# local worktrees
+.worktrees/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/binaries/
+desktop/src-tauri/icons/

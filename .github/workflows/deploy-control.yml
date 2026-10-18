@@ -1,0 +1,33 @@
+name: Deploy control server to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "control/**"
+      - ".github/workflows/deploy-control.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Deploy control Worker
+        working-directory: control
+        # control/wrangler.toml defines the Worker, its Durable Object
+        # migration, and the meshtalk-control.qincai.xyz custom domain.
+        run: npx --yes wrangler@4 deploy

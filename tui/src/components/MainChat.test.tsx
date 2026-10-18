@@ -1,8 +1,11 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { act, createRef, useState, type ComponentProps } from "react"
 import { useTerminalDimensions } from "@opentui/react"
 import { testRender } from "@opentui/react/test-utils"
-import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
+import { NativeImage, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core"
+import { mkdir, rm } from "fs/promises"
+import { tmpdir } from "os"
+import { join } from "path"
 import { Sidebar } from "./Sidebar"
 import { ConversationPanel } from "./ConversationPanel"
 import { chatLayout, chatTheme } from "../chatTheme"
@@ -43,7 +46,7 @@ function panelProps(width: number): ComponentProps<typeof ConversationPanel> {
       { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "I shared the **updated notes**. What do you think?", created_at: 1788580800 } },
       { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "me", content: "Looks good. The simpler layout makes it much easier to read.", created_at: 1788580860, delivered: 1 } },
     ],
-    deliveredMessageIds: new Set(), dialogOpen: false, draftLength: 0, drafts: {}, flashingEnabled: false, blinkOn: true, composerHeight: 3, composerRef: createRef<TextareaRenderable>(), groupMembers: {}, identity: { peer_id: "me", display_name: "Taylor" }, imageProtocol: "blocks", limitedGroupMembers: [], capabilityGapMessage: "", isSending: false, limitColor: undefined, mutedPeers: {}, peers, selected: peers[0], selectedGroup: undefined, selectedGroupId: undefined, selectedHasCapabilityGap: false, selectedReplyTargetId: undefined, replyTo: undefined, selectionKey: "peer:alex", unreadMessageStates: {}, unreadNow: 0, markUnreadMessageVisible: noop, openSettings: noop, openImage: noop, openDeliveryDetails: noop, typingNames: [], editingName: false, scrollFocused: false, scrollboxRef: createRef<ScrollBoxRenderable>(), status: DEFAULT_STATUS, setComposerHeight: noop, setDraftLength: noop, setScrollFocused: noop, selectReplyTarget: noop, clearReplyTarget: noop, onComposerChange: noop, send: noop,
+    deliveredMessageIds: new Set(), dialogOpen: false, draftLength: 0, drafts: {}, flashingEnabled: false, blinkOn: true, composerHeight: 3, composerRef: createRef<TextareaRenderable>(), groupMembers: {}, identity: { peer_id: "me", display_name: "Taylor" }, imageProtocol: "blocks", limitedGroupMembers: [], capabilityGapMessage: "", isSending: false, limitColor: undefined, mutedPeers: {}, peers, selected: peers[0], selectedGroup: undefined, selectedGroupId: undefined, selectedHasCapabilityGap: false, selectedReplyTargetId: undefined, replyTo: undefined, selectionKey: "peer:alex", unreadMessageStates: {}, markUnreadMessageVisible: noop, openSettings: noop, openImage: noop, openDeliveryDetails: noop, typingNames: [], editingName: false, scrollFocused: false, scrollboxRef: createRef<ScrollBoxRenderable>(), status: DEFAULT_STATUS, setComposerHeight: noop, setDraftLength: noop, setScrollFocused: noop, selectReplyTarget: noop, clearReplyTarget: noop, onComposerChange: noop, send: noop,
   }
 }
 // Markdown's worker initializes asynchronously, independently of the renderer scheduler.
@@ -81,7 +84,7 @@ for (const width of [120, 80, 64, 48, 32]) {
       expect(frame).toContain("Write a message...")
       expect(frame).toContain("30,720 bytes")
       expect(frame).toContain("Ctrl+P settings")
-      expect(frame.replace(/\s+/g, " ")).toContain("Ctrl+↑↓ chats")
+      expect(frame).not.toContain("Ctrl+↑↓ chats")
       const commandsShortcut = setup.renderer.root.findDescendantById("settings-shortcut")!
       expect(commandsShortcut).toBeDefined()
       if (!props.compact) expect(commandsShortcut.screenX).toBeGreaterThan(props.composerRef.current!.screenX)
@@ -98,18 +101,212 @@ test("sidebar uses friend/request markers and mouse selection retains the conver
   let selection: unknown
   const props = sidebarProps(120)
   props.peers = [{ ...peers[0]!, presence: "away", capability_gap: true, friend_request: "both" }]
-  props.mutedPeers = { alex: 1 }
+  props.mutedPeers = {}
   props.setSelection = value => { selection = value }
   const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
   try {
     const frame = await settle(setup)
     expect(frame).toContain("Groups (1)")
     expect(frame).not.toContain("──── Groups")
-    for (const label of ["~", "♥", "↙", "↗", "Limited", "Muted", "3 new"]) expect(frame).toContain(label)
+    for (const label of ["~", "♥", "↙", "↗", "Limited", "3 new"]) expect(frame).toContain(label)
+    expect(frame).not.toContain("Muted")
     for (const label of ["Away", "Offline", "Friend", "Request received", "Request sent"]) expect(frame).not.toContain(label)
     const row = setup.renderer.root.findDescendantById("nav-peer-alex")!
     await act(async () => { await setup.mockMouse.click(row.screenX + 1, row.screenY) })
     expect(selection).toEqual({ kind: "peer", id: "alex" })
+  } finally { await close(setup) }
+})
+
+test("keeps friend markers visible beside long peer names", async () => {
+  const props = sidebarProps(120)
+  const displayName = "A-very-long-peer-name-that-must-wrap-without-hiding-markers"
+  props.peers = [{ ...peers[0]!, display_name: displayName, friend_request: "both" }]
+  props.mutedPeers = {}
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup)
+    expect(frame.replace(/[\s♥↙↗]/g, "")).toContain(displayName)
+    expect(frame).toContain("♥")
+    expect(frame).toContain("↙")
+    expect(frame).toContain("↗")
+  } finally { await close(setup) }
+})
+
+test("muted peers and groups hide unread badges while staying dimmed", async () => {
+  const props = sidebarProps(120)
+  props.peers = [{ ...peers[0]!, unread_count: 3 }]
+  props.groups = [{ ...group, unread_count: 2 }]
+  props.mutedPeers = { alex: 0 }
+  props.mutedGroups = { team: 0 }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup)
+    expect(frame).toContain("Muted")
+    expect(frame).not.toContain("3 new")
+    expect(frame).not.toContain("2 new")
+  } finally { await close(setup) }
+})
+
+test("top bar shows a mute toggle for the selected conversation", async () => {
+  const props = panelProps(80)
+  let toggled = 0
+  props.mutedPeers = {}
+  props.mutedGroups = {}
+  props.onToggleMute = () => { toggled++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    await settle(setup, "Alex Morgan")
+    const toggle = setup.renderer.root.findDescendantById("mute-toggle")!
+    expect(toggle).toBeDefined()
+    await act(async () => { await setup.mockMouse.click(toggle.screenX + 1, toggle.screenY) })
+    expect(toggled).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("peers with Do Not Disturb show a red circle and DND flag", async () => {
+  const props = sidebarProps(120)
+  props.peers = [{ ...peers[0]!, dnd: true }]
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Alex Morgan")
+    expect(frame).toContain("DND")
+    const fg = foregroundFor(setup, "Alex Morgan") as unknown as { toInts: () => number[] }
+    expect(fg?.toInts()).toEqual([255, 95, 95, 255])
+  } finally { await close(setup) }
+})
+
+test("sidebar shows a Do Not Disturb indicator when DND is on", async () => {
+  const props = sidebarProps(120)
+  props.dndEnabled = true
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Do Not Disturb on")
+    expect(frame).toContain("Do Not Disturb on")
+    const fg = foregroundFor(setup, "Do Not Disturb on") as unknown as { toInts: () => number[] }
+    expect(fg?.toInts()).toEqual([255, 95, 95, 255])
+  } finally { await close(setup) }
+})
+
+test("conversation header marks a peer with Do Not Disturb", async () => {
+  const props = panelProps(80)
+  props.selected = { ...peers[0]!, dnd: true }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "Alex Morgan")
+    expect(frame).toContain("DND")
+  } finally { await close(setup) }
+})
+
+test("Do Not Disturb blocks all desktop notifications", async () => {
+  const { notify } = await import("../notifications")
+  let triggered = 0
+  const renderer = { capabilities: { notifications: true }, triggerNotification: () => { triggered++ } }
+  const preferences = { setup_dismissed: true, delivery: "terminal" as const, events: { messages: true, friend_requests: true, file_offers: true, file_completed: true } }
+  for (const event of ["messages", "friend_requests", "file_offers", "file_completed"] as const)
+    await notify(preferences, event, renderer, "hello", true)
+  expect(triggered).toBe(0)
+  await notify(preferences, "messages", renderer, "hello", false)
+  expect(triggered).toBe(1)
+})
+
+test("mention popup lists matching members above the input and picks on click", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "me", display_name: "Taylor" }] }
+  props.mentionOpen = true
+  props.mentionCandidates = [
+    { peerId: "alex", displayName: "Alex Morgan" },
+    { peerId: "me", displayName: "Taylor", isSelf: true },
+  ]
+  props.mentionSelected = 1
+  let picked: string | undefined
+  props.onMentionPick = (peerId) => { picked = peerId }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    const frame = await settle(setup, "Alex Morgan")
+    expect(setup.renderer.root.findDescendantById("mention-popup")).toBeDefined()
+    expect(frame).toContain("@Alex Morgan")
+    expect(frame).toContain("@Taylor (you)")
+    const row = setup.renderer.root.findDescendantById("mention-pick-alex")!
+    await act(async () => { await setup.mockMouse.click(row.screenX + 1, row.screenY) })
+    expect(picked).toBe("alex")
+  } finally { await close(setup) }
+})
+
+test("stored mention tokens render as display names with a yellow highlight", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "me", display_name: "Taylor" }] }
+  props.conversationItems = [
+    { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "hi <@me> and <@sam> and <@gone>!", mentions: ["me"], created_at: 1788580800 } },
+    { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "alex", content: "no mentions here", mentions: [], created_at: 1788580860 } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    const frame = await settle(setup, "no mentions here")
+    expect(frame).toContain("hi @Taylor and @Sam Chen and @unknown!")
+    expect(frame).not.toContain("<@me>")
+    expect(frame).toContain("no mentions here")
+    const spans = setup.captureSpans().lines.flatMap((line) => line.spans)
+    const bgOf = (text: string) =>
+      (spans.find((span) => span.text === text)?.bg as unknown as { toInts?: () => number[] })?.toInts?.()
+    // The pill itself carries the blue block background...
+    expect(bgOf("@Taylor")).toEqual([29, 78, 137, 255])
+    // ...while the surrounding row keeps the yellow mention highlight.
+    expect(bgOf("hi ")).toEqual([77, 63, 30, 255])
+  } finally { await close(setup) }
+})
+
+test("mention highlight follows the server payload over raw content", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }, { peer_id: "me", display_name: "Taylor" }] }
+  props.conversationItems = [
+    { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "alex", content: "payload says hi", mentions: ["me"], created_at: 1788580800 } },
+    { type: "message", createdAt: 1788580860, message: { message_id: "m2", sender_id: "alex", content: "hi <@me> but payload disagrees", mentions: [], created_at: 1788580860 } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    await settle(setup, "payload says hi")
+    const spans = setup.captureSpans().lines.flatMap((line) => line.spans)
+    const bgOf = (text: string) =>
+      (spans.find((span) => span.text.includes(text))?.bg as unknown as { toInts?: () => number[] })?.toInts?.()
+    // Payload mention highlights even without a token in content...
+    expect(bgOf("payload says hi")).toEqual([77, 63, 30, 255])
+    // ...and an empty payload suppresses the highlight despite the token.
+    expect(bgOf("payload disagrees")).not.toEqual([77, 63, 30, 255])
+  } finally { await close(setup) }
+})
+
+test("sidebar highlights groups with unread mentions", async () => {
+  const props = sidebarProps(120)
+  props.groups = [{ ...group, unread_count: 1 }]
+  props.mentionCounts = { team: 2 }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Design studio")
+    expect(frame).toContain("@2 mentioned")
+  } finally { await close(setup) }
+})
+
+test("mentions bypass muted groups", async () => {
+  const props = sidebarProps(120)
+  props.groups = [{ ...group, unread_count: 1 }]
+  props.mentionCounts = { team: 2 }
+  props.mutedGroups = { team: 0 }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "Design studio")
+    expect(frame).toContain("@2 mentioned")
   } finally { await close(setup) }
 })
 
@@ -351,11 +548,11 @@ test("rendezvous and capability warnings pulse softly and remain readable", asyn
     const frame = await settle(bright, "Out-of-sync with MeshTalk")
     expect(frame).toContain("Limited: This peer needs a newer client.")
     expect(frame).toContain("Offline: messages queue")
-    expect(frame).toContain("Messages blocked until your friend request")
+    expect(frame).toContain("Messaging is blocked until you become friends.")
     brightRendezvous = foregroundFor(bright, "Out-of-sync with MeshTalk")
     brightCapability = foregroundFor(bright, "Limited: This peer")
     brightOffline = foregroundFor(bright, "Offline: messages queue")
-    brightFriend = foregroundFor(bright, "Messages blocked until")
+    brightFriend = foregroundFor(bright, "Messaging is blocked until")
     expect(brightRendezvous).toBeDefined()
     expect(brightCapability).toBeDefined()
     expect(brightOffline).toBeDefined()
@@ -369,7 +566,7 @@ test("rendezvous and capability warnings pulse softly and remain readable", asyn
     expect(foregroundFor(dim, "Out-of-sync with MeshTalk")).not.toEqual(brightRendezvous)
     expect(foregroundFor(dim, "Limited: This peer")).not.toEqual(brightCapability)
     expect(foregroundFor(dim, "Offline: messages queue")).not.toEqual(brightOffline)
-    expect(foregroundFor(dim, "Messages blocked until")).not.toEqual(brightFriend)
+    expect(foregroundFor(dim, "Messaging is blocked until")).not.toEqual(brightFriend)
   } finally { await close(dim) }
 
   const staticWarning = await testRender(<ConversationPanel {...warningProps} flashingEnabled={false} blinkOn={false} />, { width: 80, height: 26 })
@@ -378,7 +575,7 @@ test("rendezvous and capability warnings pulse softly and remain readable", asyn
     expect(foregroundFor(staticWarning, "Out-of-sync with MeshTalk")).toEqual(brightRendezvous)
     expect(foregroundFor(staticWarning, "Limited: This peer")).toEqual(brightCapability)
     expect(foregroundFor(staticWarning, "Offline: messages queue")).toEqual(brightOffline)
-    expect(foregroundFor(staticWarning, "Messages blocked until")).toEqual(brightFriend)
+    expect(foregroundFor(staticWarning, "Messaging is blocked until")).toEqual(brightFriend)
   } finally { await close(staticWarning) }
 })
 
@@ -398,6 +595,28 @@ test("group history keeps system messages, replies, file status, and delivery de
     const frame = await settle(setup, "joined the group")
     for (const label of ["Group / 4 members", "joined the group", "Replying to Alex Morgan", "delivered 1/1", "notes.pdf", "1.0 KiB"]) expect(frame).toContain(label)
   } finally { await close(setup) }
+})
+
+test("does not decode or preview non-image attachments", async () => {
+  const directory = join(tmpdir(), `meshtalk-non-image-test-${crypto.randomUUID()}`)
+  const filePath = join(directory, "answers.pdf")
+  await mkdir(directory)
+  // Deliberately use image bytes: rendering must be gated by the attachment's
+  // filename, not whether a decoder happens to accept its contents.
+  await Bun.write(filePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64"))
+  const props = panelProps(80)
+  props.conversationItems = [{ type: "file", createdAt: 1788580860, file: { file_id: "pdf", filename: "answers.pdf", file_size: 1024, sender_id: "alex", recipient_id: "me", direction: "inbound", status: "completed", created_at: 1788580860, file_path: filePath }, allFiles: [] }]
+  const loadSpy = spyOn(NativeImage, "load")
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 20 })
+  try {
+    const frame = await settle(setup, "answers.pdf")
+    expect(frame).toContain("answers.pdf")
+    expect(loadSpy).not.toHaveBeenCalled()
+  } finally {
+    loadSpy.mockRestore()
+    await close(setup)
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 function ResizableChat({ props }: { props: ComponentProps<typeof ConversationPanel> }) {
@@ -459,6 +678,307 @@ test("history selection and unread visibility retain their message IDs", async (
   } finally { await close(setup) }
 })
 
+test("history controls jump to the oldest unread message and back to latest", async () => {
+  const props = panelProps(80)
+  props.conversationItems = Array.from({ length: 24 }, (_, index) => ({
+    type: "message" as const,
+    createdAt: 1788580800 + index,
+    message: { message_id: `m${index}`, sender_id: "alex", content: `History entry ${index}`, created_at: 1788580800 + index },
+  }))
+  props.unreadMessageStates = {
+    m12: { conversationKey: "peer:alex", receivedAt: Date.now() },
+    m18: { conversationKey: "peer:alex", receivedAt: Date.now() },
+  }
+  let historyFocused = false
+  props.setScrollFocused = value => { historyFocused = value }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 20 })
+  try {
+    await settle(setup, "History entry 23")
+    const unread = setup.renderer.root.findDescendantById("jump-to-oldest-unread")!
+    expect(unread).toBeDefined()
+    await act(async () => { await setup.mockMouse.click(unread.screenX, unread.screenY); await setup.renderOnce() })
+    expect(historyFocused).toBe(true)
+    expect(props.scrollboxRef.current!.scrollTop).toBeGreaterThan(0)
+
+    props.scrollboxRef.current!.scrollTo(0)
+    await act(async () => { await setup.renderOnce() })
+    const latest = setup.renderer.root.findDescendantById("jump-to-latest")!
+    expect(latest).toBeDefined()
+    await act(async () => { await setup.mockMouse.click(latest.screenX, latest.screenY); await setup.renderOnce() })
+    expect(props.scrollboxRef.current!.scrollTop).toBeGreaterThan(0)
+    expect(historyFocused).toBe(false)
+  } finally { await close(setup) }
+})
+
+test("unread highlights animate through an OpenTUI overlay", async () => {
+  const props = panelProps(80)
+  props.unreadMessageStates = {
+    m1: {
+      conversationKey: "peer:alex",
+      receivedAt: Date.now(),
+      visibleAt: Date.now(),
+    },
+  }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    await settle(setup, "updated notes")
+    const overlay = setup.renderer.root.findDescendantById("unread-highlight-m1")!
+    expect(overlay).toBeDefined()
+    expect(overlay.opacity).toBeLessThan(1)
+  } finally { await close(setup) }
+})
+
+test("delivery details are shown for group messages, not direct messages", async () => {
+  const directProps = panelProps(80)
+  const directMessage = directProps.conversationItems[1]!
+  if (directMessage.type !== "message") throw new Error("expected message")
+  directMessage.message.blocked = 1
+  const direct = await testRender(<ConversationPanel {...directProps} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(direct, "Looks good")
+    expect(frame).toContain("blocked")
+    expect(frame).not.toContain("click for details")
+  } finally { await close(direct) }
+
+  const groupProps = panelProps(80)
+  groupProps.selected = undefined
+  groupProps.selectedGroup = group
+  groupProps.selectedGroupId = group.group_id
+  groupProps.selectionKey = "group:team"
+  const groupMessage = groupProps.conversationItems[1]!
+  if (groupMessage.type !== "message") throw new Error("expected message")
+  groupMessage.message.group_id = group.group_id
+  groupMessage.message.deliveries = [{ recipient_id: "alex", display_name: "Alex Morgan", status: "delivered", updated_at: 1788580861 }]
+  const groupSetup = await testRender(<ConversationPanel {...groupProps} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(groupSetup, "Looks good")
+    expect(frame).toContain("click for details")
+  } finally { await close(groupSetup) }
+})
+
+test("group file rows count completed deliveries as delivered", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [
+    { peer_id: "alex", display_name: "Alex Morgan" },
+    { peer_id: "sam", display_name: "Sam Chen" },
+    { peer_id: "jo", display_name: "Jo Park" },
+    { peer_id: "max", display_name: "Max Ray" },
+  ] }
+  props.conversationItems = [
+    { type: "file", createdAt: 1788580860, file: { file_id: "file1", filename: "photo.png", file_size: 29200, sender_id: "me", recipient_id: "", group_id: "team", direction: "outbound", status: "transferring", created_at: 1788580860, file_path: "/tmp/photo.png", deliveries: [
+      { recipient_id: "alex", display_name: "Alex Morgan", status: "completed", updated_at: 1788580861 },
+      { recipient_id: "sam", display_name: "Sam Chen", status: "completed", updated_at: 1788580861 },
+      { recipient_id: "jo", display_name: "Jo Park", status: "queued", updated_at: 1788580861 },
+      { recipient_id: "max", display_name: "Max Ray", status: "unavailable", updated_at: 1788580861 },
+    ] }, allFiles: [] },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
+  try {
+    const frame = await settle(setup, "photo.png")
+    expect(frame).toContain("delivered 2/4 · queued 1 · unavailable 1")
+  } finally { await close(setup) }
+})
+
+test("synthesized file deliveries keep failed distinct from unavailable", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.selectionKey = "group:team"
+  props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }] }
+  const file = { file_id: "file2", filename: "broken.zip", file_size: 100, sender_id: "me", recipient_id: "", group_id: "team", direction: "outbound", status: "failed", created_at: 1788580860 }
+  props.conversationItems = [
+    { type: "file", createdAt: 1788580860, file, allFiles: [file] },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
+  try {
+    const frame = await settle(setup, "broken.zip")
+    expect(frame).toContain("delivered 0/1 · failed 1")
+  } finally { await close(setup) }
+})
+
+test("sidebar no-peers empty state offers friend, connection, and LAN help actions", async () => {
+  const props = sidebarProps(120)
+  props.peers = []
+  props.groups = []
+  let added = 0
+  let connection = 0
+  let lanHelp = 0
+  props.onAddFriend = () => { added++ }
+  props.onOpenConnection = () => { connection++ }
+  props.onOpenLanHelp = () => { lanHelp++ }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "No peers yet")
+    expect(frame).toContain("No peers yet")
+    expect(frame.replace(/\s+/g, " ")).toContain("LAN-only? You're good")
+    expect(frame).toContain("Add friend")
+    expect(frame).toContain("Connection")
+    const add = setup.renderer.root.findDescendantById("sidebar-empty-peers-add")!
+    await act(async () => { await setup.mockMouse.click(add.screenX + 1, add.screenY) })
+    expect(added).toBe(1)
+    const conn = setup.renderer.root.findDescendantById("sidebar-empty-peers-connection")!
+    await act(async () => { await setup.mockMouse.click(conn.screenX + 1, conn.screenY) })
+    expect(connection).toBe(1)
+    const help = setup.renderer.root.findDescendantById("sidebar-empty-peers-lan-help")!
+    await act(async () => { await setup.mockMouse.click(help.screenX + 1, help.screenY) })
+    expect(lanHelp).toBe(1)
+    const dismiss = setup.renderer.root.findDescendantById("sidebar-empty-peers-dismiss")!
+    await act(async () => { await setup.mockMouse.click(dismiss.screenX + 1, dismiss.screenY) })
+    const collapsed = await settle(setup, "Waiting for peers")
+    expect(collapsed).toContain("Waiting for peers")
+  } finally { await close(setup) }
+})
+
+test("sidebar no-groups empty state offers create and join actions", async () => {
+  const props = sidebarProps(120)
+  props.groups = []
+  let created = 0
+  let joined = 0
+  props.onCreateGroup = () => { created++ }
+  props.onJoinGroup = () => { joined++ }
+  const setup = await testRender(<Sidebar {...props} />, { width: 30, height: 30 })
+  try {
+    const frame = await settle(setup, "No groups yet")
+    expect(frame).toContain("Create group")
+    expect(frame).toContain("Join with invite")
+    const create = setup.renderer.root.findDescendantById("sidebar-empty-groups-create")!
+    await act(async () => { await setup.mockMouse.click(create.screenX + 1, create.screenY) })
+    expect(created).toBe(1)
+    const join = setup.renderer.root.findDescendantById("sidebar-empty-groups-join")!
+    await act(async () => { await setup.mockMouse.click(join.screenX + 1, join.screenY) })
+    expect(joined).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("empty DM keeps optional tips hidden without losing the draft", async () => {
+  const props = panelProps(80)
+  props.conversationItems = []
+  props.drafts = { "peer:alex": "Keep me" }
+  let attached = 0
+  props.onAttachFile = () => { attached++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "No messages yet")
+    expect(frame).toContain("No messages yet")
+    expect(frame).toContain("Tips")
+    expect(frame).not.toContain("Write first message")
+    expect(frame).not.toContain("Attach file")
+    const tips = setup.renderer.root.findDescendantById("empty-conversation-dm-tips")!
+    await act(async () => { await setup.mockMouse.click(tips.screenX + 1, tips.screenY) })
+    const expanded = await settle(setup, "Write first message")
+    expect(expanded).toContain("Attach file")
+    expect(expanded).toContain("Hide tips")
+    const attach = setup.renderer.root.findDescendantById("empty-conversation-dm-tips-expanded-attach")!
+    await act(async () => { await setup.mockMouse.click(attach.screenX + 1, attach.screenY) })
+    expect(attached).toBe(1)
+    expect(props.composerRef.current!.plainText).toBe("Keep me")
+    const dismiss = setup.renderer.root.findDescendantById("empty-conversation-dm-tips-expanded-dismiss")!
+    await act(async () => { await setup.mockMouse.click(dismiss.screenX + 1, dismiss.screenY) })
+    const collapsed = await settle(setup, "Tips")
+    expect(collapsed).toContain("No messages yet")
+    expect(collapsed).not.toContain("Write first message")
+    expect(props.composerRef.current!.plainText).toBe("Keep me")
+  } finally { await close(setup) }
+})
+
+test("empty group keeps optional tips hidden until requested", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = group
+  props.selectedGroupId = group.group_id
+  props.conversationItems = []
+  props.selectionKey = "group:team"
+  let attached = 0
+  props.onAttachFile = () => { attached++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "Say hello to the group")
+    expect(frame).toContain("Tips")
+    expect(frame).not.toContain("Write first message")
+    const tips = setup.renderer.root.findDescendantById("empty-conversation-group-tips")!
+    await act(async () => { await setup.mockMouse.click(tips.screenX + 1, tips.screenY) })
+    const expanded = await settle(setup, "Write first message")
+    expect(expanded).toContain("Attach file")
+    const attach = setup.renderer.root.findDescendantById("empty-conversation-group-tips-expanded-attach")!
+    await act(async () => { await setup.mockMouse.click(attach.screenX + 1, attach.screenY) })
+    expect(attached).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("remote discovery warning offers a connection action and LAN reassurance", async () => {
+  const props = panelProps(80)
+  props.hasRooms = true
+  props.controlStatus = { connected: false, reconnect_attempts: 1 }
+  let opened = 0
+  props.onOpenConnection = () => { opened++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "Remote discovery is not configured")
+    expect(frame.replace(/\s+/g, " ")).toContain("LAN-only? You're good")
+    expect(frame).toContain("Open connection")
+    const action = setup.renderer.root.findDescendantById("rendezvous-action-open")!
+    await act(async () => { await setup.mockMouse.click(action.screenX + 1, action.screenY) })
+    expect(opened).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("no-selection empty state offers friend and group actions", async () => {
+  const props = panelProps(80)
+  props.selected = undefined
+  props.selectedGroup = undefined
+  props.selectionKey = undefined
+  props.conversationItems = []
+  let added = 0
+  let created = 0
+  props.onAddFriend = () => { added++ }
+  props.onCreateGroup = () => { created++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "No conversation selected")
+    expect(frame).toContain("Add friend")
+    expect(frame).toContain("Create group")
+    const add = setup.renderer.root.findDescendantById("empty-no-selection-add")!
+    await act(async () => { await setup.mockMouse.click(add.screenX + 1, add.screenY) })
+    expect(added).toBe(1)
+    const create = setup.renderer.root.findDescendantById("empty-no-selection-create")!
+    await act(async () => { await setup.mockMouse.click(create.screenX + 1, create.screenY) })
+    expect(created).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("stranger conversation shows one concise friend action row", async () => {
+  const props = panelProps(80)
+  props.selected = { ...peers[0]!, is_friend: false, friend_request: undefined }
+  props.conversationItems = []
+  const seen: string[] = []
+  props.onFriendAction = action => { seen.push(action) }
+  let attached = 0
+  props.onAttachFile = () => { attached++ }
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 26 })
+  try {
+    const frame = await settle(setup, "You need to be friends")
+    expect(frame).toContain("You need to be friends to message.")
+    expect(frame).toContain("Add friend")
+    expect(frame).toContain("Block")
+    expect(frame).toContain("Inbox")
+    expect(frame).not.toContain("Messages blocked until your friend request")
+    expect(frame).not.toContain("Ctrl+P > Friends > Add friend")
+    expect(frame).not.toContain("Alt+1 Add friend")
+    expect(frame).not.toContain("No messages yet")
+    expect(frame).not.toContain("Write first message")
+    expect(frame).not.toContain("Attach file")
+    expect(frame).not.toContain("Hide tips")
+    const action = setup.renderer.root.findDescendantById("friend-inline-add")!
+    await act(async () => { await setup.mockMouse.click(action.screenX + 1, action.screenY) })
+    expect(seen).toContain("add")
+  } finally { await close(setup) }
+})
+
 for (const width of [80, 48, 32]) {
   test(`status keeps the settings shortcut without moving the composer at ${width} columns`, async () => {
     const props = panelProps(chatLayout(width).panelWidth)
@@ -489,9 +1009,25 @@ for (const width of [80, 48, 32]) {
       expect(frame.replace(/\s+/g, " ")).toContain("End of status.")
       await act(async () => { changeStatus(DEFAULT_STATUS) })
       frame = await settle(setup)
-      expect(frame).toContain("Enter send")
+      expect(frame).not.toContain("Enter send")
       expect(frame).toContain("Ctrl+P settings")
       expect(props.composerRef.current!.screenY).toBe(y)
     } finally { await close(setup) }
   })
 }
+
+test("still-sending messages show a sending indicator instead of blocking", async () => {
+  const props = panelProps(80)
+  props.conversationItems = [
+    ...props.conversationItems,
+    { type: "message", createdAt: 1788580920, message: { message_id: "pending-abc", sender_id: "me", recipient_id: "alex", content: "On its way", created_at: 1788580920, pending: 1 } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 30 })
+  try {
+    const frame = await settle(setup, "On its way")
+    // "sending…" (ellipsis) is the row-level pending status; the footer uses
+    // "Sending... /" (ascii dots), so this cannot match the footer.
+    expect(frame).toContain("sending…")
+    expect(frame).toContain("On its way")
+  } finally { await close(setup) }
+})

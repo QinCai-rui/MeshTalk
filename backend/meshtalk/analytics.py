@@ -13,12 +13,18 @@ from __future__ import annotations
 import asyncio
 import collections
 import json
+import logging
 import os
 import platform
 import re
+import ssl
 import time
 import urllib.request
 from pathlib import Path
+
+import certifi
+
+logger = logging.getLogger("meshtalk.analytics")
 
 ANALYTICS_URL = "https://meshtalk-analytics.raymont.workers.dev/v1/analytics"
 TIMEOUT_SECONDS = 3
@@ -144,11 +150,18 @@ class Analytics:
         if payload["os"] is None or payload["arch"] is None:
             return False
         def send() -> bool:
-            # Cloudflare edge may return 403 for Python-urllib's default User-Agent
-            # identify as meshtalk (version is already in the
+            # Cloudflare edge returns 403 for Python-urllib's default
+            # User-Agent; identify as meshtalk (version is already in the
             # payload, and the Worker strips UA before the origin anyway).
+            # Use certifi's CA bundle explicitly (same as rendezvous.py):
+            # release builds link OpenSSL statically with CI-machine default
+            # CA paths, so the system store cannot be relied on.
             request = urllib.request.Request(ANALYTICS_URL, data=json.dumps(payload, separators=(",", ":")).encode(), headers={"Content-Type": "application/json", "User-Agent": f"meshtalk/{self.app_version}"}, method="POST")
+            context = ssl.create_default_context(cafile=certifi.where())
             try:
-                with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response: return 200 <= response.status < 300
-            except Exception: return False
+                with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS, context=context) as response:
+                    return 200 <= response.status < 300
+            except Exception as exc:
+                logger.warning("analytics flush failed: %s", type(exc).__name__)
+                return False
         return await asyncio.to_thread(send)

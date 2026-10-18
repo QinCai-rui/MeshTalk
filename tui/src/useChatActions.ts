@@ -8,16 +8,20 @@ import { tmpdir } from "os"
 import { statSync } from "fs"
 import { stageFilesForConfirmation } from "./fileSendConfirm"
 import { groupFromResponse, sortPeersByInteraction } from "./utils"
+import { payloadMentions, spansToTokens, type MentionSpan } from "./mentions"
 import { runCommand as navigationRunCommand } from "./navigation"
 import { sendTestNotification } from "./notifications"
 import { DEFAULT_STATUS, groupDeliveryLabel, MAX_MESSAGE_BYTES, MIN_COMPOSER_HEIGHT } from "./utils"
 import { goBack as navigateBack } from "./navigation"
+import { sameResponse, updateBoundedEntry } from "./stateRetention"
 
 declare const APP_VERSION: string
 declare const MESHTALK_RELEASE: boolean
 
 const PUBLIC_CONTROL_URL = "wss://meshtalk-control.qincai.xyz/v1/rendezvous"
-const MAX_PASTED_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_FILE_SIZE = 50 * 1024 * 1024
+const MAX_GROUP_MEMBER_CACHE = 32
+const MAX_DRAFT_ENTRIES = 200
 
 const IMAGE_EXTENSIONS: Record<string, string> = {
   "image/png": ".png",
@@ -52,7 +56,6 @@ type ChatActionsDeps = {
   setDraftLength: (n: number) => void
   composerHeight: number
   setComposerHeight: (n: number) => void
-  isSending: boolean
   setIsSending: (b: boolean) => void
   nameDraft: string
   setNameDraft: (s: string) => void
@@ -68,12 +71,18 @@ type ChatActionsDeps = {
   setCopyToast: (b: boolean) => void
   mutedPeers: Record<string, number>
   setMutedPeers: React.Dispatch<React.SetStateAction<Record<string, number>>>
+  mutedGroups: Record<string, number>
+  setMutedGroups: React.Dispatch<React.SetStateAction<Record<string, number>>>
+  mentionSpans: Record<string, MentionSpan[]>
+  setMentionUnread: React.Dispatch<React.SetStateAction<Record<string, number>>>
   notificationPreferences: NotificationPreferences | null
   setNotificationPreferences: React.Dispatch<React.SetStateAction<NotificationPreferences | null>>
   notificationTestDelivery: Exclude<NotificationDelivery, "disabled"> | null
   setNotificationTestDelivery: React.Dispatch<React.SetStateAction<Exclude<NotificationDelivery, "disabled"> | null>>
   flashingEnabled: boolean
   setFlashingEnabled: (b: boolean) => void
+  dndEnabled: boolean
+  setDndEnabled: (b: boolean) => void
   setImageProtocol: (protocol: ImageProtocol) => void
   setSplashStyle: (style: SplashPreference) => void
   controlStatus: { connected: boolean; reconnect_attempts: number; control_url?: string | null }
@@ -96,21 +105,60 @@ type ChatActionsDeps = {
   filePickerOpenRef: { current: boolean }
   composerRef: { current: { plainText: string; selectAll: () => void; deleteSelection: () => void; insertText: (text: string) => void } | null }
   selectionKey: string | undefined
+  setMentionSpans: React.Dispatch<React.SetStateAction<Record<string, MentionSpan[]>>>
+  clearPrevComposerText: (key: string) => void
+  onMessageEnqueued?: (info: { kind: "peer" | "group"; targetId: string }) => void
+}
+
+// Non-blocking sends (issue #220): optimistic rows appear instantly while the
+// IPC requests run one-by-one per conversation (FIFO). Module-level so the
+// queues survive re-renders of the hook's owning component.
+const sendQueues = new Map<string, Promise<void>>()
+const pendingSendIds = new Map<string, string>()
+export type ResolvedSendMeta = {
+  realId: string
+  queued?: boolean
+  deliveries?: GroupDelivery[]
+  mentions?: string[]
+  failed?: boolean
+}
+// Unified lookup table for pending → real mapping + revive data.
+export const resolvedSendMeta = new Map<string, ResolvedSendMeta>()
+let sendsInFlight = 0
+
+function trimSendMap(map: Map<string, unknown>) {
+  // Oldest-first trim; in-flight entries are always the newest, so they survive.
+  if (map.size <= 1_000) return
+  for (const key of map.keys()) {
+    map.delete(key)
+    if (map.size <= 500) break
+  }
+}
+
+/** Real message id for a finished optimistic send, if it has acked or failed. */
+export function resolvePendingSendId(tempId: string): string | undefined {
+  return resolvedSendMeta.get(tempId)?.realId
+}
+
+/** Ack metadata for a finished optimistic send, if it has acked. */
+export function getResolvedSendMeta(tempId: string): ResolvedSendMeta | undefined {
+  return resolvedSendMeta.get(tempId)
 }
 
 export function useChatActions(deps: ChatActionsDeps) {
   const { ipc, clipboardRef, renderer, backendDisconnectedRef } = deps
   const { peers, setPeers, groups, setGroups, groupMembers, setGroupMembers, identity, setIdentity } = deps
   const { selection, setSelection, selectedPeerId, selectedGroupId, messages, setMessages, drafts, setDrafts } = deps
-  const { draftLength, setDraftLength, composerHeight, setComposerHeight, isSending, setIsSending } = deps
+  const { draftLength, setDraftLength, composerHeight, setComposerHeight, setIsSending } = deps
   const { nameDraft, setNameDraft, editingName, setEditingName, scrollFocused, setScrollFocused } = deps
   const { deliveredMessageIds, setDeliveredMessageIds, status, setStatus, copyToast, setCopyToast } = deps
-  const { mutedPeers, setMutedPeers, notificationPreferences, setNotificationPreferences } = deps
+  const { mutedPeers, setMutedPeers, mutedGroups, setMutedGroups, mentionSpans, setMentionUnread, notificationPreferences, setNotificationPreferences } = deps
   const { notificationTestDelivery, setNotificationTestDelivery } = deps
-  const { flashingEnabled, setFlashingEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
+  const { flashingEnabled, setFlashingEnabled, dndEnabled, setDndEnabled, setImageProtocol, setSplashStyle, controlStatus, setControlStatus } = deps
   const { debugInfo, setDebugInfo, fileTransfers, setFileTransfers } = deps
   const { dialog, setDialog, setDialogDraft, setDialogError, setDialogBusy } = deps
   const { statusResetRef, copyToastResetRef, dialogActionRef, dialogBusyRef, filePickerOpenRef, composerRef, selectionKey } = deps
+  const { setMentionSpans, clearPrevComposerText, onMessageEnqueued } = deps
   const setFriendRequests = deps.setFriendRequests
 
   function showStatus(message: string, durationMs = 2_000) {
@@ -124,7 +172,10 @@ export function useChatActions(deps: ChatActionsDeps) {
   async function refreshFriendRequestsSilent() {
     try {
       const response = await ipc.send("friend_requests")
-      if (!response.error && setFriendRequests) setFriendRequests(response.requests as FriendRequest[])
+      if (!response.error && setFriendRequests) {
+        const next = response.requests as FriendRequest[]
+        setFriendRequests((current) => sameResponse(current, next) ? current : next)
+      }
     } catch {}
   }
 
@@ -143,7 +194,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     const response = await ipc.send("peers")
     if (response.error) throw new Error(response.error)
     const next = sortPeersByInteraction(response.peers as Peer[])
-    setPeers(next)
+    setPeers((current) => sameResponse(current, next) ? current : next)
     setSelection((current) => current && (current.kind === "group" || next.some((p) => p.peer_id === current.id))
       ? current
       : next[0] ? { kind: "peer", id: next[0].peer_id } : groups[0] ? { kind: "group", id: groups[0].group_id } : undefined)
@@ -153,7 +204,24 @@ export function useChatActions(deps: ChatActionsDeps) {
     const response = await ipc.send("groups")
     if (response.error) throw new Error(response.error)
     const next = (response.groups as Group[]).sort((a, b) => a.name.localeCompare(b.name))
-    setGroups(next)
+    setMentionUnread((current) => {
+      const updated = { ...current }
+      const groupIds = new Set(next.map((group) => group.group_id))
+      for (const groupId of Object.keys(updated)) {
+        if (!groupIds.has(groupId)) delete updated[groupId]
+      }
+      for (const group of next) {
+        if (group.group_id === selectedGroupId) {
+          delete updated[group.group_id]
+          continue
+        }
+        const count = Number(group.mention_unread_count)
+        if (Number.isFinite(count) && count > 0) updated[group.group_id] = count
+        else delete updated[group.group_id]
+      }
+      return updated
+    })
+    setGroups((current) => sameResponse(current, next) ? current : next)
     setSelection((current) => {
       if (!current) return peers[0] ? { kind: "peer", id: peers[0].peer_id } : next[0] ? { kind: "group", id: next[0].group_id } : undefined
       if (current?.kind !== "group" || next.some((g) => g.group_id === current.id)) return current
@@ -165,13 +233,19 @@ export function useChatActions(deps: ChatActionsDeps) {
     if (!groupId) return
     const response = await ipc.send("group_members", { group_id: groupId })
     if (response.error) throw new Error(response.error)
-    setGroupMembers((current) => ({ ...current, [groupId]: response.members as GroupMember[] }))
+    const members = response.members as GroupMember[]
+    setGroupMembers((current) => sameResponse(current[groupId], members)
+      ? current
+      : updateBoundedEntry(current, groupId, members, MAX_GROUP_MEMBER_CACHE))
   }
 
   async function refreshFiles() {
     try {
       const response = await ipc.send("files")
-      if (!response.error) setFileTransfers(response.files as FileTransfer[])
+      if (!response.error) {
+        const next = response.files as FileTransfer[]
+        setFileTransfers((current) => sameResponse(current, next) ? current : next)
+      }
     } catch {}
   }
 
@@ -445,7 +519,9 @@ export function useChatActions(deps: ChatActionsDeps) {
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
       const members = response.members as GroupMember[]
-      setGroupMembers((c) => ({ ...c, [group.group_id]: members }))
+      setGroupMembers((current) => sameResponse(current[group.group_id], members)
+        ? current
+        : updateBoundedEntry(current, group.group_id, members, MAX_GROUP_MEMBER_CACHE))
       showDialog({ kind: "group-detail", group, members })
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -475,6 +551,14 @@ export function useChatActions(deps: ChatActionsDeps) {
     } catch (error) { setDialogError(error instanceof Error ? error.message : String(error)) }
   }
 
+  async function refreshMutes() {
+    const mutedResp = await ipc.send("muted_peers")
+    if (!mutedResp.error) {
+      setMutedPeers((mutedResp.muted_peers as Record<string, number>) ?? {})
+      setMutedGroups((mutedResp.muted_groups as Record<string, number>) ?? {})
+    }
+  }
+
   async function mutePeer(peerId: string, timeout: number) {
     const action = beginDialogAction()
     if (action === null) return
@@ -482,8 +566,7 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("mute", { peer_id: peerId, timeout })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      const mutedResp = await ipc.send("muted_peers")
-      if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
+      await refreshMutes()
       const until = response.until as number
       const label = until <= 0 ? "permanently" : `until ${new Date(until * 1000).toLocaleTimeString()}`
       const peer = peers.find((p) => p.peer_id === peerId)
@@ -500,10 +583,41 @@ export function useChatActions(deps: ChatActionsDeps) {
       const response = await ipc.send("unmute", { peer_id: peerId })
       if (response.error) throw new Error(response.error)
       if (dialogActionRef.current !== action) return
-      const mutedResp = await ipc.send("muted_peers")
-      if (!mutedResp.error) setMutedPeers(mutedResp.muted_peers as Record<string, number>)
+      await refreshMutes()
       const peer = peers.find((p) => p.peer_id === peerId)
       showStatus(`Unmuted ${peer?.display_name ?? peerId}.`)
+      closeDialog()
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  async function muteGroup(groupId: string, timeout: number) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("mute", { group_id: groupId, timeout })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      await refreshMutes()
+      const until = response.until as number
+      const label = until <= 0 ? "permanently" : `until ${new Date(until * 1000).toLocaleTimeString()}`
+      const group = groups.find((g) => g.group_id === groupId)
+      showStatus(`Muted ${group?.name ?? groupId} ${label}.`)
+      closeDialog()
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  async function unmuteGroup(groupId: string) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("unmute", { group_id: groupId })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      await refreshMutes()
+      const group = groups.find((g) => g.group_id === groupId)
+      showStatus(`Unmuted ${group?.name ?? groupId}.`)
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
@@ -706,26 +820,33 @@ export function useChatActions(deps: ChatActionsDeps) {
     return { valid, missing }
   }
 
-  async function sendFilesDirect(paths: string[]) {
-    if (!selection) { showStatus("Select a peer or group before sending a file."); return }
-    let sent = 0
-    for (const filePath of paths) {
-      try {
-        if (selection.kind === "peer") {
-          const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: filePath })
-          if (response.error) throw new Error(response.error)
-        } else {
-          const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: filePath })
-          if (response.error) throw new Error(response.error)
-        }
-        sent++
-      } catch (error) {
-        showStatus(`Could not send ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
-        return
-      }
+  async function sendFilesDirect(paths: string[], target = selection, caption = ""): Promise<Array<{ path: string; reason: string; fileId?: string }>> {
+    if (!target) throw new Error("Select a peer or group before sending a file.")
+    const payload = target.kind === "peer"
+      ? paths.length === 1 ? { recipient_id: target.id, file_path: paths[0], caption } : { recipient_id: target.id, paths, caption }
+      : paths.length === 1 ? { group_id: target.id, file_path: paths[0], caption } : { group_id: target.id, paths, caption }
+    const response = await ipc.send(target.kind === "peer" ? "file_send" : "group_file_send", payload)
+    if (response.error) {
+      const fileId = typeof response.file_id === "string" ? response.file_id : undefined
+      const fileIds = [...(fileId ? [fileId] : []), ...(Array.isArray(response.file_ids) ? response.file_ids : [])]
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
+      const ids = [...new Set(fileIds)]
+      throw Object.assign(
+        new Error(ids.length ? `${response.error} [${ids.map((id) => id.slice(0, 8)).join(", ")}]` : String(response.error)),
+        { ...(fileId ? { fileId } : {}), ...(ids.length ? { fileIds: ids } : {}) },
+      )
     }
-    if (sent === 1) showStatus(`File transfer started: ${paths[0] ?? "file"} -> ${selection.id.slice(0, 8)}`)
-    else if (sent > 1) showStatus(`Started ${sent} file transfers.`)
+    const errors = Array.isArray(response.errors) ? response.errors : []
+    const reported = errors.map((entry: unknown) => typeof entry === "string"
+      ? { path: entry, reason: "" }
+      : { path: typeof (entry as { path?: unknown }).path === "string" ? (entry as { path: string }).path : "", reason: typeof (entry as { error?: unknown }).error === "string" ? (entry as { error: string }).error : "", fileId: typeof (entry as { file_id?: unknown }).file_id === "string" ? (entry as { file_id: string }).file_id : undefined })
+      .filter((entry) => entry.path)
+    const failed = reported.filter((entry) => paths.includes(entry.path))
+    const fallbackReason = errors.length ? errors.map((entry) => typeof entry === "string" ? entry : JSON.stringify(entry)).join("; ") : ""
+    const outstanding = failed.length ? failed : errors.length ? paths.map((path) => ({ path, reason: fallbackReason })) : []
+    const succeeded = paths.length - outstanding.length
+    if (succeeded > 0) showStatus(paths.length === 1 ? `File transfer started: ${paths[0] ?? "file"} -> ${target.id.slice(0, 8)}` : `Started ${succeeded} of ${paths.length} file transfers.`)
+    return outstanding
   }
 
   async function requestFileSend(paths: string[], source: FileConfirmSource) {
@@ -737,7 +858,7 @@ export function useChatActions(deps: ChatActionsDeps) {
     }
     try {
       const confirmationPaths = source === "picker" ? valid : await stageFilesForConfirmation(valid)
-      showDialog({ kind: "file-confirm", paths: confirmationPaths, source })
+      showDialog({ kind: "file-confirm", paths: confirmationPaths, source, target: selection, caption: composerRef.current?.plainText.trim() ?? "" })
     } catch (error) {
       showStatus(`Could not prepare file: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -745,18 +866,47 @@ export function useChatActions(deps: ChatActionsDeps) {
 
   function requestImageSend(bytes: Uint8Array, mimeType: string) {
     if (!selection) { showStatus("Select a peer or group first."); return }
-    showDialog({ kind: "file-confirm", paths: [], source: "image", image: { bytes, mimeType } })
+    if (!bytes || !bytes.byteLength) { showStatus("The pasted image is empty."); return }
+    if (bytes.byteLength > MAX_FILE_SIZE) { showStatus("Pasted image exceeds the 50 MiB limit."); return }
+    showDialog({ kind: "file-confirm", paths: [], source: "image", target: selection, caption: composerRef.current?.plainText.trim() ?? "", image: { bytes, mimeType } })
   }
 
   async function confirmPendingFileSend() {
     const pending = dialog
     if (!pending || pending.kind !== "file-confirm") return
-    closeDialog()
-    if (pending.image) {
-      await sendImage(pending.image.bytes, pending.image.mimeType)
-    } else {
-      await sendFilesDirect(pending.paths)
-    }
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      let paths = pending.paths
+      if (pending.image) {
+        const extension = IMAGE_EXTENSIONS[pending.image.mimeType.toLowerCase()]
+        if (!extension) throw new Error(`Unsupported pasted image type: ${pending.image.mimeType}`)
+        const path = join(tmpdir(), `meshtalk-pasted-image-${crypto.randomUUID()}${extension}`)
+        await Bun.write(path, pending.image.bytes)
+        paths = [path]
+      }
+      const outstanding = await sendFilesDirect(paths, pending.target, pending.caption)
+      if (dialogActionRef.current !== action) return
+      if (outstanding.length) {
+        const detail = outstanding.map((entry) => {
+          const name = entry.path.split(/[\\/]/).pop() ?? entry.path
+          const id = entry.fileId ? ` [${entry.fileId.slice(0, 8)}]` : ""
+          return entry.reason ? `${name}: ${entry.reason}${id}` : `${name}${id}`
+        }).join("; ")
+        if (!pending.image) {
+          showDialog({ kind: "file-confirm", paths: outstanding.map((entry) => entry.path), source: pending.source, target: pending.target, caption: pending.caption })
+        }
+        setDialogError(`Failed to send ${detail}. Fix the files or retry.`)
+        return
+      }
+      if (pending.caption && composerRef.current?.plainText.trim() === pending.caption) {
+        composerRef.current.selectAll(); composerRef.current.deleteSelection()
+        if (selectionKey) setDrafts((current) => updateBoundedEntry(current, selectionKey, "", MAX_DRAFT_ENTRIES))
+        setDraftLength(0); setComposerHeight(MIN_COMPOSER_HEIGHT)
+      }
+      closeDialog()
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
   }
 
   async function sendFile(filePath: string) {
@@ -768,34 +918,14 @@ export function useChatActions(deps: ChatActionsDeps) {
       const home = process.env.HOME || process.env.USERPROFILE || ""
       const expanded = home && (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\")) ? home + trimmed.slice(1) : trimmed
       const absolutePath = resolve(expanded)
-      if (selection?.kind === "peer") {
-        const response = await ipc.send("file_send", { recipient_id: selection.id, file_path: absolutePath })
-        if (response.error) throw new Error(response.error)
-        showStatus(`File transfer started: ${absolutePath} -> ${selection.id.slice(0, 8)}`)
-      } else if (selection?.kind === "group") {
-        const response = await ipc.send("group_file_send", { group_id: selection.id, file_path: absolutePath })
-        if (response.error) throw new Error(response.error)
-        showStatus(`Group file transfer started: ${absolutePath}`)
+      if (selection?.kind === "peer" || selection?.kind === "group") {
+        const outstanding = await sendFilesDirect([absolutePath], selection)
+        if (outstanding.length) throw new Error(outstanding[0]?.reason || "File transfer did not start")
       } else { throw new Error("Select a peer or group first") }
       if (dialogActionRef.current !== action) return
       closeDialog()
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
-  }
-
-  async function sendImage(bytes: Uint8Array, mimeType: string) {
-    if (!selection) { showStatus("Select a peer or group before pasting an image."); return }
-    const extension = IMAGE_EXTENSIONS[mimeType.toLowerCase()]
-    if (!extension) { showStatus(`Unsupported pasted image type: ${mimeType}`); return }
-    if (!bytes.byteLength) { showStatus("The pasted image is empty."); return }
-    if (bytes.byteLength > MAX_PASTED_IMAGE_BYTES) { showStatus("Pasted image exceeds the 8 MiB limit."); return }
-    const filePath = join(tmpdir(), `meshtalk-pasted-image-${crypto.randomUUID()}${extension}`)
-    try {
-      await Bun.write(filePath, bytes)
-      await sendFile(filePath)
-    } catch (error) {
-      showStatus(`Could not send pasted image: ${error instanceof Error ? error.message : String(error)}`)
-    }
   }
 
   async function openFilePicker() {
@@ -909,6 +1039,29 @@ export function useChatActions(deps: ChatActionsDeps) {
     finally { finishDialogAction(action) }
   }
 
+  async function saveDndEnabled(enabled: boolean) {
+    const action = beginDialogAction()
+    if (action === null) return
+    try {
+      const response = await ipc.send("dnd", { enabled })
+      if (response.error) throw new Error(response.error)
+      if (dialogActionRef.current !== action) return
+      setDndEnabled(response.dnd_enabled as boolean)
+      showStatus(
+        response.dnd_enabled
+          ? "Do Not Disturb on. All notifications are paused and peers see you as unavailable."
+          : "Do Not Disturb off. Notifications resumed.",
+      )
+      if (dialog && dialog.kind !== "settings" && dialog.kind.startsWith("notification"))
+        showDialog({ kind: "notifications" })
+    } catch (error) { failDialogAction(action, error) }
+    finally { finishDialogAction(action) }
+  }
+
+  function toggleDnd() {
+    void saveDndEnabled(!dndEnabled)
+  }
+
   function notificationEventEnabled(event: NotificationEvent): boolean {
     return Boolean(notificationPreferences?.events[event])
   }
@@ -969,44 +1122,136 @@ export function useChatActions(deps: ChatActionsDeps) {
     finally { finishDialogAction(action) }
   }
 
-  async function send(replyToMessageId?: string): Promise<boolean> {
-    const composer = composerRef.current
-    const content = composer?.plainText.trim() ?? ""
-    if (!content) { showStatus("Message is empty."); return false }
-    if (!selection || !selectionKey || !identity) { showStatus("Select a peer or group before sending."); return false }
-    if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) { showStatus("Message exceeds the 30 KiB limit."); return false }
-    setIsSending(true)
+  async function deliverQueuedMessage(args: {
+    tempId: string; kind: "peer" | "group"; targetId: string; content: string
+    replyToMessageId?: string; peerName?: string
+  }): Promise<boolean> {
+    // A reply to a still-pending message must reference its real id. FIFO
+    // ordering per conversation guarantees the parent settles first.
+    let replyTo = args.replyToMessageId
+    if (replyTo) {
+      const mapped = resolvedSendMeta.get(replyTo)
+      if (mapped) replyTo = mapped.failed ? undefined : mapped.realId
+      else if (replyTo.startsWith("pending-")) replyTo = undefined // parent failed/evicted
+    }
     try {
-      const response = selection.kind === "peer"
-        ? await ipc.send("send", { recipient_id: selection.id, content, reply_to_message_id: replyToMessageId })
-        : await ipc.send("group_send", { group_id: selection.id, content, reply_to_message_id: replyToMessageId })
+      const response = args.kind === "peer"
+        ? await ipc.send("send", { recipient_id: args.targetId, content: args.content, reply_to_message_id: replyTo })
+        : await ipc.send("group_send", { group_id: args.targetId, content: args.content, reply_to_message_id: replyTo })
       if (response.error) throw new Error(response.error)
+      const realId = response.message_id as string
+      pendingSendIds.set(args.tempId, realId)
+      trimSendMap(pendingSendIds)
       const queued = Boolean(response.queued)
-      if (selection.kind === "peer") {
-        const lastInteraction = Date.now() / 1000
-        setPeers((current) => sortPeersByInteraction(current.map((peer) => peer.peer_id === selection.id ? { ...peer, last_interaction: lastInteraction } : peer)))
+      const meta: ResolvedSendMeta = { realId, queued }
+      if (args.kind === "group") {
+        meta.deliveries = response.deliveries as GroupDelivery[]
+        meta.mentions = payloadMentions(response.mentions)
       }
-      setMessages((c) => [...c, {
-        message_id: response.message_id as string, sender_id: identity.peer_id,
-        ...(selection.kind === "peer" ? { recipient_id: selection.id } : { group_id: selection.id, deliveries: response.deliveries as GroupDelivery[] }),
-        content, created_at: Date.now() / 1000, delivered: 0, queued: queued ? 1 : 0, reply_to_message_id: replyToMessageId,
-      }])
-      if (composer && composer === composerRef.current) { composer.selectAll(); composer.deleteSelection() }
-      setDrafts((c) => ({ ...c, [selectionKey]: "" }))
-      setDraftLength(0)
-      setComposerHeight(MIN_COMPOSER_HEIGHT)
-      showStatus(selection.kind === "group" ? `Group message sent: ${groupDeliveryLabel(response.deliveries as GroupDelivery[])}.`
+      resolvedSendMeta.set(args.tempId, meta)
+      trimSendMap(resolvedSendMeta)
+      setMessages((current) => current.map((message) => {
+        if (message.message_id === args.tempId) {
+          return {
+            ...message,
+            message_id: realId, pending: 0, delivered: 0,
+            ...(args.kind === "peer"
+              ? { queued: queued ? 1 : 0 }
+              : { deliveries: response.deliveries as GroupDelivery[], mentions: payloadMentions(response.mentions) }),
+          }
+        }
+        // Keep reply links intact when the parent was still pending at send time.
+        if (message.reply_to_message_id === args.tempId) return { ...message, reply_to_message_id: realId }
+        return message
+      }))
+      showStatus(args.kind === "group" ? `Group message sent: ${groupDeliveryLabel(response.deliveries as GroupDelivery[])}.`
         : queued ? "Message stored and queued. It will send when the peer is online."
           : "Message sent. Waiting for delivery confirmation.")
       return true
     } catch (error) {
+      // Keep the optimistic row so the failed message stays visible in context,
+      // and detach any reply that referenced this still-pending message — its
+      // temp id was never persisted, so the link would dangle forever.
+      // Record a failed meta entry too: without it, a row stashed in the
+      // pending buffer (user switched conversations) would revive as
+      // still-pending forever.
+      resolvedSendMeta.set(args.tempId, { realId: args.tempId, failed: true })
+      trimSendMap(resolvedSendMeta)
+      setMessages((current) => current.map((message) =>
+        message.message_id === args.tempId ? { ...message, pending: 0, failed: 1 }
+        : message.reply_to_message_id === args.tempId ? { ...message, reply_to_message_id: undefined }
+        : message,
+      ))
       if (!backendDisconnectedRef.current) {
         const msg = error instanceof Error ? error.message : String(error)
-        if (msg.includes("No known public key")) showStatus(`You must connect to ${peers.find((p) => p.peer_id === selection.id)?.display_name ?? "this peer"} at least once before offline messages can be queued.`)
+        if (msg.includes("No known public key")) showStatus(`You must connect to ${args.peerName ?? "this peer"} at least once before offline messages can be queued.`)
         else setStatus(`Send error: ${msg}`)
       }
       return false
-    } finally { setIsSending(false) }
+    }
+  }
+
+  async function send(replyToMessageId?: string): Promise<boolean> {
+    const composer = composerRef.current
+    // Snapshot everything at Enter time: the composer is cleared immediately
+    // so the next message can be typed while this one is still sending.
+    const snapshotSelection = selection
+    const snapshotKey = selectionKey
+    const snapshotIdentity = identity
+    // Picked mentions display as `@Display Name`; convert spans back to tokens.
+    const rawContent = composer?.plainText ?? ""
+    const spans = snapshotKey ? (mentionSpans[snapshotKey] ?? []) : []
+    const content = spansToTokens(rawContent, spans).trim()
+    if (!content) { showStatus("Message is empty."); return false }
+    if (!snapshotSelection || !snapshotKey || !snapshotIdentity) { showStatus("Select a peer or group before sending."); return false }
+    if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) { showStatus("Message exceeds the 30 KiB limit."); return false }
+    const tempId = `pending-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    const peerName = snapshotSelection.kind === "peer"
+      ? peers.find((p) => p.peer_id === snapshotSelection.id)?.display_name
+      : undefined
+    setMessages((c) => [...c, {
+      message_id: tempId, sender_id: snapshotIdentity.peer_id,
+      ...(snapshotSelection.kind === "peer" ? { recipient_id: snapshotSelection.id } : { group_id: snapshotSelection.id, deliveries: [] }),
+      content, created_at: Date.now() / 1000, delivered: 0, queued: 0, pending: 1, reply_to_message_id: replyToMessageId,
+    }])
+    if (snapshotSelection.kind === "peer") {
+      const lastInteraction = Date.now() / 1000
+      setPeers((current) => sortPeersByInteraction(current.map((peer) => peer.peer_id === snapshotSelection.id ? { ...peer, last_interaction: lastInteraction } : peer)))
+    }
+    if (composer && composer === composerRef.current) { composer.selectAll(); composer.deleteSelection() }
+    setDrafts((current) => updateBoundedEntry(
+      current, snapshotKey, "", MAX_DRAFT_ENTRIES,
+    ))
+    setDraftLength(0)
+    setComposerHeight(MIN_COMPOSER_HEIGHT)
+    // The composer was just cleared, so its spans are stale — reset them now
+    // (at enqueue time, not at ack time) so text typed while sending keeps
+    // its own spans.
+    setMentionSpans((current) => {
+      if (!(snapshotKey in current)) return current
+      const { [snapshotKey]: _, ...rest } = current
+      return rest
+    })
+    clearPrevComposerText(snapshotKey)
+    sendsInFlight += 1
+    setIsSending(true)
+    onMessageEnqueued?.({ kind: snapshotSelection.kind, targetId: snapshotSelection.id })
+    const previous = sendQueues.get(snapshotKey) ?? Promise.resolve()
+    const task = previous.then(() => deliverQueuedMessage({
+      tempId, kind: snapshotSelection.kind, targetId: snapshotSelection.id,
+      content, replyToMessageId, peerName,
+    }))
+    const tail = task.then(() => undefined, () => undefined)
+    sendQueues.set(snapshotKey, tail)
+    void task.then(() => {
+      if (sendQueues.get(snapshotKey) === tail) sendQueues.delete(snapshotKey)
+      sendsInFlight -= 1
+      if (sendsInFlight <= 0) {
+        sendsInFlight = 0
+        setIsSending(false)
+      }
+    })
+    return task
   }
 
   function saveUpdateChannel(channel: UpdateChannel) {
@@ -1020,8 +1265,12 @@ export function useChatActions(deps: ChatActionsDeps) {
   }
 
   function runCommand(command: string) {
+    if (command === "dnd") {
+      toggleDnd()
+      return
+    }
     navigationRunCommand(command, {
-      groups, groupMembers, identity, mutedPeers, peers, selectedGroupId, selectedPeerId, selection,
+      groups, groupMembers, identity, mutedPeers, mutedGroups, peers, selectedGroupId, selectedPeerId, selection,
       showDialog, showStatus, setDialogDraft, setDialogError, setNameDraft,
       setRenameDialog: () => showDialog({ kind: "rename" }),
        loadAdvancedConfig, loadDebugInfo, loadFiles, loadFriendRequests, loadGroupDetails, loadRooms,
@@ -1038,12 +1287,12 @@ export function useChatActions(deps: ChatActionsDeps) {
     loadAdvancedConfig, saveAdvancedConfig,
     loadRooms, createRoom, joinRoom, leaveRoom, loadRoomInvite,
     loadGroupDetails, leaveGroup, copyInvite,
-    mutePeer, unmutePeer,
+    mutePeer, unmutePeer, muteGroup, unmuteGroup, refreshMutes,
     loadFriendRequests, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer,
     loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest,
     reStun, loadDebugInfo, loadFiles,
-    sendFile, sendFilesDirect, sendImage, requestFileSend, requestImageSend, confirmPendingFileSend, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
-    saveDisplayName, setAccessibilityFlashing,
+    sendFile, sendFilesDirect, requestFileSend, requestImageSend, confirmPendingFileSend, openFilePicker, defaultDownloadPath, downloadFile, loadFilesDir, setFilesDir,
+    saveDisplayName, setAccessibilityFlashing, saveDndEnabled, toggleDnd,
     testNotificationDelivery, confirmNotificationDelivery, disableNotifications, toggleNotificationEvent,
     send, runCommand,
   }

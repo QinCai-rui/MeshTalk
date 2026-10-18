@@ -2,7 +2,20 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
-import { buildWindowsReplacementScript, installRelease, isNewerVersion, isStagingWithinInstallDir, parsePendingUpdate, readUpdateChannel, saveUpdateChannel, type UpdateProgress } from "./updater"
+import { buildWindowsReplacementScript, installRelease, isNewerVersion, isStagingWithinInstallDir, isStableVersion, parsePendingUpdate, readUpdateChannel, saveUpdateChannel, type UpdateProgress } from "./updater"
+
+describe("isStableVersion", () => {
+  test("recognizes stable and snapshot versions", () => {
+    expect(isStableVersion("0.32.2")).toBe(true)
+    expect(isStableVersion("0.32.2-1")).toBe(true)
+    expect(isStableVersion("0.32.2-SNAPSHOT+307-13466ec")).toBe(false)
+  })
+
+  test("rejects invalid versions", () => {
+    expect(isStableVersion("dev")).toBe(false)
+    expect(isStableVersion("0.32.2-preview")).toBe(false)
+  })
+})
 
 describe("isNewerVersion", () => {
   test("orders numeric release revisions after the base release", () => {

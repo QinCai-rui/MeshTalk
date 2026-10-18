@@ -8,6 +8,10 @@ export const MAX_MESSAGE_BYTES = 30 * 1024
 export const UNREAD_MESSAGE_FADE_MS = 3_000
 export const DEFAULT_STATUS = "Ctrl+P: Settings  Ctrl+U: upload  Ctrl+V: paste image  Ctrl+Up/Down: switch chats  PgUp: history  Ctrl+C: quit"
 
+export function isMuteActive(until: number | undefined, now = Date.now() / 1000): boolean {
+  return until !== undefined && (until <= 0 || now < until)
+}
+
 export function getComposerHeight(composer: TextareaRenderable | null): number {
   const lines = composer?.editorView.getTotalVirtualLineCount() ?? 0
   return Math.min(MAX_COMPOSER_HEIGHT, Math.max(MIN_COMPOSER_HEIGHT, lines))
@@ -40,7 +44,7 @@ export function peerFriendStatusText(peer: Peer): string {
   if (state === "outgoing") return "Friend request sent — waiting for them to accept."
   if (state === "both") return "You both sent requests — accept to become friends."
   if (state === "blocked") return "Blocked — their requests and messages are ignored."
-  return "Not friends yet — messages are blocked until they accept."
+  return "You need to be friends to message."
 }
 
 export type InlineFriendAction = "add" | "cancel" | "accept" | "decline" | "block" | "unblock" | "inbox"
@@ -80,14 +84,33 @@ export function addablePeers(peers: Peer[], identityPeerId?: string): Peer[] {
 }
 export function composerLimitColor(length: number): string | undefined { const usage = length / MAX_MESSAGE_BYTES; if (usage >= 1) return theme.danger; if (usage >= 0.9) return theme.caution; if (usage >= 0.75) return theme.warning; return undefined }
 export const unreadMessageBackground = unreadBackground
+export function normalizeDeliveryStatus(status: string): string {
+  // File transfers report per-recipient delivery with transfer lifecycle
+  // statuses ("completed", "transferring", "receiving"); message deliveries
+  // use "delivered"/"pending". Normalize so shared labels and dialogs never
+  // drop or miscount file recipients.
+  if (status === "completed") return "delivered"
+  if (status === "transferring" || status === "receiving") return "pending"
+  return status
+}
 export function groupDeliveryLabel(deliveries: GroupDelivery[] = []): string {
   if (!deliveries.length) return "sent"
-  const delivered = deliveries.filter((delivery) => delivery.status === "delivered").length
-  const queued = deliveries.filter((delivery) => delivery.status === "queued").length
-  const unavailable = deliveries.filter((delivery) => delivery.status === "unavailable").length
+  const statuses = deliveries.map((delivery) => normalizeDeliveryStatus(delivery.status))
+  const count = (status: string) => statuses.filter((value) => value === status).length
+  const delivered = count("delivered")
+  const queued = count("queued")
+  const unavailable = count("unavailable")
+  const failed = statuses.filter((status) => status === "failed" || status === "blocked").length
+  const sent = count("sent")
+  const pending = count("pending")
+  const known = delivered + queued + unavailable + failed + sent + pending
   const details = [`delivered ${delivered}/${deliveries.length}`]
   if (queued) details.push(`queued ${queued}`)
   if (unavailable) details.push(`unavailable ${unavailable}`)
+  if (failed) details.push(`failed ${failed}`)
+  if (sent) details.push(`sent ${sent}`)
+  if (pending) details.push(`pending ${pending}`)
+  if (statuses.length > known) details.push(`other ${statuses.length - known}`)
   return details.join(" · ")
 }
 export function groupFromResponse(response: Record<string, unknown>): Group | undefined { if (response.group && typeof response.group === "object") return response.group as Group; if (typeof response.group_id !== "string" || typeof response.name !== "string") return undefined; return { group_id: response.group_id, name: response.name, member_count: 1, unread_count: 0 } }

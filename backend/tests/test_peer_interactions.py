@@ -55,3 +55,40 @@ class PeerInteractionTest(unittest.IsolatedAsyncioTestCase):
             [item["file_id"] for item in await self.db.get_file_transfers(group_id="group")],
             ["group-file"],
         )
+
+    async def test_group_file_fanout_does_not_leak_into_dm_listing(self):
+        local = "local"
+        await self.db.save_file_transfer({
+            "file_id": "group-fanout-a", "filename": "group.txt", "file_size": 1,
+            "chunk_size": 1, "total_chunks": 1, "sender_id": local, "recipient_id": "peer-a",
+            "group_id": "group", "direction": "outbound", "status": "sent", "created_at": 1.0,
+        })
+        await self.db.save_file_transfer({
+            "file_id": "direct-to-a", "filename": "direct.txt", "file_size": 1,
+            "chunk_size": 1, "total_chunks": 1, "sender_id": local, "recipient_id": "peer-a",
+            "direction": "outbound", "status": "sent", "created_at": 2.0,
+        })
+        await self.db.save_file_transfer({
+            "file_id": "group-inbound", "filename": "inbound.txt", "file_size": 1,
+            "chunk_size": 1, "total_chunks": 1, "sender_id": "peer-b", "recipient_id": local,
+            "group_id": "group", "direction": "inbound", "status": "completed", "created_at": 3.0,
+        })
+
+        # DM listings show direct transfers only.
+        self.assertEqual(
+            [item["file_id"] for item in await self.db.get_file_transfers("peer-a")],
+            ["direct-to-a"],
+        )
+        self.assertEqual(
+            await self.db.get_file_transfers("peer-b"), [],
+        )
+        # Group listing is unaffected.
+        self.assertEqual(
+            {item["file_id"] for item in await self.db.get_file_transfers(group_id="group")},
+            {"group-fanout-a", "group-inbound"},
+        )
+        # Internal delivery paths can still see group rows for the peer.
+        self.assertEqual(
+            [item["file_id"] for item in await self.db.get_file_transfers("peer-a", include_group=True)],
+            ["direct-to-a", "group-fanout-a"],
+        )

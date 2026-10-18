@@ -157,7 +157,7 @@ function drawStacked(cv,dayList,series,legendEl,maxSeries){
   const x=cv.getContext("2d");x.scale(dpr,dpr);x.clearRect(0,0,W,H);
   const names=Object.keys(series).sort((a,b)=>tot(series[b])-tot(series[a]));
   const top=names.slice(0,maxSeries),rest=names.slice(maxSeries);
-  if(rest.length){const o={};dayList.forEach(d=>o[d]=0);rest.forEach(n=>dayList.forEach(d=>o[d]+=series[n][d]||0));series={};top.forEach(n=>series[n]=arguments[2][n]);series["other"]=o;top.push("other");}
+  if(rest.length){const o={};dayList.forEach(d=>o[d]=0);rest.forEach(n=>dayList.forEach(d=>o[d]+=series[n][d]||0));const kept={};top.forEach(n=>{kept[n]=series[n]});kept["other"]=o;series=kept;top.push("other");}
   else{const s={};top.forEach(n=>s[n]=series[n]);series=s;}
   const keys=Object.keys(series),padL=44,padB=22,padT=8,cw=(W-padL-8)/dayList.length;
   let mx=1;dayList.forEach((d,i)=>{let s=0;keys.forEach(k=>s+=series[k][d]||0);mx=Math.max(mx,s)});

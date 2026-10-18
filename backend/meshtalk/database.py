@@ -5,13 +5,91 @@ Stores: identity, peers, messages, outgoing queue, seen message IDs.
 
 from __future__ import annotations
 
+import sqlite3
 import time
+import hashlib
 import os
 import json
+import re
 from pathlib import Path
 
 import aiosqlite
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+MENTION_TOKEN_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
+
+# Matches a mention token only when its `<` is not escaped by an odd
+# run of preceding backslashes; the backslash itself escapes the next
+# character, and `\\` escapes to a literal `\`.
+_MENTION_AT_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
+
+
+def _is_escaped(content: str, index: int) -> bool:
+    r"""Whether the character at *index* is escaped by a preceding `\`."""
+    backslashes = 0
+    i = index - 1
+    while i >= 0 and content[i] == "\\":
+        backslashes += 1
+        i -= 1
+    return backslashes % 2 == 1
+
+
+def extract_mentions(content: str) -> list[str]:
+    r"""Extract unique mentioned peer IDs (`<@user_id>` tokens) in order.
+
+    A token `\<@id>` (odd backslashes before `<`) is an escaped literal and
+    does not count as a mention; `\\` collapses to a single `\` so
+    `\\<@id>` is a mention preceded by a literal `\`.
+    """
+    if not isinstance(content, str) or not content:
+        return []
+    seen: set[str] = set()
+    mentions: list[str] = []
+    for match in _MENTION_AT_RE.finditer(content):
+        if _is_escaped(content, match.start()):
+            continue
+        peer_id = match.group(1)
+        if peer_id not in seen:
+            seen.add(peer_id)
+            mentions.append(peer_id)
+    return mentions
+
+
+def render_mentions_plain(content: str, names: dict[str, str]) -> str:
+    r"""Render `<@user_id>` tokens as plain `@Display Name` text.
+
+    Used for recipients without mention support so mentions stay readable
+    instead of arriving as raw tokens. Escape rules mirror the rich client:
+    `\\` becomes `\`, `\<@id>` renders the literal `<@id>`, and `\\<@id>`
+    is a mention preceded by a literal `\`. A lone `\` before any other
+    character is left untouched.
+    """
+    parts: list[str] = []
+    i = 0
+    n = len(content)
+    while i < n:
+        ch = content[i]
+        if ch == "\\" and i + 1 < n and content[i + 1] == "\\":
+            parts.append("\\")
+            i += 2
+            continue
+        if ch == "\\":
+            match = MENTION_TOKEN_RE.match(content, i + 1)
+            if match:
+                parts.append(match.group(0))
+                i += 1 + len(match.group(0))
+                continue
+        if ch == "<":
+            match = MENTION_TOKEN_RE.match(content, i)
+            if match:
+                peer_id = match.group(1)
+                parts.append("@everyone" if peer_id == "everyone" else "@" + names.get(peer_id, "unknown"))
+                i += len(match.group(0))
+                continue
+        parts.append(ch)
+        i += 1
+    return "".join(parts)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS peers (
@@ -117,7 +195,8 @@ CREATE TABLE IF NOT EXISTS group_messages (
     created_at REAL NOT NULL,
     received_at REAL,
     kind TEXT NOT NULL DEFAULT 'message',
-    reply_to_message_id TEXT
+    reply_to_message_id TEXT,
+    origin_signature BLOB
 );
 
 CREATE TABLE IF NOT EXISTS group_deliveries (
@@ -142,7 +221,22 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     file_path TEXT,
     created_at REAL NOT NULL,
     completed_at REAL,
-    received_chunks INTEGER NOT NULL DEFAULT 0
+    received_chunks INTEGER NOT NULL DEFAULT 0,
+    file_sha256 TEXT NOT NULL DEFAULT '',
+    caption TEXT NOT NULL DEFAULT '',
+    batch_id TEXT,
+    batch_index INTEGER,
+    batch_count INTEGER,
+    awaiting_ack_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS file_deliveries (
+    file_id TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    awaiting_ack_at REAL,
+    PRIMARY KEY (file_id, recipient_id)
 );
 
 CREATE TABLE IF NOT EXISTS file_received_chunks (
@@ -150,7 +244,26 @@ CREATE TABLE IF NOT EXISTS file_received_chunks (
     chunk_index INTEGER NOT NULL,
     PRIMARY KEY (file_id, chunk_index)
 );
+
+CREATE INDEX IF NOT EXISTS idx_group_messages_group_created ON group_messages(group_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_outgoing_queue_recipient ON outgoing_queue(recipient_id, attempts);
+
+CREATE TABLE IF NOT EXISTS group_relay_cursors (
+    peer_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    last_rowid INTEGER NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (peer_id, group_id)
+);
 """
+
+MAX_GROUP_HISTORY_ROWS = 5000
+# Absolute per-group history bound, applied even to undelivered rows: a single
+# vanished member must not pin storage forever via in-flight deliveries.
+HARD_MAX_GROUP_HISTORY_ROWS = 10000
+# Upper bound on queued group packets per recipient; beyond this the sender
+# stops queueing (marks unavailable) instead of growing the queue without end.
+MAX_QUEUED_GROUP_PER_PEER = 200
 
 
 class Database:
@@ -167,11 +280,27 @@ class Database:
         self._db = await aiosqlite.connect(str(self.db_path))
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
+        try:
+            cursor_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_relay_cursors)")}
+            if cursor_columns and "last_rowid" not in cursor_columns:
+                # Pre-release schema used a timestamp cursor; rowid cursors
+                # replace it (best-effort cache, safe to rebuild).
+                await self._db.execute("DROP TABLE IF EXISTS group_relay_cursors")
+                await self._db.execute(
+                    """CREATE TABLE IF NOT EXISTS group_relay_cursors (
+                        peer_id TEXT NOT NULL, group_id TEXT NOT NULL,
+                        last_rowid INTEGER NOT NULL, updated_at REAL NOT NULL,
+                        PRIMARY KEY (peer_id, group_id))"""
+                )
+        except Exception:
+            pass
         columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(peers)")}
         if "signing_public_key" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN signing_public_key BLOB")
         if "tui_active" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN tui_active INTEGER NOT NULL DEFAULT 0")
+        if "dnd" not in columns:
+            await self._db.execute("ALTER TABLE peers ADD COLUMN dnd INTEGER NOT NULL DEFAULT 0")
         if "lan_endpoint" not in columns:
             await self._db.execute("ALTER TABLE peers ADD COLUMN lan_endpoint TEXT")
         if "remote_endpoint" not in columns:
@@ -222,6 +351,21 @@ class Database:
                 await self._db.execute("ALTER TABLE groups ADD COLUMN name TEXT NOT NULL DEFAULT ''")
         except Exception:
             pass
+        file_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(file_transfers)")}
+        file_migrations = {
+            "file_sha256": "TEXT NOT NULL DEFAULT ''",
+            "caption": "TEXT NOT NULL DEFAULT ''",
+            "batch_id": "TEXT",
+            "batch_index": "INTEGER",
+            "batch_count": "INTEGER",
+            "awaiting_ack_at": "REAL",
+        }
+        for column, definition in file_migrations.items():
+            if column not in file_columns:
+                await self._db.execute(f"ALTER TABLE file_transfers ADD COLUMN {column} {definition}")
+        delivery_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(file_deliveries)")}
+        if "awaiting_ack_at" not in delivery_columns:
+            await self._db.execute("ALTER TABLE file_deliveries ADD COLUMN awaiting_ack_at REAL")
         # Migrate group_messages table (older DBs lacked received_at/kind)
         try:
             gm_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_messages)")}
@@ -233,6 +377,8 @@ class Database:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN content BLOB")
             if gm_columns and "reply_to_message_id" not in gm_columns:
                 await self._db.execute("ALTER TABLE group_messages ADD COLUMN reply_to_message_id TEXT")
+            if gm_columns and "origin_signature" not in gm_columns:
+                await self._db.execute("ALTER TABLE group_messages ADD COLUMN origin_signature BLOB")
         except Exception:
             pass
         # Ensure group_deliveries exists (older DBs may lack it entirely - SCHEMA already handled)
@@ -269,8 +415,23 @@ class Database:
 
     async def close(self) -> None:
         """Close the database connection."""
-        if self._db:
-            await self._db.close()
+        db = self._db
+        if db:
+            try:
+                await db.commit()
+            except BaseException:
+                # Cleanup must not hide the commit failure that triggered shutdown.
+                try:
+                    await db.close()
+                except Exception:
+                    pass
+                self._db = None
+                raise
+            else:
+                try:
+                    await db.close()
+                finally:
+                    self._db = None
 
     async def get_peer(self, peer_id: str) -> dict | None:
         """Retrieve peer information by peer ID."""
@@ -283,22 +444,61 @@ class Database:
     async def upsert_peer(
         self, peer_id: str, display_name: str, public_key: bytes, signing_public_key: bytes,
         tui_active: bool = False, capabilities: list[str] | None = None,
+        dnd: bool | None = None,
     ) -> None:
         """Insert or update peer information including keys and online status."""
         await self._db.execute(
-            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active, capabilities)
-               VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, last_seen, is_online, tui_active, capabilities, dnd)
+               VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
                ON CONFLICT(peer_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  public_key = excluded.public_key,
                  signing_public_key = excluded.signing_public_key,
                  last_seen = excluded.last_seen,
-                   is_online = 1,
-                   tui_active = excluded.tui_active,
-                   capabilities = COALESCE(excluded.capabilities, peers.capabilities)""",
-            (peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active), json.dumps(sorted(set(capabilities))) if capabilities is not None else None),
+                  is_online = 1,
+                  tui_active = excluded.tui_active,
+                  dnd = CASE WHEN ? IS NULL THEN peers.dnd ELSE excluded.dnd END,
+                  capabilities = COALESCE(excluded.capabilities, peers.capabilities)""",
+            (
+                peer_id, display_name, public_key, signing_public_key, time.time(), int(tui_active),
+                json.dumps(sorted(set(capabilities))) if capabilities is not None else None,
+                int(dnd) if dnd is not None else 0, dnd,
+            ),
         )
         await self._db.commit()
+
+    async def upsert_peer_signing_key(self, peer_id: str, signing_public_key: bytes) -> bool:
+        """Cache a verified signing key without touching other peer state.
+
+        Used for keys learned from room endpoint cards (which carry no
+        encryption key and say nothing about online status). The key must be
+        self-certifying (peer_id == SHA-256(key)); returns False otherwise.
+        Existing display names, encryption keys, capabilities, online state,
+        and last_seen are kept: a card sighting is not direct contact.
+        """
+        if (
+            not isinstance(signing_public_key, (bytes, bytearray))
+            or len(signing_public_key) != 32
+            or hashlib.sha256(bytes(signing_public_key)).hexdigest() != peer_id
+        ):
+            return False
+        existing = await self.get_peer(peer_id)
+        if existing and existing.get("signing_public_key") == bytes(signing_public_key):
+            return True
+        await self._db.execute(
+            """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, is_online)
+               VALUES (?, ?, ?, ?, 0)
+               ON CONFLICT(peer_id) DO UPDATE SET
+                 signing_public_key = excluded.signing_public_key""",
+            (
+                peer_id,
+                (existing or {}).get("display_name", "Anonymous"),
+                (existing or {}).get("public_key"),
+                bytes(signing_public_key),
+            ),
+        )
+        await self._db.commit()
+        return True
 
     async def peer_supports(self, peer_id: str, capability: str) -> bool:
         """Check a capability learned from the peer's most recent handshake."""
@@ -423,6 +623,103 @@ class Database:
                 message["content"] = message["content"].decode("utf-8", errors="replace")
         return messages
 
+    async def search_local_messages(self, local_peer_id: str, query: str, offset: int = 0,
+                                    peer_id: str | None = None, group_id: str | None = None) -> dict:
+        """Search a bounded encrypted-history page without creating a plaintext index.
+
+        Offset addresses scanned rows, not matches; a caller can continue through
+        empty pages. Reading/searching never advances conversation read markers.
+        """
+        clauses = ["1 = 1"]
+        args: list = [local_peer_id, local_peer_id, local_peer_id]
+        if peer_id:
+            clauses.append("kind = 'peer' AND conversation_id = ?")
+            args.append(peer_id)
+        if group_id:
+            clauses.append("kind = 'group' AND conversation_id = ?")
+            args.append(group_id)
+        args.extend([501, offset])
+        async with self._db.execute(
+            f"""SELECT * FROM (
+                SELECT 'peer' AS kind, CASE WHEN sender_id = ? THEN recipient_id ELSE sender_id END AS conversation_id,
+                       message_id, sender_id, content, created_at, reply_to_message_id
+                FROM messages WHERE sender_id = ? OR recipient_id = ?
+                UNION ALL
+                SELECT 'group', group_id, message_id, sender_id, content, created_at, reply_to_message_id
+                FROM group_messages
+            ) WHERE {' AND '.join(clauses)} ORDER BY created_at DESC, kind, message_id DESC LIMIT ? OFFSET ?""", args
+        ) as cursor:
+            rows = [dict(row) async for row in cursor]
+        results = []
+        needle = query.casefold()
+        for row in rows[:500]:
+            try:
+                row["content"] = self._decrypt_content(row["content"]) or ""
+            except (InvalidTag, ValueError, UnicodeDecodeError):
+                # A corrupt row must not hide matches in the remaining rows.
+                continue
+            if needle in row["content"].casefold():
+                results.append(row)
+        return {"results": results, "next_offset": offset + 500 if len(rows) > 500 else None}
+
+    async def set_desktop_drafts(self, drafts: dict[str, str]) -> None:
+        value = self._encrypt_content(json.dumps({key: text for key, text in drafts.items() if text}))
+        await self._db.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('desktop_drafts', ?)", (value,))
+        await self._db.commit()
+
+    async def get_desktop_drafts(self) -> dict[str, str]:
+        async with self._db.execute("SELECT value FROM config WHERE key = 'desktop_drafts'") as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return {}
+        try:
+            value = json.loads(self._decrypt_content(row[0]) or "{}")
+            return value if isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()) else {}
+        except (ValueError, TypeError, InvalidTag):
+            return {}
+
+    async def desktop_history(self, local_peer_id: str, peer_id: str | None, group_id: str | None,
+                              before: int | None = None, around: str | None = None) -> dict:
+        """Read history by stable local insertion sequence, without marking it read."""
+        table = "group_messages" if group_id else "messages"
+        where = "group_id = ?" if group_id else "((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))"
+        args = [group_id] if group_id else [local_peer_id, peer_id, peer_id, local_peer_id]
+        if around:
+            async with self._db.execute(f"SELECT rowid FROM {table} WHERE {where} AND message_id = ?", [*args, around]) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return {"messages": [], "next_before": None}
+            anchor = row[0]
+            async with self._db.execute(f"SELECT rowid FROM {table} WHERE {where} AND rowid > ? ORDER BY rowid ASC LIMIT 50", [*args, anchor]) as cursor:
+                later = [later_row[0] async for later_row in cursor]
+            before = (later[-1] + 1) if later else (anchor + 1)
+        if before is not None:
+            where += " AND rowid < ?"
+            args.append(before)
+        async with self._db.execute(f"SELECT rowid AS sequence, * FROM {table} WHERE {where} ORDER BY rowid DESC LIMIT 101", args) as cursor:
+            rows = [dict(row) async for row in cursor]
+        more = len(rows) > 100
+        page = rows[:100]
+        messages = []
+        for row in page:
+            try:
+                row["content"] = self._decrypt_content(row["content"]) or ""
+            except (InvalidTag, ValueError, UnicodeDecodeError):
+                # A corrupt row must not break history loading for the rest.
+                continue
+            row.pop("encrypted_content", None)
+            row.pop("origin_signature", None)
+            messages.append(row)
+        rows = messages
+        if group_id:
+            deliveries = await self.get_group_deliveries_many([r["message_id"] for r in rows])
+            for row in rows:
+                row["deliveries"] = deliveries.get(row["message_id"], [])
+        # The continuation boundary comes from the raw page, not the filtered
+        # messages: a fully corrupt page must still paginate to older history.
+        oldest = page[-1]["sequence"] if page else None
+        return {"messages": list(reversed(rows)), "next_before": oldest if more else None}
+
     async def save_message(self, msg: dict) -> None:
         """Store a message in the database with encrypted content."""
         await self._db.execute(
@@ -474,12 +771,35 @@ class Database:
         await self._db.commit()
 
     async def cleanup_expired(self) -> None:
-        """Remove seen message IDs older than 24 hours."""
+        """Remove seen message IDs older than 24 hours and dead queue rows."""
         now = time.time()
         await self._db.execute(
             "DELETE FROM seen_messages WHERE seen_at < ?", (now - 86400,)
         )
+        # Queue rows that exhausted their retry budget are never selected
+        # again; reap them so a malicious peer cannot grow the table forever.
+        await self._db.execute("DELETE FROM outgoing_queue WHERE attempts >= 5")
         await self._db.commit()
+
+    async def has_queued_payload(self, recipient_id: str, packet_type: int, payload: bytes) -> bool:
+        """Whether an identical payload is already queued for the recipient."""
+        async with self._db.execute(
+            """SELECT 1 FROM outgoing_queue
+               WHERE recipient_id = ? AND packet_type = ? AND encrypted_payload = ? AND attempts < 5
+               LIMIT 1""",
+            (recipient_id, packet_type, payload),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def count_queued_packets(self, recipient_id: str, packet_type: int) -> int:
+        """Count pending queued packets of one type for a recipient."""
+        async with self._db.execute(
+            """SELECT COUNT(*) AS n FROM outgoing_queue
+               WHERE recipient_id = ? AND packet_type = ? AND attempts < 5""",
+            (recipient_id, packet_type),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row["n"]) if row else 0
 
     async def add_to_outqueue(
         self,
@@ -548,6 +868,13 @@ class Database:
         )
         await self._db.commit()
 
+    async def mark_message_queued(self, message_id: str) -> None:
+        """Mark a message as queued for later delivery."""
+        await self._db.execute(
+            "UPDATE messages SET queued = 1 WHERE message_id = ?", (message_id,)
+        )
+        await self._db.commit()
+
     async def mark_message_blocked(self, message_id: str) -> None:
         """Mark a message as blocked by the recipient."""
         await self._db.execute(
@@ -579,15 +906,28 @@ class Database:
         await self._db.commit()
         return cursor.rowcount > 0
 
-    async def delete_file_transfer_locally(self, file_id: str) -> dict | None:
-        """Remove a local attachment record, chunks, and pending sends."""
+    async def delete_file_transfer_locally(self, file_id: str, files_base: Path) -> dict | None:
+        """Remove all local metadata associated with an attachment."""
         transfer = await self.get_file_transfer(file_id)
         if transfer is None:
             return None
         await self._db.execute("DELETE FROM file_transfers WHERE file_id = ?", (file_id,))
         await self._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (file_id,))
+        await self._db.execute("DELETE FROM file_deliveries WHERE file_id = ?", (file_id,))
         await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (file_id,))
+        await self._db.execute("DELETE FROM seen_messages WHERE message_id = ?", (file_id,))
         await self._db.commit()
+        file_path = transfer.get("file_path")
+        if file_path and await self.count_file_path_references(file_path) == 0:
+            path = Path(file_path)
+            try:
+                base = files_base.resolve()
+                path.resolve().relative_to(base)
+                path.unlink(missing_ok=True)
+                if path.parent.resolve() != base:
+                    path.parent.rmdir()
+            except (OSError, ValueError):
+                pass
         return transfer
 
     async def upsert_group(self, group_id: str, name: str) -> None:
@@ -630,6 +970,29 @@ class Database:
             (local_peer_id,),
         ) as cursor:
             return [dict(row) async for row in cursor]
+
+    async def get_group_mention_unread_count(self, group_id: str, local_peer_id: str) -> int:
+        """Count unread messages in a group that mention the local peer."""
+        async with self._db.execute(
+            """SELECT content FROM group_messages
+               WHERE group_id = ? AND sender_id != ?
+                 AND received_at > COALESCE(
+                   (SELECT read_at FROM groups WHERE group_id = ?), 0
+                 )""",
+            (group_id, local_peer_id, group_id),
+        ) as cursor:
+            mention_count = 0
+            async for row in cursor:
+                try:
+                    content = self._decrypt_content(row["content"]) or ""
+                except (InvalidTag, ValueError, UnicodeDecodeError):
+                    # A corrupt message must not hide mention counts for the
+                    # other rows in this group.
+                    continue
+                mentions = extract_mentions(content)
+                if local_peer_id in mentions or "everyone" in mentions:
+                    mention_count += 1
+            return mention_count
 
     async def upsert_group_member(
         self,
@@ -700,22 +1063,88 @@ class Database:
         content = message.get("content")
         cursor = await self._db.execute(
             """INSERT OR IGNORE INTO group_messages
-                (message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id, origin_signature)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 message["message_id"], message["group_id"], message["sender_id"],
                 self._encrypt_content(content) if content is not None else None,
                 message["created_at"], message.get("received_at"), message.get("kind", "message"),
-                message.get("reply_to_message_id"),
+                message.get("reply_to_message_id"), message.get("origin_signature"),
             ),
         )
         await self._db.commit()
+        if cursor.rowcount > 0:
+            await self._prune_group_history(message["group_id"])
         return cursor.rowcount > 0
+
+    async def _prune_group_history(self, group_id: str) -> None:
+        """Drop oldest group history beyond the retention bound.
+
+        Only rows no one is still waiting for are eligible up to the soft
+        bound: anything with a non-terminal delivery (pending/queued/sent)
+        is kept, so floods cannot evict an offline member's undelivered
+        backlog. A hard cap bounds pathological pinning (e.g. a vanished
+        member holding deliveries open forever). Derived delivery rows and
+        queued group packets for pruned messages are removed in the same
+        savepoint, which nests safely under concurrent writers.
+        """
+        await self._db.execute("SAVEPOINT group_prune")
+        try:
+            async with self._db.execute(
+                "SELECT COUNT(*) AS n FROM group_messages WHERE group_id = ?", (group_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row and row["n"] > MAX_GROUP_HISTORY_ROWS + 100:
+                await self._db.execute(
+                    """DELETE FROM group_messages WHERE group_id = ? AND message_id NOT IN (
+                         SELECT message_id FROM group_messages WHERE group_id = ?
+                         ORDER BY rowid DESC LIMIT ?) AND message_id NOT IN (
+                         SELECT message_id FROM group_deliveries
+                         WHERE status NOT IN ('delivered', 'unavailable'))""",
+                    (group_id, group_id, MAX_GROUP_HISTORY_ROWS),
+                )
+            async with self._db.execute(
+                "SELECT COUNT(*) AS n FROM group_messages WHERE group_id = ?", (group_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row and row["n"] > HARD_MAX_GROUP_HISTORY_ROWS:
+                await self._db.execute(
+                    """DELETE FROM group_messages WHERE group_id = ? AND message_id NOT IN (
+                         SELECT message_id FROM group_messages WHERE group_id = ?
+                         ORDER BY rowid DESC LIMIT ?)""",
+                    (group_id, group_id, HARD_MAX_GROUP_HISTORY_ROWS),
+                )
+            await self._db.execute(
+                """DELETE FROM group_deliveries WHERE message_id NOT IN (
+                     SELECT message_id FROM group_messages)"""
+            )
+            await self._db.execute(
+                """DELETE FROM outgoing_queue WHERE group_id = ? AND message_id IS NOT NULL
+                   AND message_id NOT IN (SELECT message_id FROM group_messages)""",
+                (group_id,),
+            )
+            try:
+                await self._db.execute("RELEASE group_prune")
+            except sqlite3.OperationalError as exc:
+                if "no such savepoint" not in str(exc):
+                    raise
+                # Another coroutine committed on this shared connection
+                # mid-prune, which already closed our savepoint (and
+                # committed the deletes executed so far). The commit below
+                # persists the rest; the next insert prunes again.
+            await self._db.commit()
+        except Exception:
+            try:
+                await self._db.execute("ROLLBACK TO group_prune")
+                await self._db.execute("RELEASE group_prune")
+            except Exception:  # noqa: BLE001
+                pass
+            raise
 
     async def get_group_messages(self, group_id: str, limit: int = 200) -> list[dict]:
         """Retrieve recent group messages with delivery status."""
         async with self._db.execute(
-            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id
+            """SELECT message_id, group_id, sender_id, content, created_at, received_at, kind, reply_to_message_id, origin_signature
                FROM (SELECT rowid AS sequence, * FROM group_messages WHERE group_id = ? ORDER BY rowid DESC LIMIT ?)
                ORDER BY sequence ASC""",
             (group_id, limit),
@@ -723,7 +1152,90 @@ class Database:
             messages = [dict(row) async for row in cursor]
         for message in messages:
             message["content"] = self._decrypt_content(message["content"]) or ""
-            message["deliveries"] = await self.get_group_deliveries(message["message_id"])
+            if message["origin_signature"] is not None:
+                message["origin_signature"] = message["origin_signature"].hex()
+            message["mentions"] = extract_mentions(message["content"])
+            message["deliveries"] = []
+        if messages:
+            by_id = {message["message_id"]: message for message in messages}
+            for message_id, deliveries in (await self.get_group_deliveries_many(list(by_id))).items():
+                by_id[message_id]["deliveries"] = deliveries
+        return messages
+
+    async def get_group_deliveries_many(self, message_ids: list[str]) -> dict[str, list[dict]]:
+        """Get delivery status for several group messages in one query."""
+        grouped: dict[str, list[dict]] = {}
+        if not message_ids:
+            return grouped
+        placeholders = ",".join("?" for _ in message_ids)
+        async with self._db.execute(
+            f"""SELECT d.message_id, d.recipient_id,
+                       COALESCE(p.display_name, gm.display_name, d.recipient_id) AS display_name,
+                       d.status, d.updated_at
+                FROM group_deliveries d
+                LEFT JOIN group_messages m ON m.message_id = d.message_id
+                LEFT JOIN group_members gm ON gm.group_id = m.group_id AND gm.peer_id = d.recipient_id
+                LEFT JOIN peers p ON p.peer_id = d.recipient_id
+                WHERE d.message_id IN ({placeholders}) ORDER BY display_name""",
+            tuple(message_ids),
+        ) as cursor:
+            async for row in cursor:
+                grouped.setdefault(row["message_id"], []).append(dict(row))
+        return grouped
+
+    async def get_relay_cursor(self, peer_id: str, group_id: str) -> int | None:
+        """Return the rowid high-water mark relayed to a peer, if any."""
+        async with self._db.execute(
+            "SELECT last_rowid FROM group_relay_cursors WHERE peer_id = ? AND group_id = ?",
+            (peer_id, group_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row["last_rowid"]) if row else None
+
+    async def set_relay_cursor(self, peer_id: str, group_id: str, last_rowid: int) -> None:
+        """Advance the relay high-water mark; only moves forward."""
+        await self._db.execute(
+            """INSERT INTO group_relay_cursors (peer_id, group_id, last_rowid, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(peer_id, group_id) DO UPDATE SET
+                 last_rowid = max(group_relay_cursors.last_rowid, excluded.last_rowid),
+                 updated_at = excluded.updated_at""",
+            (peer_id, group_id, int(last_rowid), time.time()),
+        )
+        await self._db.commit()
+
+    async def get_group_messages_for_relay(
+        self, group_id: str, since: float, limit: int,
+        after: int | None = None,
+    ) -> list[dict]:
+        """Retrieve relayable messages SQL-side, in insertion order.
+
+        Only real messages at/after ``since`` (and past the ``after`` resume
+        cursor rowid, when given) are returned, already bounded to ``limit``
+        rows, so sweeps never decrypt or scan more than they can send.
+        Ordering by ``rowid`` (not sender-controlled ``created_at``) keeps a
+        malicious future timestamp from skipping other history. Delivery
+        rows are intentionally omitted: the relay does not need them and the
+        recipient tracks its own state by message_id.
+        """
+        if limit <= 0:
+            return []
+        if after is not None:
+            query = """SELECT rowid, message_id, group_id, sender_id, content, created_at, reply_to_message_id, origin_signature
+               FROM group_messages
+               WHERE group_id = ? AND kind = 'message' AND created_at >= ? AND rowid > ?
+               ORDER BY rowid ASC LIMIT ?"""
+            params: tuple = (group_id, since, after, limit)
+        else:
+            query = """SELECT rowid, message_id, group_id, sender_id, content, created_at, reply_to_message_id, origin_signature
+               FROM group_messages
+               WHERE group_id = ? AND kind = 'message' AND created_at >= ?
+               ORDER BY rowid ASC LIMIT ?"""
+            params = (group_id, since, limit)
+        async with self._db.execute(query, params) as cursor:
+            messages = [dict(row) async for row in cursor]
+        for message in messages:
+            message["content"] = self._decrypt_content(message["content"]) or ""
         return messages
 
     async def get_group_message(self, message_id: str) -> dict | None:
@@ -912,13 +1424,15 @@ class Database:
         """Store or update a file transfer record in the database."""
         await self._db.execute(
             """INSERT OR REPLACE INTO file_transfers
-               (file_id, filename, file_size, chunk_size, total_chunks, sender_id, recipient_id, group_id, direction, status, file_path, created_at, completed_at, received_chunks)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (file_id, filename, file_size, chunk_size, total_chunks, sender_id, recipient_id, group_id, direction, status, file_path, created_at, completed_at, received_chunks, file_sha256, caption, batch_id, batch_index, batch_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 transfer["file_id"], transfer["filename"], transfer["file_size"], transfer["chunk_size"],
                 transfer["total_chunks"], transfer["sender_id"], transfer["recipient_id"], transfer.get("group_id"),
                 transfer["direction"], transfer["status"], transfer.get("file_path"), transfer["created_at"],
                 transfer.get("completed_at"), transfer.get("received_chunks", 0),
+                transfer.get("file_sha256", ""), transfer.get("caption", ""), transfer.get("batch_id"),
+                transfer.get("batch_index"), transfer.get("batch_count"),
             ),
         )
         await self._db.commit()
@@ -938,14 +1452,30 @@ class Database:
         await self._db.execute(f"UPDATE file_transfers SET {sets} WHERE file_id = ?", tuple(values))
         await self._db.commit()
 
-    async def get_file_transfers(self, peer_id: str | None = None, group_id: str | None = None) -> list[dict]:
-        """Retrieve file transfers filtered by peer ID or group ID."""
+    async def get_file_transfers(self, peer_id: str | None = None, group_id: str | None = None, include_group: bool = False) -> list[dict]:
+        """Retrieve file transfers filtered by peer ID or group ID.
+
+        A peer-only query returns direct transfers only (group_id IS NULL)
+        so group fan-out rows do not leak into DM history. Pass
+        include_group=True for internal per-peer delivery paths (flush/resume)
+        that must still see queued group transfers for that peer.
+        """
         query = "SELECT * FROM file_transfers"
         clauses: list[str] = []
         params: list[str] = []
         if peer_id:
-            clauses.append("(sender_id = ? OR recipient_id = ?)")
+            peer_clause = "(sender_id = ? OR recipient_id = ?)"
             params.extend([peer_id, peer_id])
+            if include_group:
+                peer_clause = "(" + peer_clause + " OR EXISTS (SELECT 1 FROM file_deliveries d WHERE d.file_id = file_transfers.file_id AND d.recipient_id = ?))"
+                params.append(peer_id)
+            clauses.append(peer_clause)
+            if not group_id and not include_group:
+                # Falsy group_id (None, or "" which IPC validation already
+                # rejects) means a DM listing: direct transfers only. Wire
+                # decode only yields None or a 32-hex id, and direct rows
+                # store NULL, so IS NULL cannot hide a real group row.
+                clauses.append("group_id IS NULL")
         if group_id:
             clauses.append("group_id = ?")
             params.append(group_id)
@@ -954,6 +1484,62 @@ class Database:
         query += " ORDER BY created_at DESC"
         async with self._db.execute(query, tuple(params)) as cursor:
             return [dict(row) async for row in cursor]
+
+    async def set_file_delivery(self, file_id: str, recipient_id: str, status: str) -> None:
+        """Create or update one recipient's delivery state."""
+        await self._db.execute(
+            """INSERT INTO file_deliveries (file_id, recipient_id, status, updated_at, awaiting_ack_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(file_id, recipient_id) DO UPDATE SET
+                 status = excluded.status, updated_at = excluded.updated_at,
+                 awaiting_ack_at = excluded.awaiting_ack_at""",
+            (file_id, recipient_id, status, time.time(), time.time() if status == "sent" else None),
+        )
+        await self._db.commit()
+
+    async def get_file_delivery(self, file_id: str, recipient_id: str) -> dict | None:
+        """Return one recipient's delivery state."""
+        async with self._db.execute(
+            "SELECT * FROM file_deliveries WHERE file_id = ? AND recipient_id = ?",
+            (file_id, recipient_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_file_deliveries(self, file_id: str) -> list[dict]:
+        """Return all recipient states for a logical file send."""
+        async with self._db.execute(
+            "SELECT * FROM file_deliveries WHERE file_id = ? ORDER BY recipient_id", (file_id,)
+        ) as cursor:
+            return [dict(row) async for row in cursor]
+
+    async def delete_file_delivery(self, file_id: str, recipient_id: str) -> bool:
+        """Delete one recipient's delivery state."""
+        cursor = await self._db.execute(
+            "DELETE FROM file_deliveries WHERE file_id = ? AND recipient_id = ?",
+            (file_id, recipient_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def remove_file_from_outqueue(self, file_id: str, recipient_id: str | None = None) -> int:
+        """Delete queued file packets, optionally scoped to one recipient."""
+        if recipient_id is None:
+            cursor = await self._db.execute("DELETE FROM outgoing_queue WHERE message_id = ?", (file_id,))
+        else:
+            cursor = await self._db.execute(
+                "DELETE FROM outgoing_queue WHERE message_id = ? AND recipient_id = ?",
+                (file_id, recipient_id),
+            )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def count_file_path_references(self, file_path: str | Path) -> int:
+        """Count transfer rows sharing a local file path."""
+        async with self._db.execute(
+            "SELECT COUNT(*) FROM file_transfers WHERE file_path = ?", (str(file_path),)
+        ) as cursor:
+            return (await cursor.fetchone())[0]
 
     async def get_pending_file_offers(self) -> list[dict]:
         """Retrieve all file transfers that are pending or actively transferring."""
@@ -968,8 +1554,14 @@ class Database:
         ) as cursor:
             return await cursor.fetchone() is not None
 
-    async def record_file_chunk_received(self, file_id: str, chunk_index: int) -> int:
-        """Mark a file chunk as received and return total received chunks count."""
+    async def record_file_chunk_received(
+        self, file_id: str, chunk_index: int, *, commit: bool = True
+    ) -> int:
+        """Mark a file chunk as received and return total received chunks count.
+
+        File receivers can commit progress in bounded batches. The default
+        remains durable per call for other callers and resume-sensitive paths.
+        """
         await self._db.execute(
             "INSERT OR IGNORE INTO file_received_chunks (file_id, chunk_index) VALUES (?, ?)",
             (file_id, chunk_index),
@@ -982,8 +1574,18 @@ class Database:
             "UPDATE file_transfers SET received_chunks = ? WHERE file_id = ?",
             (received_chunks, file_id),
         )
-        await self._db.commit()
+        if commit:
+            await self._db.commit()
         return received_chunks
+
+    async def commit(self) -> None:
+        """Commit pending changes made by a batched operation."""
+        await self._db.commit()
+
+    async def reset_file_received_chunks(self, file_id: str) -> None:
+        """Drop all received-chunk state so a full integrity retry overwrites every chunk."""
+        await self._db.execute("DELETE FROM file_received_chunks WHERE file_id = ?", (file_id,))
+        await self._db.execute("UPDATE file_transfers SET received_chunks = 0 WHERE file_id = ?", (file_id,))
 
     async def get_missing_file_chunk_ranges(self, file_id: str, total_chunks: int) -> list[tuple[int, int]]:
         """Calculate contiguous ranges of missing file chunks."""

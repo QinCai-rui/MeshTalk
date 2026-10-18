@@ -1,5 +1,28 @@
 import type { ServerWebSocket } from "bun"
 import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } from "crypto"
+import {
+  HEX_32,
+  HEX_64,
+  MAX_CONNECTIONS,
+  MAX_CONNECTIONS_PER_IP,
+  MAX_CONTROL_MESSAGES_PER_MINUTE,
+  MAX_PEER_FETCHES_PER_MINUTE,
+  MAX_RELAY_FRAME_LENGTH,
+  MAX_RELAY_FRAMES_PER_SECOND,
+  MAX_RELAY_PEERS_PER_DEVICE,
+  MAX_RETAINED_BYTES,
+  MAX_ROOMS,
+  MAX_ROOMS_PER_CLIENT,
+  MAX_ROOM_MEMBERS,
+  MAX_SIGNALS_PER_MINUTE,
+  MAX_SIGNAL_LENGTH,
+  PEER_ID,
+  RELAY_BURST_BYTES,
+  RELAY_BYTES_PER_SECOND,
+  RELAY_PEER_IDLE_MS,
+  ROOM_AUTH,
+  ROOM_ID,
+} from "./config"
 
 type ClientData = {
   ip: string
@@ -50,29 +73,8 @@ type DeviceLimit = {
 }
 
 const PORT = Number(process.env.PORT ?? 8787)
-const MAX_ROOM_MEMBERS = 64
-const MAX_ROOMS_PER_CLIENT = 32
-const MAX_SIGNAL_LENGTH = 8 * 1024
-const MAX_CONTROL_MESSAGES_PER_MINUTE = 96
-const MAX_SIGNALS_PER_MINUTE = 64
-const MAX_PEER_FETCHES_PER_MINUTE = 30
-const MAX_RELAY_FRAMES_PER_SECOND = 500
-const MAX_CONNECTIONS = 10_000
-const MAX_CONNECTIONS_PER_IP = 32
-const MAX_ROOMS = 10_000
-const MAX_RETAINED_BYTES = 64 * 1024 * 1024
-const MAX_RELAY_FRAME_LENGTH = 1200
-const MAX_RELAY_PEERS_PER_DEVICE = 8
-const RELAY_PEER_IDLE_MS = 60_000
-const RELAY_BYTES_PER_SECOND = 1024 * 1024
-const RELAY_BURST_BYTES = 4 * 1024 * 1024
 const RELAY_ENABLED = process.env.CONTROL_RELAY_ENABLED !== "false"
 const TRUSTED_PROXY = process.env.CONTROL_TRUSTED_PROXY === "true"
-const ROOM_ID = /^[a-f0-9]{32}$/
-const ROOM_AUTH = /^[a-f0-9]{64}$/
-const PEER_ID = /^[a-f0-9]{64}$/
-const HEX_32 = /^[a-f0-9]{64}$/
-const HEX_64 = /^[a-f0-9]{128}$/
 
 const rooms = new Map<string, RoomState>()
 let connections = 0

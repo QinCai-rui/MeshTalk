@@ -22,6 +22,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQU
 function baseProps(dialog: Extract<Dialog, { kind: "file-confirm" }>): ComponentProps<typeof FileConfirmDialogContent> {
   return {
     dialog,
+    dialogError: "",
     dialogWidth: 72,
     dialogHeight: 18,
     screenWidth: 80,
@@ -29,12 +30,40 @@ function baseProps(dialog: Extract<Dialog, { kind: "file-confirm" }>): Component
     imageProtocol: "blocks",
     peers: [peer],
     groups: [],
-    selection: { kind: "peer", id: peer.peer_id },
     closeDialog: () => {},
     showDialog: () => {},
     confirmPendingFileSend: () => {},
   }
 }
+
+test("shows send errors in the confirmation dialog", async () => {
+  const setup = await testRender(<FileConfirmDialogContent {...baseProps({ kind: "file-confirm", paths: [], source: "image", target: { kind: "peer", id: peer.peer_id }, caption: "", image: { bytes: new Uint8Array(Buffer.from(PNG, "base64")), mimeType: "image/png" } })} dialogError="Recipient does not support file_transfer_v2; ask them to upgrade MeshTalk to receive files" />, { width: 80, height: 20 })
+  try {
+    const frame = await settle(setup)
+    expect(frame).toContain("Recipient does not support file_transfer_v2")
+    expect(frame).toContain("> Send")
+    expect(frame).toContain("Cancel")
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
+
+test("keeps actions visible for long errors in a narrow image dialog", async () => {
+  const props = baseProps({ kind: "file-confirm", paths: [], source: "image", target: { kind: "peer", id: peer.peer_id }, caption: "", image: { bytes: new Uint8Array(Buffer.from(PNG, "base64")), mimeType: "image/png" } })
+  props.dialogError = "Recipient does not support file_transfer_v2; ask them to upgrade MeshTalk to receive files and use a V2 client."
+  props.dialogWidth = 32
+  props.dialogHeight = 12
+  props.screenWidth = 40
+  props.screenHeight = 14
+  const setup = await testRender(<box width={props.dialogWidth} height={props.dialogHeight}><FileConfirmDialogContent {...props} /></box>, { width: 40, height: 14 })
+  try {
+    const frame = await settle(setup)
+    expect(frame).toContain("> Send")
+    expect(frame).toContain("Cancel")
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
 
 async function settle(setup: Awaited<ReturnType<typeof testRender>>) {
   await act(async () => { await setup.flush(); await setup.renderOnce() })
@@ -46,7 +75,7 @@ test("shows compact file confirmation metadata", async () => {
   const filePath = join(directory, "notes.txt")
   await mkdir(directory)
   await Bun.write(filePath, "notes")
-  const setup = await testRender(<FileConfirmDialogContent {...baseProps({ kind: "file-confirm", paths: [filePath], source: "picker" })} />, { width: 80, height: 20 })
+  const setup = await testRender(<FileConfirmDialogContent {...baseProps({ kind: "file-confirm", paths: [filePath], source: "picker", target: { kind: "peer", id: peer.peer_id }, caption: "" })} />, { width: 80, height: 20 })
   try {
     const frame = await settle(setup)
     expect(frame).toContain("Send file to Alex Morgan?")
@@ -65,7 +94,7 @@ test("previews an image file and opens its full-screen viewer", async () => {
   await mkdir(directory)
   await Bun.write(filePath, Buffer.from(PNG, "base64"))
   let opened: Dialog | undefined
-  const props = baseProps({ kind: "file-confirm", paths: [filePath], source: "drop" })
+  const props = baseProps({ kind: "file-confirm", paths: [filePath], source: "drop", target: { kind: "peer", id: peer.peer_id }, caption: "" })
   props.showDialog = (dialog) => { opened = dialog }
   const setup = await testRender(<FileConfirmDialogContent {...props} />, { width: 80, height: 20 })
   try {
@@ -85,7 +114,7 @@ test("previews an image file and opens its full-screen viewer", async () => {
 test("shows pasted image metadata and opens its full-screen viewer", async () => {
   let opened: Dialog | undefined
   const image = new Uint8Array(Buffer.from(PNG, "base64"))
-  const props = baseProps({ kind: "file-confirm", paths: [], source: "image", image: { bytes: image, mimeType: "image/png" } })
+  const props = baseProps({ kind: "file-confirm", paths: [], source: "image", target: { kind: "peer", id: peer.peer_id }, caption: "", image: { bytes: image, mimeType: "image/png" } })
   props.showDialog = (dialog) => { opened = dialog }
   const setup = await testRender(<FileConfirmDialogContent {...props} />, { width: 80, height: 20 })
   try {

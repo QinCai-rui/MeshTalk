@@ -108,6 +108,11 @@ function parseVersion(value: string): Version | null {
   return { parts, revision: 0, snapshotRun: null }
 }
 
+export function isStableVersion(value: string): boolean {
+  const version = parseVersion(value)
+  return version !== null && version.snapshotRun === null
+}
+
 export function isNewerVersion(latest: string, current: string): boolean {
   const next = parseVersion(latest)
   const installed = parseVersion(current)

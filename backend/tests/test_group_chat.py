@@ -8,6 +8,7 @@ from meshtalk.group_router import GroupRouter
 from meshtalk.identity import Identity
 from meshtalk.message_router import MessageRouter
 from meshtalk.peer_manager import PeerManager
+from meshtalk.protocol import CAP_AT_MENTIONS
 from meshtalk.settings import Settings
 
 
@@ -91,6 +92,71 @@ class GroupChatTest(unittest.IsolatedAsyncioTestCase):
                 if all(item["status"] == "delivered" for item in deliveries):
                     break
                 await asyncio.sleep(0.02)
+
+    async def test_group_message_event_and_history_carry_mentions(self):
+        bob_id = self.identities[1].peer_id
+        message_id, _ = await self.groups[0].send_message(
+            self.group_id, f"hello <@{bob_id}> and <@{bob_id}>".encode()
+        )
+        plain_id, _ = await self.groups[0].send_message(self.group_id, b"no mentions")
+        received = {}
+        async with asyncio.timeout(3):
+            while message_id not in received or plain_id not in received:
+                while not self.events[1].empty():
+                    event = self.events[1].get_nowait()
+                    if event["event"] == "group_message":
+                        received[event["message_id"]] = event
+                await asyncio.sleep(0.02)
+        self.assertEqual(received[message_id]["mentions"], [bob_id])
+        self.assertEqual(received[plain_id]["mentions"], [])
+        messages = {
+            message["message_id"]: message
+            for message in await self.databases[1].get_group_messages(self.group_id)
+        }
+        self.assertEqual(messages[message_id]["mentions"], [bob_id])
+        self.assertEqual(messages[plain_id]["mentions"], [])
+        self.assertEqual(
+            await self.databases[1].get_group_mention_unread_count(
+                self.group_id, self.identities[1].peer_id
+            ),
+            1,
+        )
+        await self.databases[1]._db.execute(
+            """INSERT INTO group_messages
+               (message_id, group_id, sender_id, content, created_at, received_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("corrupt", self.group_id, self.identities[2].peer_id, b"bad", 1, 1),
+        )
+        await self.databases[1]._db.commit()
+        self.assertEqual(
+            await self.databases[1].get_group_mention_unread_count(
+                self.group_id, self.identities[1].peer_id
+            ),
+            1,
+        )
+
+    async def test_group_message_renders_mentions_for_legacy_recipient(self):
+        modern_id = self.identities[1].peer_id
+        legacy_id = self.identities[2].peer_id
+        legacy_peer = self.managers[0].get_connected_peer(legacy_id)
+        self.assertIsNotNone(legacy_peer)
+        legacy_peer.capabilities.remove(CAP_AT_MENTIONS)
+        content = f"hello <@{modern_id}> and \\<@{legacy_id}>"
+
+        message_id, _ = await self.groups[0].send_message(self.group_id, content.encode())
+        received = {}
+        async with asyncio.timeout(3):
+            while len(received) < 2:
+                for index in (1, 2):
+                    while not self.events[index].empty():
+                        event = self.events[index].get_nowait()
+                        if event["event"] == "group_message" and event["message_id"] == message_id:
+                            received[index] = event["content"]
+                await asyncio.sleep(0.02)
+
+        self.assertEqual(received[1], content)
+        self.assertEqual(received[2], f"hello @Bob and <@{legacy_id}>")
+        self.assertNotIn(f"<@{modern_id}>", received[2])
 
     async def test_group_reply_references_original_message(self):
         original_id, _ = await self.groups[0].send_message(self.group_id, b"original")

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import signal
 import socket
@@ -16,7 +17,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .identity import Identity
-from .database import Database
+from .database import Database, extract_mentions
 from .discovery import DiscoveryService
 from .peer_manager import PeerManager, PeerConnection
 from .friends import FriendManager
@@ -25,12 +26,27 @@ from .message_router import MessageRouter
 from .typing_router import TypingRouter
 from .file_transfer import FileTransferManager
 from .ipc import IPCServer
-from .protocol import Packet, PacketType, capability_for_packet
+from .desktop_queries import handlers as desktop_query_handlers
+from .protocol import Packet, PacketType, REMOVED_V1_FILE_PACKET_TYPES, capability_for_packet
 from .rendezvous import RendezvousService
 from .settings import Settings
 from .analytics import Analytics
+from .network_monitor import NetworkMonitor, NetworkState
 
 logger = logging.getLogger("meshtalk")
+
+
+def _is_valid_mute_timeout(timeout: object) -> bool:
+    if timeout is None:
+        return True
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+        return False
+    try:
+        value = float(timeout)
+    except OverflowError:
+        return False
+    return value >= 0 and math.isfinite(value) and math.isfinite(time.time() + value)
+
 
 def _get_data_dir() -> Path:
     import os
@@ -60,6 +76,7 @@ async def main(debug: bool = False) -> None:
     analytics = Analytics(DATA_DIR / "settings.json")
 
     peer_manager = PeerManager(identity, db, on_packet=lambda p, pkt: None)
+    peer_manager.dnd_enabled = settings.dnd_enabled
     friend_manager = FriendManager(identity, peer_manager, db)
     group_router = GroupRouter(identity, peer_manager, db, settings)
     router = MessageRouter(
@@ -100,7 +117,27 @@ async def main(debug: bool = False) -> None:
                 logger.info("Flushed %d queued file transfer(s) to %s", flushed_files, peer_id)
             return
         for item in items:
-            packet_type = PacketType(item["packet_type"])
+            raw_packet_type = item["packet_type"]
+            if raw_packet_type in REMOVED_V1_FILE_PACKET_TYPES:
+                logger.info("Discarding removed %s queue row", REMOVED_V1_FILE_PACKET_TYPES[raw_packet_type])
+                await db.remove_from_outqueue(item["id"])
+                continue
+            try:
+                packet_type = PacketType(raw_packet_type)
+            except ValueError:
+                logger.warning("Discarding unknown queued packet type %s", raw_packet_type)
+                await db.remove_from_outqueue(item["id"])
+                continue
+            # File transfers are flushed by file_manager to avoid sending their
+            # offer and chunks twice through the generic outbound queue. Skip
+            # them before capability handling so file rows are never
+            # mis-attributed to message tables.
+            if item["packet_type"] in (
+                PacketType.FILE_OFFER_V2.value,
+                PacketType.FILE_CHUNK_V2.value,
+                PacketType.FILE_ACK_V2.value,
+            ):
+                continue
             required = capability_for_packet(packet_type)
             if required is not None and not peer.supports(required):
                 if item["message_id"] and item.get("group_id"):
@@ -110,10 +147,6 @@ async def main(debug: bool = False) -> None:
                     await ipc.broadcast_event({"event": "message_failed", "message_id": item["message_id"]})
                 await db.remove_from_outqueue(item["id"])
                 continue
-            # File transfers are flushed by file_manager to avoid sending their
-            # offer and chunks twice through the generic outbound queue.
-            if item["packet_type"] in (PacketType.FILE_OFFER.value, PacketType.FILE_CHUNK.value, PacketType.FILE_ACK.value):
-                continue
             if not await group_router.can_flush(peer, item):
                 if item["message_id"] and item.get("group_id"):
                     await db.set_group_delivery(item["message_id"], peer_id, "unavailable")
@@ -121,14 +154,14 @@ async def main(debug: bool = False) -> None:
                 continue
             try:
                 packet = Packet(packet_type, item["encrypted_payload"])
-                if item["message_id"] and item.get("group_id"):
+                if item["message_id"] and item.get("group_id") and packet_type == PacketType.GROUP_MESSAGE:
                     await db.set_group_delivery(item["message_id"], peer_id, "sent")
                 await peer_manager.send_packet(peer, packet)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to flush queued packet for %s: %s", peer_id, exc)
                 await db.increment_outqueue_attempts(item["id"])
                 continue
-            if item["message_id"] and item.get("group_id"):
+            if item["message_id"] and item.get("group_id") and packet_type == PacketType.GROUP_MESSAGE:
                 await ipc.broadcast_event({
                     "event": "group_sent",
                     "message_id": item["message_id"],
@@ -181,6 +214,21 @@ async def main(debug: bool = False) -> None:
         peer_manager.record_remote_candidate,
         group_router.record_room_member,
     )
+
+    network_refresh_lock = asyncio.Lock()
+
+    async def handle_network_change(previous: NetworkState, current: NetworkState) -> None:
+        """Rebind all network-bound services after the active route changes."""
+        async with network_refresh_lock:
+            try:
+                try:
+                    await peer_manager.refresh_network()
+                finally:
+                    await discovery.refresh()
+            finally:
+                rendezvous.network_changed()
+
+    network_monitor = NetworkMonitor(handle_network_change)
 
     async def handle_send(req: dict) -> dict:
         recipient = req.get("recipient_id")
@@ -243,6 +291,7 @@ async def main(debug: bool = False) -> None:
                 "last_interaction": interaction_times.get(peer["peer_id"], 0),
                 "is_online": int((connection := peer_manager.get_connected_peer(peer["peer_id"])) is not None),
                 "presence": "active" if connection and connection.tui_active else "away" if connection else "offline",
+                "dnd": bool(connection.dnd) if connection else bool(peer.get("dnd", 0)),
                 "unread_count": unread_counts.get(peer["peer_id"], 0),
                 "is_friend": peer["peer_id"] in friends,
                 "is_blocked": peer["peer_id"] in blocked,
@@ -408,7 +457,31 @@ async def main(debug: bool = False) -> None:
             "display_name": identity.display_name,
             "setup_dismissed": settings.identity_setup_dismissed or identity.display_name != "Anonymous",
             "flashing_enabled": settings.flashing_enabled,
+            "dnd_enabled": settings.dnd_enabled,
         }
+
+    async def handle_desktop_info(req: dict) -> dict:
+        from . import __version__
+        return {
+            "ipc_version": 1,
+            "backend_version": os.environ.get("MESHTALK_APP_VERSION", __version__),
+        }
+
+    async def handle_desktop_release(req: dict) -> dict:
+        # The requesting desktop connection is still counted until it exits.
+        if ipc.client_count <= 1:
+            stop_event.set()
+            return {"stopping": True}
+        return {"stopping": False}
+
+    async def handle_dnd(req: dict) -> dict:
+        enabled = req.get("enabled")
+        if enabled is not None:
+            if not isinstance(enabled, bool):
+                return {"error": "enabled must be boolean"}
+            settings.set_dnd_enabled(enabled)
+            await peer_manager.set_dnd_enabled(settings.dnd_enabled)
+        return {"dnd_enabled": settings.dnd_enabled}
 
     async def handle_accessibility(req: dict) -> dict:
         flashing_enabled = req.get("flashing_enabled")
@@ -636,7 +709,12 @@ async def main(debug: bool = False) -> None:
         return {"rooms": rendezvous.room_status()}
 
     async def handle_groups(req: dict) -> dict:
-        return {"groups": await db.get_groups(identity.peer_id)}
+        groups = await db.get_groups(identity.peer_id)
+        for group in groups:
+            group["mention_unread_count"] = await db.get_group_mention_unread_count(
+                group["group_id"], identity.peer_id
+            )
+        return {"groups": groups}
 
     async def handle_group_members(req: dict) -> dict:
         group_id = req.get("group_id")
@@ -668,7 +746,7 @@ async def main(debug: bool = False) -> None:
         ):
             return {"error": "reply_to_message_id must be a non-empty string up to 128 characters"}
         message_id, deliveries = await group_router.send_message(group_id, content.encode(), reply_to_message_id)
-        return {"message_id": message_id, "deliveries": deliveries}
+        return {"message_id": message_id, "deliveries": deliveries, "mentions": extract_mentions(content)}
 
     async def handle_delete_message(req: dict) -> dict:
         message_id = req.get("message_id")
@@ -678,15 +756,12 @@ async def main(debug: bool = False) -> None:
         if group_id is not None and not isinstance(group_id, str):
             return {"error": "group_id must be a string"}
         is_file = req.get("file") is True
-        transfer = await db.delete_file_transfer_locally(message_id) if is_file else None
+        if is_file:
+            file_manager.forget_transfer(message_id)
+        transfer = await db.delete_file_transfer_locally(message_id, file_manager.files_base) if is_file else None
         if is_file:
             if transfer is None:
                 return {"error": "attachment not found"}
-            if transfer["direction"] == "inbound" and transfer.get("file_path"):
-                try:
-                    Path(transfer["file_path"]).unlink(missing_ok=True)
-                except OSError:
-                    logger.warning("Could not remove local attachment file %s", transfer["file_path"])
         else:
             deleted = await db.delete_message_locally(message_id, group_id)
             if not deleted:
@@ -703,19 +778,39 @@ async def main(debug: bool = False) -> None:
 
     async def handle_mute(req: dict) -> dict:
         peer_id = req.get("peer_id")
-        if not isinstance(peer_id, str) or not peer_id:
-            return {"error": "peer_id required"}
+        group_id = req.get("group_id")
         timeout = req.get("timeout")
-        if timeout is not None and not isinstance(timeout, (int, float)):
+        if not _is_valid_mute_timeout(timeout):
             return {"error": "timeout must be a number (seconds) or 0 for permanent"}
         if timeout is None:
             timeout = 0
         until = time.time() + float(timeout) if float(timeout) > 0 else 0
+        if group_id is not None and peer_id is not None:
+            return {"error": "Specify either peer_id or group_id"}
+        if group_id is not None:
+            if not isinstance(group_id, str):
+                return {"error": "group_id must be a string"}
+            if not group_id:
+                return {"error": "group_id required"}
+            settings.mute_group(group_id, until)
+            return {"group_id": group_id, "until": until}
+        if not isinstance(peer_id, str) or not peer_id:
+            return {"error": "peer_id required"}
         settings.mute_peer(peer_id, until)
         return {"peer_id": peer_id, "until": until}
 
     async def handle_unmute(req: dict) -> dict:
         peer_id = req.get("peer_id")
+        group_id = req.get("group_id")
+        if group_id is not None and peer_id is not None:
+            return {"error": "Specify either peer_id or group_id"}
+        if group_id is not None:
+            if not isinstance(group_id, str):
+                return {"error": "group_id must be a string"}
+            if not group_id:
+                return {"error": "group_id required"}
+            settings.unmute_group(group_id)
+            return {"group_id": group_id}
         if not isinstance(peer_id, str) or not peer_id:
             return {"error": "peer_id required"}
         settings.unmute_peer(peer_id)
@@ -727,7 +822,11 @@ async def main(debug: bool = False) -> None:
         for peer_id, until in settings.muted_peers.items():
             if until <= 0 or now < until:
                 muted[peer_id] = until
-        return {"muted_peers": muted}
+        muted_groups = {}
+        for group_id, until in settings.muted_groups.items():
+            if until <= 0 or now < until:
+                muted_groups[group_id] = until
+        return {"muted_peers": muted, "muted_groups": muted_groups}
 
     async def handle_notifications(req: dict) -> dict:
         setup_dismissed = req.get("setup_dismissed")
@@ -782,48 +881,97 @@ async def main(debug: bool = False) -> None:
             "peers": peers_info,
         }
 
+    def _file_error(exc: Exception) -> dict:
+        """Build an IPC error, handing back the failed file_id when the backend kept a retryable row."""
+        response: dict = {"error": str(exc)}
+        file_id = getattr(exc, "file_id", None)
+        if file_id:
+            response["file_id"] = file_id
+        return response
+
+    def _batch_error(result: dict) -> dict:
+        details = "; ".join(
+            f"{entry.get('path', '?')}: {entry.get('error', entry)}" for entry in result["errors"]
+        )
+        response: dict = {"error": details or "no files started"}
+        file_ids = sorted({entry.get("file_id") for entry in result["errors"] if entry.get("file_id")})
+        if len(file_ids) == 1:
+            response["file_id"] = file_ids[0]
+        elif file_ids:
+            response["file_ids"] = file_ids
+        return response
+
     async def handle_file_send(req: dict) -> dict:
         recipient_id = req.get("recipient_id")
-        file_path = req.get("file_path")
         if not isinstance(recipient_id, str) or not recipient_id:
             return {"error": "recipient_id required"}
-        if not isinstance(file_path, str) or not file_path:
-            return {"error": "file_path required"}
+        paths = req.get("paths")
+        if paths is None:
+            paths = [req.get("file_path")]
+        if not isinstance(paths, list) or not paths or len(paths) > 32 or not all(isinstance(path, str) and path for path in paths):
+            return {"error": "file_path or paths[] required (maximum 32)"}
+        caption = req.get("caption", "")
+        if not isinstance(caption, str):
+            return {"error": "caption must be text"}
+        if await db.is_peer_blocked(recipient_id):
+            return {"error": "This peer is blocked; unblock them to send files"}
         try:
-            file_id = await file_manager.send_file(recipient_id, file_path)
+            if len(paths) == 1:
+                file_id = await file_manager.send_file(recipient_id, paths[0], caption=caption)
+                return {"file_id": file_id, "results": [{"recipient_id": recipient_id, "file_id": file_id}], "errors": []}
+            result = await file_manager.send_batch(recipient_id, paths, caption=caption)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return _file_error(exc)
         except Exception as exc:
             logger.exception("file_send failed")
             return {"error": str(exc)}
-        return {"file_id": file_id}
+        if not result["results"]:
+            return _batch_error(result)
+        return result
+
+    async def handle_file_retry(req: dict) -> dict:
+        file_id = req.get("file_id")
+        if not isinstance(file_id, str) or not file_id:
+            return {"error": "file_id required"}
+        try:
+            recipient_id = req.get("recipient_id")
+            if recipient_id is not None and (not isinstance(recipient_id, str) or not recipient_id):
+                return {"error": "recipient_id must be a non-empty string"}
+            retried = await file_manager.retry_file(file_id, recipient_id=recipient_id)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            logger.exception("file_retry failed")
+            return {"error": str(exc)}
+        return {"file_id": retried}
 
     async def handle_group_file_send(req: dict) -> dict:
         group_id = req.get("group_id")
-        file_path = req.get("file_path")
         if not isinstance(group_id, str) or not group_id:
             return {"error": "group_id required"}
-        if not isinstance(file_path, str) or not file_path:
-            return {"error": "file_path required"}
+        paths = req.get("paths")
+        if paths is None:
+            paths = [req.get("file_path")]
+        if not isinstance(paths, list) or not paths or len(paths) > 32 or not all(isinstance(path, str) and path for path in paths):
+            return {"error": "file_path or paths[] required (maximum 32)"}
+        caption = req.get("caption", "")
+        if not isinstance(caption, str):
+            return {"error": "caption must be text"}
         if group_id not in settings.rooms or settings.rooms[group_id].group_name is None:
             return {"error": "Unknown group"}
-        members = await db.get_group_members(group_id)
-        results = []
-        errors = []
-        for member in members:
-            recipient_id = member["peer_id"]
-            if recipient_id == identity.peer_id:
-                continue
-            if await db.is_peer_blocked(recipient_id):
-                continue
-            try:
-                fid = await file_manager.send_file(recipient_id, file_path, group_id=group_id)
-                results.append({"recipient_id": recipient_id, "file_id": fid})
-            except Exception as exc:
-                errors.append(f"{recipient_id[:8]}: {exc}")
-        if not results and errors:
-            return {"error": "; ".join(errors)}
-        return {"results": results, "errors": errors}
+        try:
+            if len(paths) == 1:
+                file_id = await file_manager.send_group_file(group_id, paths[0], caption=caption)
+                return {"file_id": file_id, "results": [{"recipient_id": "", "file_id": file_id}], "errors": []}
+            result = await file_manager.send_batch(group_id, paths, group_id=group_id, caption=caption)
+        except ValueError as exc:
+            return _file_error(exc)
+        except Exception as exc:
+            logger.exception("group_file_send failed")
+            return {"error": str(exc)}
+        if not result["results"]:
+            return _batch_error(result)
+        return result
 
     async def handle_files(req: dict) -> dict:
         peer_id = req.get("peer_id")
@@ -885,6 +1033,9 @@ async def main(debug: bool = False) -> None:
         return {"files_dir": str(settings.files_dir), "configured": settings._files_dir, "env": os.environ.get("MESHTALK_FILES_DIR"), "data_dir": str(DATA_DIR)}
 
     ipc_handlers = {
+        **desktop_query_handlers(db, identity.peer_id),
+        "desktop_info": handle_desktop_info,
+        "desktop_release": handle_desktop_release,
         "send": handle_send,
         "peers": handle_peers,
         "remove_peer": handle_remove_peer,
@@ -901,6 +1052,7 @@ async def main(debug: bool = False) -> None:
         "typing": handle_typing,
         "identity": handle_identity,
         "accessibility": handle_accessibility,
+        "dnd": handle_dnd,
         "status": handle_status,
         "messages": handle_messages,
         "set_display_name": handle_set_display_name,
@@ -925,6 +1077,7 @@ async def main(debug: bool = False) -> None:
         "debug_re_stun": handle_debug_re_stun,
         "debug_info": handle_debug_info,
         "file_send": handle_file_send,
+        "file_retry": handle_file_retry,
         "group_file_send": handle_group_file_send,
         "files": handle_files,
         "file_info": handle_file_info,
@@ -953,6 +1106,7 @@ async def main(debug: bool = False) -> None:
     await discovery.start()
     await rendezvous.start()
     await ipc.start()
+    await network_monitor.start()
 
     logger.info("MeshTalk backend running")
 
@@ -992,6 +1146,7 @@ async def main(debug: bool = False) -> None:
             await asyncio.wait_for(analytics.flush(), timeout=1.5)
         except Exception:
             pass
+        await network_monitor.stop()
         await ipc.stop()
         await rendezvous.stop()
         await peer_manager.stop()
@@ -1002,7 +1157,9 @@ async def main(debug: bool = False) -> None:
 
 def run() -> None:
     debug = "--debug" in sys.argv[1:]
-    asyncio.run(main(debug))
+    from .instance_lock import InstanceLock
+    with InstanceLock(DATA_DIR):
+        asyncio.run(main(debug))
 
 
 if __name__ == "__main__":

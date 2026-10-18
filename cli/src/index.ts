@@ -1,5 +1,5 @@
 import { IPCClient, type IPCResponse } from "../../common/ipc-client";
-import { basename } from "path";
+import { basename, resolve } from "path";
 
 const PROGRAM = basename(process.env.MESHTALK_PROGRAM ?? process.argv[1] ?? process.argv[0]);
 const USAGE = `Usage: ${PROGRAM} <command> [args]
@@ -10,11 +10,12 @@ Commands:
   peers                       List peers, transports, and endpoints
   messages <peer-id>          Show conversation history
   send <peer-id> <message>    Send an encrypted direct message
-  send-file <peer-id> <path>   Send a file to a peer (cross-platform path)
+  send-file <peer-id> <paths...> [--caption TEXT]  Send files to a peer
   files                       List file transfers
   files dir                   Show current files storage directory
   files set-dir <path>        Set files storage directory (e.g., E:\\MeshTalkFiles)
   download <file-id> <dest>   Download a received file to dest path/folder
+  retry <file-id> [--recipient <peer-id>]  Retry a file transfer or delivery
   watch                       Print incoming messages until interrupted
   control [set-url <url>]      Show or configure the control service
   advanced                         Show server IP pins that override DNS
@@ -33,7 +34,7 @@ Commands:
   group members <group-id>    List group members
   group messages <group-id>   Show group message history
   group send <group-id> <message>  Send a group message
-  group send-file <group-id> <path> Send a file to a group
+  group send-file <group-id> <paths...> [--caption TEXT] Send files to a group
   group leave <group-id>      Leave a group chat
   friends                     List your friends
   friend-requests             List pending friend requests
@@ -54,7 +55,9 @@ Commands:
 
 function hasError(response: IPCResponse): boolean {
   if (response.error) {
-    console.error(`Error: ${response.error}`);
+    const ids = [response.file_id, ...(Array.isArray(response.file_ids) ? response.file_ids : [])]
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+    console.error(`Error: ${response.error}${ids.length ? ` (file_id: ${ids.join(", ")})` : ""}`);
     process.exitCode = 1;
     return true;
   }
@@ -63,6 +66,81 @@ function hasError(response: IPCResponse): boolean {
 
 function asRecords(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value as Record<string, unknown>[] : [];
+}
+
+export function parseFileArguments(args: string[]): { paths: string[]; caption?: string } {
+  const paths: string[] = [];
+  let caption: string | undefined;
+  let options = true;
+  for (let index = 0; index < args.length; index += 1) {
+    if (options && args[index] === "--") {
+      options = false;
+      continue;
+    }
+    if (!options || args[index] !== "--caption") {
+      paths.push(args[index]);
+      continue;
+    }
+    if (caption !== undefined || index + 1 >= args.length || args[index + 1] === "--caption") {
+      throw new Error("--caption requires one value and may only be specified once");
+    }
+    caption = args[index + 1];
+    index += 1;
+  }
+  return { paths, ...(caption === undefined ? {} : { caption }) };
+}
+
+export function fileMetadataLines(file: Record<string, unknown>): string[] {
+  const lines: string[] = [];
+  if (file.caption) lines.push(`  Caption: ${file.caption}`);
+  if (file.batch_id) {
+    const position = Number.isInteger(file.batch_index) && Number.isInteger(file.batch_count)
+      ? ` (${Number(file.batch_index) + 1}/${file.batch_count})`
+      : "";
+    lines.push(`  Batch: ${file.batch_id}${position}`);
+  }
+  const deliveries = asRecords(file.deliveries);
+  if (deliveries.length) {
+    lines.push("  Deliveries:");
+    for (const delivery of deliveries) {
+      lines.push(`    ${delivery.recipient_id}: ${delivery.status ?? "unknown"}`);
+    }
+  }
+  return lines;
+}
+
+function printFileMetadata(file: Record<string, unknown>): void {
+  for (const line of fileMetadataLines(file)) console.log(line);
+}
+
+function sendFilePayload(targetKey: "recipient_id" | "group_id", target: string, paths: string[], caption?: string): Record<string, unknown> {
+  return {
+    [targetKey]: target,
+    ...(paths.length === 1 ? { file_path: resolve(paths[0]) } : { paths: paths.map((path) => resolve(path)) }),
+    ...(caption === undefined ? {} : { caption }),
+  };
+}
+
+export function printTransferStarted(response: IPCResponse, prefix = "File transfer"): void {
+  const results = asRecords(response.results);
+  const errors = Array.isArray(response.errors) ? response.errors : [];
+  if (errors.length) process.exitCode = 1;
+  if (errors.length && !results.length && !response.file_id) console.error(`${prefix} failed: no files started`);
+  else if (response.batch_id) console.log(`${prefix} batch ${response.batch_id} started`);
+  else if (response.file_id) console.log(`${prefix} ${response.file_id} started`);
+  else console.log(`${prefix} started`);
+  for (const result of results) {
+    console.log(`  ${result.file_id}${result.recipient_id ? ` -> ${result.recipient_id}` : ""}`);
+  }
+  if (Array.isArray(response.errors)) {
+    for (const error of response.errors) {
+      if (typeof error === "string") console.error(`Error: ${error}`);
+      else {
+        const record = error as Record<string, unknown>;
+        console.error(`Error: ${record.path ?? "?"}: ${record.error ?? JSON.stringify(error)}${typeof record.file_id === "string" ? ` (file_id: ${record.file_id})` : ""}`);
+      }
+    }
+  }
 }
 
 function transportName(value: unknown): string {
@@ -163,14 +241,12 @@ export async function main(): Promise<void> {
     }
 
     if (command === "send-file") {
-      const [peerId, filePath] = args;
-      if (!peerId || !filePath) throw new Error(`Usage: ${PROGRAM} send-file <peer-id> <path>`);
-      // Cross-platform: normalize path separators before sending to backend
-      const { resolve } = await import("path");
-      const normalized = resolve(filePath);
-      const response = await ipc.send("file_send", { recipient_id: peerId, file_path: normalized });
+      const [peerId, ...fileArgs] = args;
+      const { paths, caption } = parseFileArguments(fileArgs);
+      if (!peerId || !paths.length) throw new Error(`Usage: ${PROGRAM} send-file <peer-id> <paths...> [--caption TEXT]`);
+      const response = await ipc.send("file_send", sendFilePayload("recipient_id", peerId, paths, caption));
       if (hasError(response)) return;
-      console.log(`File transfer ${response.file_id} started`);
+      printTransferStarted(response);
       return;
     }
 
@@ -186,7 +262,6 @@ export async function main(): Promise<void> {
         return;
       }
       if (args[0] === "set-dir" && args[1]) {
-        const { resolve } = await import("path");
         const p = resolve(args.slice(1).join(" "));
         const response = await ipc.send("files_dir", { path: p });
         if (hasError(response)) return;
@@ -203,6 +278,7 @@ export async function main(): Promise<void> {
         const dir = f.direction as string;
         const size = Number(f.file_size);
         console.log(`${(f.file_id as string).slice(0, 8)} ${f.filename} ${size} bytes ${dir} ${status} ${f.sender_id ? `from ${(f.sender_id as string).slice(0,8)}` : ""} ${f.file_path ?? ""}`);
+        printFileMetadata(f);
       }
       return;
     }
@@ -210,10 +286,29 @@ export async function main(): Promise<void> {
     if (command === "download") {
       const [fileId, dest] = args;
       if (!fileId || !dest) throw new Error(`Usage: ${PROGRAM} download <file-id> <dest>`);
-      const { resolve } = await import("path");
+      const info = await ipc.send("file_info", { file_id: fileId });
+      if (hasError(info)) return;
       const response = await ipc.send("file_download", { file_id: fileId, dest_path: resolve(dest) });
       if (hasError(response)) return;
       console.log(`Downloaded ${fileId} -> ${response.dest_path}`);
+      const file = info.file;
+      if (file && typeof file === "object" && !Array.isArray(file)) printFileMetadata(file as Record<string, unknown>);
+      return;
+    }
+
+    if (command === "retry") {
+      const [fileId, ...options] = args;
+      let recipientId: string | undefined;
+      if (options.length) {
+        if (options.length !== 2 || options[0] !== "--recipient" || !options[1]) {
+          throw new Error(`Usage: ${PROGRAM} retry <file-id> [--recipient <peer-id>]`);
+        }
+        recipientId = options[1];
+      }
+      if (!fileId) throw new Error(`Usage: ${PROGRAM} retry <file-id> [--recipient <peer-id>]`);
+      const response = await ipc.send("file_retry", { file_id: fileId, ...(recipientId ? { recipient_id: recipientId } : {}) });
+      if (hasError(response)) return;
+      console.log(`Retry started for ${response.file_id ?? fileId}${recipientId ? ` recipient ${recipientId}` : ""}`);
       return;
     }
 
@@ -336,7 +431,7 @@ export async function main(): Promise<void> {
 
     if (command === "group") {
       const [subcommand, groupId, ...words] = args;
-      if (!groupId) throw new Error(`Usage: ${PROGRAM} group <members|messages|send|leave> <group-id> [message]`);
+      if (!groupId) throw new Error(`Usage: ${PROGRAM} group <members|messages|send|send-file|leave> <group-id> [message]`);
 
       if (subcommand === "members" && !words.length) {
         const response = await ipc.send("group_members", { group_id: groupId });
@@ -375,13 +470,11 @@ export async function main(): Promise<void> {
       }
 
       if (subcommand === "send-file") {
-        const filePath = words.join(" ");
-        if (!filePath) throw new Error(`Usage: ${PROGRAM} group send-file <group-id> <path>`);
-        const { resolve } = await import("path");
-        const normalized = resolve(filePath);
-        const response = await ipc.send("group_file_send", { group_id: groupId, file_path: normalized });
+        const { paths, caption } = parseFileArguments(words);
+        if (!paths.length) throw new Error(`Usage: ${PROGRAM} group send-file <group-id> <paths...> [--caption TEXT]`);
+        const response = await ipc.send("group_file_send", sendFilePayload("group_id", groupId, paths, caption));
         if (hasError(response)) return;
-        console.log(`Group file transfer started: ${JSON.stringify(response.results)}`);
+        printTransferStarted(response, "Group file transfer");
         return;
       }
 
@@ -392,7 +485,7 @@ export async function main(): Promise<void> {
         return;
       }
 
-      throw new Error(`Usage: ${PROGRAM} group <members|messages|send|leave> <group-id> [message]`);
+      throw new Error(`Usage: ${PROGRAM} group <members|messages|send|send-file|leave> <group-id> [value]`);
     }
 
     if (command === "friends") {
