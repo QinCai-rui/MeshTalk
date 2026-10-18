@@ -9,6 +9,7 @@ on:
     paths-ignore:
       - "assets/**"
       - "README.md"
+      - "web/**"
   workflow_dispatch:
     inputs:
       version:
