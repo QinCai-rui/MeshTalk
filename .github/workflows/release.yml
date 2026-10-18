@@ -9,6 +9,17 @@ on:
     paths-ignore:
       - "assets/**"
       - "README.md"
+      - "web/**"
+      - "control/**"
+      - "analytics/**"
+      - "docs/**"
+      - "scripts/**"
+      - "docker/**"
+      - "docker-compose.yml"
+      - "Dockerfile.client"
+      - "Dockerfile.control"
+      - ".dockerignore"
+      - ".opencode/**"
   workflow_dispatch:
     inputs:
       version:
