@@ -388,6 +388,12 @@ class Database:
                 await self._db.execute("CREATE TABLE IF NOT EXISTS group_deliveries (message_id TEXT NOT NULL, recipient_id TEXT NOT NULL, status TEXT NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY (message_id, recipient_id))")
         except Exception:
             pass
+        # Group message deliveries are "pending" only during one in-process fan-out,
+        # so any left at startup were interrupted by a crash and will never be sent.
+        await self._db.execute(
+            "UPDATE group_deliveries SET status = 'failed', updated_at = ? WHERE status = 'pending'",
+            (time.time(),),
+        )
         await self._encrypt_existing_message_content()
         await self._db.commit()
 

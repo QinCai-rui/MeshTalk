@@ -593,7 +593,8 @@ test("group history keeps system messages, replies, file status, and delivery de
   const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
   try {
     const frame = await settle(setup, "joined the group")
-    for (const label of ["Group / 4 members", "joined the group", "Replying to Alex Morgan", "delivered 1/1", "notes.pdf", "1.0 KiB"]) expect(frame).toContain(label)
+    for (const label of ["Group / 4 members", "joined the group", "Replying to Alex Morgan", "notes.pdf", "1.0 KiB"]) expect(frame).toContain(label)
+    expect(frame).not.toContain("delivered 1/1")
   } finally { await close(setup) }
 })
 
@@ -737,7 +738,7 @@ test("delivery details are shown for group messages, not direct messages", async
   try {
     const frame = await settle(direct, "Looks good")
     expect(frame).toContain("blocked")
-    expect(frame).not.toContain("click for details")
+    expect(frame).not.toContain("(details)")
   } finally { await close(direct) }
 
   const groupProps = panelProps(80)
@@ -748,15 +749,15 @@ test("delivery details are shown for group messages, not direct messages", async
   const groupMessage = groupProps.conversationItems[1]!
   if (groupMessage.type !== "message") throw new Error("expected message")
   groupMessage.message.group_id = group.group_id
-  groupMessage.message.deliveries = [{ recipient_id: "alex", display_name: "Alex Morgan", status: "delivered", updated_at: 1788580861 }]
+  groupMessage.message.deliveries = [{ recipient_id: "alex", display_name: "Alex Morgan", status: "failed", updated_at: 1788580861 }]
   const groupSetup = await testRender(<ConversationPanel {...groupProps} />, { width: 80, height: 26 })
   try {
     const frame = await settle(groupSetup, "Looks good")
-    expect(frame).toContain("click for details")
+    expect(frame).toContain("Failed for 1 of 1 (details)")
   } finally { await close(groupSetup) }
 })
 
-test("group file rows count completed deliveries as delivered", async () => {
+test("group file rows show a failure count only for failed or unavailable recipients", async () => {
   const props = panelProps(80)
   props.selected = undefined
   props.selectedGroup = group
@@ -779,25 +780,25 @@ test("group file rows count completed deliveries as delivered", async () => {
   const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
   try {
     const frame = await settle(setup, "photo.png")
-    expect(frame).toContain("delivered 2/4 · queued 1 · unavailable 1")
+    expect(frame).toContain("Failed for 1 of 4 (details)")
   } finally { await close(setup) }
 })
 
-test("synthesized file deliveries keep failed distinct from unavailable", async () => {
+test("synthesized file deliveries count an unavailable recipient as a failure", async () => {
   const props = panelProps(80)
   props.selected = undefined
   props.selectedGroup = group
   props.selectedGroupId = group.group_id
   props.selectionKey = "group:team"
   props.groupMembers = { team: [{ peer_id: "alex", display_name: "Alex Morgan" }] }
-  const file = { file_id: "file2", filename: "broken.zip", file_size: 100, sender_id: "me", recipient_id: "", group_id: "team", direction: "outbound", status: "failed", created_at: 1788580860 }
+  const file = { file_id: "file2", filename: "broken.zip", file_size: 100, sender_id: "me", recipient_id: "", group_id: "team", direction: "outbound", status: "unavailable", created_at: 1788580860 }
   props.conversationItems = [
     { type: "file", createdAt: 1788580860, file, allFiles: [file] },
   ]
   const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
   try {
     const frame = await settle(setup, "broken.zip")
-    expect(frame).toContain("delivered 0/1 · failed 1")
+    expect(frame).toContain("Failed for 1 of 1 (details)")
   } finally { await close(setup) }
 })
 
