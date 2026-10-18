@@ -10,9 +10,9 @@ test.each([
 ] as const)("storage save preserves the $kind draft ($storageDir)", async ({ kind, storageDir, expected }) => {
   const response = { files_dir: "/custom/files", storage_dir: storageDir, data_dir: "/data", note: "Already set" }
   const send = mock(async () => response)
-  const setDialog = mock(() => {})
-  const setDialogDraft = mock(() => {})
-  const setDialogError = mock(() => {})
+  const setDialog = mock((_dialog: Dialog) => {})
+  const setDialogDraft = mock((_draft: string) => {})
+  const setDialogError = mock((_error: string) => {})
   const statusResetRef = { current: undefined as ReturnType<typeof setTimeout> | undefined }
   const actions = useChatActions({
     ipc: { send },

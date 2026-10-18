@@ -233,8 +233,9 @@ test("file manager picker supports keyboard select and escape", async () => {
     await clickText(setup, "Group: All")
     frame = await settle(setup)
     expect(frame).toContain("Filter by group")
-    await act(async () => { setup.mockInput.pressEscape() })
-    await settle(setup)
+    await act(async () => { setup.mockInput.pressEscape(); await new Promise(resolve => setTimeout(resolve, 80)) })
+    frame = await settle(setup)
+    expect(frame).not.toContain("Filter by group")
   } finally {
     await act(async () => setup.renderer.destroy())
   }
