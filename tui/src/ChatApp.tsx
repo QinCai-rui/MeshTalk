@@ -17,7 +17,7 @@ import {
   useSelectionHandler,
   useTerminalDimensions,
 } from "@opentui/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SpinnerRenderable } from "opentui-spinner";
 extend({ spinner: SpinnerRenderable });
 import { IPCClient, type IPCEvent } from "../../common/ipc-client";
@@ -372,6 +372,10 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const clipboard = useRef<ReturnType<typeof createClipboard> | null>(null);
   const dialogAction = useRef(0);
   const dialogBusyRef = useRef(false);
+  const migrationPromptOpenRef = useRef(false);
+  const handleMigrationPromptChange = useCallback((open: boolean) => {
+    migrationPromptOpenRef.current = open;
+  }, []);
   const filePickerOpen = useRef(false);
   const deleteConfirmationTimer = useRef<
     ReturnType<typeof setTimeout> | undefined
@@ -1955,6 +1959,9 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       // while searching): handling them here as well would double-fire,
       // because this listener was registered before the dialog's own.
       if (dialog.kind === "file-list") return
+      // An open migration prompt owns Escape so it only cancels the prompt,
+      // instead of also closing the files settings panel.
+      if (migrationPromptOpenRef.current && key.name === "escape") return
       if (key.name === "escape" || (key.name === "backspace" && !dialogUsesTextInput(dialog))) {
         key.preventDefault();
         actions.goBack();
@@ -2789,6 +2796,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           setStorageDir={actions.setStorageDir}
           clearFilesDir={actions.clearFilesDir}
           clearStorageDir={actions.clearStorageDir}
+          onMigrationPromptChange={handleMigrationPromptChange}
           sendFile={actions.sendFile}
           confirmPendingFileSend={actions.confirmPendingFileSend}
           downloadFile={actions.downloadFile}

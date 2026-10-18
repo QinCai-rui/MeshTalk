@@ -225,6 +225,7 @@ async function clickText(setup: Awaited<ReturnType<typeof testRender>>, needle: 
 
 test("set files to default targets the storage root and Esc cancels the prompt", async () => {
   const clearCalls: (boolean | undefined)[] = []
+  const promptChanges: boolean[] = []
   const setup = await testRender(
     <FilesSettingsContent
       dialog={{ kind: "files-settings", ...payload(), filesDir: "/custom/files", configured: "/custom/files", storageDir: "/srv/meshtalk", storageConfigured: "/srv/meshtalk" } as Extract<Dialog, { kind: "files-settings" }>}
@@ -234,6 +235,7 @@ test("set files to default targets the storage root and Esc cancels the prompt",
       setFilesDir={noop}
       setStorageDir={noop}
       clearFilesDir={(migrate) => { clearCalls.push(migrate) }}
+      onMigrationPromptChange={(open) => { promptChanges.push(open) }}
     />,
     { width: 110, height: 70 },
   )
@@ -245,12 +247,15 @@ test("set files to default targets the storage root and Esc cancels the prompt",
     // The reset destination follows the effective storage root, not DATA_DIR.
     expect(frame).toContain("/srv/meshtalk/files")
     expect(clearCalls).toEqual([])
-    // Esc cancels the prompt without invoking the reset.
+    expect(promptChanges).toContain(true)
+    // Esc cancels the prompt without invoking the reset and hands ownership
+    // back to the parent navigation handler.
     await act(async () => { setup.mockInput.pressEscape(); await new Promise(resolve => setTimeout(resolve, 50)) })
     await settle(setup)
     frame = setup.captureCharFrame()
     expect(frame).not.toContain("Transfer existing files")
     expect(clearCalls).toEqual([])
+    expect(promptChanges.at(-1)).toBe(false)
   } finally {
     await act(async () => setup.renderer.destroy())
   }

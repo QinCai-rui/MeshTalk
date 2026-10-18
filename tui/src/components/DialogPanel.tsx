@@ -98,6 +98,7 @@ type DialogPanelProps = {
   setStorageDir: (path: string, migrate?: boolean) => void
   clearFilesDir: (migrate?: boolean) => void
   clearStorageDir: (migrate?: boolean) => void
+  onMigrationPromptChange?: (open: boolean) => void
   sendFile: (filePath: string) => void
   confirmPendingFileSend: () => void
   downloadFile: (fileId: string, destPath: string) => void
@@ -124,7 +125,7 @@ export function DialogPanel(props: DialogPanelProps) {
   const { configureControl, dismissControlSetup, loadControlStatus, saveAdvancedConfig, setAccessibilityFlashing } = props
   const { createRoom, joinRoom, leaveRoom, loadRoomInvite, loadRooms, copyInvite, leaveGroup, loadGroupDetails } = props
   const { mutePeer, unmutePeer, muteGroup, unmuteGroup, sendFriendRequest, respondToFriendRequest, cancelFriendRequest, unfriendPeer, loadFriendRequests, loadBlockedPeers, blockPeer, unblockPeer, blockSenderFromRequest } = props
-  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, loadStorageDir, loadFilesSettings, openPath, setFilesDir, setStorageDir, clearFilesDir, clearStorageDir, sendFile, confirmPendingFileSend, downloadFile, defaultDownloadPath, onDeleteFile, onRetryFile } = props
+  const { reStun, loadDebugInfo, loadFiles, loadFilesDir, loadStorageDir, loadFilesSettings, openPath, setFilesDir, setStorageDir, clearFilesDir, clearStorageDir, onMigrationPromptChange, sendFile, confirmPendingFileSend, downloadFile, defaultDownloadPath, onDeleteFile, onRetryFile } = props
   const { testNotificationDelivery, disableNotifications, confirmNotificationDelivery, toggleNotificationEvent } = props
   const { saveDisplayName, checkForUpdatesFromAbout, saveUpdateChannel, installUpdate, saveUpdateToken, restartUpdate } = props
 
@@ -180,9 +181,9 @@ export function DialogPanel(props: DialogPanelProps) {
       {dialog.kind === "file-send" && <FileSendDialogContent dialog={dialog} dialogWidth={dialogWidth} selection={selection} peers={peers} groups={groups} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} sendFile={sendFile} />}
 {dialog.kind === "file-confirm" && <FileConfirmDialogContent dialog={dialog} dialogError={dialogError} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} screenWidth={dialogWidthFor("file-list") + 2} screenHeight={dialogHeight + 4} imageProtocol={imageProtocol} peers={peers} groups={groups} closeDialog={closeDialog} showDialog={showDialog} confirmPendingFileSend={confirmPendingFileSend} />}
       {dialog.kind === "file-list" && <FileListDialogContent dialog={dialog} dialogHeight={dialogHeight} dialogWidth={dialogWidthFor(dialog.kind)} imageProtocol={imageProtocol} peers={peers} groups={groups} loadFiles={loadFiles} loadFilesDir={loadFilesDir} loadFilesSettings={loadFilesSettings} openPath={openPath} setDialogDraft={setDialogDraft} showDialog={showDialog} closeDialog={closeDialog} defaultDownloadPath={defaultDownloadPath} onDeleteFile={onDeleteFile} onRetryFile={onRetryFile} />}
-      {dialog.kind === "files-settings" && <FilesSettingsContent dialog={dialog} dialogHeight={dialogHeight} dialogBusy={dialogBusy} loadFiles={loadFiles} setFilesDir={setFilesDir} setStorageDir={setStorageDir} clearFilesDir={clearFilesDir} clearStorageDir={clearStorageDir} openPath={openPath} />}
-      {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} setStorageDir={setStorageDir} loadFiles={loadFiles} />}
-      {dialog.kind === "storage-dir" && <FilesDirDialogContent dialog={dialog} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} setStorageDir={setStorageDir} loadFiles={loadFiles} />}
+      {dialog.kind === "files-settings" && <FilesSettingsContent dialog={dialog} dialogHeight={dialogHeight} dialogBusy={dialogBusy} loadFiles={loadFiles} setFilesDir={setFilesDir} setStorageDir={setStorageDir} clearFilesDir={clearFilesDir} clearStorageDir={clearStorageDir} openPath={openPath} onMigrationPromptChange={onMigrationPromptChange} />}
+      {dialog.kind === "files-dir" && <FilesDirDialogContent dialog={dialog} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} setStorageDir={setStorageDir} loadFiles={loadFiles} onMigrationPromptChange={onMigrationPromptChange} />}
+      {dialog.kind === "storage-dir" && <FilesDirDialogContent dialog={dialog} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} setFilesDir={setFilesDir} setStorageDir={setStorageDir} loadFiles={loadFiles} onMigrationPromptChange={onMigrationPromptChange} />}
       {dialog.kind === "file-download" && <FileDownloadDialogContent dialog={dialog} dialogWidth={dialogWidth} dialogHeight={dialogHeight} dialogDraft={dialogDraft} setDialogDraft={setDialogDraft} downloadFile={downloadFile} defaultDownloadPath={defaultDownloadPath} loadFiles={loadFiles} />}
       {dialog.kind === "image-view" && <ImageViewerDialogContent filePath={dialog.filePath} bytes={dialog.bytes} filename={dialog.filename} dialogWidth={dialogWidthFor(dialog.kind)} dialogHeight={dialogHeight} imageProtocol={imageProtocol} version={dialog.version ?? null} />}
       {dialog.kind === "delivery-details" && <DeliveryDetailsDialogContent dialog={dialog} onRetryFile={onRetryFile} />}
@@ -1049,7 +1050,7 @@ function FileManagerAction({ shortcut, label, onPress, disabled = false, danger 
   </HoverHighlight>
 }
 
-export function FilesSettingsContent({ dialog, dialogHeight, dialogBusy, loadFiles, setFilesDir, setStorageDir, clearFilesDir, clearStorageDir, openPath, initialEditingFiles, initialEditingStorage }: { dialog: Extract<Dialog, { kind: "files-settings" }>; dialogHeight: number; dialogBusy: boolean; loadFiles: () => void; setFilesDir: (path: string, migrate?: boolean) => void; setStorageDir: (path: string, migrate?: boolean) => void; clearFilesDir?: (migrate?: boolean) => void; clearStorageDir?: (migrate?: boolean) => void; openPath?: (path: string) => void; initialEditingFiles?: boolean; initialEditingStorage?: boolean }) {
+export function FilesSettingsContent({ dialog, dialogHeight, dialogBusy, loadFiles, setFilesDir, setStorageDir, clearFilesDir, clearStorageDir, openPath, onMigrationPromptChange, initialEditingFiles, initialEditingStorage }: { dialog: Extract<Dialog, { kind: "files-settings" }>; dialogHeight: number; dialogBusy: boolean; loadFiles: () => void; setFilesDir: (path: string, migrate?: boolean) => void; setStorageDir: (path: string, migrate?: boolean) => void; clearFilesDir?: (migrate?: boolean) => void; clearStorageDir?: (migrate?: boolean) => void; openPath?: (path: string) => void; onMigrationPromptChange?: (open: boolean) => void; initialEditingFiles?: boolean; initialEditingStorage?: boolean }) {
   const filesCurrent = dialog.filesDir ?? ""
   const storageCurrent = dialog.storageDir ?? dialog.dataDir ?? ""
   const filesIsEnv = !!dialog.env
@@ -1063,6 +1064,11 @@ export function FilesSettingsContent({ dialog, dialogHeight, dialogBusy, loadFil
   const [filesDraft, setFilesDraft] = useState(filesCurrent)
   const [storageDraft, setStorageDraft] = useState(storageCurrent)
   const [pendingMigrate, setPendingMigrate] = useState<{ scope: "files" | "storage"; path: string; isDefault?: boolean } | null>(null)
+  useEffect(() => {
+    // Let ChatApp hand Escape to this prompt instead of closing the panel.
+    onMigrationPromptChange?.(pendingMigrate !== null)
+    return () => onMigrationPromptChange?.(false)
+  }, [pendingMigrate, onMigrationPromptChange])
   useEffect(() => { setFilesDraft(filesCurrent) }, [filesCurrent])
   useEffect(() => { setStorageDraft(storageCurrent) }, [storageCurrent])
   useEffect(() => { setPendingMigrate(null) }, [dialog.filesDir, dialog.storageDir])
@@ -1180,7 +1186,7 @@ export function FilesSettingsContent({ dialog, dialogHeight, dialogBusy, loadFil
   </SettingsScreen>
 }
 
-export function FilesDirDialogContent({ dialog, dialogDraft, setDialogDraft, setFilesDir, setStorageDir, loadFiles }: { dialog: Extract<Dialog, { kind: "files-dir" } | { kind: "storage-dir" }>; dialogDraft: string; setDialogDraft: (v: string) => void; setFilesDir: (path: string, migrate?: boolean) => void; setStorageDir: (path: string, migrate?: boolean) => void; loadFiles: () => void }) {
+export function FilesDirDialogContent({ dialog, dialogDraft, setDialogDraft, setFilesDir, setStorageDir, loadFiles, onMigrationPromptChange }: { dialog: Extract<Dialog, { kind: "files-dir" } | { kind: "storage-dir" }>; dialogDraft: string; setDialogDraft: (v: string) => void; setFilesDir: (path: string, migrate?: boolean) => void; setStorageDir: (path: string, migrate?: boolean) => void; loadFiles: () => void; onMigrationPromptChange?: (open: boolean) => void }) {
   const [scope, setScope] = useState<"files" | "storage">(dialog.kind === "storage-dir" ? "storage" : "files")
   const filesCurrent = dialog.filesDir
   const storageCurrent = dialog.storageDir ?? dialog.dataDir ?? ""
@@ -1189,6 +1195,11 @@ export function FilesDirDialogContent({ dialog, dialogDraft, setDialogDraft, set
   const isCustom = scope === "files" ? (!!dialog.configured && !isEnv) : (!!dialog.storageConfigured && !isEnv)
   const state = isEnv ? { label: "env override", color: theme.warning, background: theme.dangerSurface } : isCustom ? { label: "custom", color: theme.success, background: theme.successSurface } : { label: "default", color: theme.muted, background: theme.surface }
   const [pendingMigrate, setPendingMigrate] = useState<{ scope: "files" | "storage"; path: string } | null>(null)
+  useEffect(() => {
+    // Let ChatApp hand Escape to this prompt instead of leaving the panel.
+    onMigrationPromptChange?.(pendingMigrate !== null)
+    return () => onMigrationPromptChange?.(false)
+  }, [pendingMigrate, onMigrationPromptChange])
   useEffect(() => { setPendingMigrate(null); setDialogDraft(current) }, [scope, dialog.filesDir, dialog.storageDir])
   const selectScope = (next: "files" | "storage") => { if (next !== scope) setScope(next) }
   const requestSave = (path: string) => {
