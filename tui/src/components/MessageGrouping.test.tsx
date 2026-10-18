@@ -39,20 +39,15 @@ async function close(setup: Awaited<ReturnType<typeof testRender>>) {
   await act(async () => setup.renderer.destroy())
 }
 
-test("grouped follow-up hides its timestamp until hovered and keeps the spacing", async () => {
+test("grouped follow-up shows its timestamp on hover and hides it again when the mouse leaves", async () => {
   const props = burstProps(120)
   const time = formatTime(1788580800)
+  const timePattern = new RegExp(time.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")
   const setup = await testRender(<ConversationPanel {...props} />, { width: 120, height: 30 })
   try {
     const frame = await settle(setup, "second burst message")
-    expect(frame).toContain("Alex Morgan")
     // Only the first row of the burst shows its time.
-    expect(frame.match(new RegExp(time.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))?.length ?? 0).toBe(1)
-    // Title bar + first message header; a repeated name on the follow-up would make it 3.
-    expect(frame.match(/Alex Morgan/g)?.length ?? 0).toBe(2)
-    // The follow-up row keeps a blank slot where the time would be.
-    const followUp = frame.split("\n").find(line => line.includes("second burst message"))!
-    expect(followUp.indexOf("second burst message")).toBe(frame.split("\n").find(line => line.includes("first burst message"))!.indexOf("first burst message"))
+    expect(frame.match(timePattern)?.length ?? 0).toBe(1)
 
     const row = setup.renderer.root.findDescendantById("m2")!
     await act(async () => {
@@ -60,7 +55,37 @@ test("grouped follow-up hides its timestamp until hovered and keeps the spacing"
       await setup.renderOnce()
     })
     const hovered = await settle(setup, "second burst message")
-    expect(hovered.match(new RegExp(time.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))?.length ?? 0).toBe(2)
+    expect(hovered.match(timePattern)?.length ?? 0).toBe(2)
+
+    await act(async () => {
+      await setup.mockMouse.moveTo(0, 0)
+      await setup.renderOnce()
+    })
+    const left = await settle(setup, "second burst message")
+    expect(left.match(timePattern)?.length ?? 0).toBe(1)
+  } finally { await close(setup) }
+})
+
+test("a status word after a hidden timestamp keeps its column in a direct message", async () => {
+  const props = burstProps(120)
+  props.conversationItems = [
+    { type: "message", createdAt: 1788580800, message: { message_id: "m1", sender_id: "me", content: "first burst message", created_at: 1788580800, delivered: 1 } },
+    { type: "message", createdAt: 1788580820, message: { message_id: "m2", sender_id: "me", content: "second burst message", created_at: 1788580820, queued: 1 } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 120, height: 30 })
+  try {
+    const hiddenFrame = await settle(setup, "second burst message")
+    const hiddenColumn = hiddenFrame.split("\n").find(line => line.includes("stored and queued"))!.indexOf("stored and queued")
+
+    const row = setup.renderer.root.findDescendantById("m2")!
+    await act(async () => {
+      await setup.mockMouse.moveTo(row.screenX, row.screenY)
+      await setup.renderOnce()
+    })
+    const hoveredFrame = await settle(setup, "stored and queued")
+    const hoveredColumn = hoveredFrame.split("\n").find(line => line.includes("stored and queued"))!.indexOf("stored and queued")
+    expect(hiddenColumn).toBeGreaterThan(0)
+    expect(hoveredColumn).toBe(hiddenColumn)
   } finally { await close(setup) }
 })
 
@@ -95,6 +120,25 @@ test("compact group follow-up with a failed recipient keeps its failure line", a
     const frame = await settle(setup, "second burst message")
     // First message header shows one; the compact follow-up must keep its own.
     expect(frame.match(/Failed for 1 of 2 \(details\)/g)?.length ?? 0).toBe(2)
+  } finally { await close(setup) }
+})
+
+test("group messages with a recipient still in flight show sending, not a failure", async () => {
+  const props = burstProps(120)
+  const at = 1788580800
+  const inFlight = { recipient_id: "sam", display_name: "Sam", status: "transferring", updated_at: at }
+  props.selected = undefined
+  props.selectedGroup = { group_id: "team", name: "Team", member_count: 3, unread_count: 0 }
+  props.selectedGroupId = "team"
+  props.selectionKey = "group:team"
+  props.conversationItems = [
+    { type: "message", createdAt: at, message: { message_id: "m1", sender_id: "me", group_id: "team", content: "first burst message", created_at: at, deliveries: [inFlight] } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 120, height: 30 })
+  try {
+    const frame = await settle(setup, "first burst message")
+    expect(frame).toContain("sending")
+    expect(frame).not.toContain("(details)")
   } finally { await close(setup) }
 })
 

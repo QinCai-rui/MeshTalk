@@ -7,7 +7,7 @@ import { useTimeline } from "@opentui/react"
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme, presenceIndicator } from "../chatTheme"
-import { clipTextToWidth, computeRenderTypes, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryFailureSummary, groupRowMarginBottom, inlineFriendActions, isImageFile, isMuteActive, MAX_MESSAGE_BYTES, normalizeDeliveryStatus, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
+import { clipTextToWidth, computeRenderTypes, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryStatusSummary, groupRowMarginBottom, inlineFriendActions, isImageFile, isMuteActive, MAX_MESSAGE_BYTES, normalizeDeliveryStatus, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
 import { renderMentionedContent, payloadMentions, segmentMentionedContent, splitMentionBody, parseInlineMarkdown, type MentionCandidate, type MentionBodyBlock } from "../mentions"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
 import { MarqueeText } from "./MarqueeText"
@@ -142,7 +142,7 @@ function replyTargetForItem(item: ConversationItem): ReplyTarget {
     : { id: item.file.file_id, senderId: item.file.sender_id, label: `Attachment: ${item.file.filename}`, groupId: item.file.group_id ?? undefined, kind: "file" }
 }
 
-// Follow-up rows keep the time's width as blank space so the text doesn't shift when the time appears.
+// Hidden times keep their width as blank space, so a status word after the time on the same line does not move when the time appears on hover.
 function rowTimeLabel(timestamp: number, visible: boolean): string {
   const time = formatTime(timestamp)
   return visible ? `${time} ` : `${" ".repeat(time.length)} `
@@ -197,6 +197,7 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
   const attachments = files.length ? files : [file]
   const isBatch = attachments.length > 1
   const fileDeliveries = fileDeliveriesById.get(file.file_id) ?? []
+  const fileDeliveryStatus = groupDeliveryStatusSummary(fileDeliveries)
   const [now, setNow] = useState(() => Date.now() / 1000)
   const nextRetryAt = Math.min(...attachments
     .filter((attachment) => attachment.status === "sent" && attachment.awaiting_ack_at)
@@ -220,17 +221,18 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
           {!isBatch && singleRetryable && retryEnabled && <span fg={theme.text}> · </span>}
         </text>
         {!isBatch && singleRetryable && retryEnabled && <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></HoverHighlight>}
-        {!isBatch && isLocal && selectedGroup && groupDeliveryFailureSummary(fileDeliveries) && <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries, file.file_id) } }}><text fg={theme.danger}>{groupDeliveryFailureSummary(fileDeliveries)} <u>(details)</u></text></HoverHighlight>}
+        {!isBatch && isLocal && selectedGroup && fileDeliveryStatus && <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries, file.file_id) } }}><text fg={fileDeliveryStatus.failed ? theme.danger : theme.muted}>{fileDeliveryStatus.text}{fileDeliveryStatus.failed && <> <u>(details)</u></>}</text></HoverHighlight>}
         {!isBatch && headerCaption ? <text wrapMode="word">{headerCaption}</text> : null}
         {attachments.map((attachment) => {
           const unavailable = isLocalFileMissing(attachment.file_path) && !["queued", "transferring", "receiving"].includes(attachment.status)
           const attachmentDeliveries = fileDeliveriesById.get(attachment.file_id) ?? []
+          const attachmentDeliveryStatus = groupDeliveryStatusSummary(attachmentDeliveries)
           const attachmentRetryable = isLocal && retryableStatus(attachment.status, attachment.awaiting_ack_at)
           return <box key={attachment.file_id} style={{ flexDirection: "column" }}>
             <text wrapMode="word"><span fg={theme.accent}>{attachment.filename}</span><span fg={theme.muted}> · {(attachment.file_size / 1024).toFixed(1)} KiB{attachments.length > 1 ? fileStatusLabel(attachment.status) : ""}</span>{isBatch && attachmentRetryable && retryEnabled ? <span fg={theme.text}> · </span> : null}</text>
             {isBatch && attachment.caption ? <text wrapMode="word">{attachment.caption}</text> : null}
             {isBatch && attachmentRetryable && retryEnabled ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(attachment.file_id) } }}><text fg={theme.text}><u>Retry</u></text></HoverHighlight> : null}
-            {isBatch && isLocal && selectedGroup && groupDeliveryFailureSummary(attachmentDeliveries) ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(attachmentDeliveries, attachment.file_id) } }}><text fg={theme.danger}>{groupDeliveryFailureSummary(attachmentDeliveries)} <u>(details)</u></text></HoverHighlight> : null}
+            {isBatch && isLocal && selectedGroup && attachmentDeliveryStatus ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(attachmentDeliveries, attachment.file_id) } }}><text fg={attachmentDeliveryStatus.failed ? theme.danger : theme.muted}>{attachmentDeliveryStatus.text}{attachmentDeliveryStatus.failed && <> <u>(details)</u></>}</text></HoverHighlight> : null}
             {unavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
             {!unavailable && attachment.file_path && isImageFile(attachment.filename) ? <ImageAttachment filePath={attachment.file_path} filename={attachment.filename} protocol={imageProtocol} expectedImage scrollboxRef={handlers.current.scrollboxRef} maxWidth={imageMaxWidth} maxHeight={imageMaxHeight} version={attachment.completed_at ?? attachment.status} onOpen={() => handlers.current.openImage(attachment)} /> : null}
           </box>
@@ -273,6 +275,7 @@ type MessageRowProps = {
 
 const ConversationMessageRow = memo(function ConversationMessageRow({ message, isLocal, isSystem, senderName, renderedContent, bodyBlocks, mentioned, replyTarget, replySender, replyContent, replySnippet, selectedRow, isCompact, marginBottom, unreadHighlightStartedAt, replyHighlightStartedAt, replyHighlightGeneration, selectedGroup, delivered, blocked, queued, failed, pending, showReceived, messageSyntaxStyle, pendingMessageSyntaxStyle, messageRefs, handlers }: MessageRowProps) {
   const [rowHovered, setRowHovered] = useState(false)
+  const messageDeliveryStatus = groupDeliveryStatusSummary(message.deliveries)
   const markdown = useMemo(() => <markdown content={renderedContent} syntaxStyle={pending ? pendingMessageSyntaxStyle : messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />, [messageSyntaxStyle, pendingMessageSyntaxStyle, pending, renderedContent])
   const rowBackground = replyHighlightStartedAt ? undefined : selectedRow ? theme.selected : mentioned ? theme.mention : undefined
   // Still-sending rows render greyed out and italic per issue #220. The
@@ -290,9 +293,9 @@ const ConversationMessageRow = memo(function ConversationMessageRow({ message, i
           {isLocal && !isSystem && !selectedGroup && (!isCompact || pending || blocked || failed || queued) && <span fg={pending ? theme.muted : blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{pending ? <i>sending…</i> : blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
           {showReceived && <span fg={theme.muted}> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
         </text>
-        {isLocal && !isSystem && selectedGroup && (pending || groupDeliveryFailureSummary(message.deliveries)) && (pending
+        {isLocal && !isSystem && selectedGroup && (pending || messageDeliveryStatus) && (pending
           ? <text fg={theme.muted}><i>sending…</i></text>
-          : <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.danger}>{groupDeliveryFailureSummary(message.deliveries)} <u>(details)</u></text></HoverHighlight>)}
+          : <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(message.deliveries ?? []) } }}><text fg={messageDeliveryStatus?.failed ? theme.danger : theme.muted}>{messageDeliveryStatus?.text}{messageDeliveryStatus?.failed && <> <u>(details)</u></>}</text></HoverHighlight>)}
         {message.reply_to_message_id && <HoverHighlight disabled={!replyTarget} onMouseDown={replyTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); const target = replyTargetForItem(replyTarget); handlers.current.clearReplyTarget(); handlers.current.highlightReplyTarget(target.id); handlers.current.setScrollFocused(true); handlers.current.scrollboxRef.current?.scrollChildIntoView(target.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></HoverHighlight>}
         {!bodyBlocks ? (
           markdown
@@ -724,7 +727,7 @@ senderName={selectedGroup ? groupMemberNames.get(file.sender_id) ?? peerNames.ge
           const unread = !isLocal ? unreadMessageStates[message.message_id] : undefined
           const replyHighlightStartedAt = replyHighlight?.id === message.message_id ? replyHighlight.startedAt : undefined
           const replyHighlightGenerationForRow = replyHighlight?.id === message.message_id ? replyHighlight.generation : undefined
-           const selectedRow = scrollFocused && selectedReplyTargetId === message.message_id
+   const selectedRow = scrollFocused && selectedReplyTargetId === message.message_id
            const unreadHighlightStartedAt = unread?.visibleAt !== undefined && !replyHighlightStartedAt && !selectedRow ? unread.visibleAt : undefined
            const isSystem = Boolean(selectedGroup && message.kind && message.kind !== "message" && message.kind !== "text")
            const senderName = selectedGroup ? groupMemberNames.get(message.sender_id) ?? peerNames.get(message.sender_id) ?? "Unknown member" : selected?.display_name ?? "Unknown member"

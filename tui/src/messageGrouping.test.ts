@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import {
   computeRenderTypes,
   dayKey,
-  groupDeliveryFailureSummary,
+  groupDeliveryStatusSummary,
   groupRowMarginBottom,
   isSystemMessage,
 } from "./utils";
@@ -204,12 +204,14 @@ test("isSystemMessage matches the renderer's group-gated check", () => {
   expect(isSystemMessage({}, true)).toBe(false);
 });
 
-test("groupDeliveryFailureSummary reports only failed recipients", () => {
+test("groupDeliveryStatusSummary shows failures and in-flight sends, and nothing for routine states", () => {
   const at = 1_000_000;
   const delivery = (status: string) => ({ recipient_id: "bob", display_name: "Bob", status, updated_at: at });
-  expect(groupDeliveryFailureSummary([])).toBeUndefined();
-  expect(groupDeliveryFailureSummary([delivery("delivered"), delivery("sent")])).toBeUndefined();
-  expect(groupDeliveryFailureSummary([delivery("delivered"), delivery("queued")])).toBeUndefined();
-  expect(groupDeliveryFailureSummary([delivery("delivered"), delivery("failed")])).toBe("Failed for 1 of 2");
-  expect(groupDeliveryFailureSummary([delivery("completed"), delivery("unavailable"), delivery("blocked")])).toBe("Failed for 2 of 3");
+  expect(groupDeliveryStatusSummary([])).toBeUndefined();
+  expect(groupDeliveryStatusSummary([delivery("delivered"), delivery("sent")])).toBeUndefined();
+  expect(groupDeliveryStatusSummary([delivery("delivered"), delivery("queued")])).toBeUndefined();
+  expect(groupDeliveryStatusSummary([delivery("delivered"), delivery("failed")])).toEqual({ text: "Failed for 1 of 2", failed: true });
+  expect(groupDeliveryStatusSummary([delivery("completed"), delivery("unavailable"), delivery("blocked")])).toEqual({ text: "Failed for 2 of 3", failed: true });
+  expect(groupDeliveryStatusSummary([delivery("completed"), delivery("transferring")])).toEqual({ text: "sending", failed: false });
+  expect(groupDeliveryStatusSummary([delivery("receiving"), delivery("failed")])).toEqual({ text: "Failed for 1 of 2", failed: true });
 });

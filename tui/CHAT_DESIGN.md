@@ -37,7 +37,8 @@ its existing UI.
   image previews, selection, scrolling, and unread highlights. A follow-up in a burst
   from the same sender hides its time until the row is hovered or selected, and keeps
   that space blank so text stays aligned. Group rows show a delivery line only when a
-  recipient failed; queued and delivered states stay quiet. Connection/delivery
+  recipient failed (`Failed for N of M (details)`, in red) or is still sending
+  (`sending`, in muted text); queued and delivered states stay quiet. Connection/delivery
   warnings remain outside the scrolling history. Rendezvous, capability, offline,
   and friend-request warnings pulse between readable amber tones when flashing is
   enabled; Accessibility settings can keep them static.

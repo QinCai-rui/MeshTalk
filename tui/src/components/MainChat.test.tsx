@@ -749,7 +749,6 @@ test("delivery details are shown for group messages, not direct messages", async
   const groupMessage = groupProps.conversationItems[1]!
   if (groupMessage.type !== "message") throw new Error("expected message")
   groupMessage.message.group_id = group.group_id
-  groupMessage.message.deliveries = [{ recipient_id: "alex", display_name: "Alex Morgan", status: "delivered", updated_at: 1788580861 }]
   groupMessage.message.deliveries = [{ recipient_id: "alex", display_name: "Alex Morgan", status: "failed", updated_at: 1788580861 }]
   const groupSetup = await testRender(<ConversationPanel {...groupProps} />, { width: 80, height: 26 })
   try {
@@ -758,7 +757,7 @@ test("delivery details are shown for group messages, not direct messages", async
   } finally { await close(groupSetup) }
 })
 
-test("group file rows count completed deliveries as delivered", async () => {
+test("group file rows show a failure count only for failed recipients", async () => {
   const props = panelProps(80)
   props.selected = undefined
   props.selectedGroup = group
@@ -785,7 +784,7 @@ test("group file rows count completed deliveries as delivered", async () => {
   } finally { await close(setup) }
 })
 
-test("synthesized file deliveries keep failed distinct from unavailable", async () => {
+test("synthesized file deliveries count an unavailable recipient as a failure", async () => {
   const props = panelProps(80)
   props.selected = undefined
   props.selectedGroup = group
