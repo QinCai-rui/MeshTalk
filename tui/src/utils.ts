@@ -136,8 +136,11 @@ function groupingIsSystem(item: ConversationItem, isGroup: boolean): boolean {
   return item.type === "message" && isSystemMessage(item.message, isGroup);
 }
 
-export function groupDeliveriesNeedAttention(deliveries: GroupDelivery[] = []): boolean {
-  return deliveries.some((delivery) => delivery.status !== "delivered" && delivery.status !== "sent");
+const FAILED_DELIVERY_STATUSES = new Set(["failed", "blocked", "unavailable"]);
+
+export function groupDeliveryFailureSummary(deliveries: GroupDelivery[] = []): string | undefined {
+  const failed = deliveries.filter((delivery) => FAILED_DELIVERY_STATUSES.has(normalizeDeliveryStatus(delivery.status))).length;
+  return failed ? `Failed for ${failed} of ${deliveries.length}` : undefined;
 }
 
 export function groupRowMarginBottom(renderTypes: readonly RenderType[], index: number): 0 | 1 {

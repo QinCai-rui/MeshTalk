@@ -7,7 +7,7 @@ import { useTimeline } from "@opentui/react"
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { ConversationItem, FileTransfer, Group, GroupDelivery, GroupMember, ImageProtocol, Message, Peer, ReplyTarget, UnreadMessageState } from "../types"
 import { chatTheme as theme, presenceIndicator } from "../chatTheme"
-import { clipTextToWidth, computeRenderTypes, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveriesNeedAttention, groupDeliveryLabel, groupRowMarginBottom, inlineFriendActions, isImageFile, isMuteActive, MAX_MESSAGE_BYTES, normalizeDeliveryStatus, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
+import { clipTextToWidth, computeRenderTypes, dayKey, formatDateSeparator, formatDateTime, formatTime, formatTimeMinute, getComposerHeight, groupDeliveryFailureSummary, groupRowMarginBottom, inlineFriendActions, isImageFile, isMuteActive, MAX_MESSAGE_BYTES, normalizeDeliveryStatus, peerFriendState, peerFriendStatusText, peerPresence, transportName, unreadMessageBackground, UNREAD_MESSAGE_FADE_MS, type InlineFriendAction } from "../utils"
 import { renderMentionedContent, payloadMentions, segmentMentionedContent, splitMentionBody, parseInlineMarkdown, type MentionCandidate, type MentionBodyBlock } from "../mentions"
 import { ImageAttachment, isLocalFileMissing, notifyImageViewportChanged } from "./ImageAttachment"
 import { MarqueeText } from "./MarqueeText"
@@ -213,7 +213,7 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
           {!isBatch && singleRetryable && retryEnabled && <span fg={theme.text}> · </span>}
         </text>
         {!isBatch && singleRetryable && retryEnabled && <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(file.file_id) } }}><text fg={theme.text}><u>Retry</u></text></HoverHighlight>}
-        {!isBatch && isLocal && selectedGroup && (!isCompact || groupDeliveriesNeedAttention(fileDeliveries)) && <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries, file.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(fileDeliveries)} <u>(click for details)</u></text></HoverHighlight>}
+        {!isBatch && isLocal && selectedGroup && groupDeliveryFailureSummary(fileDeliveries) && <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(fileDeliveries, file.file_id) } }}><text fg={theme.danger}>{groupDeliveryFailureSummary(fileDeliveries)} <u>(details)</u></text></HoverHighlight>}
         {!isBatch && headerCaption ? <text wrapMode="word">{headerCaption}</text> : null}
         {attachments.map((attachment) => {
           const unavailable = isLocalFileMissing(attachment.file_path) && !["queued", "transferring", "receiving"].includes(attachment.status)
@@ -223,7 +223,7 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
             <text wrapMode="word"><span fg={theme.accent}>{attachment.filename}</span><span fg={theme.muted}> · {(attachment.file_size / 1024).toFixed(1)} KiB{attachments.length > 1 ? fileStatusLabel(attachment.status) : ""}</span>{isBatch && attachmentRetryable && retryEnabled ? <span fg={theme.text}> · </span> : null}</text>
             {isBatch && attachment.caption ? <text wrapMode="word">{attachment.caption}</text> : null}
             {isBatch && attachmentRetryable && retryEnabled ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.onRetryFile?.(attachment.file_id) } }}><text fg={theme.text}><u>Retry</u></text></HoverHighlight> : null}
-            {isBatch && isLocal && selectedGroup ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(attachmentDeliveries, attachment.file_id) } }}><text fg={theme.muted}>{groupDeliveryLabel(attachmentDeliveries)} <u>(click for details)</u></text></HoverHighlight> : null}
+            {isBatch && isLocal && selectedGroup && groupDeliveryFailureSummary(attachmentDeliveries) ? <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(attachmentDeliveries, attachment.file_id) } }}><text fg={theme.danger}>{groupDeliveryFailureSummary(attachmentDeliveries)} <u>(details)</u></text></HoverHighlight> : null}
             {unavailable ? <text fg={theme.danger}>File unavailable: not found or deleted locally</text> : null}
             {!unavailable && attachment.file_path && isImageFile(attachment.filename) ? <ImageAttachment filePath={attachment.file_path} filename={attachment.filename} protocol={imageProtocol} expectedImage scrollboxRef={handlers.current.scrollboxRef} maxWidth={imageMaxWidth} maxHeight={imageMaxHeight} version={attachment.completed_at ?? attachment.status} onOpen={() => handlers.current.openImage(attachment)} /> : null}
           </box>
@@ -282,9 +282,9 @@ const ConversationMessageRow = memo(function ConversationMessageRow({ message, i
           {isLocal && !isSystem && !selectedGroup && (!isCompact || pending || blocked || failed || queued) && <span fg={pending ? theme.muted : blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{pending ? <i>sending…</i> : blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
           {showReceived && <span fg={theme.muted}> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}
         </text>
-        {isLocal && !isSystem && selectedGroup && (!isCompact || pending || groupDeliveriesNeedAttention(message.deliveries)) && (pending
+        {isLocal && !isSystem && selectedGroup && (pending || groupDeliveryFailureSummary(message.deliveries)) && (pending
           ? <text fg={theme.muted}><i>sending…</i></text>
-          : <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.muted}>{groupDeliveryLabel(message.deliveries)} <u>(click for details)</u></text></HoverHighlight>)}
+          : <HoverHighlight onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); handlers.current.openDeliveryDetails(message.deliveries ?? []) } }}><text fg={theme.danger}>{groupDeliveryFailureSummary(message.deliveries)} <u>(details)</u></text></HoverHighlight>)}
         {message.reply_to_message_id && <HoverHighlight disabled={!replyTarget} onMouseDown={replyTarget ? (event) => { if (event.button === 0) { event.stopPropagation(); const target = replyTargetForItem(replyTarget); handlers.current.clearReplyTarget(); handlers.current.highlightReplyTarget(target.id); handlers.current.setScrollFocused(true); handlers.current.scrollboxRef.current?.scrollChildIntoView(target.id) } } : undefined}><text fg={theme.accent}>&gt; Replying to {replySender ?? "an unavailable message"}{replySnippet ? <>: <u>{replySnippet}{replyContent && replyContent.replace(/\s+/g, " ").trim().length > 60 ? "..." : ""}</u></> : ""}</text></HoverHighlight>}
         {!bodyBlocks ? (
           markdown

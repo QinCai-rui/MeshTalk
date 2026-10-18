@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import {
   computeRenderTypes,
   dayKey,
-  groupDeliveriesNeedAttention,
+  groupDeliveryFailureSummary,
   groupRowMarginBottom,
   isSystemMessage,
 } from "./utils";
@@ -204,12 +204,12 @@ test("isSystemMessage matches the renderer's group-gated check", () => {
   expect(isSystemMessage({}, true)).toBe(false);
 });
 
-test("groupDeliveriesNeedAttention flags only non-nominal delivery states", () => {
+test("groupDeliveryFailureSummary reports only failed recipients", () => {
   const at = 1_000_000;
   const delivery = (status: string) => ({ recipient_id: "bob", display_name: "Bob", status, updated_at: at });
-  expect(groupDeliveriesNeedAttention([])).toBe(false);
-  expect(groupDeliveriesNeedAttention([delivery("delivered"), delivery("sent")])).toBe(false);
-  expect(groupDeliveriesNeedAttention([delivery("delivered"), delivery("queued")])).toBe(true);
-  expect(groupDeliveriesNeedAttention([delivery("unavailable")])).toBe(true);
-  expect(groupDeliveriesNeedAttention([delivery("pending")])).toBe(true);
+  expect(groupDeliveryFailureSummary([])).toBeUndefined();
+  expect(groupDeliveryFailureSummary([delivery("delivered"), delivery("sent")])).toBeUndefined();
+  expect(groupDeliveryFailureSummary([delivery("delivered"), delivery("queued")])).toBeUndefined();
+  expect(groupDeliveryFailureSummary([delivery("delivered"), delivery("failed")])).toBe("Failed for 1 of 2");
+  expect(groupDeliveryFailureSummary([delivery("completed"), delivery("unavailable"), delivery("blocked")])).toBe("Failed for 2 of 3");
 });

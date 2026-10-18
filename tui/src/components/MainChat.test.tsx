@@ -593,7 +593,8 @@ test("group history keeps system messages, replies, file status, and delivery de
   const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
   try {
     const frame = await settle(setup, "joined the group")
-    for (const label of ["Group / 4 members", "joined the group", "Replying to Alex Morgan", "delivered 1/1", "notes.pdf", "1.0 KiB"]) expect(frame).toContain(label)
+    for (const label of ["Group / 4 members", "joined the group", "Replying to Alex Morgan", "notes.pdf", "1.0 KiB"]) expect(frame).toContain(label)
+    expect(frame).not.toContain("delivered 1/1")
   } finally { await close(setup) }
 })
 
@@ -749,10 +750,11 @@ test("delivery details are shown for group messages, not direct messages", async
   if (groupMessage.type !== "message") throw new Error("expected message")
   groupMessage.message.group_id = group.group_id
   groupMessage.message.deliveries = [{ recipient_id: "alex", display_name: "Alex Morgan", status: "delivered", updated_at: 1788580861 }]
+  groupMessage.message.deliveries = [{ recipient_id: "alex", display_name: "Alex Morgan", status: "failed", updated_at: 1788580861 }]
   const groupSetup = await testRender(<ConversationPanel {...groupProps} />, { width: 80, height: 26 })
   try {
     const frame = await settle(groupSetup, "Looks good")
-    expect(frame).toContain("click for details")
+    expect(frame).toContain("Failed for 1 of 1 (details)")
   } finally { await close(groupSetup) }
 })
 
@@ -779,7 +781,7 @@ test("group file rows count completed deliveries as delivered", async () => {
   const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
   try {
     const frame = await settle(setup, "photo.png")
-    expect(frame).toContain("delivered 2/4 · queued 1 · unavailable 1")
+    expect(frame).toContain("Failed for 1 of 4 (details)")
   } finally { await close(setup) }
 })
 
@@ -797,7 +799,7 @@ test("synthesized file deliveries keep failed distinct from unavailable", async 
   const setup = await testRender(<ConversationPanel {...props} />, { width: 80, height: 32 })
   try {
     const frame = await settle(setup, "broken.zip")
-    expect(frame).toContain("delivered 0/1 · failed 1")
+    expect(frame).toContain("Failed for 1 of 1 (details)")
   } finally { await close(setup) }
 })
 

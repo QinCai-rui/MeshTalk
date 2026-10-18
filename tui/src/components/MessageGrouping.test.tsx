@@ -66,23 +66,42 @@ test("compact follow-up with a warning status keeps its status line", async () =
   } finally { await close(setup) }
 })
 
-test("compact group follow-up with disagreeing deliveries keeps its drill-down", async () => {
+test("compact group follow-up with a failed recipient keeps its failure line", async () => {
   const props = burstProps(120)
   const at = 1788580800
   const delivered = { recipient_id: "bob", display_name: "Bob", status: "delivered", updated_at: at }
+  const failed = { recipient_id: "sam", display_name: "Sam", status: "failed", updated_at: at }
+  props.selected = undefined
+  props.selectedGroup = { group_id: "team", name: "Team", member_count: 3, unread_count: 0 }
+  props.selectedGroupId = "team"
+  props.selectionKey = "group:team"
+  props.conversationItems = [
+    { type: "message", createdAt: at, message: { message_id: "m1", sender_id: "me", group_id: "team", content: "first burst message", created_at: at, deliveries: [delivered, failed] } },
+    { type: "message", createdAt: at + 20, message: { message_id: "m2", sender_id: "me", group_id: "team", content: "second burst message", created_at: at + 20, deliveries: [delivered, failed] } },
+  ]
+  const setup = await testRender(<ConversationPanel {...props} />, { width: 120, height: 30 })
+  try {
+    const frame = await settle(setup, "second burst message")
+    // First message header shows one; the compact follow-up must keep its own.
+    expect(frame.match(/Failed for 1 of 2 \(details\)/g)?.length ?? 0).toBe(2)
+  } finally { await close(setup) }
+})
+
+test("group messages with only queued recipients show no delivery line", async () => {
+  const props = burstProps(120)
+  const at = 1788580800
   const queued = { recipient_id: "sam", display_name: "Sam", status: "queued", updated_at: at }
   props.selected = undefined
   props.selectedGroup = { group_id: "team", name: "Team", member_count: 3, unread_count: 0 }
   props.selectedGroupId = "team"
   props.selectionKey = "group:team"
   props.conversationItems = [
-    { type: "message", createdAt: at, message: { message_id: "m1", sender_id: "me", group_id: "team", content: "first burst message", created_at: at, deliveries: [delivered, { ...delivered, recipient_id: "sam", display_name: "Sam" }] } },
-    { type: "message", createdAt: at + 20, message: { message_id: "m2", sender_id: "me", group_id: "team", content: "second burst message", created_at: at + 20, deliveries: [delivered, queued] } },
+    { type: "message", createdAt: at, message: { message_id: "m1", sender_id: "me", group_id: "team", content: "first burst message", created_at: at, deliveries: [queued] } },
   ]
   const setup = await testRender(<ConversationPanel {...props} />, { width: 120, height: 30 })
   try {
-    const frame = await settle(setup, "second burst message")
-    // First message header shows one; the compact follow-up must keep its own.
-    expect(frame.match(/\(click for details\)/g)?.length ?? 0).toBe(2)
+    const frame = await settle(setup, "first burst message")
+    expect(frame).not.toContain("queued")
+    expect(frame).not.toContain("click for details")
   } finally { await close(setup) }
 })
