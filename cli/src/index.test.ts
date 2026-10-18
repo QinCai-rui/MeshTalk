@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { fileMetadataLines, parseFileArguments, printTransferStarted } from "./index";
+import { fileMetadataLines, parseFileArguments, printTransferStarted, splitMigrateFlags } from "./index";
 
 test("failed batches report errors without success; partial batches retain successes", () => {
   const log = spyOn(console, "log").mockImplementation(() => {});
@@ -41,6 +41,25 @@ describe("file command arguments", () => {
     expect(parseFileArguments(["--caption", "Notes", "--", "--caption"])).toEqual({
       paths: ["--caption"],
       caption: "Notes",
+    });
+  });
+});
+
+describe("storage location arguments", () => {
+  test("rejects conflicting migrate flags", () => {
+    expect(() => splitMigrateFlags(["target", "--migrate", "--no-migrate"])).toThrow("not both");
+  });
+
+  test("separates the path from migrate flags", () => {
+    expect(splitMigrateFlags(["my path", "--migrate"])).toEqual({
+      paths: ["my path"],
+      migrate: true,
+      noMigrate: false,
+    });
+    expect(splitMigrateFlags(["my path", "--no-migrate"])).toEqual({
+      paths: ["my path"],
+      migrate: false,
+      noMigrate: true,
     });
   });
 });

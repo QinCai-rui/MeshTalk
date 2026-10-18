@@ -17,7 +17,7 @@ import {
   useSelectionHandler,
   useTerminalDimensions,
 } from "@opentui/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SpinnerRenderable } from "opentui-spinner";
 extend({ spinner: SpinnerRenderable });
 import { IPCClient, type IPCEvent } from "../../common/ipc-client";
@@ -372,6 +372,10 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
   const clipboard = useRef<ReturnType<typeof createClipboard> | null>(null);
   const dialogAction = useRef(0);
   const dialogBusyRef = useRef(false);
+  const migrationPromptOpenRef = useRef(false);
+  const handleMigrationPromptChange = useCallback((open: boolean) => {
+    migrationPromptOpenRef.current = open;
+  }, []);
   const filePickerOpen = useRef(false);
   const deleteConfirmationTimer = useRef<
     ReturnType<typeof setTimeout> | undefined
@@ -1948,6 +1952,16 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       return;
     }
     if (dialog) {
+      // A child that already consumed the key (e.g. closing an in-dialog
+      // popup) must not also trigger navigation: one Esc exits one layer.
+      if (key.defaultPrevented) return
+      // File Manager owns all of its keys (Esc/Backspace included, including
+      // while searching): handling them here as well would double-fire,
+      // because this listener was registered before the dialog's own.
+      if (dialog.kind === "file-list") return
+      // An open migration prompt owns Escape so it only cancels the prompt,
+      // instead of also closing the files settings panel.
+      if (migrationPromptOpenRef.current && key.name === "escape") return
       if (key.name === "escape" || (key.name === "backspace" && !dialogUsesTextInput(dialog))) {
         key.preventDefault();
         actions.goBack();
@@ -2488,7 +2502,7 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
       : Math.min(32, Math.max(1, height - 4));
   function dialogWidthFor(kind: Dialog["kind"]): number {    if (kind === "image-view" || kind === "file-list") return Math.max(1, width - 2);
     if (kind === "file-confirm") return fileConfirmDialogWidth(width);
-    if (kind === "files-dir" || kind === "file-download") return Math.min(118, Math.max(1, width - 6));
+    if (kind === "files-dir" || kind === "storage-dir" || kind === "file-download") return Math.min(118, Math.max(1, width - 6));
     if (kind === "group-detail")
       return Math.min(78, Math.max(1, width - 2));
     return dialogWidth;
@@ -2775,7 +2789,14 @@ function ChatSession({ splashStyle }: { splashStyle?: SplashStyle | false }) {
           loadDebugInfo={actions.loadDebugInfo}
           loadFiles={actions.loadFiles}
           loadFilesDir={actions.loadFilesDir}
+          loadStorageDir={actions.loadStorageDir}
+          loadFilesSettings={actions.loadFilesSettings}
+          openPath={actions.openPath}
           setFilesDir={actions.setFilesDir}
+          setStorageDir={actions.setStorageDir}
+          clearFilesDir={actions.clearFilesDir}
+          clearStorageDir={actions.clearStorageDir}
+          onMigrationPromptChange={handleMigrationPromptChange}
           sendFile={actions.sendFile}
           confirmPendingFileSend={actions.confirmPendingFileSend}
           downloadFile={actions.downloadFile}

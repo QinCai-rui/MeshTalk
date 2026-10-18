@@ -381,8 +381,19 @@ group member. Offline members with a known encryption key receive queued copies
 that flush on reconnect.
 
 Files are stored in `~/.meshtalk/files/<file_id>/` by default. Override the
-storage directory with the `files_dir` IPC command or `MESHTALK_DATA_DIR`
-environment variable.
+files directory with the `files_dir` IPC command, `files set-dir`, or the
+`MESHTALK_FILES_DIR` environment variable. `MESHTALK_STORAGE_DIR` overrides the
+broader storage location (database, received files, and identity), and
+`MESHTALK_DATA_DIR` selects the data directory that holds `settings.json` and
+runtime files.
+
+The storage location (messages database, received files, and identity) can
+also be changed in Settings » Files & transfers or with `storage set-dir`.
+You are asked whether to transfer existing data: with migration the data is
+copied, verified by SHA-256 and a SQLite integrity check, and only then removed
+from the old location. Stored file paths are re-pointed at the new location,
+and any failure aborts the change, cleans up partial copies, and leaves the old
+location active. Settings and runtime files stay in the data directory.
 
 ## Compile From Source
 

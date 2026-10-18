@@ -29,7 +29,7 @@ export function settingsCategory(kind: Dialog["kind"]) {
   if (kind.includes("friend") || kind.startsWith("block")) return "friends"
   if (kind.startsWith("room")) return "rooms"
   if (kind.startsWith("debug")) return "debug"
-  if (kind.startsWith("file") || kind === "files-dir") return "files"
+  if (kind.startsWith("file") || kind === "files-dir" || kind === "storage-dir" || kind === "files-settings") return "files"
   if (kind.startsWith("update")) return "about"
   return kind
 }

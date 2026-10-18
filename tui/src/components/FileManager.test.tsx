@@ -21,7 +21,6 @@ function props(files: FileTransfer[]): ComponentProps<typeof FileListDialogConte
     peers,
     groups: [{ group_id: "studio", name: "Design studio", member_count: 4, unread_count: 0 }],
     loadFiles: noop,
-    loadFilesDir: noop,
     setDialogDraft: noop,
     showDialog: noop,
     closeDialog: noop,
@@ -53,14 +52,13 @@ test("file manager uses peer names, keeps ID fallbacks, and exposes a wide detai
   }
 })
 
-test("file manager remains usable when narrow and preserves refresh, location, save, and delete keys", async () => {
+test("file manager remains usable when narrow and preserves refresh, save, and delete keys", async () => {
   const directory = join(tmpdir(), `meshtalk-file-manager-${crypto.randomUUID()}`)
   const filePath = join(directory, "notes.txt")
   await mkdir(directory)
   await Bun.write(filePath, "notes")
   const transfer: FileTransfer = { file_id: "local-file", filename: "notes.txt", file_size: 5, sender_id: "peer-alex-long-id", recipient_id: "me", direction: "inbound", status: "completed", file_path: filePath, created_at: 20, completed_at: 21 }
   let refreshed = 0
-  let locations = 0
   let draft = ""
   let shown: Dialog | undefined
   let deleted: FileTransfer | undefined
@@ -68,7 +66,6 @@ test("file manager remains usable when narrow and preserves refresh, location, s
   Object.assign(narrowProps, {
     dialogWidth: 56,
     loadFiles: () => { refreshed += 1 },
-    loadFilesDir: () => { locations += 1 },
     setDialogDraft: (value: string) => { draft = value },
     showDialog: (dialog: Dialog) => { shown = dialog },
     onDeleteFile: (file: FileTransfer) => { deleted = file },
@@ -78,15 +75,20 @@ test("file manager remains usable when narrow and preserves refresh, location, s
     let frame = await settle(setup)
     expect(setup.renderer.root.findDescendantById("file-manager-details")).toBeUndefined()
     expect(frame).toContain("Received from Alex Morgan")
-    expect(frame).toContain("meshtalk-file-manager-")
+    expect(frame).toContain("meshtalk-file-")
     expect(frame).toContain("notes.txt")
+    expect(frame).toContain("<")
+    expect(frame).toContain("File Manager")
 
-    await act(async () => { setup.mockInput.pressKey("r"); setup.mockInput.pressKey("l"); setup.mockInput.pressKey("s") })
+    await act(async () => { setup.mockInput.pressKey("r"); setup.mockInput.pressKey("s") })
     await settle(setup)
     expect(refreshed).toBe(1)
-    expect(locations).toBe(1)
     expect(draft).toContain("copy-notes.txt")
     expect(shown).toMatchObject({ kind: "file-download", fileId: "local-file" })
+    // Back button at top returns to settings, Location/G storage removed
+    expect(frame).toContain("<")
+    expect(frame).not.toContain("ocation")
+    expect(frame).not.toContain("storage")
 
     await act(async () => setup.mockInput.pressKey("d"))
     frame = await settle(setup)
@@ -102,6 +104,234 @@ test("file manager remains usable when narrow and preserves refresh, location, s
   } finally {
     await act(async () => setup.renderer.destroy())
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+async function clickText(setup: Awaited<ReturnType<typeof testRender>>, needle: string, occurrence = 0) {
+  const frame = setup.captureCharFrame()
+  const lines = frame.split("\n")
+  for (let row = 0; row < lines.length; row++) {
+    let col = -1
+    let seen = -1
+    let from = 0
+    while (seen < occurrence) {
+      const at = lines[row]!.indexOf(needle, from)
+      if (at < 0) break
+      seen++
+      col = at
+      from = at + 1
+    }
+    if (seen === occurrence && col >= 0) {
+      await act(async () => {
+        await setup.mockMouse.click(col + 1, row)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      })
+      return
+    }
+  }
+  throw new Error(`text not found for click: ${needle}`)
+}
+
+function filterTransfers(): FileTransfer[] {
+  return [
+    { file_id: "f-alex", filename: "project-notes.pdf", file_size: 2048, sender_id: "peer-alex-long-id", recipient_id: "me", direction: "inbound", status: "completed", created_at: 30 },
+    { file_id: "f-bob", filename: "bob-photo.png", file_size: 512, sender_id: "peer-bob-long-id", recipient_id: "me", direction: "inbound", status: "completed", created_at: 20 },
+    { file_id: "f-group", filename: "team-plan.pdf", file_size: 1024, sender_id: "me", recipient_id: "peer-bob-long-id", direction: "outbound", group_id: "studio", status: "sent", created_at: 10 },
+  ]
+}
+
+function filterPropsWithBob(transfers: FileTransfer[]) {
+  const filterProps = props(transfers)
+  Object.assign(filterProps, {
+    peers: [...peers, { peer_id: "peer-bob-long-id", display_name: "Bob Jones", is_online: 1, last_seen: 0, last_interaction: 0, unread_count: 0, endpoints: [] }],
+  })
+  return filterProps
+}
+
+test("file manager peer picker filters, group picker clears peer", async () => {
+  const setup = await testRender(<FileListDialogContent {...filterPropsWithBob(filterTransfers())} />, { width: 100, height: 28 })
+  try {
+    let frame = await settle(setup)
+    expect(frame).toContain("Peer: All")
+    expect(frame).toContain("Group: All")
+    expect(frame).toContain("project-notes.pdf")
+    expect(frame).toContain("team-plan.pdf")
+    // Clicking Peer opens a picker dialogue instead of cycling.
+    await clickText(setup, "Peer: All")
+    frame = await settle(setup)
+    expect(frame).toContain("Filter by peer")
+    expect(frame).toContain("Alex Morgan")
+    expect(frame).toContain("Bob Jones")
+    // Pick Alex: only their transfer remains, group stays All.
+    await clickText(setup, "Alex Morgan")
+    frame = await settle(setup)
+    expect(frame).toContain("Peer: Alex Morgan")
+    expect(frame).toContain("Group: All")
+    expect(frame).toContain("project-notes.pdf")
+    expect(frame).not.toContain("bob-photo.png")
+    expect(frame).not.toContain("team-plan.pdf")
+    // Picking a group clears the peer filter (never both).
+    await clickText(setup, "Group: All")
+    frame = await settle(setup)
+    expect(frame).toContain("Filter by group")
+    await clickText(setup, "Design studio")
+    frame = await settle(setup)
+    expect(frame).toContain("Group: Design studio")
+    expect(frame).toContain("Peer: All")
+    expect(frame).toContain("team-plan.pdf")
+    expect(frame).not.toContain("project-notes.pdf")
+    // Picking All clears the group filter again (highlight starts on All).
+    await clickText(setup, "Group: Design studio")
+    await settle(setup)
+    await act(async () => { setup.mockInput.pressEnter() })
+    frame = await settle(setup)
+    expect(frame).toContain("Group: All")
+    expect(frame).toContain("project-notes.pdf")
+    expect(frame).toContain("team-plan.pdf")
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
+
+test("backspace returns to the settings panel instead of closing the file manager", async () => {
+  let returned = 0
+  let closed = 0
+  const managerProps = props([])
+  Object.assign(managerProps, {
+    loadFilesSettings: () => { returned += 1 },
+    closeDialog: () => { closed += 1 },
+  })
+  const setup = await testRender(<FileListDialogContent {...managerProps} />, { width: 100, height: 28 })
+  try {
+    await settle(setup)
+    await act(async () => { setup.mockInput.pressBackspace(); await new Promise(resolve => setTimeout(resolve, 50)) })
+    await settle(setup)
+    expect(returned).toBe(1)
+    expect(closed).toBe(0)
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
+
+test("file manager picker supports keyboard select and escape", async () => {
+  const setup = await testRender(<FileListDialogContent {...filterPropsWithBob(filterTransfers())} />, { width: 100, height: 28 })
+  try {
+    await settle(setup)
+    await clickText(setup, "Peer: All")
+    let frame = await settle(setup)
+    expect(frame).toContain("Filter by peer")
+    // Down moves to Alex, Enter confirms without touching the file list.
+    await act(async () => { setup.mockInput.pressArrow("down") })
+    frame = await settle(setup)
+    expect(frame).toContain("> Alex Morgan")
+    await act(async () => { setup.mockInput.pressEnter() })
+    frame = await settle(setup)
+    expect(frame).toContain("Peer: Alex Morgan")
+    expect(frame).not.toContain("Filter by peer")
+    expect(frame).not.toContain("team-plan.pdf")
+    // Escape closes an open picker.
+    await clickText(setup, "Group: All")
+    frame = await settle(setup)
+    expect(frame).toContain("Filter by group")
+    await act(async () => { setup.mockInput.pressEscape() })
+    await settle(setup)
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
+
+test("file manager search narrows by filename phrase", async () => {
+  const transfers: FileTransfer[] = [
+    { file_id: "f-alex", filename: "project-notes.pdf", file_size: 2048, sender_id: "peer-alex-long-id", recipient_id: "me", direction: "inbound", status: "completed", created_at: 30 },
+    { file_id: "f-bob", filename: "bob-photo.png", file_size: 512, sender_id: "peer-bob-long-id", recipient_id: "me", direction: "inbound", status: "completed", created_at: 20 },
+    { file_id: "f-group", filename: "team-plan.pdf", file_size: 1024, sender_id: "me", recipient_id: "peer-bob-long-id", direction: "outbound", group_id: "studio", status: "sent", created_at: 10 },
+  ]
+  const searchProps = props(transfers)
+  Object.assign(searchProps, {
+    peers: [...peers, { peer_id: "peer-bob-long-id", display_name: "Bob Jones", is_online: 1, last_seen: 0, last_interaction: 0, unread_count: 0, endpoints: [] }],
+  })
+  const setup = await testRender(<FileListDialogContent {...searchProps} />, { width: 100, height: 28 })
+  try {
+    await settle(setup)
+    await act(async () => { setup.mockInput.pressKey("/") })
+    await settle(setup)
+    for (const char of "plan") await act(async () => { setup.mockInput.pressKey(char) })
+    const frame = await settle(setup)
+    expect(frame).toContain("team-plan.pdf")
+    expect(frame).not.toContain("project-notes.pdf")
+    expect(frame).not.toContain("bob-photo.png")
+    expect(frame).toContain("1 shown")
+    // Enter blurs but keeps the filter applied.
+    await act(async () => { setup.mockInput.pressEnter() })
+    const blurred = await settle(setup)
+    expect(blurred).toContain("team-plan.pdf")
+    expect(blurred).not.toContain("project-notes.pdf")
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
+
+test("file manager search displays each character live and backspace edits", async () => {
+  const transfers: FileTransfer[] = [
+    { file_id: "f-alex", filename: "project-notes.pdf", file_size: 2048, sender_id: "peer-alex-long-id", recipient_id: "me", direction: "inbound", status: "completed", created_at: 30 },
+    { file_id: "f-group", filename: "team-plan.pdf", file_size: 1024, sender_id: "me", recipient_id: "peer-bob-long-id", direction: "outbound", group_id: "studio", status: "sent", created_at: 10 },
+  ]
+  let shown: Dialog | undefined
+  const liveProps = props(transfers)
+  Object.assign(liveProps, { showDialog: (dialog: Dialog) => { shown = dialog } })
+  const setup = await testRender(<FileListDialogContent {...liveProps} />, { width: 100, height: 28 })
+  try {
+    await settle(setup)
+    await act(async () => { setup.mockInput.pressKey("/") })
+    await settle(setup)
+    // Each keystroke must appear immediately (no one-step display lag).
+    let frame = ""
+    for (const char of "plan") {
+      await act(async () => { setup.mockInput.pressKey(char) })
+      frame = await settle(setup)
+    }
+    expect(frame).toContain("/ plan")
+    expect(frame).toContain("team-plan.pdf")
+    expect(frame).not.toContain("project-notes.pdf")
+    // Backspace deletes a character instead of navigating away.
+    await act(async () => { setup.mockInput.pressBackspace() })
+    frame = await settle(setup)
+    expect(frame).toContain("/ pla")
+    expect(frame).not.toContain("/ plan")
+    expect(shown).toBeUndefined()
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
+
+test("file manager search blurs when clicking elsewhere", async () => {
+  const transfers: FileTransfer[] = [
+    { file_id: "f-alex", filename: "project-notes.pdf", file_size: 2048, sender_id: "peer-alex-long-id", recipient_id: "me", direction: "inbound", status: "completed", created_at: 30 },
+    { file_id: "f-group", filename: "team-plan.pdf", file_size: 1024, sender_id: "me", recipient_id: "peer-bob-long-id", direction: "outbound", group_id: "studio", status: "sent", created_at: 10 },
+  ]
+  let refreshed = 0
+  const blurProps = props(transfers)
+  Object.assign(blurProps, { loadFiles: () => { refreshed += 1 } })
+  const setup = await testRender(<FileListDialogContent {...blurProps} />, { width: 100, height: 28 })
+  try {
+    await settle(setup)
+    await act(async () => { setup.mockInput.pressKey("/") })
+    await settle(setup)
+    for (const char of "plan") await act(async () => { setup.mockInput.pressKey(char) })
+    let frame = await settle(setup)
+    expect(frame).toContain("/ plan")
+    // Clicking the header blurs the field: pressing r refreshes instead of
+    // typing, while the entered filter stays applied.
+    await clickText(setup, "File Manager")
+    frame = await settle(setup)
+    await act(async () => { setup.mockInput.pressKey("r") })
+    frame = await settle(setup)
+    expect(refreshed).toBe(1)
+    expect(frame).toContain("/ plan")
+    expect(frame).toContain("team-plan.pdf")
+    expect(frame).not.toContain("project-notes.pdf")
+  } finally {
+    await act(async () => setup.renderer.destroy())
   }
 })
 
