@@ -438,7 +438,7 @@ async def migrate_files_location(*, db, settings, target: Path) -> dict:
         problems = delete_tree_contents(old_base)
         if problems:
             cleanup_warning = "; ".join(problems[:5])
-    return {"migrated": True, "cleanup_warning": cleanup_warning}
+    return {"migrated": bool(copied), "cleanup_warning": cleanup_warning}
 
 
 async def switch_storage_location(*, db, settings, file_manager, identity, target: Path, migrate: bool) -> dict:
