@@ -1070,7 +1070,8 @@ export function useChatActions(deps: ChatActionsDeps) {
       if (typeof response.cleanup_warning === "string") showStatus(response.cleanup_warning as string)
       showDialog(storageDialogFrom(response))
       if (dialog?.kind === "files-settings") setDialogDraft("")
-      else setDialogDraft(response.files_dir as string)
+      else if (dialog?.kind === "files-dir") setDialogDraft(response.files_dir as string)
+      else setDialogDraft(response.storage_dir as string ?? response.data_dir as string)
     } catch (error) { failDialogAction(action, error) }
     finally { finishDialogAction(action) }
   }

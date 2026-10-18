@@ -1262,15 +1262,15 @@ async def main(debug: bool = False) -> None:
         raw = req.get("path") or req.get("dir") or req.get("location")
         if not isinstance(raw, str) or not raw.strip():
             return {"error": "path required"}
-        target = Path(raw.strip()).expanduser()
+        target = Path(raw.strip()).expanduser().resolve()
+        # Confine local IPC callers to the MeshTalk storage roots: otherwise any
+        # local client could probe the filesystem or pop open arbitrary folders.
+        if not _is_allowed_open_path(target, (settings.storage_dir, settings.files_dir, DATA_DIR)):
+            return {"error": f"Path is outside the MeshTalk storage locations: {target}"}
         # Allow opening the file itself or its directory; resolve to directory
         if not target.exists():
             return {"error": f"Path does not exist: {target}"}
         directory = target if target.is_dir() else target.parent
-        # Confine local IPC callers to the MeshTalk storage roots: otherwise any
-        # local client could probe the filesystem or pop open arbitrary folders.
-        if not _is_allowed_open_path(directory, (settings.storage_dir, settings.files_dir, DATA_DIR)):
-            return {"error": f"Path is outside the MeshTalk storage locations: {directory}"}
         if sys.platform == "win32":
             try:
                 os.startfile(str(directory))  # type: ignore[attr-defined]
@@ -1314,7 +1314,7 @@ async def main(debug: bool = False) -> None:
         }
 
     ipc_handlers = {
-        **desktop_query_handlers(db, identity.peer_id),
+        **desktop_query_handlers(db, identity),
         "desktop_info": handle_desktop_info,
         "desktop_release": handle_desktop_release,
         "send": handle_send,

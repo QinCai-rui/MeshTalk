@@ -165,6 +165,30 @@ test("files-settings landing shows manager button and two sections with independ
   }
 })
 
+test.each(["/srv/meshtalk", undefined])("files-settings default hints follow effective storage (%s)", async (storageDir) => {
+  const current = storageDir ?? "/data"
+  const setup = await testRender(
+    <FilesSettingsContent
+      dialog={{ kind: "files-settings", ...payload(), storageDir, filesDir: `${current}/files` }}
+      dialogHeight={40}
+      dialogBusy={false}
+      loadFiles={noop}
+      setFilesDir={noop}
+      setStorageDir={noop}
+    />,
+    { width: 110, height: 70 },
+  )
+  try {
+    await settle(setup)
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(`Default: ${current}/files`)
+    expect(frame).toContain(`Default: ${current} (database, files, identity).`)
+    if (storageDir) expect(frame).not.toContain("Default: /data")
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
+
 test("files-settings edit file location shows inline editor and keeps storage independent", async () => {
   const setup = await renderFilesSettings(noop, noop, noop, { files: true })
   try {
