@@ -33,8 +33,11 @@ its existing UI.
   capability limits, and delivery state still use words. Selected rows and the active composer also have a plain `>` marker.
 - The header holds the conversation name and connection/state details. Endpoint
   addresses and long relay descriptions simplify when space is limited.
-- History retains Markdown, dates, reply navigation, delivery details, attachments,
-  image previews, selection, scrolling, and unread highlights. Connection/delivery
+- History retains Markdown, dates, reply navigation, delivery failures, attachments,
+  image previews, selection, scrolling, and unread highlights. A follow-up in a burst
+  from the same sender hides its time until the row is hovered or selected, and keeps
+  that space blank so text stays aligned. Group rows show a delivery line only when a
+  recipient failed; queued and delivered states stay quiet. Connection/delivery
   warnings remain outside the scrolling history. Rendezvous, capability, offline,
   and friend-request warnings pulse between readable amber tones when flashing is
   enabled; Accessibility settings can keep them static.

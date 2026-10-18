@@ -142,6 +142,12 @@ function replyTargetForItem(item: ConversationItem): ReplyTarget {
     : { id: item.file.file_id, senderId: item.file.sender_id, label: `Attachment: ${item.file.filename}`, groupId: item.file.group_id ?? undefined, kind: "file" }
 }
 
+// Follow-up rows keep the time's width as blank space so the text doesn't shift when the time appears.
+function rowTimeLabel(timestamp: number, visible: boolean): string {
+  const time = formatTime(timestamp)
+  return visible ? `${time} ` : `${" ".repeat(time.length)} `
+}
+
 function fileStatusColor(status: string) {
   if (status === "completed" || status === "sent") return theme.muted
   if (status === "queued") return theme.warning
@@ -186,6 +192,7 @@ type FileRowProps = {
 }
 
 const ConversationFileRow = memo(function ConversationFileRow({ file, files, fileDeliveriesById, fileUnavailable, isCompact, marginBottom, isLocal, senderName, selectedGroup, selectedPeerName, selectedReplyTargetId, scrollFocused, fileReplyHighlightStartedAt, fileReplyHighlightGeneration, canRetryFile, retryEnabled, imageProtocol, imageMaxWidth, imageMaxHeight, messageRefs, handlers }: FileRowProps) {
+  const [rowHovered, setRowHovered] = useState(false)
   const selectedRow = scrollFocused && selectedReplyTargetId === file.file_id
   const attachments = files.length ? files : [file]
   const isBatch = attachments.length > 1
@@ -203,11 +210,11 @@ const ConversationFileRow = memo(function ConversationFileRow({ file, files, fil
   const singleRetryable = canRetryFile && retryableStatus(file.status, file.awaiting_ack_at)
   const headerCaption = file.caption || attachments.find((attachment) => attachment.caption)?.caption
   return (
-    <HoverHighlight id={file.file_id} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} active={selectedRow || Boolean(fileReplyHighlightStartedAt)} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "file", createdAt: file.created_at, file, allFiles: files }))} style={{ position: "relative", flexDirection: "column", marginBottom, backgroundColor: selectedRow && !fileReplyHighlightStartedAt ? theme.selected : undefined }}>
+    <HoverHighlight id={file.file_id} ref={(node) => { if (node) messageRefs.current[file.file_id] = node; else delete messageRefs.current[file.file_id] }} active={selectedRow || Boolean(fileReplyHighlightStartedAt)} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "file", createdAt: file.created_at, file, allFiles: files }))} onMouseMove={() => setRowHovered(true)} onMouseOut={() => setRowHovered(false)} style={{ position: "relative", flexDirection: "column", marginBottom, backgroundColor: selectedRow && !fileReplyHighlightStartedAt ? theme.selected : undefined }}>
       {fileReplyHighlightStartedAt && <HighlightOverlay key={fileReplyHighlightGeneration} id={`reply-highlight-${file.file_id}`} startedAt={fileReplyHighlightStartedAt} />}
       <box style={{ position: "relative", zIndex: 1, flexDirection: "column" }}>
         <text>
-          <span fg={selectedRow ? theme.accent : theme.muted}>{selectedRow ? "> " : ""}</span><span fg={theme.muted}>{formatTime(file.created_at)} </span>
+          <span fg={selectedRow ? theme.accent : theme.muted}>{selectedRow ? "> " : ""}</span><span fg={theme.muted}>{rowTimeLabel(file.created_at, !isCompact || rowHovered || selectedRow)}</span>
           {!isCompact ? <><span fg={isLocal ? theme.accent : theme.text}>{isLocal ? "You" : selectedGroup ? senderName : selectedPeerName}</span><span fg={theme.muted}> shared an attachment</span></> : null}
           {isLocal && !selectedGroup && (!isCompact || file.status !== "completed" && file.status !== "sent") && <span fg={fileStatusColor(file.status)}>{fileStatusLabel(file.status)}</span>}
           {!isBatch && singleRetryable && retryEnabled && <span fg={theme.text}> · </span>}
@@ -265,6 +272,7 @@ type MessageRowProps = {
 }
 
 const ConversationMessageRow = memo(function ConversationMessageRow({ message, isLocal, isSystem, senderName, renderedContent, bodyBlocks, mentioned, replyTarget, replySender, replyContent, replySnippet, selectedRow, isCompact, marginBottom, unreadHighlightStartedAt, replyHighlightStartedAt, replyHighlightGeneration, selectedGroup, delivered, blocked, queued, failed, pending, showReceived, messageSyntaxStyle, pendingMessageSyntaxStyle, messageRefs, handlers }: MessageRowProps) {
+  const [rowHovered, setRowHovered] = useState(false)
   const markdown = useMemo(() => <markdown content={renderedContent} syntaxStyle={pending ? pendingMessageSyntaxStyle : messageSyntaxStyle} conceal={true} concealCode={true} style={{ width: "100%" }} />, [messageSyntaxStyle, pendingMessageSyntaxStyle, pending, renderedContent])
   const rowBackground = replyHighlightStartedAt ? undefined : selectedRow ? theme.selected : mentioned ? theme.mention : undefined
   // Still-sending rows render greyed out and italic per issue #220. The
@@ -272,12 +280,12 @@ const ConversationMessageRow = memo(function ConversationMessageRow({ message, i
   // the body and status carry the pending treatment.
   const pendingBody = pending && !isSystem
   return (
-    <HoverHighlight id={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} active={Boolean(rowBackground || replyHighlightStartedAt || unreadHighlightStartedAt)} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "message", createdAt: message.created_at, message }))} style={{ position: "relative", width: "100%", flexDirection: "column", marginBottom, backgroundColor: rowBackground }}>
+    <HoverHighlight id={message.message_id} ref={(node) => { if (node) messageRefs.current[message.message_id] = node; else delete messageRefs.current[message.message_id] }} active={Boolean(rowBackground || replyHighlightStartedAt || unreadHighlightStartedAt)} onMouseDown={() => handlers.current.selectReplyTarget(replyTargetForItem({ type: "message", createdAt: message.created_at, message }))} onMouseMove={() => setRowHovered(true)} onMouseOut={() => setRowHovered(false)} style={{ position: "relative", width: "100%", flexDirection: "column", marginBottom, backgroundColor: rowBackground }}>
       {replyHighlightStartedAt && <HighlightOverlay key={replyHighlightGeneration} id={`reply-highlight-${message.message_id}`} startedAt={replyHighlightStartedAt} />}
       {unreadHighlightStartedAt && <HighlightOverlay key={unreadHighlightStartedAt} id={`unread-highlight-${message.message_id}`} startedAt={unreadHighlightStartedAt} />}
       <box style={{ position: "relative", zIndex: 1, width: "100%", flexDirection: "column" }}>
         <text>
-          <span fg={selectedRow ? theme.accent : theme.muted}>{selectedRow ? "> " : ""}</span><span fg={theme.muted}>{formatTime(message.created_at)} </span>
+          <span fg={selectedRow ? theme.accent : theme.muted}>{selectedRow ? "> " : ""}</span><span fg={theme.muted}>{rowTimeLabel(message.created_at, !isCompact || rowHovered || selectedRow)}</span>
           {!isCompact && <span fg={isSystem ? theme.warning : isLocal ? theme.accent : theme.text}>{isSystem ? "System" : isLocal ? "You" : senderName}</span>}
           {isLocal && !isSystem && !selectedGroup && (!isCompact || pending || blocked || failed || queued) && <span fg={pending ? theme.muted : blocked || failed ? theme.danger : queued ? theme.warning : theme.muted}>{pending ? <i>sending…</i> : blocked ? " blocked" : failed ? " disabled" : queued ? " stored and queued" : delivered ? " delivered" : " sent"}</span>}
           {showReceived && <span fg={theme.muted}> ({isLocal ? "delivered at " : "received at "}{formatDateTime(message.received_at!)})</span>}

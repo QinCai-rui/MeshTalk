@@ -738,7 +738,7 @@ test("delivery details are shown for group messages, not direct messages", async
   try {
     const frame = await settle(direct, "Looks good")
     expect(frame).toContain("blocked")
-    expect(frame).not.toContain("click for details")
+    expect(frame).not.toContain("(details)")
   } finally { await close(direct) }
 
   const groupProps = panelProps(80)

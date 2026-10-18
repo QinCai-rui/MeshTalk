@@ -39,17 +39,28 @@ async function close(setup: Awaited<ReturnType<typeof testRender>>) {
   await act(async () => setup.renderer.destroy())
 }
 
-test("grouped follow-up keeps its timestamp but does not repeat the name", async () => {
+test("grouped follow-up hides its timestamp until hovered and keeps the spacing", async () => {
   const props = burstProps(120)
   const time = formatTime(1788580800)
   const setup = await testRender(<ConversationPanel {...props} />, { width: 120, height: 30 })
   try {
     const frame = await settle(setup, "second burst message")
     expect(frame).toContain("Alex Morgan")
-    // Each row keeps an accurate muted timestamp (no per-line names).
-    expect(frame.match(new RegExp(time.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))?.length ?? 0).toBe(2)
+    // Only the first row of the burst shows its time.
+    expect(frame.match(new RegExp(time.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))?.length ?? 0).toBe(1)
     // Title bar + first message header; a repeated name on the follow-up would make it 3.
     expect(frame.match(/Alex Morgan/g)?.length ?? 0).toBe(2)
+    // The follow-up row keeps a blank slot where the time would be.
+    const followUp = frame.split("\n").find(line => line.includes("second burst message"))!
+    expect(followUp.indexOf("second burst message")).toBe(frame.split("\n").find(line => line.includes("first burst message"))!.indexOf("first burst message"))
+
+    const row = setup.renderer.root.findDescendantById("m2")!
+    await act(async () => {
+      await setup.mockMouse.moveTo(row.screenX, row.screenY)
+      await setup.renderOnce()
+    })
+    const hovered = await settle(setup, "second burst message")
+    expect(hovered.match(new RegExp(time.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))?.length ?? 0).toBe(2)
   } finally { await close(setup) }
 })
 
@@ -87,7 +98,7 @@ test("compact group follow-up with a failed recipient keeps its failure line", a
   } finally { await close(setup) }
 })
 
-test("group messages with only queued recipients show no delivery line", async () => {
+test("group messages with only queued recipients show no delivery line or details link", async () => {
   const props = burstProps(120)
   const at = 1788580800
   const queued = { recipient_id: "sam", display_name: "Sam", status: "queued", updated_at: at }
@@ -102,6 +113,6 @@ test("group messages with only queued recipients show no delivery line", async (
   try {
     const frame = await settle(setup, "first burst message")
     expect(frame).not.toContain("queued")
-    expect(frame).not.toContain("click for details")
+    expect(frame).not.toContain("(details)")
   } finally { await close(setup) }
 })
