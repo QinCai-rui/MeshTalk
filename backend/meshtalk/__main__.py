@@ -36,14 +36,11 @@ from .network_monitor import NetworkMonitor, NetworkState
 from .storage import (
     DB_FILENAME,
     STORAGE_ENV_VAR,
-    copy_tree_merge,
-    delete_tree_contents,
     dir_has_content,
     migrate_files_location,
     same_location,
     switch_storage_location,
     validate_target_dir,
-    verify_tree_copy,
 )
 
 logger = logging.getLogger("meshtalk")
@@ -1130,43 +1127,21 @@ async def main(debug: bool = False) -> None:
                 payload = _storage_payload()
                 payload["note"] = "Files location reset to default. MESHTALK_FILES_DIR still overrides it."
                 return payload
-            old_base = settings._normalize_dir(settings._files_dir)
             target = settings.storage_dir / "files"
-            if same_location(old_base, target):
-                settings.clear_files_dir()
-                return _storage_payload()
-            copied: list[str] = []
-            if dir_has_content(old_base):
-                if await db.has_active_file_transfers():
-                    return {"error": "A file transfer is in progress; wait for it to finish before resetting."}
-                try:
-                    copied = copy_tree_merge(old_base, target)
-                except Exception as exc:
-                    return {"error": f"Could not copy files to '{target}': {exc}. Location unchanged."}
-                problems = verify_tree_copy(old_base, target, copied)
-                if not problems and await db.has_active_file_transfers():
-                    problems = ["a file transfer started during the migration"]
-                if problems:
-                    for rel in reversed(copied):
-                        try:
-                            (target / rel).unlink()
-                        except OSError:
-                            pass
-                    detail = "; ".join(problems[:5])
-                    return {"error": f"Verification failed ({detail}). Location unchanged."}
+            try:
+                result = await migrate_files_location(db=db, settings=settings, target=target)
+            except RuntimeError as exc:
+                return {"error": str(exc)}
+            # The default follows storage_dir, so drop the explicit override
+            # written by the migration.
             settings.clear_files_dir()
-            if copied:
-                # Re-root absolute transfer paths before the old files vanish.
-                await db.rewrite_file_paths(old_base, target)
-            # Files are now at default location; remove old after successful copy
-            if dir_has_content(old_base):
-                problems = delete_tree_contents(old_base)
-                payload = _storage_payload()
-                payload["migrated"] = True
-                if problems:
-                    payload["cleanup_warning"] = f"Location reset, but some old files could not be deleted: {'; '.join(problems[:5])}"
-                return payload
-            return _storage_payload()
+            payload = _storage_payload()
+            payload["migrated"] = result["migrated"]
+            if result["cleanup_warning"]:
+                payload["cleanup_warning"] = (
+                    f"Location reset, but some old files could not be deleted: {result['cleanup_warning']}"
+                )
+            return payload
         migrate = _wants_migrate(req)
         try:
             target = validate_target_dir(new_path, base=settings.path.parent)
