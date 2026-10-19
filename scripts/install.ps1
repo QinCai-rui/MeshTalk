@@ -16,7 +16,7 @@
 .PARAMETER Yes
     Auto-answer yes to prompts
 .PARAMETER CloseRunning
-    Allow the helper to close verified running MeshTalk processes. Not implied by Yes; requires a supported helper.
+    Skip the close question and allow closing running MeshTalk instances. Not implied by Yes; requires a supported helper.
 .PARAMETER InstallDir
     Use a specific installation directory
 .PARAMETER Uninstall
@@ -139,7 +139,7 @@ Options:
   -Method <auto|gh|webrequest>  Download via auto, gh, or webrequest
   -NonInteractive          Disable prompts; use stable release and default dir
   -Yes                     Auto-answer yes to prompts
-  -CloseRunning            Allow the helper to close verified running MeshTalk processes
+  -CloseRunning            Skip the close question; allow closing running MeshTalk instances
                            Not implied by -Yes; requires a supported helper
   -InstallDir <dir>        Use a specific installation directory
   -Uninstall               Remove an existing installation
@@ -946,6 +946,37 @@ function Test-InstallProtocol {
     }
 }
 
+function Confirm-InstallClosePermission {
+    param([string]$Launcher)
+    if ($script:CloseRunningFlag -or $script:NonInteractive) { return }
+
+    try {
+        $status = @(& $Launcher --install-status --install-dir $script:InstallDirSel 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $status.Count -ne 1 -or ($status[0] -cne 'running' -and $status[0] -cne 'stopped')) {
+            throw 'Invalid installation status.'
+        }
+    } catch {
+        throw 'Unable to inspect running MeshTalk processes. Installed files were left unchanged.'
+    }
+    if ($status[0] -ceq 'stopped') { return }
+
+    Write-Host 'Closing MeshTalk interrupts active sessions and file transfers.'
+    $previousAssumeYes = $script:AssumeYes
+    $confirmed = $false
+    try {
+        $script:AssumeYes = $false
+        $confirmed = Read-Confirmation -Prompt 'MeshTalk is running. Close all instances and continue?' -Default 'n'
+    } catch {
+        $confirmed = $false
+    } finally {
+        $script:AssumeYes = $previousAssumeYes
+    }
+    if (-not $confirmed) {
+        throw 'Cancelled. Installed files were left unchanged.'
+    }
+    $script:CloseRunningFlag = $true
+}
+
 function Install-Extracted {
     param([string]$ExtractDir)
     $launcher = Join-Path $ExtractDir $script:LauncherName
@@ -956,6 +987,7 @@ function Install-Extracted {
         }
     }
     if (Test-InstallProtocol -Launcher $launcher) {
+        Confirm-InstallClosePermission -Launcher $launcher
         $helperArgs = @('--install-from', $ExtractDir, '--install-dir', $script:InstallDirSel)
         if ($script:CloseRunningFlag) { $helperArgs += '--close-running' }
         & $launcher @helperArgs
@@ -1135,6 +1167,7 @@ function Uninstall-ManagedReleases {
             & chmod u+rx $helper
             if ($LASTEXITCODE -ne 0) { throw 'Unable to make the temporary uninstall helper executable.' }
         }
+        Confirm-InstallClosePermission -Launcher $helper
         $helperArgs = @('--uninstall-releases', '--install-dir', $script:InstallDirSel)
         if ($script:CloseRunningFlag) { $helperArgs += '--close-running' }
         & $helper @helperArgs

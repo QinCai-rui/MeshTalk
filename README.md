@@ -131,8 +131,10 @@ Unused older releases are deleted automatically. A release stays available
 while a launcher or backend still uses it; cleanup retries during later launches
 and while MeshTalk is running. Shared Windows folders keep their exact executable
 paths and refresh the forwarding executable after all instances stop, without
-moving unrelated files. The installer offers explicit `--close-running` (Bash)
-or `-CloseRunning` (PowerShell) permission; generic yes flags do not imply it.
+moving unrelated files. If MeshTalk is running, the installer asks to close its
+instances and continue. Ordinary interactive updates need no extra flag.
+For unattended installs, `--close-running` in Bash or `-CloseRunning` in
+PowerShell skips that question. Generic yes flags do not imply close permission.
 On macOS and Linux, handoff preserves the terminal session.
 Identity, messages, and settings are not moved or deleted by updates.
 See [update installation and recovery](docs/UPDATES.md) for migration details.

@@ -137,10 +137,21 @@ the new update guarantees retroactively.
 
 ### Closing MeshTalk automatically
 
-Pass `--close-running` to the Bash installer or `-CloseRunning` to the PowerShell
-installer to explicitly permit closing MeshTalk for installation or uninstall.
-Generic `--yes`/`-Yes` does **not** grant this permission. Active sessions and file
-transfers will be interrupted.
+When MeshTalk is running, an interactive installer asks:
+
+```text
+MeshTalk is running. Close all instances and continue?
+```
+
+Answer yes to let the installer close MeshTalk and continue. No flag is needed.
+Declining, an empty answer, or unavailable input cancels the operation without
+changing installed files. A stopped installation does not show this question.
+
+For unattended installation or uninstall, `--close-running` in Bash or
+`-CloseRunning` in PowerShell grants permission without the question. Generic
+`--yes` or `-Yes` does not grant permission. Non-interactive installs without
+close permission keep the previous staging or refusal behavior. Closing MeshTalk
+interrupts active sessions and file transfers.
 
 The helper first requests authenticated backend shutdown, which lets connected
 TUI windows exit cleanly. Remaining processes are checked against the selected

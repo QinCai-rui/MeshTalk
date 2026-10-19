@@ -38,10 +38,11 @@ describe("affected packages", () => {
     expect(affectedPackages(["backend/uv.lock"]).containers).toEqual(["client"])
   })
   test("root installer changes select installer syntax and handoff checks", () => {
-    for (const path of ["scripts/install.sh", "scripts/install.ps1", "scripts/install.test.ts"]) expect(affectedPackages([path]).installers).toBe(true)
+    for (const path of ["scripts/install.sh", "scripts/install.ps1", "scripts/install.test.ts", "scripts/install.ps1.test.ts"]) expect(affectedPackages([path]).installers).toBe(true)
     expect(affectedPackages(["scripts/profile-rss.sh"]).installers).toBe(false)
   })
   test("updater checks cover launcher, release management, installer, and dependency inputs", () => {
+    expect(affectedPackages(["scripts/install.ps1.test.ts"]).updates).toBe(true)
     for (const path of ["bin/meshtalk.ts", "bin/meshtalk.test.ts", "bin/tui-entry.ts", "common/updater.ts", "common/updater.test.ts", "common/release-install.ts", "common/release-install.test.ts", "common/windows-install-links.ts", "common/windows-install-links.test.ts", "common/install-processes.ts", "common/install-processes.test.ts", "common/install-paths.ts", "common/install-paths.test.ts", "scripts/install.sh", "scripts/install.ps1", "scripts/install.test.ts", "package.json", "bun.lock", "cli/package.json", "tui/package.json"]) {
       expect(affectedPackages([path]).updates).toBe(true)
     }

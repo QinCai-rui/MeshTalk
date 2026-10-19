@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
 import { managedInstallRoot, processMayBeAlive, releaseFiles, stageReleaseDirectory } from "../common/release-install"
@@ -18,16 +18,30 @@ beforeAll(async () => {
   // installation fixtures. Process/lease lifetime is tested in the module suite.
   const inspector = join(temporary, "process-list.ts")
   writeFileSync(inspector, `
+    if (process.env.MESHTALK_TEST_WAIT_FOR_CLOSE) { console.log("ready"); await Bun.sleep(60000); process.exit(0) }
     if (process.env.MESHTALK_TEST_PROCESS_LIST === "empty") process.exit(0)
     if (process.env.MESHTALK_TEST_PROCESS_LIST === "invalid") { console.log("unparseable"); process.exit(0) }
     const pid = process.ppid
-    if (process.platform === "win32") console.log('"meshtalk.exe","' + pid + '","Console","1","1 K"')
-    else if (process.argv.includes("pid=,ppid=,uid=,comm=")) console.log(pid + " 0 " + process.getuid() + " meshtalk")
+    const running = Number(process.env.MESHTALK_TEST_RUNNING_PID)
+    if (process.platform === "win32" && process.env.MESHTALK_TEST_STATUS_INSPECTOR && process.argv.includes("-Command")) {
+      const rows = [{ pid, parentPid: 0, executable: null, identity: "self", sameUser: true, canClose: false }]
+      if (running) rows.push({ pid: running, parentPid: 0, executable: process.env.MESHTALK_TEST_RUNNING_EXECUTABLE, identity: "fixture", sameUser: true, canClose: false })
+      console.log(JSON.stringify(rows))
+    }
+    else if (process.platform === "win32") console.log('"meshtalk.exe","' + pid + '","Console","1","1 K"')
+    else if (process.argv.includes("pid=,ppid=,uid=,comm=")) {
+      console.log(pid + " 0 " + process.getuid() + " meshtalk")
+      if (running) console.log(running + " 0 " + process.getuid() + " " + process.env.MESHTALK_TEST_RUNNING_EXECUTABLE)
+    }
     else console.log(pid + " meshtalk")
   `)
   const inspectorBuild = Bun.spawn([process.execPath, "build", inspector, "--compile", "--outfile", join(tools, process.platform === "win32" ? "tasklist.exe" : "ps")], { stdout: "ignore", stderr: "pipe" })
   const inspectorErrors = await new Response(inspectorBuild.stderr).text()
   if (await inspectorBuild.exited !== 0) throw new Error(inspectorErrors)
+  if (process.platform === "win32") {
+    mkdirSync(join(tools, "status"))
+    copyFileSync(join(tools, "tasklist.exe"), join(tools, "status", "powershell.exe"))
+  }
   for (const version of ["1.0.0", "2.0.0"]) {
     const source = join(temporary, version)
     mkdirSync(source)
@@ -62,6 +76,39 @@ async function run(executable: string, args: string[], name: string, extraEnv: R
 
 test("compiled installer protocol bypasses normal component lookup", async () => {
   expect(await run(join(first, releaseFiles[0]), ["--install-protocol"], "protocol")).toEqual({ stdout: "1", stderr: "", code: 0 })
+})
+
+test("installation status reports running and stopped without changing installed files", async () => {
+  const root = join(temporary, "status install")
+  mkdirSync(root)
+  const executable = join(root, releaseFiles[0])
+  copyFileSync(join(tools, process.platform === "win32" ? "tasklist.exe" : "ps"), executable)
+  writeFileSync(join(root, releaseFiles[1]), "unchanged backend")
+  const waiter = Bun.spawn([executable], { env: { ...process.env, MESHTALK_TEST_WAIT_FOR_CLOSE: "1" }, stdout: "pipe", stderr: "pipe" })
+  const input = waiter.stdout.getReader()
+  try {
+    expect(new TextDecoder().decode((await input.read()).value)).toContain("ready")
+    const env = { MESHTALK_TEST_STATUS_INSPECTOR: "1", MESHTALK_TEST_RUNNING_PID: String(waiter.pid), MESHTALK_TEST_RUNNING_EXECUTABLE: executable, PATH: `${join(tools, "status")}${delimiter}${tools}${delimiter}${process.env.PATH ?? ""}` }
+    expect(await run(join(first, releaseFiles[0]), ["--install-status", "--install-dir", root], "status", env)).toEqual({ stdout: "running", stderr: "", code: 0 })
+    waiter.kill()
+    await waiter.exited
+    expect(await run(join(first, releaseFiles[0]), ["--install-status", "--install-dir", root], "status", { ...env, MESHTALK_TEST_RUNNING_PID: "" })).toEqual({ stdout: "stopped", stderr: "", code: 0 })
+    expect(readdirSync(root).sort()).toEqual([...releaseFiles].sort())
+    expect(readFileSync(join(root, releaseFiles[1]), "utf8")).toBe("unchanged backend")
+    const invalid = await run(join(first, releaseFiles[0]), ["--install-status", "--install-dir", root], "status", { ...env, MESHTALK_TEST_PROCESS_LIST: "invalid" })
+    expect(invalid.code).not.toBe(0)
+    expect(readdirSync(root).sort()).toEqual([...releaseFiles].sort())
+  } finally {
+    input.releaseLock()
+    if (waiter.exitCode === null) waiter.kill()
+    await waiter.exited
+  }
+}, 60000)
+
+test("installation status does not create an absent installation", async () => {
+  const root = join(temporary, "absent status")
+  expect(await run(join(first, releaseFiles[0]), ["--install-status", "--install-dir", root], "absent-status", { MESHTALK_DATA_DIR: root })).toEqual({ stdout: "stopped", stderr: "", code: 0 })
+  expect(existsSync(root)).toBe(false)
 })
 
 test.each(["empty", "invalid"])("installer refuses an %s process list before changing an installation", async (mode) => {

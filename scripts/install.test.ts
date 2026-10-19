@@ -26,9 +26,10 @@ function fixture(launcher = "exit 2") {
   return { root, destination, extracted }
 }
 
-function run(f: ReturnType<typeof fixture>, body = 'install_extracted "$EXTRACTED"') {
-  return Bun.spawnSync(["bash", "-c", `${installer}\nINSTALL_DIR=$DESTINATION\nPLATFORM=linux\nLAUNCHER_NAME=meshtalk\nEXPECTED_FILES=(meshtalk meshtalk-backend)\n${body}`], {
+function run(f: ReturnType<typeof fixture>, body = 'install_extracted "$EXTRACTED"', input?: string) {
+  return Bun.spawnSync(["bash", "-c", `${installer}\nINSTALL_DIR=$DESTINATION\nPLATFORM=linux\nNON_INTERACTIVE=1\nLAUNCHER_NAME=meshtalk\nEXPECTED_FILES=(meshtalk meshtalk-backend)\n${body}`], {
     env: { ...process.env, DESTINATION: f.destination, EXTRACTED: f.extracted, TMPDIR: f.root },
+    stdin: input === undefined ? "ignore" : Buffer.from(input),
   })
 }
 
@@ -55,6 +56,58 @@ function expectUnknownPreserved(f: ReturnType<typeof fixture>) {
 }
 
 describe("Bash installer release handoff", () => {
+  test.each(["", "--yes"])("asks before closing running instances and forwards consent without a user flag: %s", options => {
+    const f = fixture('if [[ $1 == --install-protocol ]]; then echo 1; elif [[ $1 == --install-status ]]; then echo running; else printf "%s\\n" "$@" > "$DESTINATION/arguments"; fi')
+    const result = run(f, `NON_INTERACTIVE=0; parse_arguments ${options}; prompt_read() { printf '%s|%s' "$2" "$ASSUME_YES" > "$DESTINATION/question"; printf -v "$1" yes; }; install_extracted "$EXTRACTED"; printf '%s' "$ASSUME_YES" > "$DESTINATION/assume-yes"`)
+    expect(result.exitCode).toBe(0)
+    expect(readFileSync(join(f.destination, "question"), "utf8")).toContain("MeshTalk is running. Close all instances and continue?")
+    expect(readFileSync(join(f.destination, "question"), "utf8")).toEndWith("|0")
+    expect(readFileSync(join(f.destination, "arguments"), "utf8")).toBe(`--install-from\n${f.extracted}\n--install-dir\n${f.destination}\n--close-running\n`)
+    expect(readFileSync(join(f.destination, "assume-yes"), "utf8")).toBe(options ? "1" : "0")
+  })
+
+  test.each(["no", ""])("declining or leaving the close question empty preserves installed files: %s", answer => {
+    const f = fixture('if [[ $1 == --install-protocol ]]; then echo 1; elif [[ $1 == --install-status ]]; then echo running; else touch "$DESTINATION/helper-ran"; fi')
+    const result = run(f, `NON_INTERACTIVE=0; ASSUME_YES=1; prompt_read() { printf -v "$1" '${answer}'; }; install_extracted "$EXTRACTED"`)
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr.toString()).toContain("Cancelled")
+    expect(existsSync(join(f.destination, "helper-ran"))).toBe(false)
+    expect(readFileSync(join(f.destination, "meshtalk"), "utf8")).toBe("old launcher")
+    expect(readFileSync(join(f.destination, "meshtalk-backend"), "utf8")).toBe("old backend")
+  })
+
+  test.each(["yes", "y", ""])("EOF without a completed answer never grants close permission: %j", answer => {
+    const f = fixture('if [[ $1 == --install-protocol ]]; then echo 1; elif [[ $1 == --install-status ]]; then echo running; else touch "$DESTINATION/helper-ran"; fi')
+    const result = run(f, 'NON_INTERACTIVE=0; ASSUME_YES=1; install_extracted "$EXTRACTED"', answer)
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr.toString()).toContain("Cancelled")
+    expect(existsSync(join(f.destination, "helper-ran"))).toBe(false)
+    expect(readFileSync(join(f.destination, "meshtalk"), "utf8")).toBe("old launcher")
+  })
+
+  test("a stopped installation continues without a close question", () => {
+    const f = fixture('if [[ $1 == --install-protocol ]]; then echo 1; elif [[ $1 == --install-status ]]; then echo stopped; else printf "%s\\n" "$@" > "$DESTINATION/arguments"; fi')
+    const result = run(f, 'NON_INTERACTIVE=0; prompt_read() { return 99; }; install_extracted "$EXTRACTED"')
+    expect(result.exitCode).toBe(0)
+    expect(readFileSync(join(f.destination, "arguments"), "utf8")).not.toContain("--close-running")
+  })
+
+  test.each(["exit 7", "echo invalid", "printf 'running\\nextra\\n'", "printf 'running\\n\\n'"])("status failures stop before asking or installing: %s", status => {
+    const f = fixture(`if [[ $1 == --install-protocol ]]; then echo 1; elif [[ $1 == --install-status ]]; then ${status}; else touch "$DESTINATION/helper-ran"; fi`)
+    const result = run(f, 'NON_INTERACTIVE=0; prompt_read() { touch "$DESTINATION/prompted"; }; install_extracted "$EXTRACTED"')
+    expect(result.exitCode).not.toBe(0)
+    expect(existsSync(join(f.destination, "helper-ran"))).toBe(false)
+    expect(existsSync(join(f.destination, "prompted"))).toBe(false)
+    expect(readFileSync(join(f.destination, "meshtalk"), "utf8")).toBe("old launcher")
+  })
+
+  test("managed uninstall also asks before closing without requiring a flag", () => {
+    const f = uninstallFixture(".meshtalk-install.json", 'if [[ $1 == --install-protocol ]]; then echo 1; elif [[ $1 == --install-status ]]; then echo running; else printf "%s\\n" "$@" > "$DESTINATION/arguments"; fi')
+    const result = run(f, 'NON_INTERACTIVE=0; ASSUME_YES=1; prompt_read() { printf -v "$1" yes; }; uninstall_meshtalk')
+    expect(result.exitCode).toBe(0)
+    expect(readFileSync(join(f.destination, "arguments"), "utf8")).toContain("--close-running")
+  })
+
   test.each(["", "--yes", "-y", "--close-running", "--yes --close-running"])("forwards close-running only when explicitly selected: %s", options => {
     const f = fixture('if [[ $1 == --install-protocol ]]; then echo 1; else printf "%s\\n" "$@" > "$DESTINATION/arguments"; fi')
     const result = run(f, `parse_arguments ${options}; install_extracted "$EXTRACTED"`)
@@ -286,10 +339,12 @@ describe("PowerShell installer close-running contract", () => {
     expect(powershellInstaller).toContain("$script:CloseRunningFlag = [bool]$CloseRunning")
     expect(powershellInstaller).toContain(".PARAMETER CloseRunning")
     expect(powershellInstaller).toContain("Not implied by -Yes; requires a supported helper")
-    expect(powershellInstaller.match(/\$script:CloseRunningFlag\s*=/g)).toHaveLength(1)
+    expect(powershellInstaller.match(/\$script:CloseRunningFlag\s*=/g)).toHaveLength(2)
+    expect(powershellInstaller).toContain("MeshTalk is running. Close all instances and continue?")
+    expect(powershellInstaller).toContain("$script:AssumeYes = $false")
   })
 
-  test("forwards close-running only behind its own switch in both helpers", () => {
+  test("forwards close-running only after permission in both helpers", () => {
     expect(powershellInstaller).toContain("$helperArgs = @('--install-from', $ExtractDir, '--install-dir', $script:InstallDirSel)")
     expect(powershellInstaller).toContain("$helperArgs = @('--uninstall-releases', '--install-dir', $script:InstallDirSel)")
     expect(powershellInstaller.match(/if \(\$script:CloseRunningFlag\) \{ \$helperArgs \+= '--close-running' \}/g)).toHaveLength(2)

@@ -129,7 +129,7 @@ confirm() {
   else
     hint="${DIM}[y/${RESET}${CORAL}N${RESET}${DIM}]${RESET}"
   fi
-  prompt_read answer $'\n  '"${BOLD}${prompt}${RESET} ${hint} " || true
+  prompt_read answer $'\n  '"${BOLD}${prompt}${RESET} ${hint} " || return 1
   if [[ $default == y ]]; then
     [[ -z $answer || $answer =~ ^[Yy]([Ee][Ss])?$ ]]
   else
@@ -141,6 +141,7 @@ prompt_read() {
   local silent=0
   local input_fd=-1
   local echoes=0
+  local read_status=0
   if [[ ${1:-} == --silent ]]; then
     silent=1
     shift
@@ -151,16 +152,16 @@ prompt_read() {
   shift
   if [[ -t 0 ]]; then
     echoes=1
-    if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var"; else read -r -p "$prompt_str" "$__var"; fi
+    if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var" || read_status=$?; else read -r -p "$prompt_str" "$__var" || read_status=$?; fi
   elif [[ -t 1 ]] && { exec {input_fd}<>/dev/tty; } 2>/dev/null; then
     echoes=1
-    if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var" <&$input_fd; else read -r -p "$prompt_str" "$__var" <&$input_fd; fi
+    if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var" <&$input_fd || read_status=$?; else read -r -p "$prompt_str" "$__var" <&$input_fd || read_status=$?; fi
     exec {input_fd}>&-
   else
-    if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var"; else read -r -p "$prompt_str" "$__var"; fi
+    if [[ $silent -eq 1 ]]; then read -r -s -p "$prompt_str" "$__var" || read_status=$?; else read -r -p "$prompt_str" "$__var" || read_status=$?; fi
   fi
   [[ $silent -eq 1 || $echoes -eq 0 ]] && printf '\n'
-  return 0
+  return "$read_status"
 }
 
 box_prompt() {
@@ -245,7 +246,7 @@ ${UNDERLINE}Common options${RESET}
   ${MINT}-y, --yes${RESET}               Auto-answer yes to prompts
   ${MINT}-n, --non-interactive${RESET}   Disable prompts; use stable release and default dir
   ${MINT}    --uninstall${RESET}          Remove an existing installation
-  ${MINT}    --close-running${RESET}      Allow the helper to close verified running MeshTalk processes
+  ${MINT}    --close-running${RESET}      Skip the close question; allow closing running MeshTalk instances
                               Not implied by --yes; requires a supported helper
   ${MINT}    --dry-run${RESET}            Show planned actions without making changes
   ${MINT}    --help${RESET}               Show this help
@@ -888,12 +889,32 @@ supports_install_protocol() {
     && [[ $protocol == '1.' || $protocol == $'1\n.' || $protocol == $'1\r\n.' ]]
 }
 
+confirm_install_close_permission() {
+  local launcher=$1 status
+  [[ $CLOSE_RUNNING -eq 0 && $NON_INTERACTIVE -eq 0 ]] || return 0
+  status=$("$launcher" --install-status --install-dir "$INSTALL_DIR" && printf '.') \
+    || die "Unable to check running MeshTalk instances. Installed files were left unchanged."
+  case $status in
+    'stopped.'|$'stopped\n.'|$'stopped\r\n.') return 0 ;;
+    'running.'|$'running\n.'|$'running\r\n.') ;;
+    *) die "Unexpected MeshTalk installation status. Installed files were left unchanged." ;;
+  esac
+  printf '  Closing MeshTalk interrupts active sessions and file transfers.\n'
+  # A generic --yes does not grant permission to interrupt running instances.
+  if ASSUME_YES=0 confirm "MeshTalk is running. Close all instances and continue?" n; then
+    CLOSE_RUNNING=1
+  else
+    die "Cancelled. Installed files were left unchanged."
+  fi
+}
+
 install_extracted() {
   local extract_dir=$1 file stage replaced="" old_files=""
   for file in "${EXPECTED_FILES[@]}"; do
     chmod u+rx "$extract_dir/$file" || die "Unable to make ${file} executable."
   done
   if supports_install_protocol "$extract_dir/$LAUNCHER_NAME"; then
+    confirm_install_close_permission "$extract_dir/$LAUNCHER_NAME"
     local helper_args=(--install-from "$extract_dir" --install-dir "$INSTALL_DIR")
     if [[ $CLOSE_RUNNING -eq 1 ]]; then helper_args+=(--close-running); fi
     "$extract_dir/$LAUNCHER_NAME" "${helper_args[@]}" \
@@ -1062,6 +1083,7 @@ uninstall_managed_releases() (
   # Run outside the installation so Windows can remove the root executable.
   cp -p "$INSTALL_DIR/$LAUNCHER_NAME" "$helper_dir/$LAUNCHER_NAME" || return 1
   chmod u+rx "$helper_dir/$LAUNCHER_NAME" || return 1
+  confirm_install_close_permission "$helper_dir/$LAUNCHER_NAME"
   local helper_args=(--uninstall-releases --install-dir "$INSTALL_DIR")
   if [[ $CLOSE_RUNNING -eq 1 ]]; then helper_args+=(--close-running); fi
   "$helper_dir/$LAUNCHER_NAME" "${helper_args[@]}"

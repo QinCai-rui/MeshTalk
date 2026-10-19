@@ -483,14 +483,25 @@ async function closeForInstallation(destination: string): Promise<void> {
 }
 
 async function main() {
-  mkdirSync(DATA_DIR, { recursive: true });
-
   const args = process.argv.slice(2);
 
   if (IS_RELEASE_BUILD && args[0] === "--install-protocol" && args.length === 1) {
     console.log(INSTALL_PROTOCOL);
     return;
   }
+  if (IS_RELEASE_BUILD && args[0] === "--install-status") {
+    if (args.length !== 3 || args[1] !== "--install-dir") throw new Error("Invalid installation status arguments.");
+    const destination = resolve(args[2]);
+    if (!existsSync(destination)) {
+      console.log("stopped");
+      return;
+    }
+    const root = managedInstallRoot(destination);
+    const additional = root === realpathSync(destination) ? [] : [root];
+    console.log(installationProcessPids(destination, additional).length > 0 ? "running" : "stopped");
+    return;
+  }
+  mkdirSync(DATA_DIR, { recursive: true });
   if (IS_RELEASE_BUILD && args[0] === "--apply-pending") {
     if (!isWindows || args.length !== 5 || args[1] !== "--install-dir" || args[3] !== "--release" || !/^release-[a-f0-9]{32}$/.test(args[4])) throw new Error("Invalid pending installer arguments.");
     const destination = resolve(args[2]);
