@@ -22,6 +22,7 @@ import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 DB_FILENAME = "meshtalk.db"
 IDENTITY_FILENAME = "identity.json"
@@ -48,11 +49,11 @@ RUNTIME_FILES = frozenset(
 )
 
 
-def validate_target_dir(raw: str, *, base: Path | None = None) -> Path:
-    """Validate a candidate storage/files directory and return its absolute path.
+def resolve_target_dir(raw: str, *, base: Path | None = None) -> Path:
+    """Resolve a candidate storage/files directory without touching the filesystem.
 
-    Creates the directory (including parents) and proves writability with a
-    temporary file. Raises ValueError when unusable.
+    Used to run same-location and nesting checks *before* ``validate_target_dir``
+    creates the directory, so a rejected target never leaves an empty tree behind.
     """
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError("path must be a non-empty string")
@@ -60,7 +61,22 @@ def validate_target_dir(raw: str, *, base: Path | None = None) -> Path:
     candidate = Path(cleaned).expanduser()
     if not candidate.is_absolute():
         anchor = base if base is not None else Path.cwd()
-        candidate = (anchor / candidate).resolve()
+        candidate = anchor / candidate
+    try:
+        return candidate.resolve()
+    except OSError:
+        return candidate.absolute()
+
+
+def validate_target_dir(raw: str, *, base: Path | None = None) -> Path:
+    """Validate a candidate storage/files directory and return its absolute path.
+
+    Creates the directory (including parents) and proves writability with a
+    temporary file. Raises ValueError when unusable. Callers should run
+    ``resolve_target_dir`` geometry checks first when a rejection must not
+    create the directory.
+    """
+    candidate = resolve_target_dir(raw, base=base)
     try:
         candidate.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=candidate, prefix=".meshtalk-", delete=True) as probe:
@@ -161,6 +177,9 @@ def copy_tree_merge(src: Path, dst: Path) -> list[str]:
         for root, dirs, files in os.walk(src):
             rel_root = Path(root).relative_to(src)
             target_root = dst / rel_root if str(rel_root) != "." else dst
+            # Do not descend into symlinked directories: copy2 would follow
+            # them and pull an unrelated (possibly huge) tree into the target.
+            dirs[:] = sorted(name for name in dirs if not (Path(root) / name).is_symlink())
             ensure_dir(target_root)
             for name in files:
                 # Runtime files are only special at the storage root. Nested
@@ -245,7 +264,9 @@ def verify_tree_copy(src: Path, dst: Path, copied: list[str]) -> list[str]:
 def sqlite_integrity_ok(db_path: Path) -> str | None:
     """Run PRAGMA integrity_check on a SQLite file. Returns None when OK, else details."""
     try:
-        uri = f"file:{db_path}?mode=ro"
+        # Percent-encode the path: a literal '?' or '#' in a Windows path would
+        # otherwise be parsed as URI query/fragment and abort a valid migration.
+        uri = f"file:{quote(str(db_path))}?mode=ro"
         connection = sqlite3.connect(uri, uri=True, timeout=10)
         try:
             rows = connection.execute("PRAGMA integrity_check").fetchall()
@@ -476,6 +497,39 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
             "(or vice versa); choose a separate location. Location unchanged."
         )
     previous_data_dir = file_manager.data_dir
+    # Block new sends/inbound writes for the whole switch. The active-transfer
+    # check alone leaves a window between the last check and the deletion of
+    # the old tree in which a queued transfer could start writing there.
+    file_manager.migration_in_progress = True
+    try:
+        return await _switch_storage_locked(
+            db=db,
+            settings=settings,
+            file_manager=file_manager,
+            identity=identity,
+            target=target,
+            migrate=migrate,
+            old_storage=old_storage,
+            previous_storage_setting=previous_storage_setting,
+            previous_data_dir=previous_data_dir,
+        )
+    finally:
+        file_manager.migration_in_progress = False
+
+
+async def _switch_storage_locked(
+    *,
+    db,
+    settings,
+    file_manager,
+    identity,
+    target: Path,
+    migrate: bool,
+    old_storage: Path,
+    previous_storage_setting: str | None,
+    previous_data_dir: Path,
+) -> dict:
+    """Body of ``switch_storage_location``; runs with the migration guard set."""
     old_db = old_storage / DB_FILENAME
     new_db = target / DB_FILENAME
     old_identity = old_storage / IDENTITY_FILENAME
@@ -684,13 +738,15 @@ async def switch_storage_location(*, db, settings, file_manager, identity, targe
             await db.connect()
         except Exception:
             pass
-        if migrate:
-            remove_created_artifacts(
-                db_path=new_db,
-                identity_path=new_identity,
-                files_base=new_files_base,
-                copied=copied_files,
-            )
+        # Applies to both paths: the empty-target switch also copies the
+        # identity here. Leaving it behind would silently turn an identical
+        # retry into an adopt of that orphaned identity.
+        remove_created_artifacts(
+            db_path=new_db,
+            identity_path=new_identity,
+            files_base=new_files_base,
+            copied=copied_files,
+        )
         raise RuntimeError(
             f"Could not open the database at the new location: {exc}. Location unchanged."
         ) from exc

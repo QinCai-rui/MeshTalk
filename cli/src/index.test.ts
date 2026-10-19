@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { fileMetadataLines, parseFileArguments, printTransferStarted, splitMigrateFlags } from "./index";
+import { fileMetadataLines, parseFileArguments, printTransferStarted, resolveMigrateChoice, splitMigrateFlags } from "./index";
 
 test("failed batches report errors without success; partial batches retain successes", () => {
   const log = spyOn(console, "log").mockImplementation(() => {});
@@ -60,6 +60,42 @@ describe("storage location arguments", () => {
       paths: ["my path"],
       migrate: false,
       noMigrate: true,
+    });
+  });
+});
+
+describe("migrate choice", () => {
+  function withTTY<T>(value: boolean | undefined, run: () => Promise<T>): Promise<T> {
+    const original = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value, configurable: true });
+    return run().finally(() => {
+      Object.defineProperty(process.stdin, "isTTY", { value: original, configurable: true });
+    });
+  }
+
+  test("refuses to guess on non-interactive input", async () => {
+    await withTTY(undefined, async () => {
+      await expect(resolveMigrateChoice("files", true, async () => true)).rejects.toThrow("non-interactive");
+    });
+  });
+
+  test("skips the prompt when there is nothing to transfer", async () => {
+    await withTTY(true, async () => {
+      let asked = 0;
+      const migrate = await resolveMigrateChoice("files", false, async () => { asked += 1; return true; });
+      expect(migrate).toBe(false);
+      expect(asked).toBe(0);
+    });
+  });
+
+  test("prompts for existing content and honours the answer", async () => {
+    await withTTY(true, async () => {
+      const asked: string[] = [];
+      const yes = await resolveMigrateChoice("data", true, async (label) => { asked.push(label); return true; });
+      const no = await resolveMigrateChoice("data", true, async () => false);
+      expect(yes).toBe(true);
+      expect(no).toBe(false);
+      expect(asked).toEqual(["data"]);
     });
   });
 });

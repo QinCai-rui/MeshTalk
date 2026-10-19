@@ -37,7 +37,10 @@ from .storage import (
     DB_FILENAME,
     STORAGE_ENV_VAR,
     dir_has_content,
+    location_contains,
+    locations_nested,
     migrate_files_location,
+    resolve_target_dir,
     same_location,
     switch_storage_location,
     validate_target_dir,
@@ -1144,6 +1147,26 @@ async def main(debug: bool = False) -> None:
             return payload
         migrate = _wants_migrate(req)
         try:
+            candidate = resolve_target_dir(new_path, base=settings.path.parent)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        # Geometry checks run before validate_target_dir creates anything, so a
+        # rejected path does not leave an empty directory tree behind.
+        if same_location(settings.files_dir, candidate):
+            payload = _storage_payload()
+            payload["note"] = f"Files storage is already set to '{payload['files_dir']}'."
+            return payload
+        if locations_nested(settings.files_dir, candidate):
+            return {
+                "error": f"Target '{candidate}' must not be the same as or nested inside "
+                f"'{settings.files_dir}' (or vice versa). Location unchanged."
+            }
+        if location_contains(settings.files_dir, settings.storage_dir):
+            return {
+                "error": f"The configured files location '{settings.files_dir}' contains the "
+                "storage location; choose a dedicated files directory first."
+            }
+        try:
             target = validate_target_dir(new_path, base=settings.path.parent)
         except ValueError as exc:
             return {"error": str(exc)}
@@ -1232,6 +1255,26 @@ async def main(debug: bool = False) -> None:
             }
         migrate = _wants_migrate(req)
         try:
+            candidate = resolve_target_dir(new_path, base=settings.path.parent)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        # Geometry checks run before validate_target_dir creates anything, so a
+        # rejected path does not leave an empty directory tree behind.
+        if same_location(settings.storage_dir, candidate):
+            payload = _storage_payload()
+            payload["note"] = f"Storage is already set to '{payload['storage_dir']}'."
+            return payload
+        if locations_nested(settings.storage_dir, candidate):
+            return {
+                "error": f"Target '{candidate}' must not be the same as or nested inside "
+                f"'{settings.storage_dir}' (or vice versa). Location unchanged."
+            }
+        if location_contains(settings.files_dir, candidate):
+            return {
+                "error": f"Target '{candidate}' is inside the files location "
+                f"'{settings.files_dir}'. Location unchanged."
+            }
+        try:
             target = validate_target_dir(new_path, base=settings.path.parent)
         except ValueError as exc:
             return {"error": str(exc)}
@@ -1279,8 +1322,8 @@ async def main(debug: bool = False) -> None:
             return {"opened": str(directory)}
         # Graphical opener varies by platform; try each candidate so headless
         # machines (no xdg-open/open binary, no display server) get a clear
-        # no_opener signal instead of a generic spawn error. The TUI falls
-        # back to copying the path to the clipboard in that case.
+        # no_opener signal instead of a generic spawn error. Clients fall back
+        # to copying the path to the clipboard in that case.
         candidates = [["open"]] if sys.platform == "darwin" else [
             ["xdg-open"], ["gio", "open"], ["gnome-open"], ["kde-open"],
         ]
@@ -1310,7 +1353,6 @@ async def main(debug: bool = False) -> None:
         return {
             "error": f"Could not open {directory}: {last_exc}",
             "path": str(directory),
-            "no_opener": last_exc is not None and isinstance(last_exc, FileNotFoundError),
         }
 
     ipc_handlers = {

@@ -164,6 +164,27 @@ async function confirmTransfer(label: string): Promise<boolean> {
   }
 }
 
+/**
+ * Resolve whether to migrate when neither flag was given.
+ *
+ * On a pipe there is nobody to answer the prompt, so silently proceeding
+ * without migration would either leave data behind or (for an occupied target)
+ * adopt that location's identity. Require an explicit choice instead.
+ */
+export async function resolveMigrateChoice(
+  label: string,
+  hasContent: boolean,
+  confirm: (label: string) => Promise<boolean>,
+): Promise<boolean> {
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      `Cannot prompt to transfer existing ${label} on a non-interactive input; pass --migrate or --no-migrate explicitly`,
+    );
+  }
+  if (!hasContent) return false;
+  return confirm(label);
+}
+
 export function splitMigrateFlags(args: string[]): { paths: string[]; migrate: boolean; noMigrate: boolean } {
   const migrate = args.includes("--migrate");
   const noMigrate = args.includes("--no-migrate");
@@ -296,7 +317,8 @@ export async function main(): Promise<void> {
         let migrate = migrateFlag;
         if (!migrateFlag && !noMigrate) {
           const current = await ipc.send("files_dir");
-          if (!current.error && current.files_has_content) migrate = await confirmTransfer("files");
+          if (current.error) throw new Error(String(current.error));
+          migrate = await resolveMigrateChoice("files", !!current.files_has_content, confirmTransfer);
         }
         const response = await ipc.send("files_dir", { path: p, ...(migrate ? { migrate: true } : {}) });
         if (hasError(response)) return;
@@ -341,7 +363,8 @@ export async function main(): Promise<void> {
         let migrate = migrateFlag;
         if (!migrateFlag && !noMigrate) {
           const current = await ipc.send("storage");
-          if (!current.error && current.storage_has_content) migrate = await confirmTransfer("data");
+          if (current.error) throw new Error(String(current.error));
+          migrate = await resolveMigrateChoice("data", !!current.storage_has_content, confirmTransfer);
         }
         const response = await ipc.send("storage", { path: p, ...(migrate ? { migrate: true } : {}) });
         if (hasError(response)) return;

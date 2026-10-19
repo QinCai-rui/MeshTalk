@@ -256,7 +256,8 @@ Security properties:
 
 - Each chunk is individually E2EE with a fresh ephemeral key (forward secrecy).
 - Filenames are sanitized on both sender and receiver (path traversal prevention).
-- File storage is scoped to `~/.meshtalk/files/<file_id>/`.
+- File storage is scoped to `<storage_dir>/files/<file_id>/` (default
+  `~/.meshtalk/files/<file_id>/`); the storage and files roots are configurable.
 - Early-chunk buffer has a TTL (30 s) and per-file cap (8 chunks) to bound
   memory from out-of-order arrivals.
 - Incoming file offers from non-friends (direct) or non-members (group) are
@@ -386,7 +387,9 @@ and return JSON; responses are correlated by request id, and asynchronous events
 - `file_send` / `group_file_send` — send a file to a direct peer or to all active group members.
 - `files` / `file_info` — list all file transfers or query one transfer's metadata.
 - `file_download` — save a received file to a user-chosen location.
-- `files_dir` / `set_files_dir` — get or set the files storage directory.
+- `files_dir` / `storage` — get or change the files and storage directories,
+  optionally migrating existing data with copy → verify → delete; `open_path`
+  opens a location inside the allowed storage roots.
 - `debug_re_stun` / `debug_info` — connectivity diagnostics.
 - `shutdown` — stop the backend daemon.
 

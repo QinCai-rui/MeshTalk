@@ -876,8 +876,10 @@ export function FileListDialogContent({ dialog, dialogHeight, dialogWidth, image
     else loadFiles()
   }
   const backToSettings = () => {
+    // Never render a placeholder settings panel with empty paths; if the
+    // caller did not wire the loader, close instead of showing a broken view.
     if (loadFilesSettings) void loadFilesSettings()
-    else showDialog({ kind: "files-settings", filesDir: "", dataDir: "" } as any)
+    else closeDialog()
   }
   useKeyboard((key) => {
     if (pendingDelete) {
@@ -961,7 +963,7 @@ const detailTextWidth = Math.max(1, dialogWidth - Math.floor(dialogWidth * 0.44)
       </HoverHighlight>
       <HoverHighlight id="file-search-field" onMouseDown={(event) => { event.stopPropagation(); setSearchFocused(true) }} active={searchFocused} style={{ flexDirection: "row", alignItems: "center", flexGrow: 1, minWidth: 16, height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: searchFocused || query !== "" ? theme.selected : undefined }}>
         <text fg={searchFocused ? theme.accent : theme.muted}>/ </text>
-        <input focused={searchFocused} placeholder="filter by filename…" onInput={setQuery} onSubmit={() => setSearchFocused(false)} maxLength={256} style={{ flexGrow: 1, minWidth: 0 }} />
+        <input focused={searchFocused} placeholder="filter by filename or caption…" onInput={setQuery} onSubmit={() => setSearchFocused(false)} maxLength={256} style={{ flexGrow: 1, minWidth: 0 }} />
       </HoverHighlight>
     </box>
     <box style={{ flexGrow: 1, flexShrink: 1, minHeight: 0, flexDirection: wide ? "row" : "column", gap: wide ? 1 : 0, minWidth: 0, alignItems: "flex-start" }}>

@@ -189,6 +189,42 @@ test.each(["/srv/meshtalk", undefined])("files-settings default hints follow eff
   }
 })
 
+test("migration prompt consumes keys while the path input stays focused", async () => {
+  const calls: { path: string; migrate?: boolean }[] = []
+  const setup = await testRender(
+    <FilesSettingsContent
+      dialog={{ kind: "files-settings", ...payload() } as Extract<Dialog, { kind: "files-settings" }>}
+      dialogHeight={40}
+      dialogBusy={false}
+      loadFiles={noop}
+      setFilesDir={(path, migrate) => { calls.push({ path, migrate }) }}
+      setStorageDir={noop}
+      initialEditingFiles
+    />,
+    { width: 110, height: 70 },
+  )
+  try {
+    await settle(setup)
+    await act(async () => { setup.mockInput.typeText("/new/files"); await new Promise(resolve => setTimeout(resolve, 50)) })
+    await settle(setup)
+    await clickText(setup, "Save")
+    let frame = setup.captureCharFrame()
+    expect(frame).toContain("Transfer existing files")
+    expect(calls).toEqual([])
+    // The prompt must win over the still-mounted focused input: "y" confirms
+    // instead of being typed into the draft.
+    await act(async () => { setup.mockInput.pressKey("y"); await new Promise(resolve => setTimeout(resolve, 50)) })
+    await settle(setup)
+    frame = setup.captureCharFrame()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.migrate).toBe(true)
+    expect(calls[0]!.path).not.toContain("y")
+    expect(frame).not.toContain("Transfer existing files")
+  } finally {
+    await act(async () => setup.renderer.destroy())
+  }
+})
+
 test("files-settings edit file location shows inline editor and keeps storage independent", async () => {
   const setup = await renderFilesSettings(noop, noop, noop, { files: true })
   try {

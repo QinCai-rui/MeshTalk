@@ -105,6 +105,10 @@ class FileTransferManager:
         self._pending_progress_commits: dict[str, asyncio.Task[None]] = {}
         self._integrity_retries: set[str] = set()
         self._awaiting_ack_since: dict[tuple[str, str], float] = {}
+        # Set while a storage location switch is copying/switching files. New
+        # sends and inbound writes refuse to start so nothing lands in the old
+        # tree after its last active-transfer check.
+        self.migration_in_progress = False
 
     @property
     def files_base(self) -> Path:
@@ -308,6 +312,8 @@ class FileTransferManager:
     async def _create_send(
         self, file_path, caption, group_id, recipients, batch_id=None, batch_index=None, batch_count=None
     ) -> str:
+        if self.migration_in_progress:
+            raise ValueError("The storage location is being changed; try again when it finishes")
         if group_id and not recipients:
             raise ValueError("No other members to send to")
         if not group_id and not await self._supports_v2(recipients[0]):
@@ -558,6 +564,10 @@ class FileTransferManager:
 
     async def flush_for_peer(self, peer_id: str) -> int:
         """Flush durable v2 ACKs and queued file packets, serialized per file/peer."""
+        if self.migration_in_progress:
+            # A queued flush could start writing into the files tree while the
+            # storage switch is deleting it; flush after the switch instead.
+            return 0
         peer = self.peer_manager.get_connected_peer(peer_id)
         if not peer:
             return 0
@@ -873,6 +883,12 @@ class FileTransferManager:
             self._early_chunks.pop(offer.file_id, None)
             await self._send_ack(peer, offer.file_id, "blocked")
             return
+        if self.migration_in_progress:
+            # Do not preallocate into a files tree that is about to move; the
+            # sender retries after the switch completes.
+            self._early_chunks.pop(offer.file_id, None)
+            await self._send_ack(peer, offer.file_id, "missing")
+            return
         if await self.db.is_message_seen(offer.file_id):
             return
         safe = sanitize_filename(offer.filename)
@@ -956,6 +972,10 @@ class FileTransferManager:
                 self._early_chunks.pop(file_id, None)
 
     async def _store_chunk(self, peer, chunk, transfer) -> None:
+        if self.migration_in_progress:
+            # The file path is about to move; asking for a resend avoids
+            # writing into the old tree after its last active-transfer check.
+            raise ValueError("Storage location is being changed")
         if not transfer.get("file_sha256") or transfer["direction"] != "inbound" or transfer["status"] not in ("transferring", "pending", "failed") or transfer["sender_id"] != chunk.sender_id or transfer["recipient_id"] != chunk.recipient_id or transfer["group_id"] != chunk.group_id or transfer["total_chunks"] != chunk.total_chunks:
             raise ValueError("File chunk does not match its offer")
         if await self.db.is_file_chunk_received(chunk.file_id, chunk.chunk_index):
