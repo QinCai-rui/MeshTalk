@@ -9,6 +9,8 @@ const powershell = Bun.which("powershell.exe") ?? Bun.which("pwsh")
 const installer = fileURLToPath(new URL("./install.ps1", import.meta.url))
 const roots: string[] = []
 const prompt = "MeshTalk is running. Close all instances and continue?"
+// Cold PowerShell startup on CI can exceed Bun's five-second default.
+const powershellTimeoutMs = 30_000
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -138,7 +140,7 @@ describe.skipIf(!powershell)("PowerShell installer close permission", () => {
         expect(status.path).not.toBe(join(f.destination, "meshtalk.ps1"))
         expect(existsSync(status.path)).toBe(false)
       }
-    })
+    }, powershellTimeoutMs)
 
     test.each(["no", "eof", "read-error"])(`${action}: %s cancels before mutation`, answer => {
       const f = run(action, { answer, yes: true })
@@ -148,7 +150,7 @@ describe.skipIf(!powershell)("PowerShell installer close permission", () => {
       expect(f.output).toContain("ASSUME_YES=True")
       expect(f.output).toContain("CLOSE_RUNNING=False")
       expect(mutations(f.calls)).toEqual([])
-    })
+    }, powershellTimeoutMs)
 
     test(`${action}: stopped skips confirmation and does not grant close permission`, () => {
       const f = run(action, { status: "stopped" })
@@ -156,7 +158,7 @@ describe.skipIf(!powershell)("PowerShell installer close permission", () => {
       expect(f.output).not.toContain(prompt)
       expect(mutations(f.calls)).toHaveLength(1)
       expect(mutations(f.calls)[0]!.args).not.toContain("--close-running")
-    })
+    }, powershellTimeoutMs)
 
     test.each(["error", "empty", "extra", "blank-line", "unknown", "Running", "stopped "])(`${action}: invalid status %s fails closed`, status => {
       const f = run(action, { status, answer: "yes" })
@@ -165,7 +167,7 @@ describe.skipIf(!powershell)("PowerShell installer close permission", () => {
       expect(f.output).toContain("Installed files were left unchanged")
       expect(f.output).not.toContain(prompt)
       expect(mutations(f.calls)).toEqual([])
-    })
+    }, powershellTimeoutMs)
 
     test.each([
       { nonInteractive: true },
@@ -178,7 +180,7 @@ describe.skipIf(!powershell)("PowerShell installer close permission", () => {
       expect(f.output).not.toContain(prompt)
       expect(mutations(f.calls)).toHaveLength(1)
       expect(mutations(f.calls)[0]!.args.includes("--close-running")).toBe(!!options.closeRunning)
-    })
+    }, powershellTimeoutMs)
 
     test(`${action}: generic Yes still prompts and is restored after approval`, () => {
       const f = run(action, { yes: true, answer: "yes" })
@@ -186,6 +188,6 @@ describe.skipIf(!powershell)("PowerShell installer close permission", () => {
       expect(f.output).toContain(prompt)
       expect(f.output).toContain("ASSUME_YES=True")
       expect(mutations(f.calls)[0]!.args).toContain("--close-running")
-    })
+    }, powershellTimeoutMs)
   }
 })
