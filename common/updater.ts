@@ -2,7 +2,7 @@ import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync,
 import { mkdir, open, rm } from "fs/promises"
 import { tmpdir } from "os"
 import { basename, dirname, join, resolve, sep } from "path"
-import { hasManagedBootstrap, installationRoot, installFromDirectory, stageReleaseDirectory } from "./release-install"
+import { hasManagedBootstrap, installationRoot, installFromDirectory, managedInstallRoot, scheduleFlatEntryUpdate, stageReleaseDirectory } from "./release-install"
 
 const DEFAULT_GITHUB_USER = "QinCai-rui"
 const DEFAULT_GITHUB_REPO = "MeshTalk"
@@ -454,6 +454,7 @@ export async function installRelease(release: Release, installDir: string, onPro
     await Bun.sleep(16)
     if (hasManagedBootstrap(installDir)) stageReleaseDirectory(extracted, installDir, release.version)
     else installFromDirectory(extracted, installDir, release.version)
+    scheduleFlatEntryUpdate(installDir)
   } finally {
     await rm(temporary, { recursive: true, force: true })
   }
@@ -462,7 +463,7 @@ export async function installRelease(release: Release, installDir: string, onPro
 export function requestUpdateRestart(installDir: string): void {
   mkdirSync(DATA_DIR, { recursive: true })
   const temporary = `${RESTART_PATH}.tmp`
-  writeFileSync(temporary, join(resolve(installDir), `meshtalk${process.platform === "win32" ? ".exe" : ""}`))
+  writeFileSync(temporary, resolve(installDir))
   chmodSync(temporary, 0o600)
   renameSync(temporary, RESTART_PATH)
 }
@@ -493,8 +494,10 @@ export function releaseInstallDir(): string | null {
 
 export function isReleaseInstallDir(directory: string): boolean {
   try {
+    if (hasManagedBootstrap(directory)) return true
     if (!lstatSync(directory).isDirectory()) return false
-    if (existsSync(join(directory, ".meshtalk-install.json")) && lstatSync(join(directory, `meshtalk${process.platform === "win32" ? ".exe" : ""}`)).isFile()) return true
+    const root = managedInstallRoot(directory)
+    if (existsSync(join(root, ".meshtalk-install.json")) && lstatSync(join(root, `meshtalk${process.platform === "win32" ? ".exe" : ""}`)).isFile()) return true
     return expectedFiles().every((name) => {
       const path = join(directory, name)
       return existsSync(path) && lstatSync(path).isFile()

@@ -188,6 +188,7 @@ test.each([true, false])("installRelease streams the archive and reports each in
   const files = ["meshtalk", "meshtalk-backend"].map((name) => `${name}${suffix}`)
   mkdirSync(source)
   mkdirSync(installDir)
+  if (process.platform === "win32") writeFileSync(join(installDir, "unrelated-command"), "keep")
   for (const name of files) {
     writeFileSync(join(source, name), `new ${name}`)
     writeFileSync(join(installDir, name), `old ${name}`)

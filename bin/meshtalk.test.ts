@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
-import { releaseFiles, stageReleaseDirectory } from "../common/release-install"
+import { managedInstallRoot, processMayBeAlive, releaseFiles, stageReleaseDirectory } from "../common/release-install"
 
 let temporary: string
 let first: string
@@ -22,6 +22,7 @@ beforeAll(async () => {
     if (process.env.MESHTALK_TEST_PROCESS_LIST === "invalid") { console.log("unparseable"); process.exit(0) }
     const pid = process.ppid
     if (process.platform === "win32") console.log('"meshtalk.exe","' + pid + '","Console","1","1 K"')
+    else if (process.argv.includes("pid=,ppid=,uid=,comm=")) console.log(pid + " 0 " + process.getuid() + " meshtalk")
     else console.log(pid + " meshtalk")
   `)
   const inspectorBuild = Bun.spawn([process.execPath, "build", inspector, "--compile", "--outfile", join(tools, process.platform === "win32" ? "tasklist.exe" : "ps")], { stdout: "ignore", stderr: "pipe" })
@@ -42,7 +43,7 @@ beforeAll(async () => {
   }
   first = join(temporary, "1.0.0")
   second = join(temporary, "2.0.0")
-}, 60000)
+}, 120000)
 
 afterAll(() => {
   if (temporary) rmSync(temporary, { recursive: true, force: true })
@@ -70,21 +71,30 @@ test.each(["empty", "invalid"])("installer refuses an %s process list before cha
   expect(existsSync(root)).toBe(false)
 })
 
-test("compiled bootstrap forwards arguments and reports the selected version after reinstall", async () => {
+test("the compiled installer accepts explicit automatic-close permission", async () => {
+  const root = join(temporary, "close-option")
+  mkdirSync(root)
+  const result = await run(join(first, releaseFiles[0]), ["--install-from", first, "--install-dir", root, "--close-running"], "close-option")
+  expect(result.code).toBe(0)
+  expect(await run(join(root, releaseFiles[0]), ["--version"], "close-option")).toEqual({ stdout: "1.0.0", stderr: "", code: 0 })
+}, 120000)
+
+test("the existing command updates its launcher code and preserves arguments after reinstall", async () => {
   const root = join(temporary, "managed install with spaces")
   const executable = join(root, releaseFiles[0])
   expect((await run(join(first, releaseFiles[0]), ["--install-from", first, "--install-dir", root], "managed")).code).toBe(0)
   const bootstrap = readFileSync(executable)
   expect(await run(executable, ["--version"], "managed")).toEqual({ stdout: "1.0.0", stderr: "", code: 0 })
   expect((await run(join(second, releaseFiles[0]), ["--install-from", second, "--install-dir", root], "managed")).code).toBe(0)
-  expect(readFileSync(executable)).toEqual(bootstrap)
+  expect(readFileSync(executable)).not.toEqual(bootstrap)
+  expect(readFileSync(executable)).toEqual(readFileSync(join(second, releaseFiles[0])))
   expect(await run(executable, ["--version"], "managed")).toEqual({ stdout: "2.0.0", stderr: "", code: 0 })
   const failed = await run(executable, ["--splash=invalid"], "managed")
   expect(failed.code).not.toBe(0)
   expect(failed.stderr).toContain("Usage:")
-}, 60000)
+}, 120000)
 
-test("flat binaries installed by an older updater migrate without replacing their launcher", async () => {
+test("flat binaries installed by an older updater preserve the command path and eventually refresh all code", async () => {
   const root = join(temporary, "legacy")
   mkdirSync(root)
   for (const file of releaseFiles) copyFileSync(join(first, file), join(root, file))
@@ -93,8 +103,22 @@ test("flat binaries installed by an older updater migrate without replacing thei
   expect((await run(executable, ["--version"], "legacy")).stdout).toBe("1.0.0")
   stageReleaseDirectory(second, root, "2.0.0")
   expect(await run(executable, ["--version"], "legacy")).toEqual({ stdout: "2.0.0", stderr: "", code: 0 })
-  expect(readFileSync(executable)).toEqual(bootstrap)
-}, 60000)
+  if (process.platform !== "win32") expect(readFileSync(executable)).not.toEqual(bootstrap)
+  else {
+    const expected = readFileSync(join(second, releaseFiles[0]))
+    const marker = join(root, ".meshtalk-flat-helper.json")
+    const deadline = Date.now() + 60000
+    let helperPid: number | undefined
+    while (Date.now() < deadline) {
+      try { helperPid = JSON.parse(readFileSync(marker, "utf8")).pid } catch {}
+      if (readFileSync(executable).equals(expected) && !existsSync(marker) && (!helperPid || !processMayBeAlive(helperPid))) break
+      await Bun.sleep(250)
+    }
+    expect(readFileSync(executable)).toEqual(expected)
+    expect(existsSync(marker)).toBe(false)
+    if (helperPid) expect(processMayBeAlive(helperPid)).toBe(false)
+  }
+}, 120000)
 
 test("a compiled flat installation with no backend never falls back to uv", async () => {
   const root = join(temporary, "missing backend")
@@ -110,13 +134,14 @@ test("a compiled flat installation with no backend never falls back to uv", asyn
 test("compiled uninstall preserves unrelated version directories and removes backup selection", async () => {
   const root = join(temporary, "uninstall")
   expect((await run(join(first, releaseFiles[0]), ["--install-from", first, "--install-dir", root], "uninstall")).code).toBe(0)
-  const unrelated = join(root, "versions", "another-tool")
+  const store = managedInstallRoot(root)
+  const unrelated = join(store, "versions", "another-tool")
   mkdirSync(unrelated)
   writeFileSync(join(unrelated, "keep"), "not MeshTalk")
   const executable = join(root, releaseFiles[0])
   expect((await run(executable, ["--version"], "uninstall")).code).toBe(0)
   expect((await run(join(first, releaseFiles[0]), ["--uninstall-releases", "--install-dir", root], "uninstall")).code).toBe(0)
   expect(readFileSync(join(unrelated, "keep"), "utf8")).toBe("not MeshTalk")
-  expect(existsSync(join(root, ".meshtalk-install.json"))).toBe(false)
-  expect(existsSync(join(root, ".meshtalk-install.json.bak"))).toBe(false)
-}, 60000)
+  expect(existsSync(join(store, ".meshtalk-install.json"))).toBe(false)
+  expect(existsSync(join(store, ".meshtalk-install.json.bak"))).toBe(false)
+}, 120000)

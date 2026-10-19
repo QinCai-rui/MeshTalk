@@ -42,7 +42,7 @@ describe("affected packages", () => {
     expect(affectedPackages(["scripts/profile-rss.sh"]).installers).toBe(false)
   })
   test("updater checks cover launcher, release management, installer, and dependency inputs", () => {
-    for (const path of ["bin/meshtalk.ts", "bin/meshtalk.test.ts", "bin/tui-entry.ts", "common/updater.ts", "common/updater.test.ts", "common/release-install.ts", "common/release-install.test.ts", "scripts/install.sh", "scripts/install.ps1", "scripts/install.test.ts", "package.json", "bun.lock", "cli/package.json", "tui/package.json"]) {
+    for (const path of ["bin/meshtalk.ts", "bin/meshtalk.test.ts", "bin/tui-entry.ts", "common/updater.ts", "common/updater.test.ts", "common/release-install.ts", "common/release-install.test.ts", "common/windows-install-links.ts", "common/windows-install-links.test.ts", "common/install-processes.ts", "common/install-processes.test.ts", "scripts/install.sh", "scripts/install.ps1", "scripts/install.test.ts", "package.json", "bun.lock", "cli/package.json", "tui/package.json"]) {
       expect(affectedPackages([path]).updates).toBe(true)
     }
   })

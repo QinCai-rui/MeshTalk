@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
-import { activateRelease, cleanupReleases, installFromDirectory, prepareInstalledLauncher, prepareUpdateRestart, releaseFiles, releaseUsage, retainChildRelease, stageReleaseDirectory, uninstallReleaseInstallation } from "./release-install"
+import { activateRelease, cleanupReleases, installFromDirectory, managedInstallRoot, pendingFlatInstallation, prepareInstalledLauncher, prepareUpdateRestart, releaseFiles, releaseUsage, retainChildRelease, stageReleaseDirectory, uninstallReleaseInstallation } from "./release-install"
 
 const stateFile = ".meshtalk-install.json"
 const modulePath = new URL("./release-install.ts", import.meta.url).href
@@ -10,6 +10,7 @@ type Selection = { schema: 1; current?: string; pending?: string; bootstrap?: st
 let directory: string
 let root: string
 let children: ReturnType<typeof Bun.spawn>[]
+const windowsTest = (name: string, action: () => void | Promise<void>) => test.skipIf(process.platform !== "win32")(name, action, 120000)
 
 beforeEach(() => {
   const temporary = process.platform === "win32" ? tmpdir() : "/tmp/opencode"
@@ -18,6 +19,9 @@ beforeEach(() => {
   root = join(directory, "install")
   mkdirSync(root)
   root = realpathSync(root)
+  // Exercise the shared-folder compatibility path here. Dedicated Windows
+  // junction publication has its own native tests.
+  if (process.platform === "win32") writeFileSync(join(root, "unrelated-command"), "keep")
   children = []
 })
 
@@ -92,6 +96,186 @@ function spawn(code: string) {
 }
 
 describe("release installation", () => {
+  windowsTest("dedicated Windows installation switches the whole launcher without changing its command path", () => {
+    const entry = join(directory, "dedicated")
+    installFromDirectory(source("1.0.0"), entry, "1.0.0")
+    const store = managedInstallRoot(entry)
+    expect(store).not.toBe(entry)
+    expect(lstatSync(entry).isSymbolicLink()).toBe(true)
+    const first = realpathSync(join(entry, releaseFiles[0]))
+    installFromDirectory(source("2.0.0"), entry, "2.0.0")
+    expect(realpathSync(join(entry, releaseFiles[0]))).not.toBe(first)
+    expect(readFileSync(join(entry, releaseFiles[0]), "utf8")).toBe(`${releaseFiles[0]} payload 2.0.0\n`)
+    const launcher = prepareInstalledLauncher(join(entry, releaseFiles[0]))!
+    releaseUsage(launcher)
+    cleanupReleases(store)
+    expect(existsSync(first)).toBe(false)
+    expect(readdirSync(directory).some((name) => name.includes("meshtalk-retired-"))).toBe(false)
+    uninstallReleaseInstallation(entry)
+    expect(existsSync(entry)).toBe(false)
+    expect(existsSync(join(store, stateFile))).toBe(false)
+  })
+
+  windowsTest("Windows link migration preserves the old pair until the new launcher confirms startup", () => {
+    const entry = join(directory, "legacy dedicated")
+    mkdirSync(entry)
+    for (const file of releaseFiles) writeFileSync(join(entry, file), `old ${file}`)
+    installFromDirectory(source("2.0.0"), entry, "2.0.0")
+    const store = managedInstallRoot(entry)
+    const journal = JSON.parse(readFileSync(join(store, ".meshtalk-migration.json"), "utf8"))
+    expect(readFileSync(join(journal.retired, releaseFiles[0]), "utf8")).toBe(`old ${releaseFiles[0]}`)
+    const launcher = prepareInstalledLauncher(join(entry, releaseFiles[0]))!
+    releaseUsage(launcher)
+    cleanupReleases(store)
+    expect(existsSync(journal.retired)).toBe(false)
+  })
+
+  windowsTest("a dedicated Windows installation can repair a missing selected backend", () => {
+    const entry = join(directory, "repair dedicated")
+    const original = source("1.0.0")
+    installFromDirectory(original, entry, "1.0.0")
+    const before = realpathSync(entry)
+    rmSync(join(entry, releaseFiles[1]))
+    installFromDirectory(original, entry, "1.0.0")
+    expect(realpathSync(entry)).not.toBe(before)
+    expect(readFileSync(join(entry, releaseFiles[1]), "utf8")).toBe(`${releaseFiles[1]} payload 1.0.0\n`)
+  })
+
+  windowsTest("a dedicated Windows installation can repair a missing release and two damaged selectors", () => {
+    const entry = join(directory, "repair lost release")
+    const original = source("1.0.0")
+    installFromDirectory(original, entry, "1.0.0")
+    const store = managedInstallRoot(entry)
+    rmSync(realpathSync(entry), { recursive: true })
+    writeFileSync(join(store, stateFile), "{bad main")
+    writeFileSync(join(store, `${stateFile}.bak`), "{bad backup")
+    installFromDirectory(original, entry, "1.0.0")
+    expect(managedInstallRoot(entry)).toBe(store)
+    expect(readFileSync(join(entry, releaseFiles[0]), "utf8")).toBe(`${releaseFiles[0]} payload 1.0.0\n`)
+    expect(JSON.parse(readFileSync(join(store, stateFile), "utf8")).layout).toBe("directory-link")
+  })
+
+  windowsTest("Windows uninstall followed by reinstall preserves the existing command path", () => {
+    const entry = join(directory, "reinstall dedicated")
+    installFromDirectory(source("1.0.0"), entry, "1.0.0")
+    uninstallReleaseInstallation(entry)
+    installFromDirectory(source("2.0.0"), entry, "2.0.0")
+    expect(readFileSync(join(entry, releaseFiles[0]), "utf8")).toBe(`${releaseFiles[0]} payload 2.0.0\n`)
+  })
+
+  windowsTest("the public Windows installer recovers a missing entry after a journaled migration crash", () => {
+    const entry = join(directory, "interrupted migration")
+    mkdirSync(entry)
+    for (const file of releaseFiles) writeFileSync(join(entry, file), `old ${file}`)
+    const original = source("1.0.0")
+    installFromDirectory(original, entry, "1.0.0")
+    const store = managedInstallRoot(entry)
+    const journal = JSON.parse(readFileSync(join(store, ".meshtalk-migration.json"), "utf8"))
+    expect(existsSync(journal.retired)).toBe(true)
+    // This is the persisted filesystem state between moving the ordinary
+    // directory aside and publishing its visible junction.
+    rmSync(entry, { force: true })
+    installFromDirectory(original, entry, "1.0.0")
+    expect(managedInstallRoot(entry)).toBe(store)
+    expect(readFileSync(join(entry, releaseFiles[0]), "utf8")).toBe(`${releaseFiles[0]} payload 1.0.0\n`)
+  })
+
+  windowsTest("files added through a Windows command junction are never hidden by an update", () => {
+    const entry = join(directory, "newly shared")
+    installFromDirectory(source("1.0.0"), entry, "1.0.0")
+    const before = realpathSync(entry)
+    writeFileSync(join(entry, "user-file"), "keep")
+    expect(() => installFromDirectory(source("2.0.0"), entry, "2.0.0")).toThrow()
+    expect(realpathSync(entry)).toBe(before)
+    expect(readFileSync(join(entry, "user-file"), "utf8")).toBe("keep")
+    expect(readFileSync(join(entry, releaseFiles[0]), "utf8")).toBe(`${releaseFiles[0]} payload 1.0.0\n`)
+  })
+
+  windowsTest("a shared Windows folder refreshes its forwarding executable rather than freezing it", () => {
+    install()
+    const pending = stage()
+    const update = pendingFlatInstallation(root)!
+    expect(update.release).toBe(pending)
+    installFromDirectory(update.source, root, update.version, { keepFlat: true, expectedRelease: pending })
+    expect(readFileSync(join(root, releaseFiles[0]), "utf8")).toBe(`${releaseFiles[0]} payload 2.0.0\n`)
+    expect(readFileSync(join(root, "unrelated-command"), "utf8")).toBe("keep")
+    expect(pendingFlatInstallation(root)).toBeNull()
+  })
+
+  windowsTest("Windows startup reconciles a selector published before its junction switch", () => {
+    const entry = join(directory, "interrupted selection")
+    installFromDirectory(source("1.0.0"), entry, "1.0.0")
+    const store = managedInstallRoot(entry)
+    stageReleaseDirectory(source("2.0.0"), store, "2.0.0")
+    const state = JSON.parse(readFileSync(join(store, stateFile), "utf8"))
+    writeFileSync(join(store, stateFile), JSON.stringify({ ...state, current: state.pending, pending: undefined }))
+    const launcher = prepareInstalledLauncher(join(entry, releaseFiles[0]))!
+    releaseUsage(launcher)
+    expect(realpathSync(join(entry, releaseFiles[0]))).toBe(join(store, "versions", state.pending, releaseFiles[0]))
+    expect(launcher.executable).toBe(realpathSync(join(entry, releaseFiles[0])))
+  })
+
+  windowsTest("retired Windows usage records protect live legacy processes outside the store", async () => {
+    const entry = join(directory, "retired usage")
+    mkdirSync(entry)
+    for (const file of releaseFiles) writeFileSync(join(entry, file), `old ${file}`)
+    installFromDirectory(source("1.0.0"), entry, "1.0.0")
+    const store = managedInstallRoot(entry)
+    const journal = JSON.parse(readFileSync(join(store, ".meshtalk-migration.json"), "utf8"))
+    const child = spawn("setInterval(() => {}, 1000)")
+    const records = join(journal.retired, ".meshtalk-usage")
+    mkdirSync(records)
+    writeFileSync(join(records, "11111111-1111-4111-8111-111111111111.json"), JSON.stringify({ pid: child.pid, release: ".", kind: "launcher" }))
+    const launcher = prepareInstalledLauncher(join(entry, releaseFiles[0]))!
+    releaseUsage(launcher)
+    cleanupReleases(store)
+    expect(existsSync(journal.retired)).toBe(true)
+    child.kill()
+    await child.exited
+    cleanupReleases(store)
+    expect(existsSync(journal.retired)).toBe(false)
+  })
+
+  test("a stale background helper cannot select an older download", () => {
+    const current = install()
+    const stale = stage()
+    const next = stage("3.0.0")
+    installFromDirectory(dirname(payloadPath(stale)), root, "2.0.0", { keepFlat: true, expectedRelease: stale })
+    expect(selection()).toMatchObject({ current, pending: next })
+    expect(readFileSync(join(root, releaseFiles[0]), "utf8")).toBe(`${releaseFiles[0]} payload 1.0.0\n`)
+  })
+
+  test.skipIf(process.platform === "win32")("a valid selector interrupted before link publication is reconciled on the next launch", () => {
+    const previous = install()
+    const next = stage()
+    const state = selection()
+    writeFileSync(join(root, stateFile), JSON.stringify({ ...state, current: next, pending: undefined }))
+    expect(realpathSync(join(root, releaseFiles[0]))).toBe(payloadPath(previous))
+    const launcher = prepareInstalledLauncher(join(root, releaseFiles[0]))!
+    try {
+      expect(launcher.executable).toBe(payloadPath(next))
+      expect(realpathSync(join(root, releaseFiles[0]))).toBe(payloadPath(next))
+    } finally { releaseUsage(launcher) }
+  })
+
+  test.skipIf(process.platform === "win32")("selectors from the executable-bootstrap implementation migrate to command links", () => {
+    const original = source("1.0.0")
+    for (const file of releaseFiles) copyFileSync(join(original, file), join(root, file))
+    const launcher = prepareInstalledLauncher(join(root, releaseFiles[0]))!
+    releaseUsage(launcher)
+    const state = selection()
+    rmSync(join(root, releaseFiles[0]))
+    copyFileSync(join(original, releaseFiles[0]), join(root, releaseFiles[0]))
+    const inherited = { ...state } as Record<string, unknown>
+    delete inherited.layout
+    writeFileSync(join(root, stateFile), JSON.stringify(inherited))
+    const migrated = prepareInstalledLauncher(join(root, releaseFiles[0]))!
+    releaseUsage(migrated)
+    expect(lstatSync(join(root, releaseFiles[0])).isSymbolicLink()).toBe(true)
+    const next = stage()
+    activateRelease(root)
+    expect(readFileSync(join(root, releaseFiles[0]))).toEqual(readFileSync(payloadPath(next)))
+  })
   test("ancestor path aliases resolve to the same physical installation", () => {
     const current = install()
     const alias = join(directory, "parent-alias")
@@ -206,22 +390,24 @@ describe("release installation", () => {
     } finally { chmodSync(root, 0o755) }
   })
 
-  test("installs a flat archive as a stable root launcher and a verified version pair", () => {
+  test("installs a flat archive with a stable command path and a verified version pair", () => {
     const id = install()
     expect(selection()).toMatchObject({ schema: 1, current: id })
     expect(selection().pending).toBeUndefined()
     expect(id).toMatch(/^release-[a-f0-9]{32}$/)
     expect(readFileSync(join(root, releaseFiles[0]), "utf8")).toBe(`${releaseFiles[0]} payload 1.0.0\n`)
     expect(existsSync(join(root, releaseFiles[1]))).toBe(false)
+    expect(lstatSync(join(root, releaseFiles[0])).isSymbolicLink()).toBe(process.platform !== "win32")
     assertPair(id, "1.0.0")
     expect(activateRelease(root)).toBe(payloadPath(id))
   })
 
-  test("a later install selects its pair without overwriting the bootstrap", () => {
+  test("a later install updates all launcher code at the existing command path", () => {
     install()
     const bootstrap = readFileSync(join(root, releaseFiles[0]))
     const next = install("2.0.0")
-    expect(readFileSync(join(root, releaseFiles[0]))).toEqual(bootstrap)
+    expect(readFileSync(join(root, releaseFiles[0]))).not.toEqual(bootstrap)
+    expect(readFileSync(join(root, releaseFiles[0]))).toEqual(readFileSync(payloadPath(next)))
     expect(selection()).toMatchObject({ schema: 1, current: next })
     expect(selection().pending).toBeUndefined()
     assertPair(next, "2.0.0")
@@ -315,13 +501,14 @@ describe("release installation", () => {
     }
   })
 
-  test("the installer repairs a corrupt bootstrap and records its new hash", () => {
+  test("the installer repairs a corrupt launcher at the existing command path", () => {
     install()
     writeFileSync(join(root, releaseFiles[0]), "corrupt bootstrap")
     const next = install("2.0.0")
     const bootstrap = readFileSync(join(root, releaseFiles[0]))
     expect(bootstrap.toString()).toBe(`${releaseFiles[0]} payload 2.0.0\n`)
-    expect(selection().bootstrap).toBe(new Bun.CryptoHasher("sha256").update(bootstrap).digest("hex"))
+    if (process.platform === "win32") expect(selection().bootstrap).toBe(new Bun.CryptoHasher("sha256").update(bootstrap).digest("hex"))
+    else expect(lstatSync(join(root, releaseFiles[0])).isSymbolicLink()).toBe(true)
     expect(selection().pending).toBeUndefined()
     assertPair(next, "2.0.0")
     const launcher = prepareInstalledLauncher(join(root, releaseFiles[0]))!
@@ -381,6 +568,8 @@ describe("release installation", () => {
 
       test(`${damage} pending ${file} warns but does not block ordinary startup`, () => {
         const current = install()
+        const acknowledged = prepareInstalledLauncher(payloadPath(current))!
+        releaseUsage(acknowledged)
         const pending = stage()
         if (damage === "missing") rmSync(payloadPath(pending, file))
         else writeFileSync(payloadPath(pending, file), "damaged")
@@ -481,6 +670,23 @@ describe("release installation", () => {
     expect(existsSync(dirname(payloadPath(previous)))).toBe(true)
     const acknowledged = prepareInstalledLauncher(payloadPath(next))!
     releaseUsage(acknowledged)
+    cleanupReleases(root)
+    expect(existsSync(dirname(payloadPath(previous)))).toBe(false)
+  })
+
+  test("exit cleanup leaves its own physical executable and manifest for a later process", () => {
+    const previous = install()
+    const next = stage()
+    activateRelease(root)
+    const executable = process.execPath
+    try {
+      process.execPath = payloadPath(previous)
+      const acknowledged = prepareInstalledLauncher(payloadPath(next))!
+      releaseUsage(acknowledged)
+      cleanupReleases(root)
+      expect(existsSync(payloadPath(previous))).toBe(true)
+      expect(existsSync(join(dirname(payloadPath(previous)), ".meshtalk-release.json"))).toBe(true)
+    } finally { process.execPath = executable }
     cleanupReleases(root)
     expect(existsSync(dirname(payloadPath(previous)))).toBe(false)
   })

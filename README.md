@@ -121,15 +121,19 @@ The target must be an existing standalone MeshTalk installation.
 
 On Windows, macOS, and Linux, updates verify the GitHub SHA-256 digest and
 install the launcher and backend together in a separate release directory.
-The original `meshtalk` entry point selects that complete release; running
-executables are not overwritten. Close other MeshTalk windows before choosing
+The existing `meshtalk` command path selects that complete release through a
+symlink on Unix or a directory junction in a dedicated Windows folder. Launcher
+code updates too; no original executable is kept permanently. Close other MeshTalk windows before choosing
 restart-to-update, because they share the backend. A downloaded update can
 remain staged until MeshTalk and its backend have stopped.
 
 Unused older releases are deleted automatically. A release stays available
 while a launcher or backend still uses it; cleanup retries during later launches
-and while MeshTalk is running. The stable entry point is retained, not treated
-as an old release. On macOS and Linux, handoff preserves the terminal session.
+and while MeshTalk is running. Shared Windows folders keep their exact executable
+paths and refresh the forwarding executable after all instances stop, without
+moving unrelated files. The installer offers explicit `--close-running` (Bash)
+or `-CloseRunning` (PowerShell) permission; generic yes flags do not imply it.
+On macOS and Linux, handoff preserves the terminal session.
 Identity, messages, and settings are not moved or deleted by updates.
 See [update installation and recovery](docs/UPDATES.md) for migration details.
 

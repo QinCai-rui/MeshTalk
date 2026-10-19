@@ -12,6 +12,7 @@ DRY_RUN=0
 AS_ROOT=0
 NON_INTERACTIVE=0
 ASSUME_YES=0
+CLOSE_RUNNING=0
 VERSION=""
 INSTALL_DIR=""
 DOWNLOAD_METHOD=auto
@@ -244,6 +245,8 @@ ${UNDERLINE}Common options${RESET}
   ${MINT}-y, --yes${RESET}               Auto-answer yes to prompts
   ${MINT}-n, --non-interactive${RESET}   Disable prompts; use stable release and default dir
   ${MINT}    --uninstall${RESET}          Remove an existing installation
+  ${MINT}    --close-running${RESET}      Allow the helper to close verified running MeshTalk processes
+                              Not implied by --yes; requires a supported helper
   ${MINT}    --dry-run${RESET}            Show planned actions without making changes
   ${MINT}    --help${RESET}               Show this help
 
@@ -319,6 +322,9 @@ parse_arguments() {
         ;;
       --yes|-y)
         ASSUME_YES=1
+        ;;
+      --close-running)
+        CLOSE_RUNNING=1
         ;;
       --i-understand-the-risks-of-running-as-root)
         AS_ROOT=1
@@ -867,7 +873,12 @@ has_managed_installation() {
   for marker in .meshtalk-install.json .meshtalk-install.json.bak; do
     [[ ! -e $INSTALL_DIR/$marker && ! -L $INSTALL_DIR/$marker ]] || return 0
   done
+  has_windows_link_store && return 0
   return 1
+}
+
+has_windows_link_store() {
+  [[ ${PLATFORM:-} == windows && -e $(dirname "$INSTALL_DIR")/.$(basename "$INSTALL_DIR").meshtalk-install/.meshtalk-store.json ]]
 }
 
 supports_install_protocol() {
@@ -883,10 +894,13 @@ install_extracted() {
     chmod u+rx "$extract_dir/$file" || die "Unable to make ${file} executable."
   done
   if supports_install_protocol "$extract_dir/$LAUNCHER_NAME"; then
-    "$extract_dir/$LAUNCHER_NAME" --install-from "$extract_dir" --install-dir "$INSTALL_DIR" \
+    local helper_args=(--install-from "$extract_dir" --install-dir "$INSTALL_DIR")
+    if [[ $CLOSE_RUNNING -eq 1 ]]; then helper_args+=(--close-running); fi
+    "$extract_dir/$LAUNCHER_NAME" "${helper_args[@]}" \
       || die "Managed installation failed; the installer did not fall back to legacy replacement."
     return
   fi
+  [[ $CLOSE_RUNNING -eq 0 ]] || die "--close-running requires a supported installation helper; this historical release cannot close running processes. Close MeshTalk manually and retry without --close-running."
   if has_managed_installation; then
     die "This release cannot replace a managed MeshTalk installation. Install a newer release, choose another --install-dir, or explicitly uninstall before reinstalling this historical release."
   fi
@@ -1048,7 +1062,9 @@ uninstall_managed_releases() (
   # Run outside the installation so Windows can remove the root executable.
   cp -p "$INSTALL_DIR/$LAUNCHER_NAME" "$helper_dir/$LAUNCHER_NAME" || return 1
   chmod u+rx "$helper_dir/$LAUNCHER_NAME" || return 1
-  "$helper_dir/$LAUNCHER_NAME" --uninstall-releases --install-dir "$INSTALL_DIR"
+  local helper_args=(--uninstall-releases --install-dir "$INSTALL_DIR")
+  if [[ $CLOSE_RUNNING -eq 1 ]]; then helper_args+=(--close-running); fi
+  "$helper_dir/$LAUNCHER_NAME" "${helper_args[@]}"
 )
 
 uninstall_meshtalk() {
@@ -1087,7 +1103,6 @@ uninstall_meshtalk() {
 
   printf '\n'
   task_start "Removing MeshTalk from ${INSTALL_DIR}"
-  require_windows_stopped
   if [[ $managed -eq 1 ]]; then
     if supports_install_protocol "$INSTALL_DIR/$LAUNCHER_NAME"; then
       uninstall_managed_releases \
@@ -1097,9 +1112,14 @@ uninstall_meshtalk() {
       task_finish "$TICK" "Removed MeshTalk from ${INSTALL_DIR}."
       return
     else
+      if has_windows_link_store; then
+        die "The linked installation needs repair before uninstalling. Rerun the latest installer; no installed files were removed."
+      fi
       warn "Managed cleanup is unavailable. Release and usage directories were retained, including unknown release directories; inspect them manually before removing anything."
     fi
   fi
+  [[ $CLOSE_RUNNING -eq 0 ]] || die "--close-running requires a supported managed uninstall helper. Close MeshTalk manually and retry without --close-running."
+  require_windows_stopped
   for file in "${EXPECTED_FILES[@]}"; do
     rm -f -- "$INSTALL_DIR/$file"
   done

@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path"
 
 const roots: string[] = []
 const installer = readFileSync(new URL("./install.sh", import.meta.url), "utf8").replace(/^main "\$@"$/m, "")
+const powershellInstaller = readFileSync(new URL("./install.ps1", import.meta.url), "utf8")
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -54,6 +55,50 @@ function expectUnknownPreserved(f: ReturnType<typeof fixture>) {
 }
 
 describe("Bash installer release handoff", () => {
+  test.each(["", "--yes", "-y", "--close-running", "--yes --close-running"])("forwards close-running only when explicitly selected: %s", options => {
+    const f = fixture('if [[ $1 == --install-protocol ]]; then echo 1; else printf "%s\\n" "$@" > "$DESTINATION/arguments"; fi')
+    const result = run(f, `parse_arguments ${options}; install_extracted "$EXTRACTED"`)
+    expect(result.exitCode).toBe(0)
+    const closeArgument = options.includes("--close-running") ? "--close-running\n" : ""
+    expect(readFileSync(join(f.destination, "arguments"), "utf8")).toBe(`--install-from\n${f.extracted}\n--install-dir\n${f.destination}\n${closeArgument}`)
+  })
+
+  test("documents explicit process-close permission separately from yes", () => {
+    const result = run(fixture(), "parse_arguments --help")
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.toString()).toContain("--close-running")
+    expect(result.stdout.toString()).toContain("Not implied by --yes")
+  })
+
+  test.each(["", ".meshtalk-install.json"])("refuses historical install with close-running before fallback (marker: %s)", marker => {
+    const f = fixture()
+    if (marker) writeFileSync(join(f.destination, marker), "marker")
+    const result = run(f, 'parse_arguments --yes --close-running; install_extracted "$EXTRACTED"')
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr.toString()).toContain("--close-running requires a supported installation helper")
+    expect(readFileSync(join(f.destination, "meshtalk"), "utf8")).toBe("old launcher")
+    expect(readFileSync(join(f.destination, "meshtalk-backend"), "utf8")).toBe("old backend")
+  })
+
+  test.each(["", ".meshtalk-install.json", ".meshtalk-install.json.bak"])("refuses unsupported uninstall with close-running without deleting files (marker: %s)", marker => {
+    const f = uninstallFixture(marker)
+    const result = run(f, "parse_arguments --yes --close-running; uninstall_meshtalk")
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr.toString()).toContain("--close-running requires a supported managed uninstall helper")
+    expect(readFileSync(join(f.destination, "meshtalk"), "utf8")).toBe("old launcher")
+    expect(readFileSync(join(f.destination, "meshtalk-backend"), "utf8")).toBe("old backend")
+    if (marker) expect(readFileSync(join(f.destination, marker), "utf8")).toBe("marker")
+    expectUnknownPreserved(f)
+  })
+
+  test.each(["--yes", "--yes --close-running"])("hands Windows managed uninstall to helper without script process checks: %s", options => {
+    const f = uninstallFixture(".meshtalk-install.json", 'if [[ $1 == --install-protocol ]]; then echo 1; else printf "%s\\n" "$@" > "$DESTINATION/arguments"; fi')
+    const result = run(f, `PLATFORM=windows; require_windows_stopped() { return 9; }; parse_arguments ${options}; uninstall_meshtalk`)
+    expect(result.exitCode).toBe(0)
+    const closeArgument = options.includes("--close-running") ? "--close-running\n" : ""
+    expect(readFileSync(join(f.destination, "arguments"), "utf8")).toBe(`--uninstall-releases\n--install-dir\n${f.destination}\n${closeArgument}`)
+  })
+
   test("runs the extracted managed installer with both paths and preserves managed state", () => {
     const f = fixture('if [[ $1 == --install-protocol ]]; then echo 1; else printf "%s\\n" "$@" > "$DESTINATION/arguments"; fi')
     writeFileSync(join(f.destination, ".meshtalk-install.json"), "marker")
@@ -232,5 +277,33 @@ ASSUME_YES=1; uninstall_meshtalk`)
     expect(readFileSync(join(f.destination, ".meshtalk-current.json"), "utf8")).toBe("new selector")
     expect(readdirSync(f.root).filter(name => name.startsWith("meshtalk-uninstaller."))).toEqual([])
     expectUnknownPreserved(f)
+  })
+})
+
+describe("PowerShell installer close-running contract", () => {
+  test("declares and documents a separate explicit switch", () => {
+    expect(powershellInstaller).toContain("[switch]$CloseRunning,")
+    expect(powershellInstaller).toContain("$script:CloseRunningFlag = [bool]$CloseRunning")
+    expect(powershellInstaller).toContain(".PARAMETER CloseRunning")
+    expect(powershellInstaller).toContain("Not implied by -Yes; requires a supported helper")
+    expect(powershellInstaller.match(/\$script:CloseRunningFlag\s*=/g)).toHaveLength(1)
+  })
+
+  test("forwards close-running only behind its own switch in both helpers", () => {
+    expect(powershellInstaller).toContain("$helperArgs = @('--install-from', $ExtractDir, '--install-dir', $script:InstallDirSel)")
+    expect(powershellInstaller).toContain("$helperArgs = @('--uninstall-releases', '--install-dir', $script:InstallDirSel)")
+    expect(powershellInstaller.match(/if \(\$script:CloseRunningFlag\) \{ \$helperArgs \+= '--close-running' \}/g)).toHaveLength(2)
+    expect(powershellInstaller).toContain("& $launcher @helperArgs")
+    expect(powershellInstaller).toContain("& $helper @helperArgs")
+  })
+
+  test("refuses the option before historical fallback or process-name checks", () => {
+    const installBody = powershellInstaller.split("function Install-Extracted {")[1].split("function Install-MeshTalk {")[0]
+    const uninstallBody = powershellInstaller.split("function Uninstall-MeshTalk {")[1].split("function Main {")[0]
+    expect(installBody).toContain("throw '-CloseRunning requires a supported installation helper")
+    expect(uninstallBody).toContain("throw '-CloseRunning requires a supported managed uninstall helper")
+    expect(installBody.indexOf("if ($script:CloseRunningFlag) {\n        throw")).toBeLessThan(installBody.indexOf("Confirm-MeshTalkStopped"))
+    expect(uninstallBody.indexOf("Uninstall-ManagedReleases")).toBeLessThan(uninstallBody.indexOf("Confirm-MeshTalkStopped"))
+    expect(uninstallBody.indexOf("if ($script:CloseRunningFlag) {\n        throw")).toBeLessThan(uninstallBody.indexOf("Confirm-MeshTalkStopped"))
   })
 })

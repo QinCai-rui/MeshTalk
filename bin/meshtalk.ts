@@ -7,7 +7,8 @@ import { basename, dirname, join, resolve } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { checkForUpdate, githubRepository, importLegacyWindowsUpdate, installRelease, isReleaseInstallDir, logUpdateHelper, releaseInstallDir, saveGithubRepository, saveGithubToken, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
-import { cleanupReleases, INSTALL_PROTOCOL, installationRoot, installFromDirectory, prepareInstalledLauncher, prepareUpdateRestart, releaseUsage, retainChildRelease, stageReleaseDirectory, uninstallReleaseInstallation, type InstalledLauncher } from "../common/release-install";
+import { cleanupReleases, INSTALL_PROTOCOL, installationRoot, installFromDirectory, managedInstallRoot, pendingFlatInstallation, prepareInstalledLauncher, prepareUpdateRestart, releaseFlatHelper, releaseUsage, retainChildRelease, retainInstallerRelease, scheduleFlatEntryUpdate, stageReleaseDirectory, uninstallReleaseInstallation, type InstalledLauncher } from "../common/release-install";
+import { closeInstallationProcesses, installationProcessPids } from "../common/install-processes";
 import { main as cliMain } from "../cli/src/index";
 import { runTui } from "./tui-entry";
 import type { SplashStyle } from "../tui/src/SplashScreen";
@@ -465,6 +466,21 @@ function startBackend(backend: Component, daemonise = true): ChildProcess {
   }
 }
 
+async function closeForInstallation(destination: string): Promise<void> {
+  if (!existsSync(destination)) return;
+  const root = managedInstallRoot(destination);
+  const additional = root === realpathSync(destination) ? [] : [root];
+  if (installationProcessPids(destination, additional).length === 0) return;
+  console.log("Closing MeshTalk for installation. Active sessions and file transfers will be interrupted.");
+  // TUI windows already exit when their authenticated backend disconnects.
+  // Give them time to restore their terminals before signalling any leftovers.
+  if (await backendRunning()) {
+    if (!await requestBackendShutdown()) throw new Error("MeshTalk's backend did not shut down. Close MeshTalk manually and retry; the installation was not changed.");
+    await Bun.sleep(2000);
+  }
+  await closeInstallationProcesses(destination, additional);
+}
+
 async function main() {
   mkdirSync(DATA_DIR, { recursive: true });
 
@@ -474,18 +490,46 @@ async function main() {
     console.log(INSTALL_PROTOCOL);
     return;
   }
+  if (IS_RELEASE_BUILD && args[0] === "--apply-pending") {
+    if (!isWindows || args.length !== 5 || args[1] !== "--install-dir" || args[3] !== "--release" || !/^release-[a-f0-9]{32}$/.test(args[4])) throw new Error("Invalid pending installer arguments.");
+    const destination = resolve(args[2]);
+    const lease = retainInstallerRelease(process.execPath);
+    if (!lease || lease.root !== managedInstallRoot(destination)) throw new Error("The pending installer must run from this installation's verified release store.");
+    try {
+      const deadline = Date.now() + 5 * 60_000;
+      while (true) {
+        // A newer download may supersede the one that started this helper.
+        // Always apply the latest verified selection after the windows close.
+        const update = pendingFlatInstallation(destination);
+        if (!update) return;
+        if (Date.now() >= deadline) return;
+        if (installationProcessPids(destination).length > 0) {
+          await Bun.sleep(1000);
+          continue;
+        }
+        installFromDirectory(update.source, destination, update.version, { keepFlat: true, expectedRelease: update.release });
+      }
+    } finally {
+      releaseUsage(lease);
+      releaseFlatHelper(destination);
+    }
+    return;
+  }
   if (IS_RELEASE_BUILD && args[0] === "--uninstall-releases") {
-    if (args.length !== 3 || args[1] !== "--install-dir") throw new Error("Invalid uninstaller arguments.");
+    if ((args.length !== 3 && !(args.length === 4 && args[3] === "--close-running")) || args[1] !== "--install-dir") throw new Error("Invalid uninstaller arguments.");
+    if (args[3] === "--close-running") await closeForInstallation(resolve(args[2]));
     if (await backendRunning() || otherLauncherPids().length > 0) throw new Error("Close all MeshTalk windows and stop its backend before uninstalling.");
     uninstallReleaseInstallation(resolve(args[2]));
     return;
   }
   if (IS_RELEASE_BUILD && args[0] === "--install-from") {
-    if (args.length !== 4 || args[2] !== "--install-dir") throw new Error("Invalid installer arguments.");
+    if ((args.length !== 4 && !(args.length === 5 && args[4] === "--close-running")) || args[2] !== "--install-dir") throw new Error("Invalid installer arguments.");
     const destination = resolve(args[3]);
+    if (args[4] === "--close-running") await closeForInstallation(destination);
     if (await backendRunning() || otherLauncherPids().length > 0) {
-      if (!existsSync(join(destination, ".meshtalk-install.json"))) throw new Error("Close all MeshTalk windows and stop its backend before upgrading this legacy installation.");
+      if (!existsSync(destination) || !existsSync(join(managedInstallRoot(destination), ".meshtalk-install.json"))) throw new Error("Close all MeshTalk windows and stop its backend before upgrading this legacy installation, or rerun the installer with --close-running.");
       stageReleaseDirectory(resolve(args[1]), destination, APP_RELEASE_VERSION);
+      scheduleFlatEntryUpdate(destination);
       console.log("Update staged. Close MeshTalk and launch it again to activate it.");
     } else {
       installFromDirectory(resolve(args[1]), destination, APP_RELEASE_VERSION);
@@ -510,6 +554,7 @@ async function main() {
         if (!installedLauncher) return;
         releaseUsage(installedLauncher);
         cleanupReleases(installedLauncher.root);
+        scheduleFlatEntryUpdate(installedLauncher.root);
       });
       if (realpathSync(installedLauncher.executable) !== executable) {
         process.exit(await launchReplacement(installedLauncher.executable, args, true));

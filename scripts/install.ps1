@@ -15,6 +15,8 @@
     Disable prompts; use stable release and default dir
 .PARAMETER Yes
     Auto-answer yes to prompts
+.PARAMETER CloseRunning
+    Allow the helper to close verified running MeshTalk processes. Not implied by Yes; requires a supported helper.
 .PARAMETER InstallDir
     Use a specific installation directory
 .PARAMETER Uninstall
@@ -30,6 +32,7 @@ param(
     [ValidateSet('auto', 'gh', 'webrequest')][string]$Method = 'auto',
     [Alias('n')][switch]$NonInteractive,
     [Alias('y')][switch]$Yes,
+    [switch]$CloseRunning,
     [string]$InstallDir,
     [switch]$Uninstall,
     [switch]$DryRun,
@@ -115,6 +118,7 @@ $script:Action         = if ($Uninstall) { 'uninstall' } else { 'install' }
 $script:DryRunFlag      = [bool]$DryRun
 $script:NonInteractive  = [bool]$NonInteractive
 $script:AssumeYes       = [bool]$Yes
+$script:CloseRunningFlag = [bool]$CloseRunning
 $script:VersionSel      = if ($Prerelease) { 'latest-prerelease' } elseif ($Version) { $Version } else { 'latest' }
 $script:InstallDirSel   = $InstallDir
 $script:DownloadMethod  = $Method.ToLowerInvariant()
@@ -135,6 +139,8 @@ Options:
   -Method <auto|gh|webrequest>  Download via auto, gh, or webrequest
   -NonInteractive          Disable prompts; use stable release and default dir
   -Yes                     Auto-answer yes to prompts
+  -CloseRunning            Allow the helper to close verified running MeshTalk processes
+                           Not implied by -Yes; requires a supported helper
   -InstallDir <dir>        Use a specific installation directory
   -Uninstall               Remove an existing installation
   -DryRun                  Show planned actions without making changes
@@ -919,7 +925,15 @@ function Test-ManagedInstallation {
     foreach ($marker in @('.meshtalk-install.json', '.meshtalk-install.json.bak')) {
         if (Test-Path -LiteralPath (Join-Path $script:InstallDirSel $marker)) { return $true }
     }
+    if (Test-WindowsLinkStore) { return $true }
     return $false
+}
+
+function Test-WindowsLinkStore {
+    if ($script:PlatformName -ne 'windows') { return $false }
+    $entry = [IO.Path]::GetFullPath($script:InstallDirSel).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $store = Join-Path ([IO.Path]::GetDirectoryName($entry)) ('.' + [IO.Path]::GetFileName($entry) + '.meshtalk-install')
+    return Test-Path -LiteralPath (Join-Path $store '.meshtalk-store.json')
 }
 
 function Test-InstallProtocol {
@@ -942,9 +956,14 @@ function Install-Extracted {
         }
     }
     if (Test-InstallProtocol -Launcher $launcher) {
-        & $launcher --install-from $ExtractDir --install-dir $script:InstallDirSel
+        $helperArgs = @('--install-from', $ExtractDir, '--install-dir', $script:InstallDirSel)
+        if ($script:CloseRunningFlag) { $helperArgs += '--close-running' }
+        & $launcher @helperArgs
         if ($LASTEXITCODE -ne 0) { throw 'Managed installation failed; the installer did not fall back to legacy replacement.' }
         return
+    }
+    if ($script:CloseRunningFlag) {
+        throw '-CloseRunning requires a supported installation helper; this historical release cannot close running processes. Close MeshTalk manually and retry without -CloseRunning.'
     }
     if (Test-ManagedInstallation) {
         throw 'This release cannot replace a managed MeshTalk installation. Install a newer release, choose another -InstallDir, or explicitly uninstall before reinstalling this historical release.'
@@ -1116,7 +1135,9 @@ function Uninstall-ManagedReleases {
             & chmod u+rx $helper
             if ($LASTEXITCODE -ne 0) { throw 'Unable to make the temporary uninstall helper executable.' }
         }
-        & $helper --uninstall-releases --install-dir $script:InstallDirSel
+        $helperArgs = @('--uninstall-releases', '--install-dir', $script:InstallDirSel)
+        if ($script:CloseRunningFlag) { $helperArgs += '--close-running' }
+        & $helper @helperArgs
         if ($LASTEXITCODE -ne 0) { throw 'Managed uninstall failed; launcher, backend, and remaining state were left in place.' }
     } finally {
         if ($helperCreated) { Remove-Item -LiteralPath $helperDir -Recurse -Force -ErrorAction SilentlyContinue }
@@ -1152,7 +1173,6 @@ function Uninstall-MeshTalk {
     }
 
     Start-Step "Removing MeshTalk from $($script:InstallDirSel)"
-    Confirm-MeshTalkStopped
     if ($managed) {
         $launcher = Join-Path $script:InstallDirSel $script:LauncherName
         if (Test-InstallProtocol -Launcher $launcher) {
@@ -1162,9 +1182,14 @@ function Uninstall-MeshTalk {
             Complete-Step -Marker $script:TICK -CompletedLabel "Removed MeshTalk from $($script:InstallDirSel)."
             return
         } else {
+            if (Test-WindowsLinkStore) { throw 'The linked installation needs repair before uninstalling. Rerun the latest installer; no installed files were removed.' }
             Write-WarnMsg 'Managed cleanup is unavailable. Release and usage directories were retained, including unknown release directories; inspect them manually before removing anything.'
         }
     }
+    if ($script:CloseRunningFlag) {
+        throw '-CloseRunning requires a supported managed uninstall helper. Close MeshTalk manually and retry without -CloseRunning.'
+    }
+    Confirm-MeshTalkStopped
     foreach ($file in $script:ExpectedFiles) {
         $target = Join-Path $script:InstallDirSel $file
         Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue

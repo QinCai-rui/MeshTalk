@@ -1,7 +1,9 @@
 import { Database } from "bun:sqlite"
 import { randomUUID } from "node:crypto"
-import { chmodSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs"
-import { basename, dirname, join, sep } from "node:path"
+import { spawn } from "node:child_process"
+import { chmodSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path"
+import { canLinkWindowsDirectory, cleanupWindowsMigration, publishWindowsEntry, removeWindowsEntry, windowsLinkStore, windowsRetiredDirectory, windowsStorePath } from "./windows-install-links"
 
 export const INSTALL_PROTOCOL = "1"
 const STATE = ".meshtalk-install.json"
@@ -11,7 +13,7 @@ const RELEASE_NAME = /^release-[a-f0-9]{32}$/
 const SUFFIX = process.platform === "win32" ? ".exe" : ""
 export const releaseFiles = [`meshtalk${SUFFIX}`, `meshtalk-backend${SUFFIX}`]
 
-type Selection = { schema: 1; current?: string; pending?: string; confirmed?: string; bootstrap?: string; legacy?: string[] }
+type Selection = { schema: 1; current?: string; pending?: string; confirmed?: string; bootstrap?: string; legacy?: string[]; layout?: "file-link" | "directory-link" | "flat"; entry?: string }
 type Payload = { schema: 1; version: string; files: Record<string, string> }
 type Usage = { pid: number; release: string; kind: "launcher" | "backend" }
 export type InstalledLauncher = { root: string; executable: string; usage: string; warning?: string }
@@ -85,7 +87,10 @@ function parseSelection(path: string): Selection | null {
     }
     if (state.legacy !== undefined && (!Array.isArray(state.legacy) || state.legacy.some((name: unknown) => typeof name !== "string" || !/^\d+\.\d+\.\d+(?:-\d+)?-[a-f0-9]{12}$/.test(name)))) return null
     if (state.bootstrap !== undefined && (typeof state.bootstrap !== "string" || !/^[a-f0-9]{64}$/.test(state.bootstrap))) return null
-    return { schema: 1, current: state.current, pending: state.pending, confirmed: state.confirmed, bootstrap: state.bootstrap, legacy: state.legacy }
+    if (state.layout !== undefined && !["file-link", "directory-link", "flat"].includes(state.layout)) return null
+    if (state.entry !== undefined && (typeof state.entry !== "string" || !isAbsolute(state.entry))) return null
+    if (state.layout === "directory-link" && !state.entry) return null
+    return { schema: 1, current: state.current, pending: state.pending, confirmed: state.confirmed, bootstrap: state.bootstrap, legacy: state.legacy, layout: state.layout, entry: state.entry }
   } catch { return null }
 }
 
@@ -106,6 +111,134 @@ function writeSelection(root: string, state: Selection): void {
 
 function digest(path: string): string {
   return new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex")
+}
+
+// The public Windows directory can itself be a junction into a release. State
+// and the installation lock live outside it, so switching releases cannot
+// redirect either one. Unix command directories remain ordinary directories.
+export function managedInstallRoot(installDir: string): string {
+  const linked = process.platform === "win32" ? windowsLinkStore(installDir) ?? windowsLinkStore(installDir, true) : null
+  if (linked) return linked
+  const actual = realpathSync(installDir)
+  if (RELEASE_NAME.test(basename(actual)) && basename(dirname(actual)) === "versions") return dirname(dirname(actual))
+  return actual
+}
+
+export function usesFlatWindowsEntry(installDir: string): boolean {
+  if (process.platform !== "win32") return false
+  try { return readSelection(managedInstallRoot(installDir)).layout !== "directory-link" } catch { return false }
+}
+
+export function pendingFlatInstallation(installDir: string): { root: string; release: string; source: string; version: string } | null {
+  if (!usesFlatWindowsEntry(installDir)) return null
+  const root = managedInstallRoot(installDir)
+  const state = readSelection(root)
+  const release = state.pending ?? state.current
+  if (!release) return null
+  const manifest = payload(root, release, true)
+  if (!manifest || (!state.pending && regularFile(join(root, releaseFiles[0])) && digest(join(root, releaseFiles[0])) === manifest.files[releaseFiles[0]])) return null
+  return { root, release, source: join(root, "versions", release), version: manifest.version }
+}
+
+// A shared Windows command directory cannot become a junction. A fresh copy
+// of the downloaded launcher waits outside the root executable, then refreshes
+// it after the last window closes. No installed launcher is retained forever.
+export function scheduleFlatEntryUpdate(installDir: string): void {
+  if (process.platform !== "win32") return
+  try {
+    const update = pendingFlatInstallation(installDir)
+    if (!update) return
+    withInstallLock(update.root, () => {
+      const marker = join(update.root, ".meshtalk-flat-helper.json")
+      try {
+        const previous = JSON.parse(readFileSync(marker, "utf8"))
+        const age = Date.now() - previous.createdAt
+        if (Number.isInteger(previous.pid) && previous.pid > 0 && Number.isFinite(age) && age >= 0 && age < 6 * 60_000 && processMayBeAlive(previous.pid)) return
+      } catch {}
+      const child = spawn(join(update.source, releaseFiles[0]), ["--apply-pending", "--install-dir", update.root, "--release", update.release], { detached: true, stdio: "ignore", windowsHide: true })
+      child.on("error", () => { /* Another launch/installer can retry the pending update. */ })
+      if (child.pid) writeJson(marker, { pid: child.pid, release: update.release, createdAt: Date.now() })
+      child.unref()
+    })
+  } catch { /* Updating must not interfere with an ordinary exit. */ }
+}
+
+export function releaseFlatHelper(installDir: string): void {
+  try {
+    const marker = join(managedInstallRoot(installDir), ".meshtalk-flat-helper.json")
+    if (regularFile(marker) && JSON.parse(readFileSync(marker, "utf8")).pid === process.pid) rmSync(marker)
+  } catch {}
+}
+
+export function retainInstallerRelease(executable: string): InstalledLauncher | null {
+  const root = installationRoot(executable)
+  if (!root) return null
+  const actual = realpathSync(executable)
+  const release = basename(dirname(actual))
+  if (dirname(dirname(actual)) !== join(root, "versions") || !RELEASE_NAME.test(release)) return null
+  return withInstallLock(root, () => {
+    if (!payloadManifest(root, release)) throw new Error("The pending installer release is not owned by MeshTalk.")
+    return { root, executable: actual, usage: retain(root, release, process.pid, "launcher") }
+  })
+}
+
+function replaceSymlink(path: string, target: string): void {
+  const temporary = `${path}.${randomUUID()}.tmp`
+  try {
+    symlinkSync(target, temporary)
+    renameSync(temporary, path)
+    flushDirectory(dirname(path))
+  } finally { rmSync(temporary, { force: true }) }
+}
+
+function publishEntry(root: string, state: Selection): void {
+  if (!state.current) return
+  const directory = join(root, "versions", state.current)
+  if (state.layout === "file-link") {
+    const currentLink = join(root, ".meshtalk-current")
+    const currentInfo = lstatSync(currentLink, { throwIfNoEntry: false })
+    if (currentInfo && !currentInfo.isSymbolicLink()) throw new Error("The MeshTalk current-link path is occupied by another file. The existing installation was left unchanged.")
+    if (currentInfo) {
+      const previous = resolve(root, readlinkSync(currentLink))
+      if (dirname(previous) !== join(root, "versions") || !RELEASE_NAME.test(basename(previous))) throw new Error("The MeshTalk current link points outside its release store. Run the installer to repair it.")
+    }
+    replaceSymlink(currentLink, join("versions", state.current))
+    const entry = join(root, releaseFiles[0])
+    const target = join(".meshtalk-current", releaseFiles[0])
+    // A command symlink must not point outside this installation. Replacing
+    // its directory entry does not modify its old target or another program.
+    let current: string | undefined
+    try { current = readlinkSync(entry) } catch {}
+    if (current !== target) replaceSymlink(entry, target)
+  } else if (state.layout === "directory-link") {
+    // Users may have added files through the public junction since migration.
+    // Switching it would hide those files; refuse rather than take ownership.
+    const existing = windowsLinkStore(state.entry!)
+    if (existing && existsSync(state.entry!)) {
+      const active = realpathSync(state.entry!)
+      const allowed = new Set([...releaseFiles, RELEASE, ".meshtalk-staging.json"])
+      if (readdirSync(active).some((name) => !allowed.has(name))) throw new Error("The MeshTalk command folder contains additional files. Move those files elsewhere before updating; nothing was removed.")
+    }
+    publishWindowsEntry(root, state.entry!, directory)
+  }
+}
+
+function linkedEntryRelease(root: string, state: Selection): string | undefined {
+  const entry = state.layout === "file-link" ? join(root, ".meshtalk-current") : state.layout === "directory-link" ? state.entry : undefined
+  if (!entry) return
+  try {
+    const target = realpathSync(entry)
+    if (dirname(target) === join(root, "versions") && RELEASE_NAME.test(basename(target))) return basename(target)
+  } catch {}
+}
+
+function canCleanupWindowsMigration(root: string, state: Selection): boolean {
+  try {
+    const retired = windowsRetiredDirectory(root, state.entry!)
+    if (!retired || !existsSync(retired)) return true
+    const usage = liveUsage(retired)
+    return Boolean(usage && !usage.some((entry) => entry.pid !== process.pid) && !hasUntrackedProcess(retired, new Set([process.pid])))
+  } catch { return false }
 }
 
 function payloadManifest(root: string, name: string): Payload | null {
@@ -225,6 +358,18 @@ function prune(root: string, state: Selection): void {
   // process listing must defer deletion, never guess that a release is unused.
   if (hasUntrackedProcess(root, new Set([process.pid, ...usage.map((entry) => entry.pid)]))) return
   const keep = new Set([state.current, state.pending, ...usage.map((entry) => entry.release)])
+  // An exit handler still runs inside its executable. Windows may refuse only
+  // that file after a recursive deletion has already removed its manifest.
+  // Leave our own physical release intact for a later process to collect.
+  try {
+    const actual = realpathSync(process.execPath)
+    if (dirname(dirname(actual)) === join(root, "versions")) keep.add(basename(dirname(actual)))
+  } catch { return }
+  if (state.layout === "file-link" || state.layout === "directory-link") {
+    const linked = linkedEntryRelease(root, state)
+    if (!linked) return
+    keep.add(linked)
+  }
   // A previous selection remains a recovery route until the new launcher has
   // actually started and acknowledged the current release.
   const backup = parseSelection(join(root, `${STATE}.bak`))
@@ -256,6 +401,11 @@ function prune(root: string, state: Selection): void {
         if (lstatSync(directory).isDirectory()) rmSync(directory, { recursive: true, force: true })
       } catch {}
     }
+    if (state.layout === "directory-link" && state.entry && existsSync(join(root, ".meshtalk-migration.json"))) {
+      if (canCleanupWindowsMigration(root, state)) {
+        try { cleanupWindowsMigration(root, state.entry) } catch { /* Retry after the next successful start. */ }
+      }
+    }
   }
 }
 
@@ -267,15 +417,28 @@ function ownedStaging(directory: string): boolean {
 }
 
 export function uninstallReleaseInstallation(installDir: string): void {
-  const root = realpathSync(installDir)
+  const root = managedInstallRoot(installDir)
   withInstallLock(root, () => {
+    const state = readSelection(root)
     const usage = liveUsage(root)
     if (!usage || usage.some((entry) => entry.pid !== process.pid) || hasUntrackedProcess(root, new Set([process.pid]))) {
       throw new Error("Close all MeshTalk windows and stop its backend before uninstalling.")
     }
-    // The scripts invoke a temporary copy of the bootstrap, so Windows can
-    // remove the installed executables while this transaction still holds.
+    // The scripts invoke a temporary copy, so Windows can remove the installed
+    // executables while this transaction still holds. Never follow entry links.
+    if (state.layout === "directory-link") {
+      if (existsSync(join(root, ".meshtalk-migration.json"))) {
+        if (!canCleanupWindowsMigration(root, state)) throw new Error("Close all MeshTalk windows and stop its backend before uninstalling.")
+        cleanupWindowsMigration(root, state.entry!)
+      }
+      removeWindowsEntry(root, state.entry!)
+      rmSync(join(root, "current"), { force: true })
+    }
     for (const file of releaseFiles) rmSync(join(root, file), { force: true })
+    if (state.layout === "file-link") {
+      const current = join(root, ".meshtalk-current")
+      if (lstatSync(current, { throwIfNoEntry: false })?.isSymbolicLink()) rmSync(current)
+    }
     const versions = join(root, "versions")
     if (existsSync(versions) && lstatSync(versions).isDirectory()) {
       for (const name of readdirSync(versions)) {
@@ -286,7 +449,7 @@ export function uninstallReleaseInstallation(installDir: string): void {
       }
       try { rmdirSync(versions) } catch {}
     }
-    for (const name of [STATE, `${STATE}.bak`, ".meshtalk-current.json", ".meshtalk-current.json.bak", ".meshtalk-pending.json"]) {
+    for (const name of [STATE, `${STATE}.bak`, ".meshtalk-current.json", ".meshtalk-current.json.bak", ".meshtalk-pending.json", ".meshtalk-flat-helper.json"]) {
       rmSync(join(root, name), { force: true })
     }
     const records = join(root, USAGE)
@@ -343,16 +506,20 @@ export function cleanupReleases(root: string): void {
 
 export function hasManagedBootstrap(installDir: string): boolean {
   try {
-    const state = readSelection(installDir)
-    return Boolean(state.bootstrap && regularFile(join(installDir, releaseFiles[0])) && digest(join(installDir, releaseFiles[0])) === state.bootstrap)
+    const root = managedInstallRoot(installDir)
+    const state = readSelection(root)
+    if (state.layout === "directory-link") return windowsLinkStore(state.entry!) === root
+    if (state.layout === "file-link") return Boolean(state.current && realpathSync(join(root, releaseFiles[0])) === join(root, "versions", state.current, releaseFiles[0]))
+    return Boolean(state.bootstrap && regularFile(join(root, releaseFiles[0])) && digest(join(root, releaseFiles[0])) === state.bootstrap)
   } catch { return false }
 }
 
 export function stageReleaseDirectory(source: string, installDir: string, version: string): void {
-  const root = realpathSync(installDir)
+  const root = managedInstallRoot(installDir)
   withInstallLock(root, () => {
     const state = readSelection(root)
-    if (!regularFile(join(root, releaseFiles[0]))) throw new Error("The MeshTalk entry point is missing. Run the installer to repair it.")
+    const entry = state.layout === "directory-link" ? join(state.entry!, releaseFiles[0]) : join(root, releaseFiles[0])
+    if (!existsSync(entry)) throw new Error("The MeshTalk entry point is missing. Run the installer to repair it.")
     const pending = stageDirectory(root, source, version)
     writeSelection(root, { ...state, pending })
     prune(root, { ...state, pending })
@@ -363,12 +530,18 @@ function activate(root: string, state: Selection): Selection {
   if (!state.pending) return state
   if (!payload(root, state.pending, true)) throw new Error("The downloaded MeshTalk update is incomplete or damaged. The installed release was left unchanged; download the update again.")
   const next: Selection = { ...state, current: state.pending, pending: undefined }
+  const hadSelection = existsSync(join(root, STATE))
   writeSelection(root, next)
+  try { publishEntry(root, next) } catch (error) {
+    if (hadSelection) writeJson(join(root, STATE), state)
+    else rmSync(join(root, STATE), { force: true })
+    throw error
+  }
   return next
 }
 
 export function activateRelease(installDir: string): string {
-  const root = realpathSync(installDir)
+  const root = managedInstallRoot(installDir)
   return withInstallLock(root, () => {
     const state = activate(root, readSelection(root))
     if (!state.current || !payload(root, state.current, true)) throw new Error("The selected MeshTalk release is missing or damaged. Run the installer to repair it.")
@@ -377,7 +550,7 @@ export function activateRelease(installDir: string): string {
 }
 
 export function prepareUpdateRestart(installDir: string): InstalledLauncher {
-  const root = realpathSync(installDir)
+  const root = managedInstallRoot(installDir)
   return withInstallLock(root, () => {
     const state = activate(root, readSelection(root))
     if (!state.current || !payload(root, state.current, true)) throw new Error("The selected MeshTalk release is missing or damaged. Run the installer to repair it.")
@@ -398,8 +571,8 @@ export function installationRoot(executable: string): string | null {
   return null
 }
 
-// Both a flat legacy launcher and the stable bootstrap enter here. A launcher
-// already inside a release stays pinned there, even if another window updates.
+// A running payload stays pinned to its physical release. Only an explicitly
+// permitted restart/first window activates a pending selection and dispatches.
 export function prepareInstalledLauncher(executable: string, activatePending = false, version = "legacy-flat"): InstalledLauncher | null {
   const root = installationRoot(executable)
   if (!root) return null
@@ -407,33 +580,61 @@ export function prepareInstalledLauncher(executable: string, activatePending = f
   try { return withInstallLock(root, () => {
     migrateVersionManifest(root)
     let state = readSelection(root)
+    const recovered = existsSync(join(root, STATE)) && !parseSelection(join(root, STATE))
+    if (recovered) {
+      writeSelection(root, state)
+      publishEntry(root, state)
+    }
+    if (state.current && !state.layout) {
+      state = { ...state, layout: process.platform === "win32" ? "flat" : "file-link" }
+      writeSelection(root, state)
+      publishEntry(root, state)
+    }
     const ownRelease = basename(dirname(actual))
     const isPayload = RELEASE_NAME.test(ownRelease) && dirname(dirname(actual)) === join(root, "versions")
     if (!state.current && !isPayload && releaseFiles.every((file) => regularFile(join(root, file)))) {
       // First launch after a shipped flat updater installs this binary. Copy
       // the complete pair before selecting it; the running files stay intact.
-      state = { ...state, current: stageDirectory(root, root, version), bootstrap: digest(join(root, releaseFiles[0])) }
+      state = { ...state, current: stageDirectory(root, root, version), bootstrap: digest(join(root, releaseFiles[0])), layout: process.platform === "win32" ? "flat" : "file-link" }
       writeSelection(root, state)
+      publishEntry(root, state)
     }
     let warning: string | undefined
-    if (activatePending && !isPayload) {
+    let switched = false
+    if (state.current && state.layout !== "flat" && payload(root, state.current, true)) {
+      const linked = linkedEntryRelease(root, state)
+      // Publication can be interrupted after the JSON rename but before its
+      // link switch. Repair that mismatch on the next launch. An explicitly
+      // invoked older payload remains pinned when it was not the stale entry.
+      let commandLinked = true
+      if (state.layout === "file-link") {
+        try { commandLinked = readlinkSync(join(root, releaseFiles[0])) === join(".meshtalk-current", releaseFiles[0]) } catch { commandLinked = false }
+      }
+      if (linked !== state.current || !commandLinked) {
+        publishEntry(root, state)
+        switched = isPayload && ownRelease === linked
+      }
+    }
+    if (activatePending) {
+      const previous = state.current
       try { state = activate(root, state) } catch (error) {
         if (!state.current || !payload(root, state.current, true)) throw error
         warning = "The downloaded update is damaged. Continuing with the installed release; download the update again."
       }
+      switched ||= state.current !== previous
     }
-    if (isPayload && !payload(root, ownRelease)) throw new Error("MeshTalk release components are missing. Run the installer to repair this installation.")
     if (!state.current && !existsSync(join(root, STATE))) writeSelection(root, state)
     if (!isPayload && !state.bootstrap) {
       state = { ...state, bootstrap: digest(actual) }
       writeSelection(root, state)
     }
-    const selected = isPayload ? ownRelease : state.current
+    const selected = isPayload && !switched && !recovered ? ownRelease : state.current
     if (selected && !payload(root, selected, true)) {
       const backup = parseSelection(join(root, `${STATE}.bak`))
-      if (isPayload || !backup?.current || !payload(root, backup.current, true)) throw new Error("MeshTalk release components are missing or damaged. Run the installer to repair this installation.")
+      if (!backup?.current || !payload(root, backup.current, true)) throw new Error("MeshTalk release components are missing or damaged. Run the installer to repair this installation.")
       state = { ...backup, pending: state.pending }
       writeSelection(root, state)
+      publishEntry(root, state)
       return { root, executable: join(root, "versions", backup.current, releaseFiles[0]), usage: retain(root, backup.current, process.pid, "launcher") }
     }
     const target = selected ? join(root, "versions", selected, releaseFiles[0]) : actual
@@ -464,17 +665,45 @@ export function prepareInstalledLauncher(executable: string, activatePending = f
 
 // Used by both shell installers. New releases keep the original two-file
 // archive layout so already-shipped updaters can still install this version.
-export function installFromDirectory(source: string, installDir: string, version: string): void {
-  mkdirSync(installDir, { recursive: true })
-  const root = realpathSync(installDir)
+export function installFromDirectory(source: string, installDir: string, version: string, options: { keepFlat?: boolean; expectedRelease?: string } = {}): void {
+  // Do not recreate a missing Windows entry directory before recovering its
+  // migration journal: that would obstruct the installer restoring its link.
+  if (process.platform === "win32" && !options.keepFlat) mkdirSync(dirname(resolve(installDir)), { recursive: true })
+  else mkdirSync(installDir, { recursive: true })
+  let root = process.platform === "win32" && !lstatSync(installDir, { throwIfNoEntry: false }) ? resolve(installDir) : managedInstallRoot(installDir)
+  let entry: string | undefined
+  let existing: Selection | undefined
+  try { existing = readSelection(root) } catch { /* Explicit repair is allowed below. */ }
+  if (process.platform === "win32" && !options.keepFlat && existing?.layout !== "directory-link" && canLinkWindowsDirectory(installDir)) {
+    entry = join(realpathSync(dirname(resolve(installDir))), basename(installDir))
+    root = windowsStorePath(entry)
+    const marker = join(root, ".meshtalk-store.json")
+    if (existsSync(root)) {
+      if (!lstatSync(root).isDirectory() || !regularFile(marker)) throw new Error("The MeshTalk release-store path is already occupied. The existing installation was left unchanged.")
+      const owner = JSON.parse(readFileSync(marker, "utf8"))
+      if (owner.schema !== 1 || owner.entry !== entry) throw new Error("The MeshTalk release store belongs to a different installation.")
+    } else {
+      mkdirSync(root)
+      writeJson(marker, { schema: 1, entry })
+    }
+  }
   withInstallLock(root, () => {
     // An explicit installer run may repair a damaged selector. Ordinary
     // launches never silently discard it or choose an arbitrary release.
     let state: Selection
     try { state = readSelection(root) } catch { state = { schema: 1 } }
+    if (!state.layout && !entry && process.platform === "win32" && regularFile(join(root, ".meshtalk-store.json"))) {
+      const marker = JSON.parse(readFileSync(join(root, ".meshtalk-store.json"), "utf8"))
+      if (marker.schema === 1 && typeof marker.entry === "string" && windowsLinkStore(marker.entry, true) === root) state = { ...state, layout: "directory-link", entry: marker.entry }
+      else throw new Error("MeshTalk's directory-link ownership could not be verified. The installation was left unchanged.")
+    }
+    if (options.expectedRelease && (state.pending ?? state.current) !== options.expectedRelease) return
     const pending = stageDirectory(root, source, version)
     let next: Selection
-    if (!state.bootstrap || !regularFile(join(root, releaseFiles[0])) || digest(join(root, releaseFiles[0])) !== state.bootstrap) {
+    if (process.platform !== "win32" || entry || state.layout === "directory-link") {
+      if (entry && hasUntrackedProcess(entry, new Set([process.pid]))) throw new Error("Close all MeshTalk windows and stop its backend before migrating this installation.")
+      next = activate(root, { ...state, pending, layout: process.platform === "win32" ? "directory-link" : "file-link", entry: entry ?? state.entry, bootstrap: undefined })
+    } else if (!regularFile(join(root, releaseFiles[0])) || digest(join(root, releaseFiles[0])) !== digest(join(source, releaseFiles[0]))) {
       if (regularFile(join(root, releaseFiles[0])) && hasUntrackedProcess(root, new Set([process.pid]))) throw new Error("Close all MeshTalk windows and stop its backend before migrating this installation.")
       const temporary = join(root, `.meshtalk-bootstrap-${randomUUID()}${SUFFIX}`)
       try {
@@ -487,7 +716,7 @@ export function installFromDirectory(source: string, installDir: string, version
         // before rename leaves the old flat pair runnable; a crash after it
         // leaves the new bootstrap pointing to its complete release, never to
         // an old root backend. A sharing violation restores the old selection.
-        next = activate(root, { ...state, pending, bootstrap: digest(temporary) })
+        next = activate(root, { ...state, pending, bootstrap: digest(temporary), layout: "flat" })
         try {
           renameSync(temporary, join(root, releaseFiles[0]))
         } catch (error) {
@@ -497,7 +726,7 @@ export function installFromDirectory(source: string, installDir: string, version
         }
         flushDirectory(root)
       } finally { rmSync(temporary, { force: true }) }
-    } else next = activate(root, { ...state, pending })
+    } else next = activate(root, { ...state, pending, layout: "flat", bootstrap: digest(join(root, releaseFiles[0])) })
     prune(root, next)
   })
 }
