@@ -26,6 +26,31 @@ function fixture(initial: InstallationProcess[], platform: NodeJS.Platform = "li
 }
 
 describe("installation process closing", () => {
+  test("background waits retry inspection failures and running snapshots without closing anything", async () => {
+    const f = fixture([row(2)])
+    const list = f.provider.list
+    let calls = 0
+    f.provider.list = () => {
+      if (++calls === 1) throw new Error("process exited during inspection")
+      if (calls === 3) f.setRows([])
+      return list()
+    }
+    expect(await f.controller.waitUntilStopped("/install", [], 1000)).toBe(true)
+    expect(calls).toBe(3)
+    expect(f.closed).toEqual([])
+  })
+
+  test("persistent inspection failure reaches the background deadline without permission to update", async () => {
+    const f = fixture([])
+    let calls = 0
+    f.provider.list = () => { calls++; throw new Error("inspection unavailable") }
+    expect(await f.controller.waitUntilStopped("/install", [], 1000)).toBe(false)
+    expect(calls).toBe(3)
+    expect(f.closed).toEqual([])
+    expect(() => f.controller.pids("/install")).toThrow("inspection unavailable")
+    await expect(f.controller.close("/install")).rejects.toThrow("inspection unavailable")
+  })
+
   test("closes every exact installation executable, not other names or installations", async () => {
     const f = fixture([
       row(2), row(3, "/install/versions/release/meshtalk-backend"),

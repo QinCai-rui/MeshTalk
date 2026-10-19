@@ -75,9 +75,14 @@ the next launch reconciles the link to the verified selection before dispatching
 For a shared Windows folder, an executable from the downloaded release waits
 for the installation's processes to exit, then refreshes only MeshTalk's own
 entry executable. It never replaces a running root executable. It rechecks the
-latest selection, so a superseding download is not lost. The wait is bounded
-to five minutes; later exits retry. A deliberately persistent backend must also
-be stopped, or the installer can be rerun with explicit automatic-close permission.
+latest selection, so a superseding download is not lost. Inspection retries have
+a five-minute budget; an OS query already in progress can finish after that
+budget. Later application exits retry. A deliberately persistent backend must
+also be stopped, or the installer can be rerun with automatic-close permission.
+If process inspection fails while Windows processes exit, the background helper
+waits for another complete inspection. A failed inspection never permits file
+replacement. Foreground installation and explicit closing still report inspection
+failures instead of assuming that no instances are running.
 
 The previous release remains available until the new launcher reaches its own
 entry point. After that acknowledgement, cleanup deletes unused managed

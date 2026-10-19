@@ -8,7 +8,7 @@ import { chmodSync, closeSync, existsSync, openSync, readFileSync, rmSync, write
 import { homedir } from "os";
 import { checkForUpdate, githubRepository, importLegacyWindowsUpdate, installRelease, isReleaseInstallDir, logUpdateHelper, releaseInstallDir, saveGithubRepository, saveGithubToken, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
 import { cleanupReleases, INSTALL_PROTOCOL, installationRoot, installFromDirectory, managedInstallRoot, pendingFlatInstallation, prepareInstalledLauncher, prepareUpdateRestart, releaseFlatHelper, releaseUsage, retainChildRelease, retainInstallerRelease, scheduleFlatEntryUpdate, stageReleaseDirectory, uninstallReleaseInstallation, type InstalledLauncher } from "../common/release-install";
-import { closeInstallationProcesses, installationProcessPids } from "../common/install-processes";
+import { closeInstallationProcesses, installationProcessPids, waitForInstallationToStop } from "../common/install-processes";
 import { physicalPath as realpathSync } from "../common/install-paths";
 import { main as cliMain } from "../cli/src/index";
 import { runTui } from "./tui-entry";
@@ -507,20 +507,32 @@ async function main() {
     const destination = resolve(args[2]);
     const lease = retainInstallerRelease(process.execPath);
     if (!lease || lease.root !== managedInstallRoot(destination)) throw new Error("The pending installer must run from this installation's verified release store.");
+    let phase = "reading the selected release";
     try {
       const deadline = Date.now() + 5 * 60_000;
       while (true) {
         // A newer download may supersede the one that started this helper.
         // Always apply the latest verified selection after the windows close.
-        const update = pendingFlatInstallation(destination);
+        phase = "reading the selected release";
+        let update = pendingFlatInstallation(destination);
         if (!update) return;
-        if (Date.now() >= deadline) return;
-        if (installationProcessPids(destination).length > 0) {
-          await Bun.sleep(1000);
-          continue;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return;
+        phase = "waiting for verified process inspection";
+        if (!await waitForInstallationToStop(destination, [], remaining)) {
+          logUpdateHelper("Offline entry refresh deferred because running processes or process inspection did not settle.");
+          return;
         }
+        // Downloads can supersede this helper's original release while it waits.
+        phase = "reading the selected release";
+        update = pendingFlatInstallation(destination);
+        if (!update) return;
+        phase = "replacing the entry executable";
         installFromDirectory(update.source, destination, update.version, { keepFlat: true, expectedRelease: update.release });
       }
+    } catch (error) {
+      logUpdateHelper(`Offline entry refresh failed while ${phase}.`);
+      throw error;
     } finally {
       releaseUsage(lease);
       releaseFlatHelper(destination);

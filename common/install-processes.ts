@@ -213,6 +213,22 @@ export function installationProcessController(provider: InstallationProcessProvi
     pids(root: string, additional: string[] = []): number[] {
       return targets(provider.list(), roots(root, additional)).map((row) => row.pid)
     },
+    async waitUntilStopped(root: string, additional: string[] = [], timeoutMs = 300000): Promise<boolean> {
+      if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new Error("Invalid MeshTalk wait timeout.")
+      const deadline = provider.now() + timeoutMs
+      while (true) {
+        try {
+          if (targets(provider.list(), roots(root, additional)).length === 0) return true
+        } catch {
+          // A Windows process can exit between the CIM snapshot and its owner
+          // lookup. Background updates wait for a complete, verified snapshot;
+          // an inspection failure never means the installation is unused.
+        }
+        const remaining = deadline - provider.now()
+        if (remaining <= 0) return false
+        await provider.wait(Math.min(500, remaining))
+      }
+    },
     async close(root: string, additional: string[] = [], timeoutMs = 10000): Promise<void> {
       if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new Error("Invalid MeshTalk close timeout.")
       const allowed = roots(root, additional)
@@ -254,4 +270,8 @@ export function installationProcessPids(root: string, additionalRoots: string[] 
 
 export async function closeInstallationProcesses(root: string, additionalRoots: string[] = [], timeoutMs = 10000): Promise<void> {
   await installationProcessController(nativeProvider).close(root, additionalRoots, timeoutMs)
+}
+
+export async function waitForInstallationToStop(root: string, additionalRoots: string[] = [], timeoutMs = 300000): Promise<boolean> {
+  return installationProcessController(nativeProvider).waitUntilStopped(root, additionalRoots, timeoutMs)
 }
