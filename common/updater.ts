@@ -1,8 +1,9 @@
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs"
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs"
 import { mkdir, open, rm } from "fs/promises"
 import { tmpdir } from "os"
 import { basename, dirname, join, resolve, sep } from "path"
 import { hasManagedBootstrap, installationRoot, installFromDirectory, managedInstallRoot, scheduleFlatEntryUpdate, stageReleaseDirectory } from "./release-install"
+import { physicalPath as realpathSync } from "./install-paths"
 
 const DEFAULT_GITHUB_USER = "QinCai-rui"
 const DEFAULT_GITHUB_REPO = "MeshTalk"

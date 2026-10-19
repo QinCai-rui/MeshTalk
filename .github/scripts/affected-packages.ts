@@ -21,7 +21,7 @@ export function affectedPackages(paths: string[], all = false) {
   }
   if (all) selectAll()
   for (const path of paths) {
-    if (path.startsWith("bin/") || /^common\/(updater|release-install|windows-install-links|install-processes)(\.test)?\.ts$/.test(path) || /^scripts\/install\.(sh|ps1|test\.ts)$/.test(path) || ["package.json", "bun.lock", "cli/package.json", "tui/package.json"].includes(path)) updates = true
+    if (path.startsWith("bin/") || /^common\/(updater|release-install|windows-install-links|install-processes|install-paths)(\.test)?\.ts$/.test(path) || /^scripts\/install\.(sh|ps1|test\.ts)$/.test(path) || ["package.json", "bun.lock", "cli/package.json", "tui/package.json"].includes(path)) updates = true
     if (path === ".github/workflows/pr-checks.yml" || path.startsWith(".github/scripts/")) {
       selectAll()
     } else if (path === "package.json" || path === "bun.lock") {

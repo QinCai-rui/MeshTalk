@@ -117,7 +117,7 @@ jobs:
           bun-version: "1.4.2"
       - run: bun install --frozen-lockfile
       - name: Test release installation, updater, and compiled launcher
-        run: bun test common/release-install.test.ts common/updater.test.ts common/windows-install-links.test.ts common/install-processes.test.ts bin/meshtalk.test.ts
+        run: bun test common/release-install.test.ts common/updater.test.ts common/windows-install-links.test.ts common/install-processes.test.ts common/install-paths.test.ts bin/meshtalk.test.ts
 
   installers:
     name: Installer syntax and tests

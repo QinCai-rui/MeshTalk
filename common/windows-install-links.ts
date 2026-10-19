@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { spawnSync } from "node:child_process"
-import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
+import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
+import { installationEntryPath, physicalPath as realpathSync } from "./install-paths"
 
 const STATE = ".meshtalk-install.json"
 const JOURNAL = ".meshtalk-migration.json"
@@ -26,7 +27,7 @@ function ordinary(path: string): boolean {
 }
 
 function same(a: string, b: string): boolean {
-  return process.platform === "win32" ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b)
+  return process.platform === "win32" ? installationEntryPath(a).toLowerCase() === installationEntryPath(b).toLowerCase() : resolve(a) === resolve(b)
 }
 
 function ownedPayload(path: string, staging = false): boolean {
@@ -59,7 +60,7 @@ export function canLinkWindowsDirectory(installDir: string): boolean {
 }
 
 export function windowsStorePath(installDir: string): string {
-  const entry = resolve(installDir)
+  const entry = process.platform === "win32" ? installationEntryPath(installDir) : resolve(installDir)
   if (entry === dirname(entry)) throw new Error("A filesystem root cannot be a MeshTalk entry.")
   return join(dirname(entry), `.${basename(entry)}.meshtalk-install`)
 }
@@ -127,9 +128,15 @@ function local(path: string): void {
 function owner(storeRoot: string, installDir: string, recover = false): void {
   local(storeRoot)
   local(dirname(installDir))
-  if (!same(storeRoot, windowsStorePath(installDir)) || !ordinary(storeRoot)) throw new Error("Unexpected MeshTalk store path.")
+  const expected = windowsStorePath(installDir)
+  // GetModuleFileName (compiled executables) and ordinary filesystem lookups
+  // can spell the same Windows directory differently. Verify the physical
+  // ordinary directories, not just their caller-supplied path strings.
+  if (!ordinary(storeRoot) || !ordinary(expected) || !same(realpathSync(storeRoot), realpathSync(expected))) {
+    throw new Error("Unexpected MeshTalk store path.")
+  }
   const state = json(join(storeRoot, recover ? ".meshtalk-store.json" : STATE))
-  if (state.entry !== resolve(installDir) || (recover ? state.schema !== 1 : state.layout !== "directory-link")) throw new Error("MeshTalk store does not own this entry.")
+  if (typeof state.entry !== "string" || !same(state.entry, installDir) || (recover ? state.schema !== 1 : state.layout !== "directory-link")) throw new Error("MeshTalk store does not own this entry.")
   native(storeRoot, undefined, undefined, true)
 }
 
@@ -175,7 +182,7 @@ function journal(store: string, entry: string): Migration | null {
   if (!stat(path)) return null
   const value = json(path)
   const prefix = `.${basename(entry)}.meshtalk-retired-`
-  if (value.schema !== 1 || value.entry !== entry || typeof value.retired !== "string" || !isAbsolute(value.retired) || value.retired !== join(dirname(entry), basename(value.retired)) || !new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}${UUID}$`).test(basename(value.retired))) throw new Error("Unsafe MeshTalk migration journal.")
+  if (value.schema !== 1 || typeof value.entry !== "string" || !same(value.entry, entry) || typeof value.retired !== "string" || !isAbsolute(value.retired) || !same(value.retired, join(dirname(entry), basename(value.retired))) || !new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}${UUID}$`).test(basename(value.retired))) throw new Error("Unsafe MeshTalk migration journal.")
   return value
 }
 

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import { activateRelease, cleanupReleases, installFromDirectory, managedInstallRoot, pendingFlatInstallation, prepareInstalledLauncher, prepareUpdateRestart, releaseFiles, releaseUsage, retainChildRelease, stageReleaseDirectory, uninstallReleaseInstallation } from "./release-install"
+import { physicalPath as realpathSync } from "./install-paths"
 
 const stateFile = ".meshtalk-install.json"
 const modulePath = new URL("./release-install.ts", import.meta.url).href
@@ -285,6 +286,29 @@ describe("release installation", () => {
       expect(launcher.root).toBe(root)
       expect(launcher.executable).toBe(payloadPath(current))
     } finally { releaseUsage(launcher) }
+  })
+
+  test("executable path aliases do not change the physical installation root", async () => {
+    const current = install()
+    const alias = join(directory, "executable-parent-alias")
+    symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir")
+    const child = spawn(`
+      import { mock } from "bun:test"
+      import * as fs from "node:fs"
+      const realpath = fs.realpathSync
+      const native = realpath.native
+      const aliasPath = (actual) => {
+        if (actual === ${JSON.stringify(payloadPath(current))}) return ${JSON.stringify(join(alias, "versions", current, releaseFiles[0]))}
+        return actual
+      }
+      const mocked = (path) => aliasPath(realpath(path))
+      mocked.native = (path) => aliasPath(native(path))
+      mock.module("node:fs", () => ({ ...fs, realpathSync: mocked }))
+      const { installationRoot } = await import(${JSON.stringify(modulePath)})
+      console.log(JSON.stringify(installationRoot(${JSON.stringify(payloadPath(current))})))
+    `)
+    expect(await child.exited).toBe(0)
+    expect(JSON.parse(await new Response(child.stdout).text())).toBe(root)
   })
 
   test.each(["locked", "crash before bootstrap", "crash after bootstrap"])("legacy migration is recoverable: %s", async (failure) => {

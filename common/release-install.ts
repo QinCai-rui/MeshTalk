@@ -1,9 +1,10 @@
 import { Database } from "bun:sqlite"
 import { randomUUID } from "node:crypto"
 import { spawn } from "node:child_process"
-import { chmodSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, readdirSync, readlinkSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path"
 import { canLinkWindowsDirectory, cleanupWindowsMigration, publishWindowsEntry, removeWindowsEntry, windowsLinkStore, windowsRetiredDirectory, windowsStorePath } from "./windows-install-links"
+import { installationEntryPath, physicalPath as realpathSync } from "./install-paths"
 
 export const INSTALL_PROTOCOL = "1"
 const STATE = ".meshtalk-install.json"
@@ -118,7 +119,7 @@ function digest(path: string): string {
 // redirect either one. Unix command directories remain ordinary directories.
 export function managedInstallRoot(installDir: string): string {
   const linked = process.platform === "win32" ? windowsLinkStore(installDir) ?? windowsLinkStore(installDir, true) : null
-  if (linked) return linked
+  if (linked) return realpathSync(linked)
   const actual = realpathSync(installDir)
   if (RELEASE_NAME.test(basename(actual)) && basename(dirname(actual)) === "versions") return dirname(dirname(actual))
   return actual
@@ -467,6 +468,7 @@ export function uninstallReleaseInstallation(installDir: string): void {
 
 function hasUntrackedProcess(root: string, known: Set<number>): boolean {
   try {
+    root = realpathSync(root)
     const windows = process.platform === "win32"
     const result = Bun.spawnSync(windows ? ["tasklist", "/fo", "csv", "/nh"] : ["ps", "-A", "-o", "pid=,comm="], { stdout: "pipe", stderr: "ignore" })
     if (result.exitCode !== 0) return true
@@ -487,6 +489,7 @@ function hasUntrackedProcess(root: string, known: Set<number>): boolean {
             if (path.exitCode !== 0) return true
             executable = new TextDecoder().decode(path.stdout).trim()
             if (!executable) throw new Error("Process path unavailable")
+            executable = realpathSync(executable)
           }
         } catch {
           if (processMayBeAlive(pid)) return true
@@ -565,8 +568,8 @@ export function prepareUpdateRestart(installDir: string): InstalledLauncher {
 export function installationRoot(executable: string): string | null {
   try {
     const directory = dirname(realpathSync(executable))
-    if (basename(dirname(directory)) === "versions") return dirname(dirname(directory))
-    if (basename(executable) === releaseFiles[0]) return directory
+    if (basename(dirname(directory)) === "versions") return realpathSync(dirname(dirname(directory)))
+    if (basename(executable) === releaseFiles[0]) return realpathSync(directory)
   } catch {}
   return null
 }
@@ -675,13 +678,13 @@ export function installFromDirectory(source: string, installDir: string, version
   let existing: Selection | undefined
   try { existing = readSelection(root) } catch { /* Explicit repair is allowed below. */ }
   if (process.platform === "win32" && !options.keepFlat && existing?.layout !== "directory-link" && canLinkWindowsDirectory(installDir)) {
-    entry = join(realpathSync(dirname(resolve(installDir))), basename(installDir))
+    entry = installationEntryPath(installDir)
     root = windowsStorePath(entry)
     const marker = join(root, ".meshtalk-store.json")
     if (existsSync(root)) {
       if (!lstatSync(root).isDirectory() || !regularFile(marker)) throw new Error("The MeshTalk release-store path is already occupied. The existing installation was left unchanged.")
       const owner = JSON.parse(readFileSync(marker, "utf8"))
-      if (owner.schema !== 1 || owner.entry !== entry) throw new Error("The MeshTalk release store belongs to a different installation.")
+      if (owner.schema !== 1 || typeof owner.entry !== "string" || installationEntryPath(owner.entry).toLowerCase() !== entry.toLowerCase()) throw new Error("The MeshTalk release store belongs to a different installation.")
     } else {
       mkdirSync(root)
       writeJson(marker, { schema: 1, entry })
@@ -701,7 +704,7 @@ export function installFromDirectory(source: string, installDir: string, version
     const pending = stageDirectory(root, source, version)
     let next: Selection
     if (process.platform !== "win32" || entry || state.layout === "directory-link") {
-      if (entry && hasUntrackedProcess(entry, new Set([process.pid]))) throw new Error("Close all MeshTalk windows and stop its backend before migrating this installation.")
+      if (entry && existsSync(entry) && hasUntrackedProcess(entry, new Set([process.pid]))) throw new Error("Close all MeshTalk windows and stop its backend before migrating this installation.")
       next = activate(root, { ...state, pending, layout: process.platform === "win32" ? "directory-link" : "file-link", entry: entry ?? state.entry, bootstrap: undefined })
     } else if (!regularFile(join(root, releaseFiles[0])) || digest(join(root, releaseFiles[0])) !== digest(join(source, releaseFiles[0]))) {
       if (regularFile(join(root, releaseFiles[0])) && hasUntrackedProcess(root, new Set([process.pid]))) throw new Error("Close all MeshTalk windows and stop its backend before migrating this installation.")

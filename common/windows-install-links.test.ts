@@ -4,11 +4,19 @@ import * as childProcess from "node:child_process"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { canLinkWindowsDirectory, cleanupWindowsMigration, publishWindowsEntry, removeWindowsEntry, windowsLinkStore, windowsStorePath } from "./windows-install-links"
+import { physicalPath } from "./install-paths"
 
 const directories: string[] = []
 const windows = process.platform === "win32"
 const nativeTest = windows ? test : test.skip
 const id = "11111111-1111-4111-8111-111111111111"
+const shortTemporary = windows ? (() => {
+  const script = `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition 'using System.Text; using System.Runtime.InteropServices; public static class MeshTalkShortPath { [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] public static extern uint GetShortPathName(string path, StringBuilder result, uint length); }'; $b = New-Object Text.StringBuilder 32768; if ([MeshTalkShortPath]::GetShortPathName($env:MESHTALK_PATH_TEST, $b, 32768) -eq 0) { throw 'Cannot inspect short path' }; [Console]::Write($b.ToString())`
+  const result = childProcess.spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { env: { ...process.env, MESHTALK_PATH_TEST: tmpdir() }, encoding: "utf8", timeout: 30000 })
+  if (result.error || result.status !== 0) throw new Error(result.error?.message ?? result.stderr)
+  return result.stdout.trim()
+})() : ""
+const shortPathTest = test.skipIf(!windows || shortTemporary.toLowerCase() === physicalPath(tmpdir()).toLowerCase())
 
 function temporary(): string {
   const path = fs.mkdtempSync(join(tmpdir(), "meshtalk-links-"))
@@ -124,6 +132,30 @@ describe("Windows installation ownership", () => {
 })
 
 describe("native Windows junctions", () => {
+  shortPathTest("legacy short-spelled metadata and junctions remain usable from canonical compiled paths", () => {
+    const directory = fs.mkdtempSync(join(shortTemporary, "meshtalk-legacy-alias-"))
+    directories.push(directory)
+    const rawEntry = join(directory, "legacy command")
+    const entry = join(physicalPath(directory), "legacy command")
+    expect(rawEntry.toLowerCase()).not.toBe(entry.toLowerCase())
+    const rawStore = join(directory, ".legacy command.meshtalk-install")
+    const store = windowsStorePath(entry)
+    fs.mkdirSync(rawStore)
+    put(join(rawStore, ".meshtalk-install.json"), { schema: 1, layout: "directory-link", entry: rawEntry })
+    put(join(rawStore, ".meshtalk-store.json"), { schema: 1, entry: rawEntry })
+    fs.mkdirSync(rawEntry)
+    fs.writeFileSync(join(rawEntry, "meshtalk.exe"), "legacy")
+    const release = payload(join(rawStore, "versions"))
+    publishWindowsEntry(rawStore, rawEntry, release)
+    expect(windowsLinkStore(entry)).toBe(store)
+    const next = payload(join(store, "versions"), "b")
+    publishWindowsEntry(store, entry, next)
+    expect(fs.readFileSync(join(entry, "meshtalk.exe"), "utf8")).toBe("b")
+    cleanupWindowsMigration(store, entry)
+    removeWindowsEntry(store, entry)
+    expect(fs.existsSync(entry)).toBe(false)
+  }, 60000)
+
   nativeTest("publishes and retargets without replacing current, and removes only the visible link", () => {
     const { entry, store, release } = installation()
     publishWindowsEntry(store, entry, release)

@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
-import { readFileSync, readlinkSync, realpathSync, statSync } from "node:fs"
+import { readFileSync, readlinkSync, statSync } from "node:fs"
 import { basename, isAbsolute, relative, sep } from "node:path"
+import { physicalPath as realpathSync } from "./install-paths"
 
 export type InstallationProcess = {
   pid: number

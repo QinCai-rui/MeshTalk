@@ -44,6 +44,11 @@ launcher with another release's backend. Unix handoff uses `execve` to preserve
 the terminal; a Windows compatibility forwarder waits and returns its child's
 exit status.
 
+Windows installation, process inspection, and startup use native canonical
+paths consistently, including expansion of 8.3 directory aliases. Public entry
+paths resolve their ancestors without following the entry's own junction;
+previously recorded short-spelled entries and migration journals remain valid.
+
 Selection also uses a schema-1 JSON file on every OS. It is written to a temporary
 sibling, flushed, then renamed
 over its predecessor without unlinking the predecessor first. An exclusive
