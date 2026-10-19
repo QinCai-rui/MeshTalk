@@ -17,7 +17,7 @@ export function SettingsLanding({ dialogHeight: _dialogHeight }: SettingsLanding
         <text fg={theme.accent}><b>Choose a settings section</b></text>
         <text fg={theme.text} wrapMode="word">Select a panel in the category rail to open its page.</text>
         <text fg={theme.muted} wrapMode="word">On narrow terminals, press Tab to open the category list.</text>
-        <text fg={theme.subdued} wrapMode="word">Files & transfers opens the full-screen transfer manager.</text>
+        <text fg={theme.subdued} wrapMode="word">Files & transfers manages storage locations and the transfer manager.</text>
       </box>
     </box>
 }

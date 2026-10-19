@@ -1552,6 +1552,80 @@ class Database:
         async with self._db.execute("SELECT * FROM file_transfers WHERE status IN ('pending','transferring')") as cursor:
             return [dict(row) async for row in cursor]
 
+    async def has_active_file_transfers(self) -> bool:
+        """Return True while any transfer is actively moving chunks.
+
+        Only the ``transferring`` status counts: ``pending`` (offer not yet
+        accepted) and ``queued`` (waiting for a peer) hold no open files, so
+        migrating around them is safe. Storage migration refuses to run while
+        this is true, since an in-flight transfer would otherwise complete
+        into the old location (or be deleted with it).
+        """
+        async with self._db.execute(
+            "SELECT 1 FROM file_transfers WHERE status = 'transferring' LIMIT 1"
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    def set_storage_key(self, storage_key: bytes | None) -> None:
+        """Replace the local-storage encryption key.
+
+        Used when the backend adopts another location's identity (whose
+        database rows were encrypted under a different key). Call while the
+        connection is closed, before reconnecting.
+        """
+        self._cipher = AESGCM(storage_key or os.urandom(32))
+
+    async def vacuum_into(self, dest: Path) -> None:
+        """Write a transaction-consistent snapshot of the database to dest.
+
+        Used by storage migration while the live connection stays open; the
+        caller verifies the snapshot before switching over to it. Any pending
+        batched write (file-progress rows use ``commit=False``) is flushed
+        first, both to fold it into the snapshot and because ``VACUUM`` cannot
+        run from within an open transaction.
+        """
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        await self._db.commit()
+        await self._db.execute("VACUUM INTO ?", (str(dest),))
+
+    async def rewrite_file_paths(self, old_base: Path, new_base: Path) -> int:
+        """Re-root stored file paths after the files directory moves.
+
+        Transfer rows keep absolute ``file_path`` values, so moving the files
+        tree would otherwise leave every completed transfer pointing at the
+        deleted old location. Paths outside ``old_base`` and unreadable paths
+        are left untouched. Returns the number of rows updated.
+        """
+        try:
+            old_root = old_base.resolve()
+        except OSError:
+            old_root = old_base
+        try:
+            new_root = new_base.resolve()
+        except OSError:
+            new_root = new_base
+        async with self._db.execute(
+            "SELECT file_id, file_path FROM file_transfers WHERE file_path IS NOT NULL"
+        ) as cursor:
+            rows = [dict(row) async for row in cursor]
+        updated = 0
+        for row in rows:
+            raw = row["file_path"]
+            if not raw:
+                continue
+            try:
+                rel = Path(raw).resolve().relative_to(old_root)
+            except (OSError, ValueError):
+                continue
+            await self._db.execute(
+                "UPDATE file_transfers SET file_path = ? WHERE file_id = ?",
+                (str(new_root / rel), row["file_id"]),
+            )
+            updated += 1
+        if updated:
+            await self._db.commit()
+        return updated
+
     async def is_file_chunk_received(self, file_id: str, chunk_index: int) -> bool:
         """Check if a specific file chunk has been received."""
         async with self._db.execute(

@@ -1012,7 +1012,9 @@ messages. Adding a command here does not change network compatibility.
 | files | - | List all file transfers (inbound and outbound) with status and metadata. |
 | file_info | file_id | Detailed metadata for one transfer. |
 | file_download | file_id, dest_path? | dest_path — save a received file to a user-chosen location. |
-| files_dir | path? | Get or set the files storage directory (`~/.meshtalk/files` by default). |
+| files_dir | path?, migrate? | Get or set the files storage directory (`<storage_dir>/files` by default). `path` may be `default` to reset the override. With `migrate=true`, existing files are copied, hash-verified, and only then removed from the old location. Response includes `files_dir`, `storage_dir`, `data_dir`, `db_path`, `files_configured`, `files_env`, `storage_configured`, `storage_env`, `files_has_content`, `storage_has_content`, `migrated`, optional `cleanup_warning`/`note`, and the live `peer_id`/`display_name`. Back-compat aliases `configured` and `env` mirror the files override. |
+| storage | path?, migrate? | Get or change the storage directory that holds `meshtalk.db`, `files/`, and `identity.json`. `path` may be `default` to reset to the data directory. Same response shape as `files_dir`, plus `files_migrated` and `files_note` when a custom files directory is left in place. With `migrate=false` an empty target gets a fresh database; a target that already holds MeshTalk data is adopted (its identity becomes live). |
+| open_path | path | Opens the directory (or the parent of a file) in the host file manager. The resolved path must be inside the storage, files, or data directory; otherwise a generic out-of-scope error is returned before any existence check. Falls back with `no_opener` when no graphical opener exists. |
 | mute / unmute | peer_id or group_id, timeout? | Mute state. |
 | muted_peers | - | Current peer and group mutes (`muted_peers`, `muted_groups`). |
 | dnd | enabled? | Global Do Not Disturb state; pauses all notifications and broadcasts DND presence to peers. |

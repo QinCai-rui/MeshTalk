@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 
 from meshtalk.database import Database
+from meshtalk.desktop_queries import handlers
+from meshtalk.identity import Identity
 
 
 class DesktopQueryTests(unittest.IsolatedAsyncioTestCase):
@@ -14,6 +16,23 @@ class DesktopQueryTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.db.close()
         self.temporary.cleanup()
+
+    async def test_handlers_follow_identity_changes_without_reregistering(self):
+        identity = Identity.generate("Original")
+        adopted = Identity.generate("Adopted")
+        queries = handlers(self.db, identity)
+        for message_id, sender in (("original", identity.peer_id), ("adopted", adopted.peer_id)):
+            await self.db.save_message({
+                "message_id": message_id, "sender_id": sender, "recipient_id": "alice",
+                "content": "Private needle", "encrypted_content": b"", "created_at": 1,
+                "hop_count": 0, "max_hops": 10,
+            })
+        for peer_id, expected in ((identity.peer_id, "original"), (adopted.peer_id, "adopted")):
+            identity.peer_id = peer_id
+            search = await queries["search_messages"]({"query": "needle", "peer_id": "alice"})
+            history = await queries["history_page"]({"peer_id": "alice"})
+            self.assertEqual([row["message_id"] for row in search["results"]], [expected])
+            self.assertEqual([row["message_id"] for row in history["messages"]], [expected])
 
     async def test_search_decrypts_in_memory_without_plaintext_index(self):
         await self.db.save_message({

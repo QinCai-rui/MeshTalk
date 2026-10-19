@@ -11,9 +11,11 @@ Commands:
   messages <peer-id>          Show conversation history
   send <peer-id> <message>    Send an encrypted direct message
   send-file <peer-id> <paths...> [--caption TEXT]  Send files to a peer
-  files                       List file transfers
-  files dir                   Show current files storage directory
-  files set-dir <path>        Set files storage directory (e.g., E:\\MeshTalkFiles)
+   files                       List file transfers
+   files dir                   Show current files storage directory
+   files set-dir <path> [--migrate|--no-migrate]  Set files storage directory (e.g., E:\MeshTalkFiles)
+   storage                     Show storage location (messages database, files, identity)
+   storage set-dir <path> [--migrate|--no-migrate]  Change storage location, optionally transferring existing data
   download <file-id> <dest>   Download a received file to dest path/folder
   retry <file-id> [--recipient <peer-id>]  Retry a file transfer or delivery
   watch                       Print incoming messages until interrupted
@@ -149,6 +151,51 @@ function transportName(value: unknown): string {
   return "not connected";
 }
 
+async function confirmTransfer(label: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  const { createInterface } = await import("readline");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise<string>((resolve) => rl.question(`Transfer existing ${label} to the new location? [y/N] `, resolve));
+    const normalized = answer.trim().toLowerCase();
+    return normalized === "y" || normalized === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Resolve whether to migrate when neither flag was given.
+ *
+ * On a pipe there is nobody to answer the prompt, so silently proceeding
+ * without migration would either leave data behind or (for an occupied target)
+ * adopt that location's identity. Require an explicit choice instead.
+ */
+export async function resolveMigrateChoice(
+  label: string,
+  hasContent: boolean,
+  confirm: (label: string) => Promise<boolean>,
+): Promise<boolean> {
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      `Cannot prompt to transfer existing ${label} on a non-interactive input; pass --migrate or --no-migrate explicitly`,
+    );
+  }
+  if (!hasContent) return false;
+  return confirm(label);
+}
+
+export function splitMigrateFlags(args: string[]): { paths: string[]; migrate: boolean; noMigrate: boolean } {
+  const migrate = args.includes("--migrate");
+  const noMigrate = args.includes("--no-migrate");
+  if (migrate && noMigrate) throw new Error("Specify either --migrate or --no-migrate, not both");
+  return {
+    paths: args.filter((a) => a !== "--migrate" && a !== "--no-migrate"),
+    migrate,
+    noMigrate,
+  };
+}
+
 function friendLabel(peer: Record<string, unknown>): string {
   const status = peer.friend_request;
   if (peer.is_friend) return " friend";
@@ -255,18 +302,30 @@ export async function main(): Promise<void> {
         const response = await ipc.send("files_dir");
         if (hasError(response)) return;
         console.log(`Files dir: ${response.files_dir}`);
-        if (response.env) console.log(`(overridden by MESHTALK_FILES_DIR=${response.env})`);
-        else if (response.configured) console.log(`(custom)`);
-        else console.log(`(default: <data_dir>/files)`);
+        if (response.files_env) console.log(`(overridden by MESHTALK_FILES_DIR=${response.files_env})`);
+        else if (response.files_configured) console.log(`(custom)`);
+        else console.log(`(default: <storage_dir>/files)`);
+        console.log(`Storage dir: ${response.storage_dir}`);
         console.log(`Data dir: ${response.data_dir}`);
         return;
       }
       if (args[0] === "set-dir" && args[1]) {
-        const p = resolve(args.slice(1).join(" "));
-        const response = await ipc.send("files_dir", { path: p });
+        const { paths, migrate: migrateFlag, noMigrate } = splitMigrateFlags(args.slice(1));
+        if (!paths.length || !paths.join(" ").trim()) throw new Error(`Usage: ${PROGRAM} files set-dir <path> [--migrate|--no-migrate]`);
+        const { resolve } = await import("path");
+        const p = resolve(paths.join(" "));
+        let migrate = migrateFlag;
+        if (!migrateFlag && !noMigrate) {
+          const current = await ipc.send("files_dir");
+          if (current.error) throw new Error(String(current.error));
+          migrate = await resolveMigrateChoice("files", !!current.files_has_content, confirmTransfer);
+        }
+        const response = await ipc.send("files_dir", { path: p, ...(migrate ? { migrate: true } : {}) });
         if (hasError(response)) return;
         console.log(`Files dir set to: ${response.files_dir}`);
-        console.log(`Restart backend to apply to new transfers (existing files stay in old location).`);
+        if (response.migrated) console.log(`Existing files transferred from the old location.`);
+        else if (typeof response.note === "string") console.log(response.note);
+        if (typeof response.cleanup_warning === "string") console.log(`Warning: ${response.cleanup_warning}`);
         return;
       }
       const response = await ipc.send("files");
@@ -281,6 +340,42 @@ export async function main(): Promise<void> {
         printFileMetadata(f);
       }
       return;
+    }
+
+    if (command === "storage") {
+      if (!args.length) {
+        const response = await ipc.send("storage");
+        if (hasError(response)) return;
+        console.log(`Storage dir: ${response.storage_dir}`);
+        if (response.storage_env) console.log(`(overridden by MESHTALK_STORAGE_DIR=${response.storage_env})`);
+        else if (response.storage_configured) console.log(`(custom)`);
+        else console.log(`(default: <data_dir>)`);
+        console.log(`Data dir: ${response.data_dir}`);
+        console.log(`Files dir: ${response.files_dir}`);
+        console.log(`Database: ${response.db_path}`);
+        return;
+      }
+      if (args[0] === "set-dir" && args[1]) {
+        const { paths, migrate: migrateFlag, noMigrate } = splitMigrateFlags(args.slice(1));
+        if (!paths.length || !paths.join(" ").trim()) throw new Error(`Usage: ${PROGRAM} storage set-dir <path> [--migrate|--no-migrate]`);
+        const { resolve } = await import("path");
+        const p = resolve(paths.join(" "));
+        let migrate = migrateFlag;
+        if (!migrateFlag && !noMigrate) {
+          const current = await ipc.send("storage");
+          if (current.error) throw new Error(String(current.error));
+          migrate = await resolveMigrateChoice("data", !!current.storage_has_content, confirmTransfer);
+        }
+        const response = await ipc.send("storage", { path: p, ...(migrate ? { migrate: true } : {}) });
+        if (hasError(response)) return;
+        console.log(`Storage dir set to: ${response.storage_dir}`);
+        if (response.migrated) console.log(`Existing data transferred from the old location.`);
+        else if (typeof response.note === "string") console.log(response.note);
+        if (typeof response.files_note === "string") console.log(response.files_note);
+        if (typeof response.cleanup_warning === "string") console.log(`Warning: ${response.cleanup_warning}`);
+        return;
+      }
+      throw new Error(`Usage: ${PROGRAM} storage [set-dir <path> [--migrate|--no-migrate]]`);
     }
 
     if (command === "download") {

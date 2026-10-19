@@ -1,8 +1,9 @@
 """Local desktop history/search IPC handlers. No network side effects."""
 from .database import Database
+from .identity import Identity
 
 
-def handlers(db: Database, local_peer_id: str) -> dict:
+def handlers(db: Database, identity: Identity) -> dict:
     def conversation(req):
         peer, group = req.get("peer_id"), req.get("group_id")
         for value in (peer, group):
@@ -19,7 +20,7 @@ def handlers(db: Database, local_peer_id: str) -> dict:
         if type(offset) is not int or offset < 0:
             raise ValueError("offset must be a non-negative integer")
         peer, group = conversation(req)
-        return await db.search_local_messages(local_peer_id, query.strip(), offset, peer, group)
+        return await db.search_local_messages(identity.peer_id, query.strip(), offset, peer, group)
 
     async def history(req):
         peer, group = conversation(req)
@@ -30,7 +31,7 @@ def handlers(db: Database, local_peer_id: str) -> dict:
             raise ValueError("before must be a positive integer")
         if around is not None and (not isinstance(around, str) or not around or len(around) > 128):
             raise ValueError("around must be a message identifier")
-        return await db.desktop_history(local_peer_id, peer, group, before, around)
+        return await db.desktop_history(identity.peer_id, peer, group, before, around)
 
     async def drafts(req):
         value = req.get("drafts")
