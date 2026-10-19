@@ -351,8 +351,11 @@ export function importLegacyWindowsUpdate(installDir: string): boolean {
   try {
     const root = realpathSync(installDir)
     if (!lstatSync(installDir).isDirectory() || !lstatSync(pending.installDir).isDirectory()) return false
-    if (realpathSync(pending.installDir) !== root || !isStagingWithinInstallDir(root, pending.staging)) return false
-    if (!lstatSync(pending.staging).isDirectory() || dirname(resolve(pending.staging)) !== root || dirname(realpathSync(pending.staging)) !== root || !basename(pending.staging).startsWith(".meshtalk-update-")) return false
+    const staging = realpathSync(pending.staging)
+    if (realpathSync(pending.installDir) !== root || !isStagingWithinInstallDir(root, staging)) return false
+    // Canonicalize ancestor aliases such as macOS /tmp -> /private/tmp, while
+    // still rejecting a linked staging directory or a different physical parent.
+    if (!lstatSync(pending.staging).isDirectory() || realpathSync(dirname(resolve(pending.staging))) !== root || dirname(staging) !== root || !basename(staging).startsWith(".meshtalk-update-")) return false
     const files = expectedFiles()
     if (pending.files.length !== files.length || files.some((name) => pending.files.filter((file) => file === name).length !== 1)) return false
     const entries = readdirSync(pending.staging)

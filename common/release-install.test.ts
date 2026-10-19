@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import { activateRelease, cleanupReleases, installFromDirectory, prepareInstalledLauncher, prepareUpdateRestart, releaseFiles, releaseUsage, retainChildRelease, stageReleaseDirectory, uninstallReleaseInstallation } from "./release-install"
@@ -17,6 +17,7 @@ beforeEach(() => {
   directory = mkdtempSync(join(temporary, "meshtalk-release-test-"))
   root = join(directory, "install")
   mkdirSync(root)
+  root = realpathSync(root)
   children = []
 })
 
@@ -91,6 +92,17 @@ function spawn(code: string) {
 }
 
 describe("release installation", () => {
+  test("ancestor path aliases resolve to the same physical installation", () => {
+    const current = install()
+    const alias = join(directory, "parent-alias")
+    symlinkSync(directory, alias, process.platform === "win32" ? "junction" : "dir")
+    const launcher = prepareInstalledLauncher(join(alias, "install", releaseFiles[0]))!
+    try {
+      expect(launcher.root).toBe(root)
+      expect(launcher.executable).toBe(payloadPath(current))
+    } finally { releaseUsage(launcher) }
+  })
+
   test.each(["locked", "crash before bootstrap", "crash after bootstrap"])("legacy migration is recoverable: %s", async (failure) => {
     for (const file of releaseFiles) writeFileSync(join(root, file), `legacy ${file}`)
     const nextSource = source("2.0.0")

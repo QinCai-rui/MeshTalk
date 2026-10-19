@@ -108,7 +108,7 @@ describe("importLegacyWindowsUpdate", () => {
   const suffix = process.platform === "win32" ? ".exe" : ""
   const files = ["meshtalk", "meshtalk-backend"].map((name) => `${name}${suffix}`)
 
-  for (const scenario of ["complete", "missing file", "wrong installation", "unexpected marker files", "extra staged file", "staging link", "install link", "file link", "publish failure", "malformed marker"] as const) {
+  for (const scenario of ["complete", "ancestor alias", "missing file", "wrong installation", "unexpected marker files", "extra staged file", "staging link", "install link", "file link", "publish failure", "malformed marker"] as const) {
     test(`${scenario}: imports only a complete matching update without changing installed files`, () => {
       const temporary = mkdtempSync(join(tmpdir(), "meshtalk-legacy-update-"))
       const installDir = join(temporary, "install")
@@ -124,6 +124,11 @@ describe("importLegacyWindowsUpdate", () => {
         }
         let caller = installDir
         let source = staging
+        if (scenario === "ancestor alias") {
+          const alias = join(temporary, "alias")
+          symlinkSync(installDir, alias, process.platform === "win32" ? "junction" : "dir")
+          source = join(alias, ".meshtalk-update-test")
+        }
         if (scenario === "missing file") rmSync(join(staging, files[1]))
         if (scenario === "wrong installation") {
           caller = join(temporary, "other")
@@ -153,9 +158,10 @@ describe("importLegacyWindowsUpdate", () => {
           console.log(importLegacyWindowsUpdate(${JSON.stringify(caller)}))
         `], { env: { ...process.env, MESHTALK_DATA_DIR: dataDir }, stdout: "pipe", stderr: "pipe" })
         expect(result.exitCode).toBe(0)
-        expect(new TextDecoder().decode(result.stdout).trim()).toBe(String(scenario === "complete"))
+        const complete = scenario === "complete" || scenario === "ancestor alias"
+        expect(new TextDecoder().decode(result.stdout).trim()).toBe(String(complete))
         for (const name of files) expect(readFileSync(join(installDir, name), "utf8")).toBe(`old ${name}`)
-        if (scenario === "complete") {
+        if (complete) {
           const selection = JSON.parse(readFileSync(join(installDir, ".meshtalk-install.json"), "utf8"))
           for (const name of files) expect(readFileSync(join(installDir, "versions", selection.pending, name), "utf8")).toBe(`new ${name}`)
           expect(existsSync(marker)).toBe(false)
