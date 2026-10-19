@@ -1186,7 +1186,8 @@ async def main(debug: bool = False) -> None:
             payload = _storage_payload()
             payload["note"] = "Existing files stay in the old location; pass migrate=true to transfer them."
             return payload
-        assert result is not None
+        if result is None:
+            return {"error": "migration did not run"}
         payload = _storage_payload()
         payload["migrated"] = result["migrated"]
         if result["cleanup_warning"]:
