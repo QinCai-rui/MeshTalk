@@ -855,6 +855,78 @@ choose_version() {
   esac
 }
 
+require_windows_stopped() {
+  [[ $PLATFORM == windows ]] || return 0
+  command_exists powershell.exe || die "Cannot check running MeshTalk processes. Use the PowerShell installer after closing MeshTalk."
+  powershell.exe -NoProfile -NonInteractive -Command 'if (@(Get-Process -Name meshtalk,meshtalk-backend -ErrorAction SilentlyContinue).Count -gt 0) { exit 1 }' \
+    || die "Close all MeshTalk and meshtalk-backend processes before replacing or removing this installation."
+}
+
+has_managed_installation() {
+  local marker
+  for marker in .meshtalk-install.json .meshtalk-install.json.bak; do
+    [[ ! -e $INSTALL_DIR/$marker && ! -L $INSTALL_DIR/$marker ]] || return 0
+  done
+  return 1
+}
+
+supports_install_protocol() {
+  local protocol
+  # The sentinel preserves trailing newlines so extra output cannot pass the probe.
+  protocol=$("$1" --install-protocol 2>/dev/null && printf '.') \
+    && [[ $protocol == '1.' || $protocol == $'1\n.' || $protocol == $'1\r\n.' ]]
+}
+
+install_extracted() {
+  local extract_dir=$1 file stage replaced="" old_files=""
+  for file in "${EXPECTED_FILES[@]}"; do
+    chmod u+rx "$extract_dir/$file" || die "Unable to make ${file} executable."
+  done
+  if supports_install_protocol "$extract_dir/$LAUNCHER_NAME"; then
+    "$extract_dir/$LAUNCHER_NAME" --install-from "$extract_dir" --install-dir "$INSTALL_DIR" \
+      || die "Managed installation failed; the installer did not fall back to legacy replacement."
+    return
+  fi
+  if has_managed_installation; then
+    die "This release cannot replace a managed MeshTalk installation. Install a newer release, choose another --install-dir, or explicitly uninstall before reinstalling this historical release."
+  fi
+  require_windows_stopped
+  warn "Historical release: using legacy flat installation (no managed update lock)."
+  mkdir -p "$INSTALL_DIR"
+  stage=$(mktemp -d "$INSTALL_DIR/.meshtalk-legacy.XXXXXX") || die "Unable to stage the installation."
+  mkdir "$stage/new" "$stage/old"
+  # Prepare both replacements and backups before changing either installed file.
+  for file in "${EXPECTED_FILES[@]}"; do
+    if ! cp -p "$extract_dir/$file" "$stage/new/$file"; then
+      rm -rf -- "$stage"
+      die "Unable to stage ${file}; installed files were left unchanged."
+    fi
+    if [[ -e $INSTALL_DIR/$file || -L $INSTALL_DIR/$file ]]; then
+      if [[ -d $INSTALL_DIR/$file ]] || ! cp -pP "$INSTALL_DIR/$file" "$stage/old/$file"; then
+        rm -rf -- "$stage"
+        die "Unable to back up ${file}; installed files were left unchanged."
+      fi
+      old_files="$old_files $file"
+    fi
+  done
+  for file in "${EXPECTED_FILES[@]}"; do
+    if ! mv -f "$stage/new/$file" "$INSTALL_DIR/$file"; then
+      local restored
+      for restored in $replaced; do
+        if [[ " $old_files " == *" $restored "* ]]; then
+          mv -f "$stage/old/$restored" "$INSTALL_DIR/$restored" || die "Rollback failed; backups remain in ${stage}/old."
+        else
+          rm -f -- "$INSTALL_DIR/$restored"
+        fi
+      done
+      rm -rf -- "$stage"
+      die "Legacy replacement failed; previous files were restored."
+    fi
+    replaced="$replaced $file"
+  done
+  rm -rf -- "$stage"
+}
+
 # ─── Install ─────────────────────────────────────────────────────────────────
 install_meshtalk() {
   choose_version
@@ -951,16 +1023,7 @@ install_meshtalk() {
     [[ -f $extract_dir/$file && ! -L $extract_dir/$file ]] || die "The release archive is missing ${file}."
   done
   task_start "Installing MeshTalk to ${INSTALL_DIR}"
-  mkdir -p "$INSTALL_DIR"
-  # A full installer run resets the version selector before replacing the
-  # stable bootstrap. Otherwise a newly installed bootstrap could immediately
-  # redirect back into an older in-app update.
-  rm -f -- "$INSTALL_DIR/.meshtalk-current.json" "$INSTALL_DIR/.meshtalk-current.json.bak" "$INSTALL_DIR/.meshtalk-pending.json"
-  rm -rf -- "$INSTALL_DIR/versions"
-  for file in "${EXPECTED_FILES[@]}"; do
-    cp "$extract_dir/$file" "$INSTALL_DIR/$file"
-    chmod u+rx "$INSTALL_DIR/$file"
-  done
+  install_extracted "$extract_dir"
   task_finish "$TICK" "Installed MeshTalk to ${INSTALL_DIR}."
 
   configure_path
@@ -972,10 +1035,22 @@ install_meshtalk() {
   box_bottom
   info "Open a new terminal if you just added MeshTalk to your PATH."
 
+  cleanup_on_exit
   trap - EXIT SIGINT SIGTERM
 }
 
 # ─── Uninstall ───────────────────────────────────────────────────────────────
+uninstall_managed_releases() (
+  local helper_dir
+  helper_dir=$(mktemp -d "${TMPDIR:-/tmp}/meshtalk-uninstaller.XXXXXX") || return 1
+  trap 'rm -rf -- "$helper_dir"' EXIT
+  trap 'exit 1' SIGINT SIGTERM
+  # Run outside the installation so Windows can remove the root executable.
+  cp -p "$INSTALL_DIR/$LAUNCHER_NAME" "$helper_dir/$LAUNCHER_NAME" || return 1
+  chmod u+rx "$helper_dir/$LAUNCHER_NAME" || return 1
+  "$helper_dir/$LAUNCHER_NAME" --uninstall-releases --install-dir "$INSTALL_DIR"
+)
+
 uninstall_meshtalk() {
   choose_install_dir
 
@@ -987,7 +1062,9 @@ uninstall_meshtalk() {
     return
   fi
 
-  local found=0
+  local found=0 managed=0
+  has_managed_installation && managed=1
+  found=$managed
   for file in "${EXPECTED_FILES[@]}"; do
     if [[ -e "$INSTALL_DIR/$file" || -L "$INSTALL_DIR/$file" ]]; then
       found=1
@@ -1010,11 +1087,24 @@ uninstall_meshtalk() {
 
   printf '\n'
   task_start "Removing MeshTalk from ${INSTALL_DIR}"
+  require_windows_stopped
+  if [[ $managed -eq 1 ]]; then
+    if supports_install_protocol "$INSTALL_DIR/$LAUNCHER_NAME"; then
+      uninstall_managed_releases \
+        || die "Managed uninstall failed; launcher, backend, and remaining state were left in place."
+      # The helper removes root binaries and state under its lock. A waiting
+      # installer may already have replaced them by the time it returns.
+      task_finish "$TICK" "Removed MeshTalk from ${INSTALL_DIR}."
+      return
+    else
+      warn "Managed cleanup is unavailable. Release and usage directories were retained, including unknown release directories; inspect them manually before removing anything."
+    fi
+  fi
   for file in "${EXPECTED_FILES[@]}"; do
     rm -f -- "$INSTALL_DIR/$file"
   done
-  rm -f -- "$INSTALL_DIR/.meshtalk-current.json" "$INSTALL_DIR/.meshtalk-current.json.bak" "$INSTALL_DIR/.meshtalk-pending.json"
-  rm -rf -- "$INSTALL_DIR/versions"
+  rm -f -- "$INSTALL_DIR/.meshtalk-current.json" "$INSTALL_DIR/.meshtalk-current.json.bak" "$INSTALL_DIR/.meshtalk-pending.json" \
+    "$INSTALL_DIR/.meshtalk-install.json" "$INSTALL_DIR/.meshtalk-install.json.bak"
   task_finish "$TICK" "Removed MeshTalk from ${INSTALL_DIR}."
 }
 

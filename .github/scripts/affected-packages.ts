@@ -11,14 +11,17 @@ export function affectedPackages(paths: string[], all = false) {
   let analytics = all
   let native = all
   let installers = all
+  let updates = all
   const selectAll = () => {
     typescriptPackages.forEach(name => selected.add(name))
     for (const name of ["client", "control", "analytics"]) containers.add(name)
     backend = web = analytics = native = true
     installers = true
+    updates = true
   }
   if (all) selectAll()
   for (const path of paths) {
+    if (path.startsWith("bin/") || /^common\/(updater|release-install)(\.test)?\.ts$/.test(path) || /^scripts\/install\.(sh|ps1|test\.ts)$/.test(path) || ["package.json", "bun.lock", "cli/package.json", "tui/package.json"].includes(path)) updates = true
     if (path === ".github/workflows/pr-checks.yml" || path.startsWith(".github/scripts/")) {
       selectAll()
     } else if (path === "package.json" || path === "bun.lock") {
@@ -55,11 +58,11 @@ export function affectedPackages(paths: string[], all = false) {
       containers.add("control")
     } else if (path === ".dockerignore") {
       for (const name of ["client", "control", "analytics"]) containers.add(name)
-    } else if (path === "scripts/install.sh" || path === "scripts/install.ps1") {
+    } else if (/^scripts\/install\.(sh|ps1|test\.ts)$/.test(path)) {
       installers = true
     }
   }
-  return { typescript: typescriptPackages.filter(name => selected.has(name)), containers: ["client", "control", "analytics"].filter(name => containers.has(name)), installers, backend, web, analytics, native, desktop_browser: selected.has("desktop") }
+  return { typescript: typescriptPackages.filter(name => selected.has(name)), containers: ["client", "control", "analytics"].filter(name => containers.has(name)), installers, updates, backend, web, analytics, native, desktop_browser: selected.has("desktop") }
 }
 
 if (import.meta.main) {

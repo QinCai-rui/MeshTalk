@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
-import { buildWindowsReplacementScript, installRelease, isNewerVersion, isStagingWithinInstallDir, isStableVersion, parsePendingUpdate, readUpdateChannel, saveUpdateChannel, type UpdateProgress } from "./updater"
+import { installRelease, isNewerVersion, isStagingWithinInstallDir, isStableVersion, parsePendingUpdate, readUpdateChannel, saveUpdateChannel, type UpdateProgress } from "./updater"
+import { prepareInstalledLauncher, releaseUsage } from "./release-install"
 
 describe("isStableVersion", () => {
   test("recognizes stable and snapshot versions", () => {
@@ -103,59 +104,76 @@ describe("parsePendingUpdate", () => {
   })
 })
 
-describe("buildWindowsReplacementScript", () => {
-  const pending = { staging: "C:\\install\\.meshtalk-update-abc", installDir: "C:\\install", files: ["meshtalk.exe", "meshtalk-backend.exe"] }
+describe("importLegacyWindowsUpdate", () => {
+  const suffix = process.platform === "win32" ? ".exe" : ""
+  const files = ["meshtalk", "meshtalk-backend"].map((name) => `${name}${suffix}`)
 
-  test("retries each file copy until locks clear, without PID polling", () => {
-    const script = buildWindowsReplacementScript(pending, "C:\\install\\meshtalk.exe", "C:\\data\\update-helper.log")
-    // Lock-retry per file: copy fails with a sharing violation while the old
-    // instance still holds its executable, and succeeds once it exits.
-    expect(script).toContain("copy_attempts_0")
-    expect(script).toContain("copy_attempts_1")
-    expect(script).toContain('copy /y "C:\\install\\.meshtalk-update-abc\\meshtalk.exe" "C:\\install\\meshtalk.exe"')
-    expect(script.indexOf("meshtalk-backend.exe")).toBeLessThan(script.indexOf("meshtalk.exe"))
-    // PID polling cannot work in the detached helper: pipes hang and tasklist
-    // output capture yields empty files, so neither may be used. The legacy
-    // `find /i "%PID%"` must never come back either (Unix find on MSYS
-    // machines misparses it and flashes a console window).
-    expect(script).not.toContain("tasklist")
-    expect(script).not.toContain("findstr")
-    expect(script).not.toContain("|")
-    expect(script).not.toContain("WAIT_PID")
-    expect(script).not.toMatch(/(^|[^a-zA-Z])find(\.exe)?(\s|\/)/i)
-    // No delayed expansion: `!` in install paths would be eaten.
-    expect(script).not.toContain("EnableDelayedExpansion")
-    expect(script).not.toMatch(/setlocal.*!/i)
-  })
-
-  test("cleans up the staging dir plus pending marker and relaunches", () => {
-    const script = buildWindowsReplacementScript(pending, "C:\\install\\meshtalk.exe", "C:\\data\\update-helper.log")
-    expect(script).toContain('rmdir /s /q "C:\\install\\.meshtalk-update-abc"')
-    expect(script).toContain('del "C:\\install\\.meshtalk-current.json"')
-    expect(script).toContain('rmdir /s /q "C:\\install\\versions"')
-    expect(script).toContain('start "" /d "C:\\install" "C:\\install\\meshtalk.exe"')
-    // Relaunch is retried (transient AV locks) and its outcome is logged.
-    expect(script).toContain(":start_retry")
-    expect(script).toContain(":start_failed")
-    // A missing launcher must fail fast: `start` on a nonexistent target can
-    // hang forever in a windowless session instead of returning an error.
-    expect(script).toContain("if not exist")
-    expect(script).toContain(":start_missing")
-    // Self-deletes without leaving the script file behind.
-    expect(script).toContain('del "%~f0"')
-  })
-
-  test("logs each phase for post-mortem debugging", () => {
-    const script = buildWindowsReplacementScript(pending, "C:\\install\\meshtalk.exe", "C:\\data\\update-helper.log")
-    expect(script).toContain("helper started")
-    expect(script).toContain("replaced meshtalk.exe")
-    expect(script).toContain("could not replace meshtalk.exe")
-    expect(script).toContain("relaunched")
-    expect(script).toContain("C:\\data\\update-helper.log")
-  })
+  for (const scenario of ["complete", "missing file", "wrong installation", "unexpected marker files", "extra staged file", "staging link", "install link", "file link", "publish failure", "malformed marker"] as const) {
+    test(`${scenario}: imports only a complete matching update without changing installed files`, () => {
+      const temporary = mkdtempSync(join(tmpdir(), "meshtalk-legacy-update-"))
+      const installDir = join(temporary, "install")
+      const staging = join(installDir, ".meshtalk-update-test")
+      const dataDir = join(temporary, "data")
+      const marker = join(dataDir, "pending-update.json")
+      try {
+        mkdirSync(staging, { recursive: true })
+        mkdirSync(dataDir)
+        for (const name of files) {
+          writeFileSync(join(installDir, name), `old ${name}`)
+          writeFileSync(join(staging, name), `new ${name}`)
+        }
+        let caller = installDir
+        let source = staging
+        if (scenario === "missing file") rmSync(join(staging, files[1]))
+        if (scenario === "wrong installation") {
+          caller = join(temporary, "other")
+          mkdirSync(caller)
+        }
+        if (scenario === "extra staged file") writeFileSync(join(staging, "unexpected"), "extra")
+        if (scenario === "staging link") {
+          source = join(installDir, ".meshtalk-update-link")
+          symlinkSync(staging, source, process.platform === "win32" ? "junction" : "dir")
+        }
+        if (scenario === "install link") {
+          caller = join(temporary, "install-link")
+          symlinkSync(installDir, caller, process.platform === "win32" ? "junction" : "dir")
+        }
+        if (scenario === "file link") {
+          rmSync(join(staging, files[1]))
+          symlinkSync(join(installDir, files[1]), join(staging, files[1]), "file")
+        }
+        if (scenario === "publish failure") writeFileSync(join(installDir, ".meshtalk-install.json"), "broken")
+        const markerContents = scenario === "malformed marker" ? "broken" : JSON.stringify({
+          installDir, staging: source,
+          files: scenario === "unexpected marker files" ? [files[0], files[0]] : files,
+        })
+        writeFileSync(marker, markerContents)
+        const result = Bun.spawnSync([process.execPath, "--eval", `
+          import { importLegacyWindowsUpdate } from ${JSON.stringify(join(import.meta.dir, "updater.ts"))}
+          console.log(importLegacyWindowsUpdate(${JSON.stringify(caller)}))
+        `], { env: { ...process.env, MESHTALK_DATA_DIR: dataDir }, stdout: "pipe", stderr: "pipe" })
+        expect(result.exitCode).toBe(0)
+        expect(new TextDecoder().decode(result.stdout).trim()).toBe(String(scenario === "complete"))
+        for (const name of files) expect(readFileSync(join(installDir, name), "utf8")).toBe(`old ${name}`)
+        if (scenario === "complete") {
+          const selection = JSON.parse(readFileSync(join(installDir, ".meshtalk-install.json"), "utf8"))
+          for (const name of files) expect(readFileSync(join(installDir, "versions", selection.pending, name), "utf8")).toBe(`new ${name}`)
+          expect(existsSync(marker)).toBe(false)
+          expect(existsSync(staging)).toBe(false)
+        } else {
+          expect(readFileSync(marker, "utf8")).toBe(markerContents)
+          expect(readFileSync(join(staging, files[0]), "utf8")).toBe(`new ${files[0]}`)
+          if (scenario === "missing file") expect(existsSync(join(staging, files[1]))).toBe(false)
+          if (scenario !== "publish failure") expect(existsSync(join(installDir, ".meshtalk-install.json"))).toBe(false)
+        }
+      } finally {
+        rmSync(temporary, { recursive: true, force: true })
+      }
+    })
+  }
 })
 
-test("installRelease streams the archive and reports each install phase", async () => {
+test.each([true, false])("installRelease streams the archive and reports each install phase (managed: %s)", async (managed) => {
   const temporary = mkdtempSync(join(tmpdir(), "meshtalk-updater-test-"))
   const source = join(temporary, "source")
   const installDir = join(temporary, "install")
@@ -167,6 +185,12 @@ test("installRelease streams the archive and reports each install phase", async 
   for (const name of files) {
     writeFileSync(join(source, name), `new ${name}`)
     writeFileSync(join(installDir, name), `old ${name}`)
+  }
+  let current: string | undefined
+  if (managed) {
+    const launcher = prepareInstalledLauncher(join(installDir, files[0]))!
+    releaseUsage(launcher)
+    current = JSON.parse(readFileSync(join(installDir, ".meshtalk-install.json"), "utf8")).current
   }
   // Run tar with cwd + relative names: MSYS/Git-Bash tar treats `C:\...`
   // absolute paths as remote (`C: resolve failed`).
@@ -187,12 +211,16 @@ test("installRelease streams the archive and reports each install phase", async 
       downloadUrl: `http://127.0.0.1:${server.port}/release.tar.gz`,
       digest: `sha256:${digest}`,
     }, installDir, (event) => progress.push(event))
-    if (process.platform === "win32") {
-      expect(progress.map((event) => event.step)).toContain("Staging files for replacement after restart")
-    } else {
-      for (const name of files) expect(readFileSync(join(installDir, name), "utf-8")).toBe(`new ${name}`)
-      expect(progress.map((event) => event.step)).toContain("Replacing installed binaries")
+    const selection = JSON.parse(readFileSync(join(installDir, ".meshtalk-install.json"), "utf8"))
+    if (managed) expect(selection.current).toBe(current)
+    else expect(selection.pending).toBeUndefined()
+    const selected = managed ? selection.pending : selection.current
+    expect(selected).toMatch(/^release-[a-f0-9]{32}$/)
+    for (const name of files) {
+      expect(readFileSync(join(installDir, name), "utf8")).toBe(`${!managed && name === files[0] ? "new" : "old"} ${name}`)
+      expect(readFileSync(join(installDir, "versions", selected, name), "utf8")).toBe(`new ${name}`)
     }
+    expect(progress.map((event) => event.step)).toContain("Staging verified release for restart")
     expect(progress.some((event) => event.current === 1 && event.total === 6 && event.receivedBytes === archiveBytes.length && event.totalBytes === archiveBytes.length)).toBe(true)
     expect(progress.map((event) => event.step)).toContain("Verifying SHA-256 digest")
     expect(progress.map((event) => event.step)).toContain("Inspecting release archive")

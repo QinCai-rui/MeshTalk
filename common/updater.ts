@@ -1,9 +1,8 @@
-import { spawn as spawnDetached } from "node:child_process"
-import { randomUUID } from "node:crypto"
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs"
-import { chmod, copyFile, mkdir, open, rename, rm } from "fs/promises"
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs"
+import { mkdir, open, rm } from "fs/promises"
 import { tmpdir } from "os"
-import { basename, dirname, join, resolve, sep, win32 as win32path } from "path"
+import { basename, dirname, join, resolve, sep } from "path"
+import { hasManagedBootstrap, installationRoot, installFromDirectory, stageReleaseDirectory } from "./release-install"
 
 const DEFAULT_GITHUB_USER = "QinCai-rui"
 const DEFAULT_GITHUB_REPO = "MeshTalk"
@@ -344,58 +343,29 @@ function readPendingUpdate(): PendingUpdate | null {
   }
 }
 
-function backendFirst(files: string[]): string[] {
-  const isLauncher = (name: string) => name === "meshtalk" || name === "meshtalk.exe"
-  return [...files].sort((left, right) => Number(isLauncher(left)) - Number(isLauncher(right)))
-}
-
-function writePendingUpdate(pending: PendingUpdate): void {
-  mkdirSync(DATA_DIR, { recursive: true })
-  const temporary = `${PENDING_UPDATE_PATH}.tmp`
-  writeFileSync(temporary, JSON.stringify(pending))
-  chmodSync(temporary, 0o600)
-  rmSync(PENDING_UPDATE_PATH, { force: true })
-  renameSync(temporary, PENDING_UPDATE_PATH)
-}
-
-export function applyPendingWindowsReplacement(): boolean {
+export function importLegacyWindowsUpdate(installDir: string): boolean {
   const pending = readPendingUpdate()
-  if (!pending) return true
-  if (!isStagingWithinInstallDir(pending.installDir, pending.staging)) {
-    logUpdateHelper(`pending update ignored: staging ${pending.staging} is not inside ${pending.installDir}`)
+  if (!pending) return false
+  // Import updates downloaded by an older Windows release. Never move files
+  // over the running pair: the former "rollback" could delete the backend.
+  try {
+    const root = realpathSync(installDir)
+    if (!lstatSync(installDir).isDirectory() || !lstatSync(pending.installDir).isDirectory()) return false
+    if (realpathSync(pending.installDir) !== root || !isStagingWithinInstallDir(root, pending.staging)) return false
+    if (!lstatSync(pending.staging).isDirectory() || dirname(resolve(pending.staging)) !== root || dirname(realpathSync(pending.staging)) !== root || !basename(pending.staging).startsWith(".meshtalk-update-")) return false
+    const files = expectedFiles()
+    if (pending.files.length !== files.length || files.some((name) => pending.files.filter((file) => file === name).length !== 1)) return false
+    const entries = readdirSync(pending.staging)
+    if (entries.length !== files.length || files.some((name) => !entries.includes(name) || !lstatSync(join(pending.staging, name)).isFile())) return false
+    stageReleaseDirectory(pending.staging, root, "legacy-pending")
+    // Cleanup is best effort after the release selector has been published.
+    // A failed import above never removes the marker or its source files.
+    try { rmSync(PENDING_UPDATE_PATH, { force: true }) } catch {}
+    try { rmSync(pending.staging, { recursive: true, force: true }) } catch {}
+    return true
+  } catch {
     return false
   }
-  // Replace atomically: the launcher itself is always locked while this
-  // process runs, so a partial replacement would leave a mixed-version
-  // install (new backend, old launcher). If any file is locked, roll back
-  // the files already moved and leave the pending marker for the restart
-  // helper, which runs after this process has exited.
-  const moved: string[] = []
-  for (const name of backendFirst(pending.files)) {
-    try {
-      renameSync(join(pending.staging, name), join(pending.installDir, name))
-      moved.push(name)
-    } catch {
-      for (const done of moved) {
-        try { renameSync(join(pending.installDir, done), join(pending.staging, done)) } catch {}
-      }
-      return false
-    }
-  }
-  try { rmSync(pending.staging, { recursive: true, force: true }) } catch {}
-  try { rmSync(PENDING_UPDATE_PATH, { force: true }) } catch {}
-  return true
-}
-
-function helperLabel(name: string, index: number): string {
-  return `copy_${index}_${name.replace(/[^A-Za-z0-9]/g, "_")}`
-}
-
-// Quote a path for a batch file: paths are always double-quoted, and a
-// literal % must be doubled so cmd does not treat it as variable expansion.
-// Delayed expansion stays off (see below), so ! needs no escaping.
-function batQuote(path: string): string {
-  return `"${path.replace(/%/g, "%%")}"`
 }
 
 // Best-effort timestamped append to the update helper log. Never throws:
@@ -408,161 +378,8 @@ export function logUpdateHelper(message: string): void {
   } catch {}
 }
 
-// Builds the Windows batch helper. Exported for testing. The helper replaces
-// the installed binaries after the old instance has exited, then relaunches
-// the updated launcher. It lives outside the staging directory so removing
-// the staging directory cannot fail on the running script itself.
-//
-// Robustness notes (all verified empirically on Windows — the helper runs
-// detached with ignored stdio, which rules out several obvious approaches):
-// - No `|` pipes anywhere: a piped command hangs in that environment.
-// - No `tasklist` output capture: `tasklist ... > file` writes an empty file
-//   there, so PID polling cannot work. Instead the script synchronizes on the
-//   actual file locks: `copy` fails with a sharing violation while the old
-//   launcher/backend still holds its executable, and succeeds once it exits.
-//   Each copy retries for ~120s, so a slowly-exiting backend cannot fail the
-//   update, and a never-exiting one fails with a logged error instead of a
-//   half-replaced install.
-// - No delayed expansion: install paths containing ! would otherwise be
-//   corrupted, and %VAR% references re-expand on every `goto` loop iteration
-//   as long as the script avoids parenthesized blocks (a `goto` out of a
-//   `(...)` block is fragile in cmd).
-// - System32 timeout is fully qualified: on machines with Git/MSYS in PATH a
-//   `timeout` shim could shadow the real one. `copy`, `rmdir`, `del` and
-//   `start` are cmd builtins and need no path.
-export function buildWindowsReplacementScript(pending: PendingUpdate, launcherPath: string, logPath: string): string {
-  const timeout = "%SystemRoot%\\System32\\timeout.exe"
-  const log = batQuote(logPath)
-  const lines = [
-    "@echo off",
-    "setlocal EnableExtensions",
-    `echo %DATE% %TIME% MeshTalk update helper started. staging=${batQuote(pending.staging)} installDir=${batQuote(pending.installDir)}>> ${log}`,
-  ]
-  const failedLabels: string[] = []
-  backendFirst(pending.files).forEach((name, index) => {
-    const label = helperLabel(name, index)
-    failedLabels.push(
-      `:${label}_failed`,
-      `echo %DATE% %TIME% MeshTalk update helper could not replace ${name} after %copy_attempts_${index}% attempts>> ${log}`,
-      `goto failed`,
-    )
-    lines.push(
-      `set /a copy_attempts_${index}=0`,
-      `:${label}`,
-      `copy /y ${batQuote(win32path.join(pending.staging, name))} ${batQuote(win32path.join(pending.installDir, name))} >nul 2>&1`,
-      // NOTE: the errorlevel check must come immediately after copy — any
-      // command in between (even del or echo) would reset errorlevel.
-      `if not errorlevel 1 goto ${label}_ok`,
-      `set /a copy_attempts_${index}+=1`,
-      `if %copy_attempts_${index}% GEQ 120 goto ${label}_failed`,
-      `${timeout} /t 1 /nobreak >nul`,
-      `goto ${label}`,
-      `:${label}_ok`,
-      `echo %DATE% %TIME% MeshTalk update helper replaced ${name}>> ${log}`,
-    )
-  })
-  lines.push(
-    `rmdir /s /q ${batQuote(pending.staging)}`,
-    `del ${batQuote(PENDING_UPDATE_PATH)} >nul 2>&1`,
-    `del ${batQuote(win32path.join(pending.installDir, ".meshtalk-current.json"))} >nul 2>&1`,
-    `del ${batQuote(win32path.join(pending.installDir, ".meshtalk-current.json.bak"))} >nul 2>&1`,
-    `del ${batQuote(win32path.join(pending.installDir, ".meshtalk-pending.json"))} >nul 2>&1`,
-    `rmdir /s /q ${batQuote(win32path.join(pending.installDir, "versions"))}`,
-    // Guard first: `start` on a missing target can hang forever in a
-    // windowless session instead of failing, which would leave MeshTalk
-    // closed and never relaunched with no log trail.
-    `if not exist ${batQuote(launcherPath)} goto start_missing`,
-    `set /a start_attempts=0`,
-    `:start_retry`,
-    // Launch with the install dir as working directory and retry: a transient
-    // lock (e.g. antivirus scanning the fresh binary) must not silently drop
-    // the relaunch after a successful replacement.
-    `start "" /d ${batQuote(pending.installDir)} ${batQuote(launcherPath)} >nul 2>&1`,
-    `if not errorlevel 1 goto started`,
-    `set /a start_attempts+=1`,
-    `if %start_attempts% GEQ 5 goto start_failed`,
-    `${timeout} /t 2 /nobreak >nul`,
-    `goto start_retry`,
-    `:started`,
-    `echo %DATE% %TIME% MeshTalk update helper relaunched ${batQuote(launcherPath)}>> ${log}`,
-    `(goto) 2>nul & del "%~f0" >nul 2>&1`,
-    "exit /b 0",
-    ":start_failed",
-    `echo %DATE% %TIME% MeshTalk update helper replaced the files but could not relaunch ${batQuote(launcherPath)} after %start_attempts% attempts. Start MeshTalk manually.>> ${log}`,
-    "exit /b 1",
-    ":start_missing",
-    `echo %DATE% %TIME% MeshTalk update helper replaced the files but the launcher no longer exists: ${batQuote(launcherPath)}. Start MeshTalk manually or reinstall.>> ${log}`,
-    "exit /b 1",
-    ...failedLabels,
-    ":failed",
-    `echo %DATE% %TIME% MeshTalk update helper FAILED. The installation may be partially updated; reinstall MeshTalk if it misbehaves.>> ${log}`,
-    "exit /b 1",
-  )
-  return lines.join("\r\n")
-}
-
-export function spawnWindowsReplacementHelper(): boolean {
-  if (process.platform !== "win32") return false
-  const pending = readPendingUpdate()
-  if (!pending) return false
-  if (!isStagingWithinInstallDir(pending.installDir, pending.staging)) {
-    logUpdateHelper(`helper spawn REFUSED: staging ${pending.staging} is not inside ${pending.installDir}`)
-    return false
-  }
-  const launcherPath = join(pending.installDir, "meshtalk.exe")
-  const logPath = join(DATA_DIR, "update-helper.log")
-  // Best-effort sweep of helper scripts leaked by a crash between write and
-  // self-delete. Only files matching our own prefix and older than 24h.
-  try {
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000
-    for (const entry of readdirSync(tmpdir())) {
-      if (!entry.startsWith("meshtalk-update-") || !entry.endsWith(".cmd")) continue
-      const candidate = join(tmpdir(), entry)
-      try {
-        if (statSync(candidate).isFile() && statSync(candidate).mtimeMs < cutoff) rmSync(candidate, { force: true })
-      } catch {}
-    }
-  } catch {}
-  // The script must not live inside the staging directory: it deletes that
-  // directory, and Windows cannot remove the running batch file's own folder.
-  // Write it directly in the temp directory (no subdirectory) so its
-  // self-delete leaves nothing behind.
-  const script = join(tmpdir(), `meshtalk-update-${randomUUID()}.cmd`)
-  try {
-    writeFileSync(script, buildWindowsReplacementScript(pending, launcherPath, logPath))
-  } catch (error) {
-    logUpdateHelper(`helper script write FAILED: ${error instanceof Error ? error.message : String(error)}`)
-    return false
-  }
-  try {
-    // Route through node:child_process: unlike Bun.spawn, it honors
-    // windowsHide, so no helper console window flashes on screen. Fully
-    // detach with ignored stdio so the helper outlives the exiting launcher;
-    // shared (inherited) stdio handles would tie the helper's lifetime to the
-    // launcher's console and let it die before the copy runs.
-    const comspec = process.env.ComSpec?.trim() || join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe")
-    // argv (not a shell string): Node quotes the script path for
-    // CreateProcess, so paths with spaces work unquoted here — pre-quoting or
-    // /s breaks parsing (verified empirically on Windows).
-    const helper = spawnDetached(comspec, ["/d", "/c", script], {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-    })
-    if (!Number.isInteger(helper.pid) || (helper.pid as number) <= 0) throw new Error("Windows update helper process did not start")
-    helper.unref()
-    logUpdateHelper(`helper spawned pid=${helper.pid} script=${script} launcher=${launcherPath}`)
-    return true
-  } catch (error) {
-    logUpdateHelper(`helper spawn FAILED: ${error instanceof Error ? error.message : String(error)}`)
-    try { rmSync(script, { force: true }) } catch {}
-    return false
-  }
-}
-
 export async function installRelease(release: Release, installDir: string, onProgress?: (progress: UpdateProgress) => void): Promise<void> {
   const temporary = mkdtempSync(join(tmpdir(), "meshtalk-update-"))
-  let staging: string | undefined
   try {
     const token = githubToken()
     const downloadStep = token ? "Downloading GitHub release with Bun fetch (saved token)" : "Downloading GitHub release with Bun fetch"
@@ -630,42 +447,11 @@ export async function installRelease(release: Release, installDir: string, onPro
         throw new Error(`Release archive is missing ${name}. ${REINSTALL_HINT}`)
       }
     }
-    if (process.platform === "win32") {
-      onProgress?.({ current: 6, total: 6, step: "Staging files for replacement after restart" })
-      await Bun.sleep(16)
-      const previous = readPendingUpdate()
-      staging = mkdtempSync(join(installDir, ".meshtalk-update-"))
-      const installStaging = staging
-      await Promise.all(expectedFiles().map((name) => copyFile(join(extracted, name), join(installStaging, name))))
-      writePendingUpdate({ staging: installStaging, installDir, files: expectedFiles() })
-      staging = undefined
-      if (previous && previous.staging !== installStaging && isStagingWithinInstallDir(previous.installDir, previous.staging)) {
-        try { rmSync(previous.staging, { recursive: true, force: true }) } catch {}
-      }
-      return
-    }
-    onProgress?.({ current: 6, total: 6, step: "Replacing installed binaries" })
+    onProgress?.({ current: 6, total: 6, step: "Staging verified release for restart" })
     await Bun.sleep(16)
-    staging = mkdtempSync(join(installDir, ".meshtalk-update-"))
-    const installStaging = staging
-    // Backend first, launcher last: an interruption then leaves the
-    // known-good launcher in place rather than a new launcher paired with an
-    // old backend.
-    for (const name of backendFirst(expectedFiles())) {
-      const staged = join(installStaging, name)
-      await copyFile(join(extracted, name), staged)
-      await chmod(staged, 0o755)
-    }
-    for (const name of backendFirst(expectedFiles())) await rename(join(installStaging, name), join(installDir, name))
-    await rm(installStaging, { recursive: true, force: true })
-    staging = undefined
-    // Clear the old immutable-version layout once the flat pair is in place.
-    for (const name of [".meshtalk-current.json", ".meshtalk-current.json.bak", ".meshtalk-pending.json"]) {
-      try { rmSync(join(installDir, name), { force: true }) } catch {}
-    }
-    try { rmSync(join(installDir, "versions"), { recursive: true, force: true }) } catch {}
+    if (hasManagedBootstrap(installDir)) stageReleaseDirectory(extracted, installDir, release.version)
+    else installFromDirectory(extracted, installDir, release.version)
   } finally {
-    if (staging) await rm(staging, { recursive: true, force: true })
     await rm(temporary, { recursive: true, force: true })
   }
 }
@@ -696,21 +482,16 @@ export function updateRestartPath(): string | null {
 export function releaseInstallDir(): string | null {
   for (const executable of [process.argv[0], process.argv[1], process.execPath]) {
     if (!executable || !basename(executable).startsWith("meshtalk")) continue
-    const directory = dirname(executable)
-    // One-time migration support for a launcher currently running from the
-    // removed immutable-version layout.
-    if (basename(dirname(directory)) === "versions") {
-      const root = dirname(dirname(directory))
-      if (isReleaseInstallDir(root)) return root
-    }
-    if (isReleaseInstallDir(directory)) return directory
+    const root = installationRoot(executable)
+    if (root && isReleaseInstallDir(root)) return root
   }
   return null
 }
 
 export function isReleaseInstallDir(directory: string): boolean {
   try {
-    if (!statSync(directory).isDirectory()) return false
+    if (!lstatSync(directory).isDirectory()) return false
+    if (existsSync(join(directory, ".meshtalk-install.json")) && lstatSync(join(directory, `meshtalk${process.platform === "win32" ? ".exe" : ""}`)).isFile()) return true
     return expectedFiles().every((name) => {
       const path = join(directory, name)
       return existsSync(path) && lstatSync(path).isFile()
