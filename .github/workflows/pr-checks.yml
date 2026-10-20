@@ -37,8 +37,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
-      - name: Test job selection and aggregate status
-        run: bun test ./.github/scripts/affected-packages.test.ts
+      - name: Test job selection, aggregate status, and check scripts
+        run: bun test ./.github/scripts/affected-packages.test.ts ./.github/scripts/check-typescript.test.ts
       - name: Test native check preparation
         run: python3 -m unittest discover -s .github/scripts -p test_check_desktop_native.py -v
       - id: select

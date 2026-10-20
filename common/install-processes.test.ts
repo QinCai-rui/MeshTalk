@@ -209,8 +209,90 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
 
+test.skipIf(process.platform !== "linux").each([
+  { uid: "foreign", error: "EACCES", refused: false },
+  { uid: "foreign", error: "EPERM", refused: false },
+  { uid: "same", error: "EACCES", refused: true },
+  { uid: "same", error: "EPERM", refused: true },
+  { uid: "foreign", error: "EIO", refused: true },
+  { uid: "foreign", error: "", refused: true },
+])("native Linux inspection respects process ownership: %j", scenario => {
+  const root = mkdtempSync(join(tmpdir(), "meshtalk-native-inspection-"))
+  directories.push(root)
+  writeFileSync(join(root, "meshtalk"), "fixture")
+  const result = Bun.spawnSync([process.execPath, "--eval", `
+    import { mock } from "bun:test"
+    import * as fs from "node:fs"
+    import * as childProcess from "node:child_process"
+    const read = fs.readFileSync, link = fs.readlinkSync, stat = fs.statSync
+    const executable = ${JSON.stringify(join(root, "meshtalk"))}
+    const uid = process.getuid()
+    const foreignUid = ${JSON.stringify(scenario.uid)} === "foreign" ? uid + 1 : uid
+    const ownPid = 214214213, foreignPid = 214214214
+    let alive = true
+    const closed = []
+    const fields = Array(20).fill("0"); fields[0] = "S"; fields[19] = "100"
+    mock.module("node:child_process", () => ({ ...childProcess, execFileSync: () =>
+      process.pid + " 0 " + uid + " bun\\n" +
+      (alive ? ownPid + " 0 " + uid + " meshtalk\\n" : "") +
+      foreignPid + " 0 " + foreignUid + " meshtalk\\n"
+    }))
+    mock.module("node:fs", () => ({ ...fs,
+      readFileSync: (path, ...args) => {
+        if (path === "/proc/" + ownPid + "/stat" || path === "/proc/" + foreignPid + "/stat") return "1 (meshtalk) " + fields.join(" ")
+        return read(path, ...args)
+      },
+      readlinkSync: (path, ...args) => {
+        if (path === "/proc/" + foreignPid + "/exe" && ${JSON.stringify(scenario.error)}) throw Object.assign(new Error("fixture permission"), { code: ${JSON.stringify(scenario.error)} })
+        if (path === "/proc/" + ownPid + "/exe" || path === "/proc/" + foreignPid + "/exe") return executable
+        return link(path, ...args)
+      },
+      statSync: (path, ...args) => {
+        if (path === "/proc/" + ownPid || path === "/proc/" + ownPid + "/exe") return { uid, dev: 1, ino: ownPid }
+        if (path === "/proc/" + foreignPid || path === "/proc/" + foreignPid + "/exe") return { uid: foreignUid, dev: 1, ino: foreignPid }
+        return stat(path, ...args)
+      },
+    }))
+    process.kill = (pid, signal) => {
+      if (pid !== ownPid || signal !== "SIGTERM") throw new Error("Unexpected signal target")
+      closed.push(pid); alive = false; return true
+    }
+    const { installationProcessPids, closeInstallationProcesses } = await import(${JSON.stringify(new URL("./install-processes.ts", import.meta.url).href)})
+    try {
+      const pids = installationProcessPids(${JSON.stringify(root)})
+      await closeInstallationProcesses(${JSON.stringify(root)})
+      console.log(JSON.stringify({ pids, closed }))
+    } catch (error) { console.log(JSON.stringify({ error: error.message, closed })) }
+  `], { stdout: "pipe", stderr: "pipe" })
+  expect(result.exitCode).toBe(0)
+  const output = JSON.parse(result.stdout.toString())
+  if (scenario.refused) {
+    expect(output.error).toContain(scenario.error ? "Cannot verify" : "another user")
+    expect(output.closed).toEqual([])
+  } else {
+    expect(output).toEqual({ pids: [214214213], closed: [214214213] })
+  }
+})
+
+test("Windows inspection errors remain blocking and explain possible cross-user access", () => {
+  const result = Bun.spawnSync([process.execPath, "--eval", `
+    import { mock } from "bun:test"
+    import * as childProcess from "node:child_process"
+    Object.defineProperty(process, "platform", { value: "win32" })
+    mock.module("node:child_process", () => ({ ...childProcess, execFileSync: () => { throw new Error("inaccessible executable") } }))
+    const { installationProcessPids } = await import(${JSON.stringify(new URL("./install-processes.ts", import.meta.url).href)})
+    try { console.log(JSON.stringify({ pids: installationProcessPids("unused") })) }
+    catch (error) { console.log(JSON.stringify({ error: error.message })) }
+  `], { stdout: "pipe", stderr: "pipe" })
+  expect(result.exitCode).toBe(0)
+  const output = JSON.parse(result.stdout.toString())
+  expect(output.pids).toBeUndefined()
+  expect(output.error).toMatch(/another user's session/i)
+  expect(output.error).toContain("The installation was not changed")
+})
+
 test.skipIf(process.platform !== "linux")("native executable verification closes only isolated fixture binaries", async () => {
-  const directory = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp/opencode", "meshtalk-process-test-"))
+  const directory = mkdtempSync(join(tmpdir(), "meshtalk-process-test-"))
   directories.push(directory)
   const root = join(directory, "install")
   const other = join(directory, "other")

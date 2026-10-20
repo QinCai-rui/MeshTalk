@@ -14,9 +14,7 @@ let children: ReturnType<typeof Bun.spawn>[]
 const windowsTest = (name: string, action: () => void | Promise<void>) => test.skipIf(process.platform !== "win32")(name, action, 120000)
 
 beforeEach(() => {
-  const temporary = process.platform === "win32" ? tmpdir() : "/tmp/opencode"
-  mkdirSync(temporary, { recursive: true })
-  directory = mkdtempSync(join(temporary, "meshtalk-release-test-"))
+  directory = mkdtempSync(join(tmpdir(), "meshtalk-release-test-"))
   root = join(directory, "install")
   mkdirSync(root)
   root = realpathSync(root)

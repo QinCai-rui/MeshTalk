@@ -169,6 +169,12 @@ An older Windows console process that does not exit after backend shutdown may
 need to be closed manually. If any relevant process remains or cannot be
 verified, the installer aborts instead of replacing its files.
 
+On Linux, native inspection ignores permission-denied executable paths owned by
+another user. It never closes those processes. Separate cleanup checks still
+protect their files. Windows cannot safely exclude an inaccessible session, so
+inspection still refuses to proceed and explains that another user's session
+may prevent verification.
+
 Managed uninstall delegates release cleanup to the same locked implementation
 and preserves unrelated files, including in a shared `~/.local/bin`. If the
 launcher cannot execute, the scripts leave release directories for inspection

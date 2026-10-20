@@ -24,11 +24,11 @@ export type InstallationProcessProvider = {
   wait(ms: number): Promise<void>
 }
 
-function command(file: string, args: string[]): string {
+function command(file: string, args: string[], failureMessage = "Cannot enumerate or verify running MeshTalk processes. Close MeshTalk manually and retry; the installation was not changed."): string {
   try {
     return execFileSync(file, args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 10000, windowsHide: true })
   } catch {
-    throw new Error("Cannot enumerate or verify running MeshTalk processes. Close MeshTalk manually and retry; the installation was not changed.")
+    throw new Error(failureMessage)
   }
 }
 
@@ -95,6 +95,12 @@ function unixList(): InstallationProcess[] {
       }
     } catch (error) {
       if (!gone(error)) {
+        if (platform === "linux" && row.uid !== process.getuid!() && ["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+          // Unix release switches do not overwrite a running inode. This row
+          // cannot be a close target; independent cleanup checks still protect
+          // inaccessible processes before deleting any release files.
+          return { pid: row.pid, parentPid: row.parentPid, executable: null, identity: "", sameUser: false }
+        }
         if (possiblyNamed(row.name, platform) || (executable && possiblyNamed(executable.replace(/ \(deleted\)$/, ""), platform))) throw new Error(`Cannot verify MeshTalk process ${row.pid}. Close it manually and retry.`)
         // Inaccessible kernel / other-user executables are not candidates
         // unless ps identifies them as MeshTalk.
@@ -116,8 +122,8 @@ function unixList(): InstallationProcess[] {
 
 const windowsPrelude = `$ErrorActionPreference = 'Stop'; $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; `
 
-function powershell(script: string): string {
-  return command("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
+function powershell(script: string, failureMessage?: string): string {
+  return command("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], failureMessage)
 }
 
 export function parseWindowsInstallationProcesses(text: string): InstallationProcess[] {
@@ -149,7 +155,7 @@ function windowsList(): InstallationProcess[] {
       $identity = ''; if ($p.CreationDate) { $identity = [string]$p.CreationDate.ToUniversalTime().Ticks }
       [pscustomobject]@{ pid = [int]$p.ProcessId; parentPid = [int]$p.ParentProcessId; executable = $p.ExecutablePath; identity = $identity; sameUser = $same; canClose = $close }
     }); ConvertTo-Json -InputObject $rows -Compress
-  `))
+  `, "Cannot verify running MeshTalk processes. Another user's session may prevent access. Ask its owner to close MeshTalk, then retry. The installation was not changed."))
 }
 
 const nativeProvider: InstallationProcessProvider = {
