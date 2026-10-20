@@ -69,8 +69,10 @@ Download the `.tar.gz` archive for your platform from the [latest release](../..
 extract it, and run the launcher. The archive contains the backend, CLI, TUI, and
 their runtimes, so it does not require Python, uv, Bun, or another package manager.
 
-Keep these files together in the extracted directory: `meshtalk` and `meshtalk-backend`
-(all end in `.exe` on Windows). Only the `meshtalk` launcher is invoked directly.
+Keep these files together when extracting: `meshtalk` and `meshtalk-backend`
+(both end in `.exe` on Windows). Only the `meshtalk` launcher is invoked directly.
+On its first launch, a writable installation moves to the managed layout described
+below. Do not move or delete its `versions` directory separately from the launcher.
 
 On Linux/macOS, `cd` into where the binaries are extracted to, then run `./meshtalk`
 
@@ -115,12 +117,27 @@ To update a different existing MeshTalk installation, use its directory:
 meshtalk update --install --dir /path/to/MeshTalk
 ```
 
-The target directory must contain the complete MeshTalk release binaries.
+The target must be an existing standalone MeshTalk installation.
 
-In-app updates verify the GitHub SHA-256 digest, stage the replacement files,
-then replace the flat launcher and backend installation. On macOS and Linux,
-the restarted launcher replaces itself in-place so it remains attached to the
-same terminal session.
+On Windows, macOS, and Linux, updates verify the GitHub SHA-256 digest and
+install the launcher and backend together in a separate release directory.
+The existing `meshtalk` command path selects that complete release through a
+symlink on Unix or a directory junction in a dedicated Windows folder. Launcher
+code updates too; no original executable is kept permanently. Close other MeshTalk windows before choosing
+restart-to-update, because they share the backend. A downloaded update can
+remain staged until MeshTalk and its backend have stopped.
+
+Unused older releases are deleted automatically. A release stays available
+while a launcher or backend still uses it; cleanup retries during later launches
+and while MeshTalk is running. Shared Windows folders keep their exact executable
+paths and refresh the forwarding executable after all instances stop, without
+moving unrelated files. If MeshTalk is running, the installer asks to close its
+instances and continue. Ordinary interactive updates need no extra flag.
+For unattended installs, `--close-running` in Bash or `-CloseRunning` in
+PowerShell skips that question. Generic yes flags do not imply close permission.
+On macOS and Linux, handoff preserves the terminal session.
+Identity, messages, and settings are not moved or deleted by updates.
+See [update installation and recovery](docs/UPDATES.md) for migration details.
 
 Updates use `QinCai-rui/MeshTalk` by default. To use releases from another
 GitHub repository, configure its user and repository name:

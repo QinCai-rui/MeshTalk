@@ -8,7 +8,7 @@ export function checkResults(jobs: Record<string, Job>) {
   const containers = JSON.parse(outputs.containers ?? "null")
   if (!Array.isArray(containers)) throw new Error("Missing container selection")
   const expected: Record<string, boolean> = { typescript: targets.length > 0, containers: containers.length > 0 }
-  for (const [job, key] of Object.entries({ installers: "installers", backend: "backend", web: "web", analytics: "analytics", desktop_browser: "desktop_browser", native: "native" })) {
+  for (const [job, key] of Object.entries({ installers: "installers", updates: "updates", backend: "backend", web: "web", analytics: "analytics", desktop_browser: "desktop_browser", native: "native" })) {
     if (outputs[key] !== "true" && outputs[key] !== "false") throw new Error(`Invalid selection for ${job}`)
     expected[job] = outputs[key] === "true"
   }

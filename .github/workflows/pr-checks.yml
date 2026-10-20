@@ -23,6 +23,7 @@ jobs:
       typescript: ${{ steps.select.outputs.typescript }}
       containers: ${{ steps.select.outputs.containers }}
       installers: ${{ steps.select.outputs.installers }}
+      updates: ${{ steps.select.outputs.updates }}
       backend: ${{ steps.select.outputs.backend }}
       web: ${{ steps.select.outputs.web }}
       analytics: ${{ steps.select.outputs.analytics }}
@@ -36,8 +37,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
-      - name: Test job selection and aggregate status
-        run: bun test ./.github/scripts/affected-packages.test.ts
+      - name: Test job selection, aggregate status, and check scripts
+        run: bun test ./.github/scripts/affected-packages.test.ts ./.github/scripts/check-typescript.test.ts
       - name: Test native check preparation
         run: python3 -m unittest discover -s .github/scripts -p test_check_desktop_native.py -v
       - id: select
@@ -97,8 +98,29 @@ jobs:
           esac
           docker build --file "$dockerfile" --tag "meshtalk-ci-${IMAGE}" .
 
+  updates:
+    name: Updater (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.updates == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - name: Test release installation, updater, and compiled launcher
+        run: bun test common/release-install.test.ts common/updater.test.ts common/windows-install-links.test.ts common/install-processes.test.ts common/install-paths.test.ts bin/meshtalk.test.ts scripts/install.ps1.test.ts
+
   installers:
-    name: Installer syntax
+    name: Installer syntax and tests
     needs: changes
     if: needs.changes.outputs.installers == 'true'
     runs-on: ubuntu-latest
@@ -107,6 +129,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Test installer handoff and close confirmation
+        run: bun test scripts/install.test.ts scripts/install.ps1.test.ts
       - name: Check Bash installer syntax
         run: bash -n scripts/install.sh
       - name: Parse PowerShell installer
@@ -239,7 +266,7 @@ jobs:
 
   ci:
     name: CI
-    needs: [changes, typescript, containers, installers, backend, desktop_browser, native, web, analytics]
+    needs: [changes, typescript, containers, installers, updates, backend, desktop_browser, native, web, analytics]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

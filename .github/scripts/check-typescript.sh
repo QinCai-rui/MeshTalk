@@ -15,7 +15,9 @@ case "$1" in
     bun test ./common
     ;;
   launcher)
-    bun build bin/meshtalk.ts --target=bun --packages=external --outdir "${RUNNER_TEMP:-/tmp/opencode}/meshtalk-launcher-check"
+    build_dir=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/meshtalk-launcher-check.XXXXXX")
+    trap 'rm -rf -- "$build_dir"' EXIT
+    bun build bin/meshtalk.ts --target=bun --packages=external --outdir "$build_dir"
     ;;
   *)
     echo "Unknown TypeScript check target" >&2

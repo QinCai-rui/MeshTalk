@@ -15,6 +15,8 @@
     Disable prompts; use stable release and default dir
 .PARAMETER Yes
     Auto-answer yes to prompts
+.PARAMETER CloseRunning
+    Skip the close question and allow closing running MeshTalk instances. Not implied by Yes; requires a supported helper.
 .PARAMETER InstallDir
     Use a specific installation directory
 .PARAMETER Uninstall
@@ -30,6 +32,7 @@ param(
     [ValidateSet('auto', 'gh', 'webrequest')][string]$Method = 'auto',
     [Alias('n')][switch]$NonInteractive,
     [Alias('y')][switch]$Yes,
+    [switch]$CloseRunning,
     [string]$InstallDir,
     [switch]$Uninstall,
     [switch]$DryRun,
@@ -115,6 +118,7 @@ $script:Action         = if ($Uninstall) { 'uninstall' } else { 'install' }
 $script:DryRunFlag      = [bool]$DryRun
 $script:NonInteractive  = [bool]$NonInteractive
 $script:AssumeYes       = [bool]$Yes
+$script:CloseRunningFlag = [bool]$CloseRunning
 $script:VersionSel      = if ($Prerelease) { 'latest-prerelease' } elseif ($Version) { $Version } else { 'latest' }
 $script:InstallDirSel   = $InstallDir
 $script:DownloadMethod  = $Method.ToLowerInvariant()
@@ -135,6 +139,8 @@ Options:
   -Method <auto|gh|webrequest>  Download via auto, gh, or webrequest
   -NonInteractive          Disable prompts; use stable release and default dir
   -Yes                     Auto-answer yes to prompts
+  -CloseRunning            Skip the close question; allow closing running MeshTalk instances
+                           Not implied by -Yes; requires a supported helper
   -InstallDir <dir>        Use a specific installation directory
   -Uninstall               Remove an existing installation
   -DryRun                  Show planned actions without making changes
@@ -908,6 +914,138 @@ function Select-InstallDir {
     }
 }
 
+function Confirm-MeshTalkStopped {
+    if ($script:PlatformName -ne 'windows') { return }
+    if (@(Get-Process -Name meshtalk,meshtalk-backend -ErrorAction SilentlyContinue).Count -gt 0) {
+        throw 'Close all MeshTalk and meshtalk-backend processes before replacing or removing this installation.'
+    }
+}
+
+function Test-ManagedInstallation {
+    foreach ($marker in @('.meshtalk-install.json', '.meshtalk-install.json.bak')) {
+        if (Test-Path -LiteralPath (Join-Path $script:InstallDirSel $marker)) { return $true }
+    }
+    if (Test-WindowsLinkStore) { return $true }
+    return $false
+}
+
+function Test-WindowsLinkStore {
+    if ($script:PlatformName -ne 'windows') { return $false }
+    $entry = [IO.Path]::GetFullPath($script:InstallDirSel).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $store = Join-Path ([IO.Path]::GetDirectoryName($entry)) ('.' + [IO.Path]::GetFileName($entry) + '.meshtalk-install')
+    return Test-Path -LiteralPath (Join-Path $store '.meshtalk-store.json')
+}
+
+function Test-InstallProtocol {
+    param([string]$Launcher)
+    try {
+        $protocol = @(& $Launcher --install-protocol 2>$null)
+        return ($LASTEXITCODE -eq 0 -and $protocol.Count -eq 1 -and $protocol[0] -ceq '1')
+    } catch {
+        return $false
+    }
+}
+
+function Confirm-InstallClosePermission {
+    param([string]$Launcher)
+    if ($script:CloseRunningFlag -or $script:NonInteractive) { return }
+
+    try {
+        $status = @(& $Launcher --install-status --install-dir $script:InstallDirSel 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $status.Count -ne 1 -or ($status[0] -cne 'running' -and $status[0] -cne 'stopped')) {
+            throw 'Invalid installation status.'
+        }
+    } catch {
+        throw 'Unable to inspect running MeshTalk processes. Installed files were left unchanged.'
+    }
+    if ($status[0] -ceq 'stopped') { return }
+
+    Write-Host 'Closing MeshTalk interrupts active sessions and file transfers.'
+    $previousAssumeYes = $script:AssumeYes
+    $confirmed = $false
+    try {
+        $script:AssumeYes = $false
+        $confirmed = Read-Confirmation -Prompt 'MeshTalk is running. Close all instances and continue?' -Default 'n'
+    } catch {
+        $confirmed = $false
+    } finally {
+        $script:AssumeYes = $previousAssumeYes
+    }
+    if (-not $confirmed) {
+        throw 'Cancelled. Installed files were left unchanged.'
+    }
+    $script:CloseRunningFlag = $true
+}
+
+function Install-Extracted {
+    param([string]$ExtractDir)
+    $launcher = Join-Path $ExtractDir $script:LauncherName
+    if ($script:PlatformName -ne 'windows') {
+        foreach ($file in $script:ExpectedFiles) {
+            & chmod u+rx (Join-Path $ExtractDir $file)
+            if ($LASTEXITCODE -ne 0) { throw "Unable to make $file executable." }
+        }
+    }
+    if (Test-InstallProtocol -Launcher $launcher) {
+        Confirm-InstallClosePermission -Launcher $launcher
+        $helperArgs = @('--install-from', $ExtractDir, '--install-dir', $script:InstallDirSel)
+        if ($script:CloseRunningFlag) { $helperArgs += '--close-running' }
+        & $launcher @helperArgs
+        if ($LASTEXITCODE -ne 0) { throw 'Managed installation failed; the installer did not fall back to legacy replacement.' }
+        return
+    }
+    if ($script:CloseRunningFlag) {
+        throw '-CloseRunning requires a supported installation helper; this historical release cannot close running processes. Close MeshTalk manually and retry without -CloseRunning.'
+    }
+    if (Test-ManagedInstallation) {
+        throw 'This release cannot replace a managed MeshTalk installation. Install a newer release, choose another -InstallDir, or explicitly uninstall before reinstalling this historical release.'
+    }
+    Confirm-MeshTalkStopped
+    Write-WarnMsg 'Historical release: using legacy flat installation (no managed update lock).'
+    New-Item -ItemType Directory -Path $script:InstallDirSel -Force | Out-Null
+    $stage = Join-Path $script:InstallDirSel ('.meshtalk-legacy.' + [IO.Path]::GetRandomFileName())
+    $newDir = Join-Path $stage 'new'
+    $oldDir = Join-Path $stage 'old'
+    $replaced = @()
+    $oldFiles = @()
+    $keepBackups = $false
+    try {
+        New-Item -ItemType Directory -Path $newDir,$oldDir -Force | Out-Null
+        # Prepare both replacements and backups before changing installed files.
+        foreach ($file in $script:ExpectedFiles) {
+            Copy-Item -LiteralPath (Join-Path $ExtractDir $file) -Destination (Join-Path $newDir $file)
+            $target = Join-Path $script:InstallDirSel $file
+            if (Test-Path -LiteralPath $target) {
+                if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "Installation target is not a file: $target" }
+                Copy-Item -LiteralPath $target -Destination (Join-Path $oldDir $file)
+                $oldFiles += $file
+            }
+        }
+        foreach ($file in $script:ExpectedFiles) {
+            Move-Item -LiteralPath (Join-Path $newDir $file) -Destination (Join-Path $script:InstallDirSel $file) -Force
+            $replaced += $file
+        }
+    } catch {
+        $failure = $_
+        try {
+            foreach ($file in $replaced) {
+                $target = Join-Path $script:InstallDirSel $file
+                if ($oldFiles -contains $file) {
+                    Move-Item -LiteralPath (Join-Path $oldDir $file) -Destination $target -Force
+                } else {
+                    Remove-Item -LiteralPath $target -Force
+                }
+            }
+        } catch {
+            $keepBackups = $true
+            throw "Rollback failed; backups remain in $oldDir. $_"
+        }
+        throw $failure
+    } finally {
+        if (-not $keepBackups) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Install-MeshTalk {
     Select-Version
     Select-InstallDir
@@ -999,14 +1137,7 @@ function Install-MeshTalk {
         }
 
         Start-Step "Installing MeshTalk to $($script:InstallDirSel)"
-        New-Item -ItemType Directory -Path $script:InstallDirSel -Force | Out-Null
-        foreach ($stateFile in @('.meshtalk-current.json', '.meshtalk-current.json.bak', '.meshtalk-pending.json')) {
-            Remove-Item -Path (Join-Path $script:InstallDirSel $stateFile) -Force -ErrorAction SilentlyContinue
-        }
-        Remove-Item -Path (Join-Path $script:InstallDirSel 'versions') -Recurse -Force -ErrorAction SilentlyContinue
-        foreach ($file in $script:ExpectedFiles) {
-            Copy-Item -Path (Join-Path $extractDir $file) -Destination (Join-Path $script:InstallDirSel $file) -Force
-        }
+        Install-Extracted -ExtractDir $extractDir
         Complete-Step -Marker $script:TICK -CompletedLabel "Installed MeshTalk to $($script:InstallDirSel)."
 
         Set-InstallPath
@@ -1023,6 +1154,29 @@ function Install-MeshTalk {
 }
 
 # ─── Uninstall ───────────────────────────────────────────────────────────────
+function Uninstall-ManagedReleases {
+    $helperDir = Join-Path ([IO.Path]::GetTempPath()) ('meshtalk-uninstaller.' + [IO.Path]::GetRandomFileName())
+    $helperCreated = $false
+    try {
+        New-Item -ItemType Directory -Path $helperDir | Out-Null
+        $helperCreated = $true
+        $helper = Join-Path $helperDir $script:LauncherName
+        # Run outside the installation so Windows can remove the root executable.
+        Copy-Item -LiteralPath (Join-Path $script:InstallDirSel $script:LauncherName) -Destination $helper
+        if ($script:PlatformName -ne 'windows') {
+            & chmod u+rx $helper
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to make the temporary uninstall helper executable.' }
+        }
+        Confirm-InstallClosePermission -Launcher $helper
+        $helperArgs = @('--uninstall-releases', '--install-dir', $script:InstallDirSel)
+        if ($script:CloseRunningFlag) { $helperArgs += '--close-running' }
+        & $helper @helperArgs
+        if ($LASTEXITCODE -ne 0) { throw 'Managed uninstall failed; launcher, backend, and remaining state were left in place.' }
+    } finally {
+        if ($helperCreated) { Remove-Item -LiteralPath $helperDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Uninstall-MeshTalk {
     Select-InstallDir
 
@@ -1033,7 +1187,8 @@ function Uninstall-MeshTalk {
         return
     }
 
-    $found = $false
+    $managed = Test-ManagedInstallation
+    $found = $managed
     foreach ($file in $script:ExpectedFiles) {
         $candidate = Join-Path $script:InstallDirSel $file
         if (Test-Path $candidate) { $found = $true; break }
@@ -1051,14 +1206,30 @@ function Uninstall-MeshTalk {
     }
 
     Start-Step "Removing MeshTalk from $($script:InstallDirSel)"
+    if ($managed) {
+        $launcher = Join-Path $script:InstallDirSel $script:LauncherName
+        if (Test-InstallProtocol -Launcher $launcher) {
+            Uninstall-ManagedReleases
+            # A waiting installer may replace the root as soon as the helper
+            # releases its lock. Do not delete any installed files afterward.
+            Complete-Step -Marker $script:TICK -CompletedLabel "Removed MeshTalk from $($script:InstallDirSel)."
+            return
+        } else {
+            if (Test-WindowsLinkStore) { throw 'The linked installation needs repair before uninstalling. Rerun the latest installer; no installed files were removed.' }
+            Write-WarnMsg 'Managed cleanup is unavailable. Release and usage directories were retained, including unknown release directories; inspect them manually before removing anything.'
+        }
+    }
+    if ($script:CloseRunningFlag) {
+        throw '-CloseRunning requires a supported managed uninstall helper. Close MeshTalk manually and retry without -CloseRunning.'
+    }
+    Confirm-MeshTalkStopped
     foreach ($file in $script:ExpectedFiles) {
         $target = Join-Path $script:InstallDirSel $file
-        Remove-Item -Path $target -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
     }
-    foreach ($stateFile in @('.meshtalk-current.json', '.meshtalk-current.json.bak', '.meshtalk-pending.json')) {
-        Remove-Item -Path (Join-Path $script:InstallDirSel $stateFile) -Force -ErrorAction SilentlyContinue
+    foreach ($stateFile in @('.meshtalk-current.json', '.meshtalk-current.json.bak', '.meshtalk-pending.json', '.meshtalk-install.json', '.meshtalk-install.json.bak')) {
+        Remove-Item -LiteralPath (Join-Path $script:InstallDirSel $stateFile) -Force -ErrorAction SilentlyContinue
     }
-    Remove-Item -Path (Join-Path $script:InstallDirSel 'versions') -Recurse -Force -ErrorAction SilentlyContinue
     Complete-Step -Marker $script:TICK -CompletedLabel "Removed MeshTalk from $($script:InstallDirSel)."
 }
 
