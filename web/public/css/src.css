@@ -1,14 +1,19 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@source "../../views";
+
+@theme {
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
 
 /* ==========================================================================
    MeshTalk design system
 
    The Blueprint direction, ported from the approved design demo. Authoring
    the visual language as a small design system keeps the output faithful to
-   the demo while Tailwind remains the CSS build pipeline (see tailwind.config.js
-   and postcss.config.js). Light is the default scheme; opt in to dark with
+   the demo while Tailwind remains the CSS build pipeline. Light is the default
+   scheme; opt in to dark with
    `.dark` on <html>.
    ========================================================================== */
 
