@@ -20,6 +20,6 @@
     "autoprefixer": "^10.5.4",
     "concurrently": "^10.0.6",
     "postcss": "^8.5.26",
-    "tailwindcss": "^4.3.3"
+    "tailwindcss": "^3.4.19"
   }
 }
