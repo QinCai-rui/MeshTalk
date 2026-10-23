@@ -247,7 +247,10 @@ class UdpTransport:
         if not was_started:
             return
         direct_candidates = dict(self._direct_candidates)
-        relay_candidates = set(self._derp_candidates)
+        # Expired cards kept routing only for sessions that restart discards.
+        relay_candidates = set(self._derp_candidates) - self._forgotten_relays
+        for peer_id in list(self._forgotten_relays):
+            self._drop_relay_routing(peer_id)
         await self.stop()
         self._transport = None
         self._attempts.clear()

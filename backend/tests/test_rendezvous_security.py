@@ -88,9 +88,6 @@ class RendezvousSecurityTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(second.peer_id, self.udp.retained)
 
 
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
-
 
 class RosterReuseTest(unittest.IsolatedAsyncioTestCase):
     async def test_departed_members_do_not_fill_the_roster(self):
@@ -108,3 +105,28 @@ class RosterReuseTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(await db.get_group_member(group, 'newcomer'))
             finally:
                 await db.close()
+
+
+    async def test_reactivating_a_departed_member_respects_the_cap(self):
+        from meshtalk import database
+        with tempfile.TemporaryDirectory() as temporary:
+            db = Database(Path(temporary) / 'test.db')
+            await db.connect()
+            try:
+                group = 'b' * 32
+                with patch.object(database, 'MAX_GROUP_MEMBERS', 2):
+                    await db.upsert_group_member(group, 'leaver', 'Leaver')
+                    await db.mark_group_member_left(group, 'leaver')
+                    for number in range(2):
+                        await db.upsert_group_member(group, f'peer-{number}', 'Member')
+                    with self.assertRaises(ValueError):
+                        await db.upsert_group_member(group, 'leaver', 'Leaver')
+                    # An active member can still refresh its row at the cap.
+                    await db.upsert_group_member(group, 'peer-0', 'Renamed')
+                self.assertEqual(len(await db.get_group_members(group)), 2)
+                self.assertFalse((await db.get_group_member(group, 'leaver'))['active'])
+            finally:
+                await db.close()
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

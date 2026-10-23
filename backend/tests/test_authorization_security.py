@@ -187,9 +187,6 @@ class AuthorizationSecurityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(target.read_bytes(), b'untouched')
 
 
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
-
 
 class PayloadBoundsTest(unittest.TestCase):
     def test_huge_integer_timestamp_is_invalid_payload(self):
@@ -197,3 +194,7 @@ class PayloadBoundsTest(unittest.TestCase):
         valid = json.loads(MessagePayload('id', sender.peer_id, recipient.peer_id, time.time(), 0, 0, b'cipher', b's' * 64).encode())
         with self.assertRaises(ValueError):
             MessagePayload.decode(json.dumps({**valid, 'created_at': 10 ** 400}).encode())
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

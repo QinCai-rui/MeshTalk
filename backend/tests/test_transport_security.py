@@ -322,6 +322,25 @@ class UdpHandshakeSecurityTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await wire.close()
 
+
+    async def test_restart_does_not_revive_forgotten_relay(self):
+        wire = _Datagrams()
+        try:
+            wire.confirm()
+            peer_id = wire.b.identity.peer_id
+            wire.a._sessions[peer_id].via_relay = True
+            wire.a.expect_derp_peer(peer_id)
+            wire.a.forget_candidate(peer_id)
+            revived = []
+            wire.a.expect_derp_peer = lambda peer: revived.append(peer)
+            wire.a._started = True
+            with patch.object(UdpTransport, "start", _ignore), patch.object(UdpTransport, "stop", _ignore):
+                await wire.a.restart()
+            self.assertEqual(revived, [])
+            self.assertNotIn(peer_id, wire.a._derp_candidates)
+        finally:
+            await wire.close()
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main(["-q", "-p", "no:cacheprovider", __file__]))

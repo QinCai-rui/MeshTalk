@@ -18,7 +18,7 @@ import aiosqlite
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from .storage import _is_link
+from .storage import _is_link, _private_group
 
 MENTION_TOKEN_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
 
@@ -326,8 +326,14 @@ class Database:
         # and WAL files. Restrict existing sidecars too, before SQLite opens any.
         # The containing directory must not let other users replace these names.
         parent = self.db_path.parent.stat()
-        if os.name != "nt" and (parent.st_uid != os.getuid() or (parent.st_mode & 0o002 and not parent.st_mode & 0o1000)):
-            raise ValueError("Database directory must be owned by this user and not writable by everyone")
+        # Another user able to write this directory could replace the database
+        # or plant a sidecar between these checks and SQLite opening the file.
+        if os.name != "nt" and (
+            parent.st_uid != os.getuid()
+            or parent.st_mode & 0o002
+            or (parent.st_mode & 0o020 and not _private_group(parent.st_gid))
+        ):
+            raise ValueError("Database directory must be owned by this user and writable only by this user or a private group")
         windows = os.name == "nt"
         for suffix in ("", "-journal", "-wal", "-shm"):
             path = str(self.db_path) + suffix
@@ -1116,7 +1122,7 @@ class Database:
         await self._db.execute(
             """INSERT INTO group_members (group_id, peer_id, display_name, joined_at, last_seen, active, left_at, group_capable)
                SELECT ?, ?, ?, ?, ?, ?, NULL, ?
-               WHERE EXISTS (SELECT 1 FROM group_members WHERE group_id = ? AND peer_id = ?)
+               WHERE EXISTS (SELECT 1 FROM group_members WHERE group_id = ? AND peer_id = ? AND (active = 1 OR ? = 0))
                   OR ((SELECT COUNT(*) FROM group_members WHERE group_id = ? AND active = 1) < ?
                       AND (SELECT COUNT(*) FROM group_members WHERE active = 1) < ?)
                ON CONFLICT(group_id, peer_id) DO UPDATE SET
@@ -1130,7 +1136,7 @@ class Database:
                    ELSE group_members.join_announced
                  END""",
             (group_id, peer_id, display_name, now, now, int(active), None if group_capable is None else int(group_capable),
-             group_id, peer_id, group_id, MAX_GROUP_MEMBERS, MAX_TOTAL_GROUP_MEMBERS),
+             group_id, peer_id, int(active), group_id, MAX_GROUP_MEMBERS, MAX_TOTAL_GROUP_MEMBERS),
         )
         await self._db.execute(
             """DELETE FROM group_members WHERE rowid IN (
@@ -1139,7 +1145,8 @@ class Database:
             (MAX_INACTIVE_GROUP_MEMBERS,),
         )
         await self._db.commit()
-        if await self.get_group_member(group_id, peer_id) is None:
+        stored = await self.get_group_member(group_id, peer_id)
+        if stored is None or (active and not stored["active"]):
             raise ValueError("Group roster identity limit reached")
         return existing is None or not bool(existing["active"])
 

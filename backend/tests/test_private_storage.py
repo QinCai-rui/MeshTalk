@@ -75,9 +75,6 @@ class PrivateStorageTest(unittest.TestCase):
         self.assertEqual(target.read_text(), "untouched")
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 @unittest.skipIf(os.name == "nt", "POSIX permission bits")
 class PrivateDirectoryTest(unittest.TestCase):
@@ -118,3 +115,7 @@ class PrivateDirectoryTest(unittest.TestCase):
             os.chmod(directory, 0o777)
             with self.assertRaises(PermissionError):
                 storage.write_private_text(directory / "identity.json", "dummy")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

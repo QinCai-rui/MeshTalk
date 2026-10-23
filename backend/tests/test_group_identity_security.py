@@ -65,9 +65,6 @@ class GroupIdentitySecurityTest(unittest.IsolatedAsyncioTestCase):
                 await sender.close()
 
 
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
-
 
 class GroupDuplicateRaceTest(unittest.IsolatedAsyncioTestCase):
     async def test_lost_insert_race_with_other_sender_is_not_acknowledged(self):
@@ -117,3 +114,7 @@ class GroupDuplicateRaceTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(sent, [])
             finally:
                 await db.close()
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)
