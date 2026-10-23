@@ -58,6 +58,21 @@ def _is_link(info: os.stat_result) -> bool:
     )
 
 
+def _private_group(gid: int) -> bool:
+    """Whether a group contains only the current user, as on umask 002 systems."""
+    try:
+        import grp
+        import pwd
+        group = grp.getgrgid(gid)
+    except (ImportError, KeyError):
+        return False
+    me = pwd.getpwuid(os.getuid()).pw_name
+    if any(member != me for member in group.gr_mem):
+        return False
+    # Other users whose primary group is this one also share write access.
+    return all(user.pw_gid != gid or user.pw_uid == os.getuid() for user in pwd.getpwall())
+
+
 @contextmanager
 def _directory(path: Path, *, create: bool = False, writable: bool = False):
     """Pin a directory without following links; only new directories get mode 0700.
@@ -94,8 +109,10 @@ def _directory(path: Path, *, create: bool = False, writable: bool = False):
                 # write, could replace entries during commit or cleanup.
                 # Group write is allowed: umask 002 systems create it by
                 # default for the user's private group.
-                if info.st_uid != os.getuid() or (info.st_mode & 0o002 and not info.st_mode & stat.S_ISVTX):
-                    raise PermissionError(f"{path} must be owned by this user and not writable by everyone")
+                if info.st_uid != os.getuid() or (info.st_mode & 0o002 and not info.st_mode & stat.S_ISVTX) or (
+                    info.st_mode & 0o020 and not info.st_mode & stat.S_ISVTX and not _private_group(info.st_gid)
+                ):
+                    raise PermissionError(f"{path} must be owned by this user and writable only by this user or a private group")
         else:
             current = Path(path.anchor)
             for name in path.parts[1:]:

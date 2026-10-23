@@ -96,10 +96,20 @@ class PrivateDirectoryTest(unittest.TestCase):
                 directory = Path(temporary) / "data"
                 directory.mkdir(mode=0o775)
                 os.chmod(directory, 0o775)
-                storage.write_private_text(directory / "identity.json", "dummy")
+                with patch.object(storage, "_private_group", return_value=True):
+                    storage.write_private_text(directory / "identity.json", "dummy")
                 self.assertEqual(stat.S_IMODE((directory / "identity.json").stat().st_mode), 0o600)
         finally:
             os.umask(previous)
+
+    def test_shared_group_writable_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "data"
+            directory.mkdir()
+            os.chmod(directory, 0o775)
+            with patch.object(storage, "_private_group", return_value=False):
+                with self.assertRaises(PermissionError):
+                    storage.write_private_text(directory / "identity.json", "dummy")
 
     def test_world_writable_directory_is_refused(self):
         with tempfile.TemporaryDirectory() as temporary:
