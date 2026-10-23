@@ -58,6 +58,9 @@ DIRECT_PROBE_INTERVAL = 30.0
 EXPECTED_PEER_TIMEOUT = 600.0
 MAX_EXPECTED_PEERS = 512
 MAX_ATTEMPTS = 128
+# Replies to repeated HELLOs before confirmation. The punch loop already
+# retransmits on a timer, so a few receive-driven replies cover packet loss.
+MAX_UNCONFIRMED_HELLO_REPLIES = 4
 MAX_SESSIONS = 256
 
 Endpoint = tuple[str, int]
@@ -151,6 +154,7 @@ class Session:
     local_missing_capabilities: list[str] = field(default_factory=list)
     confirmed: bool = False
     connected_notified: bool = False
+    hello_replies: int = 0
     created_at: float = field(default_factory=time.monotonic)
     last_seen: float = field(default_factory=time.monotonic)
     reassemblies: dict[int, Reassembly] = field(default_factory=dict)
@@ -338,6 +342,26 @@ class UdpTransport:
         for session in list(self._pending_sessions.get(peer_id, {}).values()):
             if not session.via_relay:
                 self._remove_session(session)
+
+    def forget_candidate(self, peer_id: str) -> None:
+        """Drop discovery and relay metadata for a peer whose card expired.
+
+        Cancels unconfirmed attempts and pending sessions. Established sessions
+        stay up; they expire through normal keepalive handling.
+        """
+        self._direct_candidates.pop(peer_id, None)
+        self._expected_endpoints.pop(peer_id, None)
+        self._last_direct_probe.pop(peer_id, None)
+        endpoint = self._derp_candidates.pop(peer_id, None)
+        if endpoint is not None and self._derp_peers.get(endpoint) == peer_id:
+            active = self._sessions.get(peer_id)
+            if not (active and active.via_relay):
+                self._derp_peers.pop(endpoint, None)
+        attempt = self._attempts.pop(peer_id, None)
+        if attempt and attempt.task:
+            attempt.task.cancel()
+        for session in list(self._pending_sessions.get(peer_id, {}).values()):
+            self._remove_session(session)
 
     def expect_peer(self, peer_id: str, endpoint: Endpoint) -> None:
         """Register a direct UDP endpoint candidate and initiate connection if appropriate."""
@@ -598,6 +622,14 @@ class UdpTransport:
             current and current.remote_nonce == nonce
             and current.remote_session_public_key == session_key
         ):
+            if current.confirmed:
+                # The peer may have missed our READY. READY never triggers a
+                # HELLO, so this cannot start a reply loop between two peers.
+                self._send_authenticated(current, READY, 0)
+                return
+            if current.hello_replies >= MAX_UNCONFIRMED_HELLO_REPLIES:
+                return
+            current.hello_replies += 1
             self._send_route(current.local_hello, addr, via_relay)
             self._send_authenticated(current, READY, 0)
             return
@@ -615,9 +647,9 @@ class UdpTransport:
         if current and current.session_id == session_id:
             self._send_authenticated(current, READY, 0)
             return
-        if not current and len(self._sessions_by_id) >= MAX_SESSIONS:
+        if len(self._sessions_by_id) >= MAX_SESSIONS:
             raise ValueError("Too many UDP sessions")
-        if current:
+        if current and not current.confirmed:
             self._remove_session(current)
         first_to_second = material[:32], material[32:64]
         second_to_first = material[64:96], material[96:128]
@@ -632,7 +664,12 @@ class UdpTransport:
             sorted(set(remote_capabilities) - set(self.capabilities)),
         )
         active = self._sessions.get(peer_id)
-        if active and active.confirmed and self._route_key(active) != (addr, via_relay):
+        if active and active.confirmed:
+            # Keep the confirmed route until the new session proves key
+            # possession with READY. _promote_session then retires the old one.
+            stale = self._pending_sessions.get(peer_id, {}).get((addr, via_relay))
+            if stale is not None:
+                self._remove_session(stale)
             self._pending_sessions.setdefault(peer_id, {})[(addr, via_relay)] = session
         else:
             self._sessions[peer_id] = session

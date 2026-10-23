@@ -21,6 +21,9 @@ BROADCAST_ADDR = "255.255.255.255"
 MAX_PENDING_DISCOVERY_PACKETS = 128
 DISCOVERY_WORKERS = 4
 MAX_KNOWN_ADDRESSES = 512
+# Bounds how long one announcement can occupy a worker. The connect and
+# handshake deadlines are shorter; this covers anything they miss.
+DISCOVERY_CALLBACK_TIMEOUT = 20.0
 
 
 class DiscoveryService:
@@ -136,7 +139,13 @@ class DiscoveryService:
             self._known_addresses.pop(next(iter(self._known_addresses)))
         self._known_addresses[packet.discovery_id] = address
         logger.info("Discovered LAN peer at %s:%d", *address)
-        await self.on_peer_found(addr[0], packet.tcp_port)
+        try:
+            await asyncio.wait_for(self.on_peer_found(addr[0], packet.tcp_port), DISCOVERY_CALLBACK_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001
+            # Forget the address so a later announcement can retry it.
+            if self._known_addresses.get(packet.discovery_id) == address:
+                self._known_addresses.pop(packet.discovery_id, None)
+            logger.debug("Discovered LAN peer at %s:%d was not reachable: %s", *address, exc)
 
     async def _discovery_worker(self) -> None:
         """Worker task that processes discovery packets from the queue."""

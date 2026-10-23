@@ -41,6 +41,7 @@ from .udp_transport import Endpoint, UdpTransport
 
 logger = logging.getLogger(__name__)
 HANDSHAKE_TIMEOUT = 10
+CONNECT_TIMEOUT = 10
 MAX_KNOWN_PEERS = 512
 MAX_CONNECTED_PEERS = 256
 MAX_PENDING_HANDSHAKES = 64
@@ -301,6 +302,22 @@ class PeerManager:
         stored = await self.db.get_peer(peer.peer_id)
         peer.dnd = bool(stored["dnd"]) if stored else False
 
+    def _admit_lan_peer(self, peer: PeerConnection) -> bool:
+        """Register an authenticated LAN peer, or refuse a duplicate.
+
+        Runs without awaiting, so the duplicate and capacity checks and the
+        insert happen together. Concurrent handshakes for one identity cannot
+        both be admitted, and a refused writer is closed by the caller.
+        """
+        old = self.peers.get(peer.peer_id)
+        if old and old.state == PeerState.CONNECTED and old.transport == "lan_tcp":
+            return False
+        if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
+            raise ValueError("Connected peer limit reached")
+        peer.state = PeerState.CONNECTED
+        self.peers[peer.peer_id] = peer
+        return True
+
     async def connect_to_peer(self, peer_id: str | None, address: str, tcp_port: int) -> None:
         if peer_id:
             self.record_lan_candidate(peer_id, address, tcp_port)
@@ -320,7 +337,9 @@ class PeerManager:
         if connection_task:
             self._connection_tasks.add(connection_task)
         try:
-            peer.reader, peer.writer = await asyncio.open_connection(address, tcp_port)
+            peer.reader, peer.writer = await asyncio.wait_for(
+                asyncio.open_connection(address, tcp_port), CONNECT_TIMEOUT
+            )
             self._pending_writers.add(peer.writer)
             await asyncio.wait_for(self._outbound_handshake(peer), HANDSHAKE_TIMEOUT)
             if not self._running:
@@ -328,17 +347,10 @@ class PeerManager:
             if not self._should_initiate(peer.peer_id):
                 # Discovery identifiers are anonymous, so both peers may dial.
                 # Once authenticated, retain the deterministic lower-ID direction.
-                peer.writer.close()
                 return
-            old = self.peers.get(peer.peer_id)
-            if old and old.state == PeerState.CONNECTED and old.transport == "lan_tcp":
-                peer.writer.close()
-                return
-            if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
-                raise ValueError("Connected peer limit reached")
             await self._seed_peer_dnd(peer)
-            peer.state = PeerState.CONNECTED
-            self.peers[peer.peer_id] = peer
+            if not self._admit_lan_peer(peer):
+                return
             self.record_lan_candidate(peer.peer_id, address, tcp_port)
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, capabilities=peer.remote_capabilities)
             self._start_receive_loop(peer)
@@ -377,15 +389,9 @@ class PeerManager:
                 raise ConnectionError("Peer manager is stopped")
             if self._should_initiate(peer.peer_id):
                 raise ValueError("Rejecting inbound TCP connection with wrong direction")
-            peer.state = PeerState.CONNECTED
-            old = self.peers.get(peer.peer_id)
-            if old and old.state == PeerState.CONNECTED and old.transport == "lan_tcp":
-                writer.close()
-                return
-            if peer.peer_id not in self.peers and len(self.peers) >= MAX_CONNECTED_PEERS:
-                raise ValueError("Connected peer limit reached")
             await self._seed_peer_dnd(peer)
-            self.peers[peer.peer_id] = peer
+            if not self._admit_lan_peer(peer):
+                return
             await self.db.upsert_peer(peer.peer_id, peer.display_name, peer.encryption_public_key, peer.signing_public_key, capabilities=peer.remote_capabilities)
             self._start_receive_loop(peer)
             await self._send_profile_update(peer)
