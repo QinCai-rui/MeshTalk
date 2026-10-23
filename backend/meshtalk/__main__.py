@@ -37,6 +37,7 @@ from .storage import (
     DB_FILENAME,
     STORAGE_ENV_VAR,
     dir_has_content,
+    ensure_private_directory,
     location_contains,
     locations_nested,
     migrate_files_location,
@@ -105,7 +106,8 @@ async def main(debug: bool = False) -> None:
     # identity. settings.json and runtime files (socket/token/pid/logs) stay
     # in DATA_DIR so the IPC endpoint never moves under a running backend.
     storage_base = settings.storage_dir
-    storage_base.mkdir(parents=True, exist_ok=True)
+    # New directories are owner-only; existing ones keep their mode.
+    ensure_private_directory(storage_base)
 
     def _load_identity() -> Identity:
         existing = Identity.load(storage_base)

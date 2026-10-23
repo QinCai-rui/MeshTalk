@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { mkdir, readFile, rm } from "fs/promises"
-import { basename, join } from "path"
+import { mkdir, readFile, rm, stat } from "fs/promises"
+import { basename, dirname, join } from "path"
 import { tmpdir } from "os"
 import {
   fileConfirmDialogHeight,
@@ -57,8 +57,9 @@ test("stages dropped files in a stable temporary directory before confirmation",
   try {
     const [staged] = await stageFilesForConfirmation([source])
     await rm(source)
-    expect(staged).toMatch(/meshtalk-drops\/[^/]+\/Screenshot\.png$/)
+    expect(staged).toMatch(/meshtalk-drops-[^/]+\/Screenshot\.png$/)
     expect(await readFile(staged!, "utf8")).toBe("image bytes")
+    if (process.platform !== "win32") expect((await stat(dirname(staged!))).mode & 0o777).toBe(0o700)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

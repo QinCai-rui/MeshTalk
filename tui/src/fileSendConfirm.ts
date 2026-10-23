@@ -1,4 +1,4 @@
-import { copyFile, mkdir } from "fs/promises"
+import { copyFile, mkdtemp } from "fs/promises"
 import { tmpdir } from "os"
 import { basename, join } from "path"
 
@@ -68,8 +68,9 @@ export function fileTypeLabel(filename: string, mimeType?: string): string {
 
 /** Preserve drag-and-drop sources that may disappear before confirmation is shown. */
 export async function stageFilesForConfirmation(paths: string[]): Promise<string[]> {
-  const directory = join(tmpdir(), "meshtalk-drops", crypto.randomUUID())
-  await mkdir(directory, { recursive: true })
+  // mkdtemp creates an owner-only directory, so another local user cannot
+  // read or replace staged files through a shared parent in the temp dir.
+  const directory = await mkdtemp(join(tmpdir(), "meshtalk-drops-"))
   const used = new Set<string>()
   return Promise.all(paths.map(async (source, index) => {
     const name = basename(source)
