@@ -97,7 +97,7 @@ async def main(debug: bool = False) -> None:
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(DATA_DIR)
 
     settings = Settings(DATA_DIR / "settings.json")
     analytics = Analytics(DATA_DIR / "settings.json")

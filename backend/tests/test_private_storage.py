@@ -77,3 +77,34 @@ class PrivateStorageTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+@unittest.skipIf(os.name == "nt", "POSIX permission bits")
+class PrivateDirectoryTest(unittest.TestCase):
+    def test_symlinked_ancestor_is_resolved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "real").mkdir()
+            (root / "alias").symlink_to(root / "real")
+            storage.write_private_text(root / "alias" / "data" / "settings.json", "dummy")
+            self.assertEqual((root / "real" / "data" / "settings.json").read_text(), "dummy")
+
+    def test_group_writable_directory_is_allowed_under_umask_002(self):
+        previous = os.umask(0o002)
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary) / "data"
+                directory.mkdir(mode=0o775)
+                os.chmod(directory, 0o775)
+                storage.write_private_text(directory / "identity.json", "dummy")
+                self.assertEqual(stat.S_IMODE((directory / "identity.json").stat().st_mode), 0o600)
+        finally:
+            os.umask(previous)
+
+    def test_world_writable_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "data"
+            directory.mkdir()
+            os.chmod(directory, 0o777)
+            with self.assertRaises(PermissionError):
+                storage.write_private_text(directory / "identity.json", "dummy")

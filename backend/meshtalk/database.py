@@ -18,6 +18,8 @@ import aiosqlite
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from .storage import _is_link
+
 MENTION_TOKEN_RE = re.compile(r"<@([A-Za-z0-9_-]+)>")
 
 # Matches a mention token only when its `<` is not escaped by an odd
@@ -324,21 +326,29 @@ class Database:
         parent = self.db_path.parent.stat()
         if os.name != "nt" and (parent.st_uid != os.getuid() or (parent.st_mode & 0o002 and not parent.st_mode & 0o1000)):
             raise ValueError("Database directory must be owned by this user and not writable by everyone")
+        windows = os.name == "nt"
         for suffix in ("", "-journal", "-wal", "-shm"):
-            flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+            path = str(self.db_path) + suffix
+            # Windows has no O_NOFOLLOW, so refuse an existing link up front.
+            if windows and os.path.lexists(path) and (os.path.islink(path) or _is_link(os.lstat(path))):
+                raise ValueError("Database files must be regular files, not links")
+            flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0)
             if not suffix:
                 flags |= os.O_CREAT
             try:
-                descriptor = os.open(str(self.db_path) + suffix, flags, 0o600)
+                descriptor = os.open(path, flags, 0o600)
             except FileNotFoundError:
                 if suffix:
                     continue
                 raise
             try:
                 info = os.fstat(descriptor)
-                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     raise ValueError("Database files must be private regular files")
-                os.fchmod(descriptor, 0o600)
+                if not windows:
+                    if info.st_uid != os.getuid():
+                        raise ValueError("Database files must be owned by this user")
+                    os.fchmod(descriptor, 0o600)
             finally:
                 os.close(descriptor)
         self._db = await aiosqlite.connect(str(self.db_path))

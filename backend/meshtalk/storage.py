@@ -67,6 +67,13 @@ def _directory(path: Path, *, create: bool = False, writable: bool = False):
     points but still depends on the user's directory ACLs against path races.
     """
     path = Path(os.path.abspath(path))
+    # Resolve links in directories that already exist (for example macOS /tmp,
+    # or a symlinked home), then walk the rest without following links. Only
+    # the new or final components need protection against being swapped.
+    existing = path
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    path = existing.resolve() / path.relative_to(existing)
     descriptor = None
     try:
         if os.name != "nt":
@@ -83,11 +90,12 @@ def _directory(path: Path, *, create: bool = False, writable: bool = False):
                 descriptor = child
             if writable:
                 info = os.fstat(descriptor)
-                # A shared, readable directory is fine. A different owner or
-                # non-sticky shared writer could replace entries during commit
-                # or cleanup. Refuse it instead of chmod'ing a user's folder.
-                if info.st_uid != os.getuid() or (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX):
-                    raise PermissionError("private storage requires an owned directory without shared write access")
+                # A different owner, or a non-sticky directory anyone can
+                # write, could replace entries during commit or cleanup.
+                # Group write is allowed: umask 002 systems create it by
+                # default for the user's private group.
+                if info.st_uid != os.getuid() or (info.st_mode & 0o002 and not info.st_mode & stat.S_ISVTX):
+                    raise PermissionError(f"{path} must be owned by this user and not writable by everyone")
         else:
             current = Path(path.anchor)
             for name in path.parts[1:]:
