@@ -1,5 +1,6 @@
 import { IPCClient, type IPCResponse } from "../../common/ipc-client";
 import { basename, resolve } from "path";
+import { terminalText } from "../../common/terminal-text";
 
 const PROGRAM = basename(process.env.MESHTALK_PROGRAM ?? process.argv[1] ?? process.argv[0]);
 const USAGE = `Usage: ${PROGRAM} <command> [args]
@@ -59,7 +60,7 @@ function hasError(response: IPCResponse): boolean {
   if (response.error) {
     const ids = [response.file_id, ...(Array.isArray(response.file_ids) ? response.file_ids : [])]
       .filter((id): id is string => typeof id === "string" && id.length > 0);
-    console.error(`Error: ${response.error}${ids.length ? ` (file_id: ${ids.join(", ")})` : ""}`);
+    console.error(terminalText(`Error: ${response.error}${ids.length ? ` (file_id: ${ids.join(", ")})` : ""}`));
     process.exitCode = 1;
     return true;
   }
@@ -108,7 +109,7 @@ export function fileMetadataLines(file: Record<string, unknown>): string[] {
       lines.push(`    ${delivery.recipient_id}: ${delivery.status ?? "unknown"}`);
     }
   }
-  return lines;
+  return lines.map((line) => terminalText(line));
 }
 
 function printFileMetadata(file: Record<string, unknown>): void {
@@ -207,9 +208,9 @@ function friendLabel(peer: Record<string, unknown>): string {
 
 function printPeer(peer: Record<string, unknown>): void {
   const endpoint = peer.active_endpoint ? ` via ${transportName(peer.active_transport)} ${peer.active_endpoint}` : "";
-  console.log(`${peer.display_name} (${String(peer.peer_id).slice(0, 12)}) ${peer.is_online ? "online" : "offline"}${friendLabel(peer)}${endpoint}`);
+  console.log(terminalText(`${peer.display_name} (${String(peer.peer_id).slice(0, 12)}) ${peer.is_online ? "online" : "offline"}${friendLabel(peer)}${endpoint}`));
   for (const item of asRecords(peer.endpoints)) {
-    if (!item.active) console.log(`  ${transportName(item.transport)} ${item.endpoint}`);
+    if (!item.active) console.log(terminalText(`  ${transportName(item.transport)} ${item.endpoint}`));
   }
 }
 
@@ -272,7 +273,7 @@ export async function main(): Promise<void> {
       if (hasError(response)) return;
       for (const message of asRecords(response.messages)) {
         const time = new Date(Number(message.created_at) * 1000).toLocaleString();
-        console.log(`[${time}] ${String(message.sender_id).slice(0, 12)}: ${message.content ?? ""}`);
+        console.log(terminalText(`[${time}] ${String(message.sender_id).slice(0, 12)}: ${message.content ?? ""}`));
       }
       return;
     }
@@ -336,7 +337,7 @@ export async function main(): Promise<void> {
         const status = f.status as string;
         const dir = f.direction as string;
         const size = Number(f.file_size);
-        console.log(`${(f.file_id as string).slice(0, 8)} ${f.filename} ${size} bytes ${dir} ${status} ${f.sender_id ? `from ${(f.sender_id as string).slice(0,8)}` : ""} ${f.file_path ?? ""}`);
+        console.log(terminalText(`${(f.file_id as string).slice(0, 8)} ${f.filename} ${size} bytes ${dir} ${status} ${f.sender_id ? `from ${(f.sender_id as string).slice(0,8)}` : ""} ${f.file_path ?? ""}`));
         printFileMetadata(f);
       }
       return;
@@ -385,7 +386,7 @@ export async function main(): Promise<void> {
       if (hasError(info)) return;
       const response = await ipc.send("file_download", { file_id: fileId, dest_path: resolve(dest) });
       if (hasError(response)) return;
-      console.log(`Downloaded ${fileId} -> ${response.dest_path}`);
+      console.log(terminalText(`Downloaded ${fileId} -> ${response.dest_path}`));
       const file = info.file;
       if (file && typeof file === "object" && !Array.isArray(file)) printFileMetadata(file as Record<string, unknown>);
       return;
@@ -411,17 +412,17 @@ export async function main(): Promise<void> {
       console.log("Watching for incoming messages. Press Ctrl+C to stop.");
       ipc.onEvent((event) => {
         if (event.event === "message") {
-          console.log(`${String(event.sender_id).slice(0, 12)}: ${event.content ?? ""}`);
+          console.log(terminalText(`${String(event.sender_id).slice(0, 12)}: ${event.content ?? ""}`));
         } else if (event.event === "group_message") {
-          console.log(`[Group ${String(event.group_id).slice(0, 12)}] ${String(event.sender_id).slice(0, 12)}: ${event.content ?? ""}`);
+          console.log(terminalText(`[Group ${String(event.group_id).slice(0, 12)}] ${String(event.sender_id).slice(0, 12)}: ${event.content ?? ""}`));
         } else if (event.event === "group_member_joined") {
-          console.log(`[Group ${String(event.group_id).slice(0, 12)}] ${event.display_name ?? String(event.peer_id).slice(0, 12)} joined.`);
+          console.log(terminalText(`[Group ${String(event.group_id).slice(0, 12)}] ${event.display_name ?? String(event.peer_id).slice(0, 12)} joined.`));
         } else if (event.event === "group_member_left") {
-          console.log(`[Group ${String(event.group_id).slice(0, 12)}] ${event.display_name ?? String(event.peer_id).slice(0, 12)} left.`);
+          console.log(terminalText(`[Group ${String(event.group_id).slice(0, 12)}] ${event.display_name ?? String(event.peer_id).slice(0, 12)} left.`));
         } else if (event.event === "file_offer") {
-          console.log(`[File] Offer ${String(event.file_id).slice(0, 8)} ${event.filename} ${event.file_size} bytes from ${String(event.sender_id).slice(0,8)}`);
+          console.log(terminalText(`[File] Offer ${String(event.file_id).slice(0, 8)} ${event.filename} ${event.file_size} bytes from ${String(event.sender_id).slice(0,8)}`));
         } else if (event.event === "file_completed") {
-          console.log(`[File] Completed ${event.filename} -> ${event.file_path}`);
+          console.log(terminalText(`[File] Completed ${event.filename} -> ${event.file_path}`));
         } else if (event.event === "file_progress") {
           const rec = event.received ?? event.chunk_index;
           console.log(`[File] Progress ${String(event.file_id).slice(0,8)} ${rec}/${event.total_chunks}`);
@@ -519,7 +520,7 @@ export async function main(): Promise<void> {
       if (!groups.length) console.log("No group chats.");
       for (const group of groups) {
         const unread = Number(group.unread_count) || 0;
-        console.log(`${group.name} (${group.group_id}) - ${group.member_count} members${unread ? `, ${unread} unread` : ""}`);
+        console.log(terminalText(`${group.name} (${group.group_id}) - ${group.member_count} members${unread ? `, ${unread} unread` : ""}`));
       }
       return;
     }
@@ -534,7 +535,7 @@ export async function main(): Promise<void> {
         const members = asRecords(response.members);
         if (!members.length) console.log("No group members.");
         for (const member of members) {
-          console.log(`${member.display_name} (${String(member.peer_id).slice(0, 12)}) - ${member.is_online ? "online" : "offline"}`);
+          console.log(terminalText(`${member.display_name} (${String(member.peer_id).slice(0, 12)}) - ${member.is_online ? "online" : "offline"}`));
         }
         return;
       }
@@ -547,9 +548,9 @@ export async function main(): Promise<void> {
         for (const message of messages) {
           const time = new Date(Number(message.created_at) * 1000).toLocaleString();
           if (message.kind === "join" || message.kind === "leave") {
-            console.log(`[${time}] ${message.content ?? ""}`);
+            console.log(terminalText(`[${time}] ${message.content ?? ""}`));
           } else {
-            console.log(`[${time}] ${String(message.sender_id).slice(0, 12)}: ${message.content ?? ""}`);
+            console.log(terminalText(`[${time}] ${String(message.sender_id).slice(0, 12)}: ${message.content ?? ""}`));
           }
         }
         return;
@@ -588,7 +589,7 @@ export async function main(): Promise<void> {
       if (hasError(response)) return;
       const friends = asRecords(response.friends);
       if (!friends.length) console.log("No friends yet. Send a friend request to chat.");
-      for (const friend of friends) console.log(`${friend.display_name} (${String(friend.peer_id).slice(0, 12)})`);
+      for (const friend of friends) console.log(terminalText(`${friend.display_name} (${String(friend.peer_id).slice(0, 12)})`));
       return;
     }
 
@@ -599,11 +600,11 @@ export async function main(): Promise<void> {
       if (!requests.length) console.log("No pending friend requests.");
       for (const request of requests) {
         if (request.direction === "incoming") {
-          console.log(`Incoming: ${request.sender_name} (${request.request_id})${request.note ? ` - ${request.note}` : ""}`);
-          console.log(`  Respond with: friend accept ${request.request_id} | friend decline ${request.request_id}`);
+          console.log(terminalText(`Incoming: ${request.sender_name} (${request.request_id})${request.note ? ` - ${request.note}` : ""}`));
+          console.log(terminalText(`  Respond with: friend accept ${request.request_id} | friend decline ${request.request_id}`));
         } else {
-          console.log(`Pending to: ${request.recipient_name ?? request.sender_name} (${request.request_id})`);
-          console.log(`  Cancel with: friend cancel ${request.request_id}`);
+          console.log(terminalText(`Pending to: ${request.recipient_name ?? request.sender_name} (${request.request_id})`));
+          console.log(terminalText(`  Cancel with: friend cancel ${request.request_id}`));
         }
       }
       return;
@@ -645,7 +646,7 @@ export async function main(): Promise<void> {
       if (hasError(response)) return;
       const blocked = asRecords(response.blocked);
       if (!blocked.length) console.log("No blocked peers. Blocked peers cannot send you friend requests.");
-      for (const peer of blocked) console.log(`${peer.display_name} (${String(peer.peer_id).slice(0, 12)})`);
+      for (const peer of blocked) console.log(terminalText(`${peer.display_name} (${String(peer.peer_id).slice(0, 12)})`));
       return;
     }
 
@@ -665,7 +666,7 @@ export async function main(): Promise<void> {
 
     throw new Error(`Unknown command: ${command}\n${USAGE}`);
   } catch (error) {
-    console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(terminalText(`Error: ${error instanceof Error ? error.message : String(error)}`));
     process.exitCode = 1;
   } finally {
     ipc.close();

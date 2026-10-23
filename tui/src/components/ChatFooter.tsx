@@ -1,6 +1,7 @@
 import { DEFAULT_STATUS } from "../utils"
 import { chatTheme as theme } from "../chatTheme"
 import { HoverHighlight } from "./HoverHighlight"
+import { terminalText } from "../../../common/terminal-text"
 
 function SettingsShortcut({ openSettings, pinned }: { openSettings: () => void; pinned?: boolean }) {
   if (pinned) {
@@ -43,14 +44,14 @@ export function ChatFooter({ width, status, openSettings, onOpenHelp }: { width:
     if (compact) {
       footerBody = <box style={{ width: "100%", height: width < 38 ? 4 : 2, flexDirection: "column", alignItems: "flex-start" }}>
         <scrollbox id="chat-status" key={status} flexGrow={1} minHeight={0} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ visible: false, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
-          <text fg={statusColor} wrapMode="word">{status}</text>
+          <text fg={statusColor} wrapMode="word">{terminalText(status)}</text>
         </scrollbox>
         <ShortcutCluster openSettings={openSettings} onOpenHelp={onOpenHelp} />
       </box>
     } else {
       footerBody = <box style={{ width: "100%", height: 2, flexDirection: "row", alignItems: "stretch", gap: 1 }}>
         <scrollbox id="chat-status" key={status} style={{ flexGrow: 1, flexShrink: 1, minWidth: 0 }} minHeight={0} contentOptions={{ flexDirection: "column" }} verticalScrollbarOptions={{ visible: false, trackOptions: { foregroundColor: theme.line, backgroundColor: theme.canvas } }}>
-          <text fg={statusColor} wrapMode="word">{status}</text>
+          <text fg={statusColor} wrapMode="word">{terminalText(status)}</text>
         </scrollbox>
         <ShortcutCluster openSettings={openSettings} onOpenHelp={onOpenHelp} pinned />
       </box>

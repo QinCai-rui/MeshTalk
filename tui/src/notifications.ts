@@ -1,4 +1,5 @@
 import { platform } from "os"
+import { terminalText } from "../../common/terminal-text"
 
 export type NotificationDelivery = "terminal" | "native" | "disabled"
 export type NotificationEvent = "messages" | "friend_requests" | "file_offers" | "file_completed"
@@ -14,8 +15,21 @@ type TerminalRenderer = {
   triggerNotification(message: string, title: string): boolean | void
 }
 
-function powerShellString(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`
+export function windowsNotificationCommand(message: string, title: string): string[] {
+  // Only base64's ASCII alphabet enters script syntax. Decoded peer text is
+  // passed to the notification API, never evaluated as PowerShell source.
+  const data = Buffer.from(JSON.stringify([title, message]), "utf8").toString("base64")
+  const script = [
+    `$data = ConvertFrom-Json ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${data}')))`,
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$icon = New-Object System.Windows.Forms.NotifyIcon",
+    "$icon.Icon = [System.Drawing.SystemIcons]::Information",
+    "$icon.Visible = $true",
+    "$icon.ShowBalloonTip(5000, $data[0], $data[1], [System.Windows.Forms.ToolTipIcon]::Info)",
+    "Start-Sleep -Seconds 6",
+    "$icon.Dispose()",
+  ].join("; ")
+  return ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]
 }
 
 function appleScriptString(value: string): string {
@@ -40,16 +54,7 @@ export async function sendNativeNotification(message: string, title = "MeshTalk"
   }
   let command: string[]
   if (platform() === "win32") {
-    const script = [
-      "Add-Type -AssemblyName System.Windows.Forms",
-      "$icon = New-Object System.Windows.Forms.NotifyIcon",
-      "$icon.Icon = [System.Drawing.SystemIcons]::Information",
-      "$icon.Visible = $true",
-      `$icon.ShowBalloonTip(5000, ${powerShellString(title)}, ${powerShellString(message)}, [System.Windows.Forms.ToolTipIcon]::Info)`,
-      "Start-Sleep -Seconds 6",
-      "$icon.Dispose()",
-    ].join("; ")
-    command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script]
+    command = windowsNotificationCommand(message, title)
   } else {
     command = ["notify-send", "--app-name=MeshTalk", title, message]
   }
@@ -87,6 +92,6 @@ export async function notify(
   }
   if (!renderer.capabilities?.notifications) return
   try {
-    renderer.triggerNotification(message, "MeshTalk")
+    renderer.triggerNotification(terminalText(message, false), "MeshTalk")
   } catch {}
 }
