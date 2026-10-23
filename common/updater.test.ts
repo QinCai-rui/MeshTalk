@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import { installRelease, isNewerVersion, isStagingWithinInstallDir, isStableVersion, parsePendingUpdate, readUpdateChannel, saveUpdateChannel, type UpdateProgress } from "./updater"
@@ -70,6 +70,26 @@ describe("updateChannel", () => {
     saveUpdateChannel("stable", settingsPath, dataDir)
     expect(readUpdateChannel(settingsPath)).toBe("stable")
     rmSync(directory, { recursive: true, force: true })
+  })
+
+  test("writes settings owner-only and never through a symlink", () => {
+    if (process.platform === "win32") return
+    const directory = mkdtempSync(join(tmpdir(), "meshtalk-channel-"))
+    const settingsPath = join(directory, "settings.json")
+    const previous = process.umask(0o022)
+    try {
+      saveUpdateChannel("unstable", settingsPath, directory)
+      expect(statSync(settingsPath).mode & 0o777).toBe(0o600)
+      const outside = join(directory, "outside.json")
+      writeFileSync(outside, "untouched")
+      rmSync(settingsPath)
+      symlinkSync(outside, settingsPath)
+      expect(() => saveUpdateChannel("stable", settingsPath, directory)).toThrow()
+      expect(readFileSync(outside, "utf-8")).toBe("untouched")
+    } finally {
+      process.umask(previous)
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   test("treats unknown values as stable", () => {

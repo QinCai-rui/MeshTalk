@@ -58,6 +58,9 @@ DIRECT_PROBE_INTERVAL = 30.0
 EXPECTED_PEER_TIMEOUT = 600.0
 MAX_EXPECTED_PEERS = 512
 MAX_ATTEMPTS = 128
+# Replies to repeated HELLOs before confirmation. The punch loop already
+# retransmits on a timer, so a few receive-driven replies cover packet loss.
+MAX_UNCONFIRMED_HELLO_REPLIES = 4
 MAX_SESSIONS = 256
 
 Endpoint = tuple[str, int]
@@ -151,6 +154,7 @@ class Session:
     local_missing_capabilities: list[str] = field(default_factory=list)
     confirmed: bool = False
     connected_notified: bool = False
+    hello_replies: int = 0
     created_at: float = field(default_factory=time.monotonic)
     last_seen: float = field(default_factory=time.monotonic)
     reassemblies: dict[int, Reassembly] = field(default_factory=dict)
@@ -184,6 +188,8 @@ class UdpTransport:
         self._derp_sender: DerpSender | None = None
         self._direct_candidates: dict[str, Endpoint] = {}
         self._last_direct_probe: dict[str, float] = {}
+        # Relay candidates whose card expired while a relay session still used them.
+        self._forgotten_relays: set[str] = set()
         self._sessions: dict[str, Session] = {}
         self._pending_sessions: dict[str, dict[tuple[Endpoint, bool], Session]] = {}
         self._retiring_sessions: dict[bytes, tuple[Session, float]] = {}
@@ -241,7 +247,10 @@ class UdpTransport:
         if not was_started:
             return
         direct_candidates = dict(self._direct_candidates)
-        relay_candidates = set(self._derp_candidates)
+        # Expired cards kept routing only for sessions that restart discards.
+        relay_candidates = set(self._derp_candidates) - self._forgotten_relays
+        for peer_id in list(self._forgotten_relays):
+            self._drop_relay_routing(peer_id)
         await self.stop()
         self._transport = None
         self._attempts.clear()
@@ -321,6 +330,7 @@ class UdpTransport:
         if peer_id == self.identity.peer_id:
             return
         endpoint = (f"derp:{peer_id}", 0)
+        self._forgotten_relays.discard(peer_id)
         self._derp_candidates[peer_id] = endpoint
         self._derp_peers[endpoint] = peer_id
         if self.relay_enabled and self._derp_sender and (self.force_relay or peer_id not in self._direct_candidates):
@@ -338,6 +348,31 @@ class UdpTransport:
         for session in list(self._pending_sessions.get(peer_id, {}).values()):
             if not session.via_relay:
                 self._remove_session(session)
+
+    def forget_candidate(self, peer_id: str) -> None:
+        """Drop discovery and relay metadata for a peer whose card expired.
+
+        Cancels unconfirmed attempts and pending sessions. Established sessions
+        stay up; they expire through normal keepalive handling.
+        """
+        self._direct_candidates.pop(peer_id, None)
+        self._expected_endpoints.pop(peer_id, None)
+        self._last_direct_probe.pop(peer_id, None)
+        active = self._sessions.get(peer_id)
+        relay_in_use = bool(active and active.via_relay) or any(
+            session.peer_id == peer_id and session.via_relay for session, _ in self._retiring_sessions.values()
+        )
+        if relay_in_use:
+            # An established relay session still needs inbound routing; drop
+            # it once that session ends (see _release_forgotten_relay).
+            self._forgotten_relays.add(peer_id)
+        else:
+            self._drop_relay_routing(peer_id)
+        attempt = self._attempts.pop(peer_id, None)
+        if attempt and attempt.task:
+            attempt.task.cancel()
+        for session in list(self._pending_sessions.get(peer_id, {}).values()):
+            self._remove_session(session)
 
     def expect_peer(self, peer_id: str, endpoint: Endpoint) -> None:
         """Register a direct UDP endpoint candidate and initiate connection if appropriate."""
@@ -512,6 +547,24 @@ class UdpTransport:
             if not pending:
                 self._pending_sessions.pop(session.peer_id, None)
         self._retiring_sessions.pop(session.session_id, None)
+        self._release_forgotten_relay(session.peer_id)
+
+    def _drop_relay_routing(self, peer_id: str) -> None:
+        self._forgotten_relays.discard(peer_id)
+        endpoint = self._derp_candidates.pop(peer_id, None)
+        if endpoint is not None and self._derp_peers.get(endpoint) == peer_id:
+            self._derp_peers.pop(endpoint, None)
+
+    def _release_forgotten_relay(self, peer_id: str) -> None:
+        """Clear expired relay routing once no relay session uses it any more."""
+        if peer_id not in self._forgotten_relays:
+            return
+        active = self._sessions.get(peer_id)
+        if (active and active.via_relay) or any(
+            session.peer_id == peer_id and session.via_relay for session, _ in self._retiring_sessions.values()
+        ):
+            return
+        self._drop_relay_routing(peer_id)
 
     def _session_for_route(
         self, peer_id: str, endpoint: Endpoint, via_relay: bool
@@ -594,10 +647,22 @@ class UdpTransport:
         except InvalidSignature as exc:
             raise ValueError("Invalid UDP handshake signature") from exc
         current = self._session_for_route(peer_id, addr, via_relay)
+        pending = self._pending_sessions.get(peer_id, {}).get((addr, via_relay))
+        if pending and pending.remote_nonce == nonce and pending.remote_session_public_key == session_key:
+            # A repeat of an in-progress replacement handshake on a confirmed route.
+            current = pending
         if (
             current and current.remote_nonce == nonce
             and current.remote_session_public_key == session_key
         ):
+            if current.confirmed:
+                # The peer may have missed our READY. READY never triggers a
+                # HELLO, so this cannot start a reply loop between two peers.
+                self._send_authenticated(current, READY, 0)
+                return
+            if current.hello_replies >= MAX_UNCONFIRMED_HELLO_REPLIES:
+                return
+            current.hello_replies += 1
             self._send_route(current.local_hello, addr, via_relay)
             self._send_authenticated(current, READY, 0)
             return
@@ -615,9 +680,9 @@ class UdpTransport:
         if current and current.session_id == session_id:
             self._send_authenticated(current, READY, 0)
             return
-        if not current and len(self._sessions_by_id) >= MAX_SESSIONS:
+        if len(self._sessions_by_id) >= MAX_SESSIONS:
             raise ValueError("Too many UDP sessions")
-        if current:
+        if current and not current.confirmed:
             self._remove_session(current)
         first_to_second = material[:32], material[32:64]
         second_to_first = material[64:96], material[96:128]
@@ -632,7 +697,12 @@ class UdpTransport:
             sorted(set(remote_capabilities) - set(self.capabilities)),
         )
         active = self._sessions.get(peer_id)
-        if active and active.confirmed and self._route_key(active) != (addr, via_relay):
+        if active and active.confirmed:
+            # Keep the confirmed route until the new session proves key
+            # possession with READY. _promote_session then retires the old one.
+            stale = self._pending_sessions.get(peer_id, {}).get((addr, via_relay))
+            if stale is not None:
+                self._remove_session(stale)
             self._pending_sessions.setdefault(peer_id, {})[(addr, via_relay)] = session
         else:
             self._sessions[peer_id] = session

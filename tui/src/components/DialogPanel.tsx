@@ -22,6 +22,7 @@ import { readLevel, writeLevel, markPrompted, type AnalyticsLevel } from "../../
 import { APP_RELEASE_VERSION } from "../SplashScreen"
 import { ControlDialogContent, ControlCustomDialogContent, ControlStatusDialogContent, AdvancedDialogContent, CustomisationDialogContent, SplashStyleDialogContent, ImageProtocolDialogContent, IpPinningDialogContent, AdvancedControlDialogContent, AdvancedStunDialogContent, AdvancedControlIpDialogContent, AdvancedStunIpDialogContent } from "./dialogs/PreferenceDialogs"
 import { HoverHighlight } from "./HoverHighlight"
+import { terminalText } from "../../../common/terminal-text"
 
 type DialogPanelProps = {
   dialog: Dialog
@@ -431,10 +432,10 @@ function FriendRequestsDialogContent({ dialog, dialogHeight, showDialog }: { dia
       {!dialog.requests.length ? <SettingsNotice>No friend requests are pending.</SettingsNotice> : null}
       <SettingsMenu dialogHeight={dialogHeight} headerRows={dialog.requests.length ? 4 : 7} options={[
           ...incoming.map((request) => ({
-            section: "Incoming", name: request.sender_name, description: request.note || "Accept, decline, or block this request.", value: `incoming:${request.request_id}`, status: "Needs response", tone: "accent" as const,
+            section: "Incoming", name: terminalText(request.sender_name), description: terminalText(request.note || "Accept, decline, or block this request."), value: `incoming:${request.request_id}`, status: "Needs response", tone: "accent" as const,
           })),
           ...outgoing.map((request) => ({
-            section: "Sent", name: request.recipient_name ?? request.sender_name, description: "Pending. Cancel this request if you no longer want to connect.", value: `outgoing:${request.request_id}`, status: "Pending",
+            section: "Sent", name: terminalText(request.recipient_name ?? request.sender_name), description: "Pending. Cancel this request if you no longer want to connect.", value: `outgoing:${request.request_id}`, status: "Pending",
           })),
         ]} onSelect={(option) => {
           if (!option) return
@@ -454,9 +455,9 @@ function FriendRequestsDialogContent({ dialog, dialogHeight, showDialog }: { dia
 
 function FriendRequestIncomingDialogContent({ dialog, dialogHeight, blockSenderFromRequest, respondToFriendRequest }: { dialog: Extract<Dialog, { kind: "friend-request-incoming" }>; dialogHeight: number; blockSenderFromRequest: (request: FriendRequest) => void; respondToFriendRequest: (request: FriendRequest, accept: boolean) => void }) {
   return (
-    <SettingsScreen breadcrumb={["Friends", "Requests", dialog.request.sender_name]} description="Choose how MeshTalk should handle this request." dialogHeight={dialogHeight}>
-      <SettingsSummary label="From" value={dialog.request.sender_name} tone="accent" />
-      {dialog.request.note ? <SettingsNotice>{dialog.request.note}</SettingsNotice> : null}
+    <SettingsScreen breadcrumb={["Friends", "Requests", terminalText(dialog.request.sender_name)]} description="Choose how MeshTalk should handle this request." dialogHeight={dialogHeight}>
+      <SettingsSummary label="From" value={terminalText(dialog.request.sender_name)} tone="accent" />
+      {dialog.request.note ? <SettingsNotice>{terminalText(dialog.request.note)}</SettingsNotice> : null}
       <SettingsMenu dialogHeight={dialogHeight} headerRows={dialog.request.note ? 8 : 6} options={[
         { section: "Response", name: "Accept", description: "Become friends and allow direct messages.", value: "accept", tone: "success" },
         { section: "Response", name: "Decline", description: "Reject this friend request.", value: "decline" },
@@ -515,10 +516,10 @@ function FriendsDialogContent({ dialogHeight, peers, identity, friendRequests, l
         {!incoming.length && !outgoing.length ? <SettingsNotice>No friend requests are pending.</SettingsNotice> : null}
         <SettingsMenu dialogHeight={dialogHeight} headerRows={9} marqueeNames options={[
           ...incoming.map((request) => ({
-            name: request.sender_name, description: request.note || "Accept, decline, or block this request.", value: `incoming:${request.request_id}`, status: "Needs response", tone: "accent" as const,
+            name: terminalText(request.sender_name), description: terminalText(request.note || "Accept, decline, or block this request."), value: `incoming:${request.request_id}`, status: "Needs response", tone: "accent" as const,
           })),
           ...outgoing.map((request) => ({
-            name: request.recipient_name ?? request.sender_name, description: "Pending. Cancel this request if you no longer want to connect.", value: `outgoing:${request.request_id}`, status: "Pending",
+            name: terminalText(request.recipient_name ?? request.sender_name), description: "Pending. Cancel this request if you no longer want to connect.", value: `outgoing:${request.request_id}`, status: "Pending",
           })),
         ]} onSelect={(option) => selectRequest(option)} />
       </>)}

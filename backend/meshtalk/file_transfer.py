@@ -10,6 +10,7 @@ import os
 import shutil
 import time
 import uuid
+import weakref
 from pathlib import Path
 from typing import Awaitable, Callable, Iterable
 
@@ -50,6 +51,21 @@ FILE_PROGRESS_COMMIT_CHUNKS = 32
 FILE_PROGRESS_COMMIT_INTERVAL = 1.0
 MAX_PROGRESS_TRACKERS = 256
 AWAITING_ACK_TIMEOUT = 30.0
+# Reservations count logical promised bytes, not sparse physical allocation.
+# A peer can reserve a complete 32-file batch at the maximum per-file size.
+MAX_INBOUND_FILES = 128
+MAX_INBOUND_FILES_PER_PEER = 64
+MAX_INBOUND_BYTES = 4 * 1024 ** 3
+MAX_INBOUND_BYTES_PER_PEER = 2 * 1024 ** 3
+FILE_FREE_SPACE_RESERVE = 64 * 1024 ** 2
+INBOUND_IDLE_TTL = 24 * 60 * 60
+FILE_MAINTENANCE_INTERVAL = 60
+RESEND_WINDOW = 60
+MAX_RESEND_REQUESTS_PER_PEER = 64
+MAX_RESEND_BYTES_PER_PEER = MAX_FILE_BATCH_SIZE * MAX_FILE_SIZE
+MAX_RESEND_REQUESTS = 256
+MAX_RESEND_BYTES = 4 * 1024 ** 3
+MAX_RESEND_PEERS = 256
 
 
 def _files_base(data_dir: Path) -> Path:
@@ -98,8 +114,14 @@ class FileTransferManager:
         self.settings = settings
         self.on_event = on_event
         self.analytics = analytics
-        self._packet_locks: dict[str, asyncio.Lock] = {}
-        self._flush_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        # Holders and queued callers retain strong references. Idle locks vanish
+        # without splitting waiters across different locks for the same key.
+        self._packet_locks = weakref.WeakValueDictionary()
+        self._flush_locks = weakref.WeakValueDictionary()
+        self._inbound_lock = asyncio.Lock()
+        self._resend_usage: dict[str, tuple[float, int, int]] = {}
+        self._resend_total = (time.monotonic(), 0, 0)
+        self._maintenance_task: asyncio.Task | None = None
         self._early_chunks: dict[str, tuple[float, list[tuple[PeerConnection, object]]]] = {}
         self._last_progress_events: dict[str, tuple[float, int]] = {}
         self._pending_progress_commits: dict[str, asyncio.Task[None]] = {}
@@ -109,6 +131,114 @@ class FileTransferManager:
         # sends and inbound writes refuse to start so nothing lands in the old
         # tree after its last active-transfer check.
         self.migration_in_progress = False
+        self._ensure_maintenance()
+
+    def _ensure_maintenance(self) -> None:
+        if self._maintenance_task is None:
+            try:
+                self._maintenance_task = asyncio.get_running_loop().create_task(self._maintain_files())
+            except RuntimeError:
+                pass
+
+    async def _maintain_files(self) -> None:
+        while True:
+            await asyncio.sleep(FILE_MAINTENANCE_INTERVAL)
+            try:
+                await self.expire_abandoned_inbound()
+                self._prune_resend_usage()
+            except Exception:
+                logger.exception("Failed to reclaim abandoned file reservations")
+
+    async def _inbound_reservations(self) -> list[dict]:
+        # Failed partial files still reserve storage. Expired rows keep their
+        # history, but have no path and therefore no outstanding reservation.
+        return [row for row in await self.db.get_file_transfers()
+                if row["direction"] == "inbound" and row["status"] != "completed"
+                and row.get("file_path")]
+
+    async def expire_abandoned_inbound(self) -> None:
+        """Reclaim incomplete files after 24 hours without a new valid chunk.
+
+        File mtime is local and survives restart, unlike the sender's created_at.
+        Keep the failed history row and seen ID so this never prunes chat history.
+        """
+        async with self._inbound_lock:
+            if not self.migration_in_progress:
+                await self._expire_abandoned_inbound()
+
+    async def _expire_abandoned_inbound(self) -> None:
+        cutoff = time.time() - INBOUND_IDLE_TTL
+        for transfer in await self._inbound_reservations():
+            path = Path(transfer["file_path"])
+            try:
+                if path.stat().st_mtime > cutoff:
+                    continue
+                # Never remove a completed user's shared file, a symlink, or a
+                # historical path outside the currently managed files tree.
+                path.resolve().relative_to(self.files_base.resolve())
+                if path.is_symlink() or not path.is_file():
+                    continue
+                if await self.db.count_file_path_references(path) != 1:
+                    continue
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError):
+                continue
+            self.forget_transfer(transfer["file_id"])
+            self._early_chunks.pop(transfer["file_id"], None)
+            await self.db.reset_file_received_chunks(transfer["file_id"])
+            await self.db.remove_file_from_outqueue(transfer["file_id"])
+            await self.db.update_file_transfer(transfer["file_id"], status="failed", file_path=None)
+            self._emit({"event": "file_failed", "file_id": transfer["file_id"], "group_id": transfer["group_id"]})
+
+    def _has_free_space(self, promised_bytes: int) -> bool:
+        # Admission must not create directories or files before checking quotas.
+        path = self.files_base
+        try:
+            while not path.exists():
+                path = path.parent
+            return shutil.disk_usage(path).free >= FILE_FREE_SPACE_RESERVE + promised_bytes
+        except OSError:
+            return False
+
+    async def _admit_inbound(self, offer) -> bool:
+        await self._expire_abandoned_inbound()
+        rows = await self._inbound_reservations()
+        peer_rows = [row for row in rows if row["sender_id"] == offer.sender_id]
+        promised = sum(row["file_size"] for row in rows)
+        peer_promised = sum(row["file_size"] for row in peer_rows)
+        return (len(rows) < MAX_INBOUND_FILES
+                and len(peer_rows) < MAX_INBOUND_FILES_PER_PEER
+                and promised + offer.file_size <= MAX_INBOUND_BYTES
+                and peer_promised + offer.file_size <= MAX_INBOUND_BYTES_PER_PEER
+                and self._has_free_space(offer.file_size))
+
+    def _prune_resend_usage(self) -> None:
+        now = time.monotonic()
+        for key, (started, _, _) in list(self._resend_usage.items()):
+            if now - started >= RESEND_WINDOW:
+                self._resend_usage.pop(key, None)
+        if now - self._resend_total[0] >= RESEND_WINDOW:
+            self._resend_total = (now, 0, 0)
+
+    def _reserve_resend(self, peer_id: str, transfer: dict, ranges) -> bool:
+        self._prune_resend_usage()
+        usage = self._resend_usage.get(peer_id)
+        if usage is None and len(self._resend_usage) >= MAX_RESEND_PEERS:
+            return False
+        started, count, size = usage or (time.monotonic(), 0, 0)
+        total_started, total_count, total_size = self._resend_total
+        requested = sum(min(transfer["file_size"], (end + 1) * transfer["chunk_size"])
+                        - start * transfer["chunk_size"] for start, end in ranges)
+        if (not ranges or count >= MAX_RESEND_REQUESTS_PER_PEER
+                or size + requested > MAX_RESEND_BYTES_PER_PEER
+                or total_count >= MAX_RESEND_REQUESTS
+                or total_size + requested > MAX_RESEND_BYTES):
+            return False
+        self._resend_usage[peer_id] = (started, count + 1, size + requested)
+        self._resend_total = (total_started, total_count + 1, total_size + requested)
+        return True
 
     @property
     def files_base(self) -> Path:
@@ -498,6 +628,15 @@ class FileTransferManager:
         self._awaiting_ack_since[(transfer["file_id"], recipient)] = time.monotonic()
         await self._set_delivery(transfer, recipient, "sent")
 
+    async def _still_authorized(self, transfer: dict, recipient: str) -> bool:
+        """Whether the recipient may still receive this file right now."""
+        if await self.db.is_peer_blocked(recipient):
+            return False
+        if transfer["group_id"]:
+            return (await self._active_group_sender(transfer["group_id"])
+                    and await self._group_recipient_eligible(transfer["group_id"], recipient))
+        return await self.db.is_friend(recipient)
+
     async def _stream_ranges(self, peer, transfer, recipient, ranges) -> bool:
         path = Path(transfer["file_path"]) if transfer.get("file_path") else None
         if not path or not path.is_file() or not peer.encryption_public_key:
@@ -529,6 +668,11 @@ class FileTransferManager:
                             self._emit({"event": "file_progress", "file_id": transfer["file_id"], "received": sent, "total_chunks": transfer["total_chunks"], "direction": "outbound", "group_id": transfer["group_id"], "recipient_id": recipient})
                         if index % 10 == 0:
                             await asyncio.sleep(0)
+                        # Recheck periodically so a block, unfriend, or group
+                        # leave during a long send stops further chunks.
+                        if sent % 32 == 0 and not await self._still_authorized(transfer, recipient):
+                            await self._set_delivery(transfer, recipient, "unavailable")
+                            return False
             await self._mark_sent_unless_completed(transfer, recipient)
             if full_stream:
                 self._emit({"event": "file_sent", "file_id": transfer["file_id"], "recipient_id": recipient, "filename": transfer["filename"], "group_id": transfer["group_id"]})
@@ -811,6 +955,9 @@ class FileTransferManager:
             if transfer["status"] == "completed":
                 await self._send_ack(peer, transfer["file_id"], "completed")
             elif transfer["status"] in ("transferring", "failed"):
+                if not transfer.get("file_path"):
+                    # Expired reservation: its partial file was deleted.
+                    continue
                 missing = await self.db.get_missing_file_chunk_ranges(transfer["file_id"], transfer["total_chunks"])
                 if not missing and transfer["status"] == "failed":
                     missing = [(0, transfer["total_chunks"] - 1)]
@@ -891,6 +1038,34 @@ class FileTransferManager:
             return
         if await self.db.is_message_seen(offer.file_id):
             return
+        async with self._inbound_lock:
+            if not await self._admit_inbound(offer):
+                # Over quota: ask the sender to retry later instead of failing it.
+                self._early_chunks.pop(offer.file_id, None)
+                logger.info("Deferred file offer %s from %s: inbound storage limit reached", offer.file_id, peer.peer_id)
+                await self._send_ack(peer, offer.file_id, "missing")
+                return
+            path = await self._create_inbound(offer)
+            if path is None:
+                return
+            safe = sanitize_filename(offer.filename)
+            # Save inside the lock so the next offer's quota check counts this one.
+            await self.db.save_file_transfer({
+                "file_id": offer.file_id, "filename": safe, "file_size": offer.file_size,
+                "chunk_size": offer.chunk_size, "total_chunks": offer.total_chunks,
+                "sender_id": offer.sender_id, "recipient_id": offer.recipient_id,
+                "group_id": offer.group_id, "direction": "inbound", "status": "transferring",
+                "file_path": str(path), "created_at": offer.created_at, "received_chunks": 0,
+                "file_sha256": offer.file_sha256, "caption": offer.caption,
+                "batch_id": offer.batch_id, "batch_index": offer.batch_index,
+                "batch_count": offer.batch_count,
+            })
+        await self.db.mark_message_seen(offer.file_id)
+        self._emit({"event": "file_offer", "file_id": offer.file_id, "filename": safe, "file_size": offer.file_size, "sender_id": peer.peer_id, "group_id": offer.group_id, "caption": offer.caption, "batch_id": offer.batch_id})
+        await self._replay_early(offer.file_id)
+
+    async def _create_inbound(self, offer) -> Path | None:
+        """Create the private sparse file that will receive an admitted offer."""
         safe = sanitize_filename(offer.filename)
         path = self._incoming_path_for(offer.file_id, offer.sender_id, offer.group_id, safe, offer.created_at)
         for _ in range(100):
@@ -906,23 +1081,11 @@ class FileTransferManager:
                 continue
             except OSError as exc:
                 logger.warning("Failed to preallocate file %s: %s", offer.file_id, exc)
-                return
+                return None
         else:
             logger.warning("Failed to preallocate file %s: no free filename", offer.file_id)
-            return
-        await self.db.save_file_transfer({
-            "file_id": offer.file_id, "filename": safe, "file_size": offer.file_size,
-            "chunk_size": offer.chunk_size, "total_chunks": offer.total_chunks,
-            "sender_id": offer.sender_id, "recipient_id": offer.recipient_id,
-            "group_id": offer.group_id, "direction": "inbound", "status": "transferring",
-            "file_path": str(path), "created_at": offer.created_at, "received_chunks": 0,
-            "file_sha256": offer.file_sha256, "caption": offer.caption,
-            "batch_id": offer.batch_id, "batch_index": offer.batch_index,
-            "batch_count": offer.batch_count,
-        })
-        await self.db.mark_message_seen(offer.file_id)
-        self._emit({"event": "file_offer", "file_id": offer.file_id, "filename": safe, "file_size": offer.file_size, "sender_id": peer.peer_id, "group_id": offer.group_id, "caption": offer.caption, "batch_id": offer.batch_id})
-        await self._replay_early(offer.file_id)
+            return None
+        return path
 
     async def _handle_chunk(self, peer, packet) -> None:
         if not peer.supports(CAP_FILE_TRANSFER_V2):
@@ -978,6 +1141,8 @@ class FileTransferManager:
             raise ValueError("Storage location is being changed")
         if not transfer.get("file_sha256") or transfer["direction"] != "inbound" or transfer["status"] not in ("transferring", "pending", "failed") or transfer["sender_id"] != chunk.sender_id or transfer["recipient_id"] != chunk.recipient_id or transfer["group_id"] != chunk.group_id or transfer["total_chunks"] != chunk.total_chunks:
             raise ValueError("File chunk does not match its offer")
+        if not transfer.get("file_path"):
+            raise ValueError("File reservation has expired")
         if await self.db.is_file_chunk_received(chunk.file_id, chunk.chunk_index):
             return
         try:
@@ -1110,6 +1275,10 @@ class FileTransferManager:
                 await self.db.remove_file_from_outqueue(ack.file_id, peer.peer_id)
                 self._emit({"event": "file_failed", "file_id": ack.file_id, "recipient_id": peer.peer_id, "group_id": transfer["group_id"]})
                 return
+            # Bound how much repeated resend work one peer can request.
+            if not self._reserve_resend(peer.peer_id, transfer, ack.missing_ranges or []):
+                logger.info("Deferred resend of %s to %s: resend limit reached", ack.file_id, peer.peer_id)
+                return
             await self._resend_missing_chunks(peer, transfer, ack.missing_ranges or [])
 
     async def _resend_missing_chunks(self, peer, transfer, ranges) -> None:
@@ -1121,11 +1290,11 @@ class FileTransferManager:
                     if not await self._stream_ranges(peer, transfer, peer.peer_id, ranges):
                         if transfer["group_id"]:
                             delivery = await self.db.get_file_delivery(transfer["file_id"], peer.peer_id)
-                            if delivery and delivery["status"] == "failed":
+                            if delivery and delivery["status"] in ("failed", "unavailable"):
                                 return
                         else:
                             current = await self.db.get_file_transfer(transfer["file_id"])
-                            if current and current["status"] == "failed":
+                            if current and current["status"] in ("failed", "unavailable"):
                                 return
                         await self._set_delivery(transfer, peer.peer_id, "queued")
                         return

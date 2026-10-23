@@ -438,18 +438,7 @@ class RendezvousService:
         self._seen_cards = {
             key: seen_at for key, seen_at in self._seen_cards.items() if now - seen_at < CARD_MAX_AGE
         }
-        if self.on_room_member:
-            try:
-                signing_key = bytes.fromhex(value["signing_public_key"])
-            except (KeyError, TypeError, ValueError):
-                signing_key = None
-            if _accepts_signing_key(self.on_room_member):
-                await self.on_room_member(room.id, peer_id, announce_join, signing_key)
-            else:
-                await self.on_room_member(room.id, peer_id, announce_join)
         candidates = value["candidates"]
-        if not candidates:
-            return
         parsed: list[tuple[str, Endpoint | None]] = []
         for candidate in candidates:
             if candidate["type"] == "derp":
@@ -466,10 +455,16 @@ class RendezvousService:
                 raise ValueError("Endpoint card is not a public address")
             parsed.append((candidate["type"], (str(address), port)))
         endpoint = next((item[1] for item in parsed if item[0] == "direct"), None)
-        self._candidate_seen = {
-            tracked_peer: seen_at for tracked_peer, seen_at in self._candidate_seen.items()
-            if now - seen_at < CANDIDATE_TRACKING_AGE
-        }
+        expired = [
+            tracked_peer for tracked_peer, seen_at in self._candidate_seen.items()
+            if now - seen_at >= CANDIDATE_TRACKING_AGE
+        ]
+        for tracked_peer in expired:
+            self._candidate_seen.pop(tracked_peer, None)
+            # Drop stale UDP discovery state too; established sessions survive.
+            forget = getattr(self.udp, "forget_candidate", None)
+            if forget is not None:
+                forget(tracked_peer)
         self._last_candidates = {
             tracked_peer: tracked for tracked_peer, tracked in self._last_candidates.items()
             if tracked_peer in self._candidate_seen
@@ -478,8 +473,22 @@ class RendezvousService:
             tracked_peer: changes for tracked_peer, changes in self._candidate_changes.items()
             if tracked_peer in self._candidate_seen
         }
+        # Every card, including one with no candidates, counts against the
+        # tracking limit before it can add a durable roster entry.
         if peer_id not in self._candidate_seen and len(self._candidate_seen) >= MAX_TRACKED_CANDIDATES:
             raise ValueError("Too many room candidates")
+        self._candidate_seen[peer_id] = now
+        if self.on_room_member:
+            try:
+                signing_key = bytes.fromhex(value["signing_public_key"])
+            except (KeyError, TypeError, ValueError):
+                signing_key = None
+            if _accepts_signing_key(self.on_room_member):
+                await self.on_room_member(room.id, peer_id, announce_join, signing_key)
+            else:
+                await self.on_room_member(room.id, peer_id, announce_join)
+        if not parsed:
+            return
         if endpoint is not None and self._last_candidates.get(peer_id) != endpoint:
             changes = [changed for changed in self._candidate_changes.get(peer_id, []) if now - changed < 60]
             if len(changes) >= MAX_CANDIDATE_CHANGES_PER_MINUTE:

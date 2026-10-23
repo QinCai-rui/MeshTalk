@@ -234,7 +234,9 @@ class FriendManager:
             return
         if await self.db.get_pending_request_with(payload.sender_id, "incoming"):
             return
-        await self.db.save_friend_request({
+        # The insert enforces block status, per-peer and total history caps, and
+        # a minimum interval between requests from one peer.
+        if not await self.db.save_friend_request({
             "request_id": payload.request_id,
             "sender_id": payload.sender_id,
             "sender_name": peer.display_name,
@@ -244,7 +246,9 @@ class FriendManager:
             "created_at": payload.created_at,
             "direction": "incoming",
             "status": "pending",
-        })
+        }):
+            logger.info("Ignored friend request %s from %s: request limit reached", payload.request_id, peer.peer_id)
+            return
         logger.info("Received friend request %s from %s", payload.request_id, peer.peer_id)
         if self.on_friend_request:
             await self.on_friend_request({
@@ -265,7 +269,14 @@ class FriendManager:
         request = await self.db.get_friend_request(payload.request_id)
         if request is None or request["direction"] != "outgoing" or request["status"] != "pending":
             return
-        await self.db.update_friend_request_status(payload.request_id, "accepted" if payload.accept else "declined")
+        # Only the peer we asked may answer. The status update rechecks the
+        # recipient and block list in one statement; a database trigger grants
+        # friendship on acceptance, so a concurrent block cannot be undone.
+        if not await self.db.resolve_friend_request(
+            payload.request_id, self.identity.peer_id, peer.peer_id, "outgoing",
+            "accepted" if payload.accept else "declined",
+        ):
+            return
         if payload.accept:
             await self.db.add_friend(payload.responder_id, peer.display_name)
         logger.info(
@@ -292,7 +303,11 @@ class FriendManager:
         request = await self.db.get_friend_request(payload.request_id)
         if request is None or request["direction"] != "incoming" or request["status"] != "pending":
             return
-        await self.db.cancel_friend_request(payload.request_id)
+        # Only the peer that sent the request may cancel it.
+        if not await self.db.resolve_friend_request(
+            payload.request_id, self.identity.peer_id, peer.peer_id, "incoming", "cancelled",
+        ):
+            return
         logger.info("Friend request %s was cancelled by %s", payload.request_id, peer.peer_id)
         if self.on_friend_cancelled:
             await self.on_friend_cancelled({
@@ -308,13 +323,15 @@ class FriendManager:
             logger.info("Ignored block report from %s: capability not negotiated", peer.peer_id)
             return
         self._verify_peer_signature(peer, payload.signed_bytes(), payload.signature)
+        # A notice only counts for a message we actually sent to this peer.
+        if not await self.db.mark_message_blocked(payload.message_id, self.identity.peer_id, peer.peer_id):
+            return
         removed_friend = await self.is_friend(peer.peer_id)
         if removed_friend:
             # The peer no longer considers us a friend (they unfriended locally).
             # Mirror that on our side so both views converge.
             await self.db.remove_friend(peer.peer_id)
             logger.info("Removed %s as a friend after blocked message notice", peer.peer_id)
-        await self.db.mark_message_blocked(payload.message_id)
         logger.info("Message %s was blocked by %s", payload.message_id, peer.peer_id)
         if self.on_message_blocked:
             await self.on_message_blocked({

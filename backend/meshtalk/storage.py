@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 import shutil
 import sqlite3
+import stat
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
@@ -47,6 +50,192 @@ RUNTIME_FILES = frozenset(
         ".data_dir",
     }
 )
+
+
+def _is_link(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _private_group(gid: int) -> bool:
+    """Whether a group contains only the current user, as on umask 002 systems."""
+    try:
+        import grp
+        import pwd
+        group = grp.getgrgid(gid)
+    except (ImportError, KeyError):
+        return False
+    me = pwd.getpwuid(os.getuid()).pw_name
+    if any(member != me for member in group.gr_mem):
+        return False
+    # Other users whose primary group is this one also share write access.
+    return all(user.pw_gid != gid or user.pw_uid == os.getuid() for user in pwd.getpwall())
+
+
+@contextmanager
+def _directory(path: Path, *, create: bool = False, writable: bool = False):
+    """Pin a directory without following links; only new directories get mode 0700.
+
+    POSIX operations stay relative to the opened directory even if an ancestor
+    is renamed. Windows has no equivalent dir_fd APIs, so it checks reparse
+    points but still depends on the user's directory ACLs against path races.
+    """
+    path = Path(os.path.abspath(path))
+    # Resolve links in directories that already exist (for example macOS /tmp,
+    # or a symlinked home), then walk the rest without following links. Only
+    # the new or final components need protection against being swapped.
+    existing = path
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    path = existing.resolve() / path.relative_to(existing)
+    descriptor = None
+    try:
+        if os.name != "nt":
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            descriptor = os.open(path.anchor, flags)
+            for name in path.parts[1:]:
+                if create:
+                    try:
+                        os.mkdir(name, mode=0o700, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                child = os.open(name, flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+            if writable:
+                info = os.fstat(descriptor)
+                # A different owner, or a non-sticky directory anyone can
+                # write, could replace entries during commit or cleanup.
+                # Group write is allowed: umask 002 systems create it by
+                # default for the user's private group.
+                if info.st_uid != os.getuid() or (info.st_mode & 0o002 and not info.st_mode & stat.S_ISVTX) or (
+                    info.st_mode & 0o020 and not info.st_mode & stat.S_ISVTX and not _private_group(info.st_gid)
+                ):
+                    raise PermissionError(f"{path} must be owned by this user and writable only by this user or a private group")
+        else:
+            current = Path(path.anchor)
+            for name in path.parts[1:]:
+                current /= name
+                if create:
+                    try:
+                        current.mkdir(mode=0o700)
+                    except FileExistsError:
+                        pass
+                info = current.lstat()
+                if _is_link(info) or not stat.S_ISDIR(info.st_mode):
+                    raise OSError("private storage directory must not be a link")
+        yield path, descriptor
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def ensure_private_directory(path: Path) -> None:
+    """Create missing directories privately without changing existing modes."""
+    with _directory(path, create=True):
+        pass
+
+
+def _entry(directory, name: str):
+    path, descriptor = directory
+    return (name, {"dir_fd": descriptor}) if descriptor is not None else (path / name, {})
+
+
+def _entry_stat(directory, name: str) -> os.stat_result | None:
+    entry, options = _entry(directory, name)
+    try:
+        return os.stat(entry, follow_symlinks=False, **options)
+    except FileNotFoundError:
+        return None
+
+
+def _same_file(first: os.stat_result | None, second: os.stat_result | None) -> bool:
+    return first is not None and second is not None and (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
+
+
+def _unlink_owned(directory, name: str, expected: os.stat_result) -> None:
+    if _same_file(_entry_stat(directory, name), expected):
+        entry, options = _entry(directory, name)
+        os.unlink(entry, **options)
+
+
+@contextmanager
+def _private_output(dest: Path, *, replace: bool):
+    """Stage mode-0600 bytes exclusively, then publish without clobbering copies."""
+    with _directory(dest.parent, create=True, writable=True) as directory:
+        previous = _entry_stat(directory, dest.name)
+        if previous is not None:
+            if not replace:
+                raise FileExistsError(f"destination already contains '{dest.name}'")
+            if _is_link(previous) or not stat.S_ISREG(previous.st_mode):
+                raise OSError("private storage destination must be a regular file, not a link")
+            if os.name != "nt" and previous.st_uid != os.getuid():
+                raise PermissionError("private storage destination belongs to another user")
+        name = f".{dest.name}.{secrets.token_hex(16)}.tmp"
+        entry, options = _entry(directory, name)
+        descriptor = os.open(entry, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, **options)
+        owned = os.fstat(descriptor)
+        try:
+            yield descriptor
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            current = _entry_stat(directory, dest.name)
+            if previous is None:
+                # link() is an atomic no-replace publication, including when
+                # a dangling symlink or a competing file appears mid-copy.
+                target, target_options = _entry(directory, dest.name)
+                os.link(entry, target, src_dir_fd=options.get("dir_fd"), dst_dir_fd=target_options.get("dir_fd"), follow_symlinks=False)
+            else:
+                if not _same_file(previous, current) or _is_link(current):
+                    raise FileExistsError("private storage destination changed during write")
+                target, _ = _entry(directory, dest.name)
+                os.replace(entry, target, src_dir_fd=options.get("dir_fd"), dst_dir_fd=options.get("dir_fd"))
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                _unlink_owned(directory, name, owned)
+            except OSError:
+                pass
+
+
+def write_private_text(dest: Path, text: str) -> None:
+    """Atomically replace an owned regular file with private UTF-8 text."""
+    with _private_output(dest, replace=True) as descriptor:
+        with os.fdopen(os.dup(descriptor), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+
+@contextmanager
+def _private_input(source: Path, *, restrict: bool = False):
+    with _directory(source.parent) as directory:
+        entry, options = _entry(directory, source.name)
+        before = _entry_stat(directory, source.name)
+        if before is None:
+            raise FileNotFoundError(source)
+        if _is_link(before) or not stat.S_ISREG(before.st_mode):
+            raise OSError("private storage source must be a regular file, not a link")
+        descriptor = os.open(entry, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), **options)
+        try:
+            info = os.fstat(descriptor)
+            if not _same_file(before, info) or not stat.S_ISREG(info.st_mode):
+                raise OSError("private storage source changed during open")
+            if restrict and os.name != "nt":
+                if info.st_uid != os.getuid() or info.st_nlink != 1:
+                    raise PermissionError("private settings must be an owned, unlinked regular file")
+                os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                yield handle
+        finally:
+            os.close(descriptor)
+
+
+def read_private_text(source: Path, *, restrict: bool = False) -> str:
+    """Read a regular file without following links, optionally hardening old modes."""
+    with _private_input(source, restrict=restrict) as handle:
+        return handle.read().decode("utf-8")
 
 
 def resolve_target_dir(raw: str, *, base: Path | None = None) -> Path:
@@ -78,7 +267,7 @@ def validate_target_dir(raw: str, *, base: Path | None = None) -> Path:
     """
     candidate = resolve_target_dir(raw, base=base)
     try:
-        candidate.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(candidate)
         with tempfile.NamedTemporaryFile(dir=candidate, prefix=".meshtalk-", delete=True) as probe:
             probe.write(b"test")
             probe.flush()
@@ -160,25 +349,24 @@ def copy_tree_merge(src: Path, dst: Path) -> list[str]:
     created_dirs: list[Path] = []
 
     def ensure_dir(path: Path) -> None:
-        if path.is_dir():
-            return
         missing: list[Path] = []
         current = path
         while not current.exists() and current != current.parent:
             missing.append(current)
             current = current.parent
-        path.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(path)
         created_dirs.extend(missing)
 
     try:
+        if src.is_symlink():
+            raise OSError("migration source must not be a link")
         if not src.is_dir():
             return copied
         ensure_dir(dst)
         for root, dirs, files in os.walk(src):
             rel_root = Path(root).relative_to(src)
             target_root = dst / rel_root if str(rel_root) != "." else dst
-            # Do not descend into symlinked directories: copy2 would follow
-            # them and pull an unrelated (possibly huge) tree into the target.
+            # Do not descend into links to unrelated source directories.
             dirs[:] = sorted(name for name in dirs if not (Path(root) / name).is_symlink())
             ensure_dir(target_root)
             for name in files:
@@ -190,10 +378,10 @@ def copy_tree_merge(src: Path, dst: Path) -> list[str]:
                 source = Path(root) / name
                 rel = str((rel_root / name) if str(rel_root) != "." else Path(name))
                 target = dst / rel
-                if target.exists():
+                if target.exists() or target.is_symlink():
                     raise FileExistsError(f"destination already contains '{rel}'")
                 ensure_dir(target.parent)
-                shutil.copy2(source, target)
+                copy_file(source, target)
                 copied.append(rel)
     except Exception:
         for rel in reversed(copied):
@@ -211,17 +399,15 @@ def copy_tree_merge(src: Path, dst: Path) -> list[str]:
 
 
 def copy_file(source: Path, dest: Path) -> None:
-    """Copy a single file, creating parent directories. Removes partial dest on failure."""
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, dest)
-    except Exception:
-        try:
-            if dest.exists():
-                dest.unlink()
-        except OSError:
-            pass
-        raise
+    """Copy regular-file bytes privately and atomically, never replacing dest.
+
+    Do not copy source permissions: even a legacy shared source must produce
+    an owner-only copy. Content verification remains the caller's job.
+    """
+    with _private_input(source) as reader:
+        with _private_output(dest, replace=False) as descriptor:
+            with os.fdopen(os.dup(descriptor), "wb") as writer:
+                shutil.copyfileobj(reader, writer, length=1024 * 1024)
 
 
 def _file_digest(path: Path) -> str:

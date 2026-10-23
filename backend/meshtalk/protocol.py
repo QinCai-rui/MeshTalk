@@ -450,6 +450,20 @@ class MessagePayload:
         )
         if payload.reply_to_message_id is not None and not _valid_request_id(payload.reply_to_message_id):
             raise ValueError("Invalid reply target")
+        if (
+            not _valid_request_id(payload.message_id)
+            or not _valid_peer_id(payload.sender_id)
+            or not _valid_peer_id(payload.recipient_id)
+            or not isinstance(payload.created_at, (int, float))
+            or isinstance(payload.created_at, bool)
+            or not 0 < payload.created_at < 1e12
+            or not math.isfinite(payload.created_at)
+            or not isinstance(payload.hop_count, int)
+            or isinstance(payload.hop_count, bool)
+            or not isinstance(payload.max_hops, int)
+            or isinstance(payload.max_hops, bool)
+        ):
+            raise ValueError("Invalid message payload")
         return payload
 
 
@@ -533,8 +547,8 @@ class GroupMessagePayload:
             or not _valid_peer_id(payload.recipient_id)
             or not isinstance(payload.created_at, (int, float))
             or isinstance(payload.created_at, bool)
+            or not 0 < payload.created_at < 1e12
             or not math.isfinite(payload.created_at)
-            or payload.created_at <= 0
             or len(payload.signature) != 64
             or len(payload.origin_signature) not in (0, 64)
             or (payload.reply_to_message_id is not None and not _valid_request_id(payload.reply_to_message_id))
@@ -620,8 +634,8 @@ class TypingPayload:
             or not _valid_peer_id(payload.recipient_id)
             or not isinstance(payload.created_at, (int, float))
             or isinstance(payload.created_at, bool)
+            or not 0 < payload.created_at < 1e12
             or not math.isfinite(payload.created_at)
-            or payload.created_at <= 0
             or len(payload.signature) != 64
         ):
             raise ValueError("Invalid typing payload")
@@ -1047,8 +1061,8 @@ class FileOfferV2Payload:
             or (self.group_id is not None and (not isinstance(self.group_id, str) or re.fullmatch(r"[a-f0-9]{32}", self.group_id) is None))
             or not isinstance(self.created_at, (int, float))
             or isinstance(self.created_at, bool)
+            or not 0 < self.created_at < 1e12
             or not math.isfinite(self.created_at)
-            or self.created_at <= 0
             or not valid_batch
             or (require_signature and (not isinstance(self.signature, bytes) or len(self.signature) != 64))
         ):

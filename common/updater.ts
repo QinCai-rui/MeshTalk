@@ -1,5 +1,6 @@
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs"
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdtempSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync, type Stats } from "fs"
 import { mkdir, open, rm } from "fs/promises"
+import { randomBytes } from "crypto"
 import { tmpdir } from "os"
 import { basename, dirname, join, resolve, sep } from "path"
 import { hasManagedBootstrap, installationRoot, installFromDirectory, managedInstallRoot, scheduleFlatEntryUpdate, stageReleaseDirectory } from "./release-install"
@@ -33,9 +34,77 @@ export type Release = {
 
 export type UpdateChannel = "stable" | "unstable"
 
+function entryStat(path: string): Stats | undefined {
+  try { return lstatSync(path) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw error
+  }
+}
+
+function sameFile(first: Stats | undefined, second: Stats | undefined): boolean {
+  return !!first && !!second && first.dev === second.dev && first.ino === second.ino
+}
+
+function privateDirectory(directory: string): void {
+  const absolute = resolve(directory)
+  // New directories are owner-only; existing ancestors keep their modes.
+  mkdirSync(absolute, { recursive: true, mode: 0o700 })
+  const info = lstatSync(absolute)
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Private storage directory must not be a link")
+  // Node has no directory-relative rename, so another user able to write the
+  // data directory could swap the file mid-write. Refuse that layout instead
+  // of changing the user's permissions. Windows still depends on user ACLs.
+  if (process.platform !== "win32" && (info.mode & 0o002) && !(info.mode & 0o1000)) {
+    throw new Error("Private storage directory must not be writable by everyone")
+  }
+}
+
+function readSettingsFile(path: string): Record<string, unknown> {
+  const before = lstatSync(path)
+  if (!before.isFile() || before.isSymbolicLink()) throw new Error("Settings must be a regular file, not a link")
+  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+  try {
+    const info = fstatSync(descriptor)
+    if (!sameFile(before, info) || !info.isFile()) throw new Error("Settings changed during open")
+    return JSON.parse(readFileSync(descriptor, "utf-8"))
+  } finally {
+    closeSync(descriptor)
+  }
+}
+
+function writePrivateText(path: string, text: string): void {
+  privateDirectory(dirname(path))
+  const parent = lstatSync(dirname(path))
+  if (process.getuid && parent.uid !== process.getuid()) throw new Error("Private storage directory must belong to the current user")
+  const previous = entryStat(path)
+  if (previous && (!previous.isFile() || previous.isSymbolicLink() || (process.getuid && previous.uid !== process.getuid()))) {
+    throw new Error("Private storage destination must be an owned regular file, not a link")
+  }
+  const temporary = join(dirname(path), `.${basename(path)}.${randomBytes(16).toString("hex")}.tmp`)
+  let descriptor: number | undefined = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
+  const owned = fstatSync(descriptor)
+  try {
+    writeFileSync(descriptor, text, "utf-8")
+    fsyncSync(descriptor)
+    closeSync(descriptor)
+    descriptor = undefined
+    if (previous) {
+      const current = entryStat(path)
+      if (!sameFile(previous, current) || current!.isSymbolicLink()) throw new Error("Private storage destination changed during write")
+      renameSync(temporary, path)
+    } else {
+      // Publish without replacing a destination created during the write.
+      linkSync(temporary, path)
+    }
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor)
+    if (sameFile(owned, entryStat(temporary))) unlinkSync(temporary)
+  }
+}
+
 export function readUpdateChannel(settingsPath: string = SETTINGS_PATH): UpdateChannel {
   try {
-    const value = JSON.parse(readFileSync(settingsPath, "utf-8")) as { update_channel?: unknown }
+    const value = readSettingsFile(settingsPath)
     return value.update_channel === "unstable" ? "unstable" : "stable"
   } catch {
     return "stable"
@@ -43,14 +112,11 @@ export function readUpdateChannel(settingsPath: string = SETTINGS_PATH): UpdateC
 }
 
 export function saveUpdateChannel(channel: UpdateChannel, settingsPath: string = SETTINGS_PATH, dataDir: string = DATA_DIR): void {
-  mkdirSync(dataDir, { recursive: true })
+  privateDirectory(dataDir)
   let settings: Record<string, unknown> = { version: 1 }
-  try { settings = JSON.parse(readFileSync(settingsPath, "utf-8")) } catch {}
+  try { settings = readSettingsFile(settingsPath) } catch {}
   settings.update_channel = channel
-  const temporary = `${settingsPath}.tmp`
-  writeFileSync(temporary, JSON.stringify(settings, null, 2))
-  chmodSync(temporary, 0o600)
-  renameSync(temporary, settingsPath)
+  writePrivateText(settingsPath, JSON.stringify(settings, null, 2))
 }
 
 export type UpdateProgress = {
@@ -131,21 +197,18 @@ type GitHubSettings = { github_token?: unknown; github_user?: unknown; github_re
 
 function githubSettings(): GitHubSettings {
   try {
-    return JSON.parse(readFileSync(SETTINGS_PATH, "utf-8")) as GitHubSettings
+    return readSettingsFile(SETTINGS_PATH) as GitHubSettings
   } catch {
     return {}
   }
 }
 
 function saveGithubSettings(update: (settings: Record<string, unknown>) => void): void {
-  mkdirSync(DATA_DIR, { recursive: true })
+  privateDirectory(DATA_DIR)
   let settings: Record<string, unknown> = { version: 1 }
-  try { settings = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8")) } catch {}
+  try { settings = readSettingsFile(SETTINGS_PATH) } catch {}
   update(settings)
-  const temporary = `${SETTINGS_PATH}.tmp`
-  writeFileSync(temporary, JSON.stringify(settings, null, 2))
-  chmodSync(temporary, 0o600)
-  renameSync(temporary, SETTINGS_PATH)
+  writePrivateText(SETTINGS_PATH, JSON.stringify(settings, null, 2))
 }
 
 export function githubRepository(): string {
@@ -462,11 +525,7 @@ export async function installRelease(release: Release, installDir: string, onPro
 }
 
 export function requestUpdateRestart(installDir: string): void {
-  mkdirSync(DATA_DIR, { recursive: true })
-  const temporary = `${RESTART_PATH}.tmp`
-  writeFileSync(temporary, resolve(installDir))
-  chmodSync(temporary, 0o600)
-  renameSync(temporary, RESTART_PATH)
+  writePrivateText(RESTART_PATH, resolve(installDir))
 }
 
 export function takeUpdateRestartPath(): string | null {

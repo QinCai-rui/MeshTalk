@@ -19,6 +19,8 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 
+from .storage import read_private_text, write_private_text
+
 
 def _raw_private(key: Ed25519PrivateKey | X25519PrivateKey) -> bytes:
     return key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
@@ -85,25 +87,25 @@ class Identity:
         return display_name
 
     def save(self, path: Path) -> None:
-        """Save the identity to disk as an encrypted JSON file."""
-        path.mkdir(parents=True, exist_ok=True)
+        """Atomically save private keys in an owner-only JSON file."""
         key_path = path / "identity.json"
-        key_path.write_text(json.dumps({
+        write_private_text(key_path, json.dumps({
             "version": 2,
             "peer_id": self.peer_id,
             "display_name": self.display_name,
             "signing_private_key": _raw_private(self.signing_private_key).hex(),
             "encryption_private_key": _raw_private(self.encryption_private_key).hex(),
         }, indent=2))
-        key_path.chmod(0o600)
 
     @classmethod
     def load(cls, path: Path) -> Identity | None:
         """Load an identity from disk, or return None if not found."""
         key_path = path / "identity.json"
-        if not key_path.exists():
+        try:
+            text = read_private_text(key_path)
+        except FileNotFoundError:
             return None
-        data = json.loads(key_path.read_text())
+        data = json.loads(text)
         if data.get("version") != 2:
             # The old X25519-only format cannot authenticate a peer. Replace it
             # rather than continuing with an unauthenticated identity.

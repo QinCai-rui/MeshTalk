@@ -6,6 +6,7 @@ import {
   MAX_CONNECTIONS,
   MAX_CONNECTIONS_PER_IP,
   MAX_CONTROL_MESSAGES_PER_MINUTE,
+  MAX_CONTROL_MESSAGE_BYTES,
   MAX_PEER_FETCHES_PER_MINUTE,
   MAX_RELAY_FRAME_LENGTH,
   MAX_RELAY_FRAMES_PER_SECOND,
@@ -38,6 +39,7 @@ type ClientData = {
   challenge: string
   challengeExpiresAt: number
   peerId?: string
+  closed?: boolean
 }
 
 type ControlMessage = {
@@ -68,6 +70,7 @@ type RoomState = {
 
 type DeviceLimit = {
   tokens: number
+  receiveTokens: number
   updatedAt: number
   relayPeers: Map<string, number>
 }
@@ -101,17 +104,22 @@ function registerDevice(socket: ServerWebSocket<ClientData>, message: ControlMes
     || typeof message.signing_public_key !== "string" || !HEX_32.test(message.signing_public_key)
     || typeof message.signature !== "string" || !HEX_64.test(message.signature)
   ) throw new Error("Invalid device registration")
+  if (socket.data.peerId && socket.data.peerId !== message.peer_id) throw new Error("Device identity cannot change on a connection")
   const key = Buffer.from(message.signing_public_key, "hex")
   if (createHash("sha256").update(key).digest("hex") !== message.peer_id) throw new Error("Device identity mismatch")
   const signed = { challenge_id: message.challenge_id, issued_at: message.issued_at, kind: "meshtalk-device-register-v1", nonce: message.nonce, peer_id: message.peer_id, signing_public_key: message.signing_public_key, v: 1 }
   const spki = Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), key])
   if (!verify(null, canonical(signed), createPublicKey({ key: spki, format: "der", type: "spki" }), Buffer.from(message.signature, "hex"))) throw new Error("Invalid device signature")
   const previous = socketsByPeerId.get(message.peer_id)
-  if (previous && previous !== socket) previous.close(4000, "Replaced by a newer device session")
   socket.data.peerId = message.peer_id
   socketsByPeerId.set(message.peer_id, socket)
+  if (previous && previous !== socket) {
+    // Transfer ownership before cleanup so the same identity keeps its quotas.
+    closeClient(previous)
+    previous.close(4000, "Replaced by a newer device session")
+  }
   if (!deviceLimits.has(message.peer_id)) {
-    deviceLimits.set(message.peer_id, { tokens: RELAY_BURST_BYTES, updatedAt: Date.now(), relayPeers: new Map() })
+    deviceLimits.set(message.peer_id, { tokens: RELAY_BURST_BYTES, receiveTokens: RELAY_BURST_BYTES, updatedAt: Date.now(), relayPeers: new Map() })
   }
   send(socket, { type: "device_registered", peer_id: message.peer_id, relay_enabled: RELAY_ENABLED, v: 1 })
 }
@@ -235,18 +243,17 @@ function reserveRelayBandwidth(peerId: string, recipientId: string, bytes: numbe
     const limit = deviceLimits.get(id)
     if (!limit) throw new Error("Relay device is not registered")
     limit.tokens = Math.min(RELAY_BURST_BYTES, limit.tokens + (now - limit.updatedAt) * RELAY_BYTES_PER_SECOND / 1000)
+    limit.receiveTokens = Math.min(RELAY_BURST_BYTES, limit.receiveTokens + (now - limit.updatedAt) * RELAY_BYTES_PER_SECOND / 1000)
     limit.updatedAt = now
-    for (const [remoteId, seenAt] of limit.relayPeers) if (now - seenAt > RELAY_PEER_IDLE_MS) limit.relayPeers.delete(remoteId)
     return limit
   })
-  if (limits.some((limit) => limit.tokens < bytes)) return false
-  if (
-    (!limits[0].relayPeers.has(recipientId) && limits[0].relayPeers.size >= MAX_RELAY_PEERS_PER_DEVICE)
-    || (!limits[1].relayPeers.has(peerId) && limits[1].relayPeers.size >= MAX_RELAY_PEERS_PER_DEVICE)
-  ) return false
-  limits[0].relayPeers.set(recipientId, now)
-  limits[1].relayPeers.set(peerId, now)
-  for (const limit of limits) limit.tokens -= bytes
+  const [sender, recipient] = limits
+  for (const [remoteId, seenAt] of sender.relayPeers) if (now - seenAt > RELAY_PEER_IDLE_MS) sender.relayPeers.delete(remoteId)
+  if (sender.tokens < bytes || recipient.receiveTokens < bytes) return false
+  if (!sender.relayPeers.has(recipientId) && sender.relayPeers.size >= MAX_RELAY_PEERS_PER_DEVICE) return false
+  sender.relayPeers.set(recipientId, now)
+  sender.tokens -= bytes
+  recipient.receiveTokens -= bytes
   return true
 }
 
@@ -272,6 +279,22 @@ function relayDatagram(socket: ServerWebSocket<ClientData>, recipientId: string,
   send(recipient, { type: "relay", peer_id: socket.data.peerId, payload, v: 1 })
 }
 
+function closeClient(socket: ServerWebSocket<ClientData>): void {
+  if (socket.data.closed) return
+  socket.data.closed = true
+  if (socket.data.peerId && socketsByPeerId.get(socket.data.peerId) === socket) {
+    socketsByPeerId.delete(socket.data.peerId)
+    deviceLimits.delete(socket.data.peerId)
+    // Free the slot this device held in other senders' relay peer limits.
+    for (const limit of deviceLimits.values()) limit.relayPeers.delete(socket.data.peerId)
+  }
+  connections = Math.max(0, connections - 1)
+  const count = (connectionsByIp.get(socket.data.ip) ?? 1) - 1
+  if (count > 0) connectionsByIp.set(socket.data.ip, count)
+  else connectionsByIp.delete(socket.data.ip)
+  for (const roomId of [...socket.data.rooms]) leaveRoom(socket, roomId)
+}
+
 export function startControlServer(port = PORT) {
   return Bun.serve<ClientData>({
     port,
@@ -293,7 +316,7 @@ export function startControlServer(port = PORT) {
       return upgraded ? undefined : new Response("WebSocket upgrade required", { status: 426 })
     },
     websocket: {
-      maxPayloadLength: 256 * 1024,
+      maxPayloadLength: MAX_CONTROL_MESSAGE_BYTES,
       idleTimeout: 60,
       open(socket) {
         connections += 1
@@ -301,6 +324,7 @@ export function startControlServer(port = PORT) {
         send(socket, { type: "device_challenge", challenge_id: socket.data.challengeId, nonce: socket.data.challenge, expires_at: socket.data.challengeExpiresAt, v: 1 })
       },
       message(socket, raw) {
+        if (socket.data.closed) return
         try {
           const message = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw)) as ControlMessage
           if (message.type === "device_register") {
@@ -321,20 +345,16 @@ export function startControlServer(port = PORT) {
           else if (message.type === "get_peers" && typeof message.room_id === "string") fetchPeers(socket, message.room_id)
           else throw new Error("Invalid control message")
         } catch (error) {
-          send(socket, { type: "error", error: error instanceof Error ? error.message : "Invalid request" })
-          socket.close(1008, "Invalid control message")
+          try {
+            send(socket, { type: "error", error: error instanceof Error ? error.message : "Invalid request" })
+          } finally {
+            closeClient(socket)
+            socket.close(1008, "Invalid control message")
+          }
         }
       },
       close(socket) {
-        for (const roomId of [...socket.data.rooms]) leaveRoom(socket, roomId)
-        if (socket.data.peerId && socketsByPeerId.get(socket.data.peerId) === socket) {
-          socketsByPeerId.delete(socket.data.peerId)
-          deviceLimits.delete(socket.data.peerId)
-        }
-        connections = Math.max(0, connections - 1)
-        const count = (connectionsByIp.get(socket.data.ip) ?? 1) - 1
-        if (count > 0) connectionsByIp.set(socket.data.ip, count)
-        else connectionsByIp.delete(socket.data.ip)
+        closeClient(socket)
       },
     },
   })

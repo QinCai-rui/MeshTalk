@@ -101,8 +101,8 @@ class MessageRouter:
             await self._handle_message(peer, packet)
         elif packet.type == PacketType.MESSAGE_ACK:
             message_id = packet.payload.decode("ascii")
-            await self.db.mark_message_delivered(message_id)
-            if self.on_delivered:
+            # Only the message's recipient may confirm delivery of our message.
+            if await self.db.mark_message_delivered(message_id, self.identity.peer_id, peer.peer_id) and self.on_delivered:
                 await self.on_delivered(message_id)
         elif packet.type in (
             PacketType.FRIEND_REQUEST,
@@ -136,13 +136,18 @@ class MessageRouter:
             content = plaintext.decode("utf-8")
         except (InvalidSignature, UnicodeDecodeError) as exc:
             raise ValueError("Invalid encrypted message") from exc
-        await self.db.mark_message_seen(message.message_id)
-        await self.db.save_message({
+        if len(plaintext) > MAX_MESSAGE_CONTENT_SIZE:
+            raise ValueError("Message exceeds 30 KiB limit")
+        # The insert rechecks friendship so a block that lands during decryption wins.
+        saved = await self.db.save_message({
             "message_id": message.message_id, "sender_id": message.sender_id, "recipient_id": message.recipient_id,
             "content": content, "encrypted_content": message.encrypted_content,
             "created_at": message.created_at,
             "hop_count": 0, "max_hops": 0, "read_at": None, "received_at": time.time(), "reply_to_message_id": message.reply_to_message_id,
-        })
+        }, require_friend=True)
+        if not saved:
+            return
+        await self.db.mark_message_seen(message.message_id)
         await self._send_delivery_receipt(peer, message.message_id)
         logger.info("Received encrypted message %s from %s", message.message_id, peer.peer_id)
         if self.on_received:

@@ -468,7 +468,14 @@ The route-selection policy is:
 
 LAN TCP discovery and authentication can take over from DERP at any time. It is
 also retained as the highest-priority route when remote UDP is active. A failed
-replacement handshake leaves the current confirmed route unchanged.
+replacement handshake leaves the current confirmed route unchanged. This holds
+on the same route too: a new HELLO creates a pending session, and the confirmed
+session stays active until the new one receives an authenticated READY.
+
+A repeated HELLO for a confirmed session gets only a READY in reply. Before
+confirmation, a session answers at most 4 repeated HELLOs; the punch loop's
+timed retransmits cover further loss. This stops two peers from replying to each
+other's HELLOs indefinitely.
 
 Relay unavailability is non-fatal. The peer remains available through any working
 LAN or direct route, and the client reports the relay failure in logs and diagnostics.
@@ -669,9 +676,17 @@ same shared secret. Forward secrecy: each message uses a fresh ephemeral key.
 On receipt, message_router._handle_message enforces: sender_id ==
 authenticated peer_id; recipient is a friend (else a signed MESSAGE_BLOCKED is
 returned and the message dropped); not expired; hop_count == max_hops == 0; not
-already seen; valid Ed25519 signature; successful decryption. The receiver then
-persists the message, sends a MESSAGE_ACK carrying the message_id, and emits an
-IPC "message" event. The sender marks delivery on the ACK.
+already seen; valid Ed25519 signature; successful decryption; decrypted
+plaintext no larger than MAX_MESSAGE_CONTENT_SIZE. `MessagePayload.decode` also
+rejects non-string IDs and non-finite or non-numeric timestamps. The insert
+rechecks friendship and block state in the same statement, so a block that lands
+during decryption wins. The receiver then persists the message, sends a
+MESSAGE_ACK carrying the message_id, and emits an IPC "message" event.
+
+The sender marks delivery only when the ACK comes from that message's
+recipient and the message was sent by the local peer. An ACK from any other peer
+is ignored. MESSAGE_BLOCKED notices follow the same rule: they only affect a
+message the local peer sent to the reporting peer.
 
 ### 7.4 Store-and-Forward (Offline Queueing)
 
@@ -734,6 +749,22 @@ settings.
 The candidate field may be null. Such a card still authenticates room membership
 and populates the roster, but does not trigger UDP punching; this supports LAN
 groups and control connectivity when STUN discovery fails.
+
+Every card, including one with no candidates, is validated and counted against
+the 512-identity tracking limit before it adds a roster entry. The roster is
+capped at 256 members per group and 2048 in total, and cached signing-only peer
+keys are capped at 512. Group fan-out sends to at most 256 members. When a
+tracked identity's card is not seen for 10 minutes, its UDP discovery and relay
+metadata is dropped; established sessions are not affected.
+
+A received group message whose ID already belongs to a stored message from a
+different sender, group, timestamp, or reply target is dropped without a
+GROUP_MESSAGE_ACK. This also holds when two handlers race to store the same ID.
+The original sender therefore never sees a false delivery. Content is not
+compared, because a sender legitimately sends a pre-rendered copy to members
+without mention support, and the origin signature already binds content to its
+sender. Storing both copies needs a (group, sender, message) key migration that
+has not been done.
 
 `GROUP_MESSAGE` contains:
 
@@ -910,12 +941,18 @@ authenticated peer's signing key; mismatched sender_id/responder_id is rejected.
   from peers on the local friend list.
 - Responses (FRIEND_REQUEST_RESPONSE): {request_id, responder_id, accept,
   signature}. Accepting adds both sides as friends and cancels any outbound
-  request the acceptor had open.
+  request the acceptor had open. Only the peer the request was sent to can
+  answer it.
 - Cancellation (FRIEND_REQUEST_CANCELLED): {request_id, sender_id, signature};
-  clears a pending request.
+  clears a pending request. Only the peer that sent the request can cancel it.
+- Request limits: one pending incoming request per peer, at most 3 incoming
+  requests per peer per hour, 32 stored per peer, 256 pending and 1024 stored in
+  total. Answered incoming requests older than 30 days are removed by periodic
+  cleanup.
 - Blocking: a blocked peer cannot send friend requests or messages; existing
-  friendship is removed. Receiving a MESSAGE_BLOCKED for a former friend mirrors
-  the removal locally so both views converge.
+  friendship is removed. Database triggers enforce this, so an acceptance that
+  races with a block cannot restore the friendship. Receiving a MESSAGE_BLOCKED
+  for a former friend mirrors the removal locally so both views converge.
 - Mute: mute(peer_id, timeout) silences notifications for timeout seconds (0 =
   permanent). Stored in settings.json.
 - Mentions: group message content may carry `<@user_id>` tokens (inserted by
@@ -1125,7 +1162,13 @@ the current code (per TODO.md):
 | Max packet size | 64 KiB | protocol.MAX_PACKET_SIZE |
 | Discovery interval | 3 s | discovery.BROADCAST_INTERVAL |
 | Handshake timeout | 10 s | peer_manager.HANDSHAKE_TIMEOUT |
+| TCP connect timeout | 10 s | peer_manager.CONNECT_TIMEOUT |
+| Discovery callback timeout | 20 s | discovery.DISCOVERY_CALLBACK_TIMEOUT |
 | Max connected peers | 256 | peer_manager.MAX_CONNECTED_PEERS |
+| Max incomplete inbound files | 128 total, 64 per peer | file_transfer.MAX_INBOUND_FILES* |
+| Max incomplete inbound bytes | 4 GiB total, 2 GiB per peer | file_transfer.MAX_INBOUND_BYTES* |
+| Abandoned inbound file expiry | 24 h without a new chunk | file_transfer.INBOUND_IDLE_TTL |
+| Group roster | 256 per group, 2048 total | database.MAX_GROUP_MEMBERS, MAX_TOTAL_GROUP_MEMBERS |
 | STUN default | stun.l.google.com:19302 | settings.DEFAULT_* |
 | Card max age | 180 s | rendezvous.CARD_MAX_AGE |
 | Card refresh | 30 s | rendezvous.REFRESH_INTERVAL |

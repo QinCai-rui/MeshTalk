@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from .storage import STORAGE_ENV_VAR, validate_target_dir
+from .storage import STORAGE_ENV_VAR, ensure_private_directory, read_private_text, validate_target_dir, write_private_text
 
 DEFAULT_STUN_HOST = "stun.l.google.com"
 DEFAULT_STUN_PORT = 19302
@@ -228,7 +228,7 @@ class Settings:
             p = (self.path.parent / p).resolve() if self.path.parent.exists() else (Path.cwd() / p).resolve()
         # Validate: try to create parent and check writable (cross-platform)
         try:
-            p.mkdir(parents=True, exist_ok=True)
+            ensure_private_directory(p)
             with tempfile.NamedTemporaryFile(dir=p, prefix=".meshtalk-", delete=True) as test:
                 test.write(b"test")
                 test.flush()
@@ -559,7 +559,7 @@ class Settings:
         try:
             if not self.path.exists():
                 return
-            data = json.loads(self.path.read_text())
+            data = json.loads(read_private_text(self.path))
         except Exception:
             return
         if isinstance(data.get("analytics_seen_versions"), list):
@@ -582,7 +582,6 @@ class Settings:
         """Save settings to disk as a JSON file."""
         self._merge_analytics_from_disk()
         self._analytics_dirty = False
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "version": 1,
             "control_url": self._control_url,
@@ -622,21 +621,19 @@ class Settings:
         # this Settings instance was loaded instead of clobbering it on the
         # backend's next unrelated save.
         try:
-            external = json.loads(self.path.read_text()) if self.path.exists() else {}
+            external = json.loads(read_private_text(self.path)) if self.path.exists() else {}
             if external.get("update_channel") in {"stable", "unstable"}:
                 data["update_channel"] = external["update_channel"]
         except Exception:
             pass
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(data, indent=2))
-        temporary.chmod(0o600)
-        temporary.replace(self.path)
+        write_private_text(self.path, json.dumps(data, indent=2))
 
     def _load(self) -> None:
-        if not self.path.exists():
+        try:
+            text = read_private_text(self.path, restrict=True)
+        except FileNotFoundError:
             return
-        self.path.chmod(0o600)
-        data = json.loads(self.path.read_text())
+        data = json.loads(text)
         # Tolerate files first created by the launcher/TUI consent writers,
         # which only store analytics keys and no "version" yet. Only an
         # explicit unknown version is rejected.

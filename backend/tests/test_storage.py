@@ -111,14 +111,14 @@ class CopyVerifyDeleteTest(unittest.TestCase):
             src = Path(temporary) / "src"
             dst = Path(temporary) / "dst"
             _make_tree(src)
-            real_copy2 = storage.shutil.copy2
+            real_copy = storage.copy_file
 
-            def fail_once(source, dest, *args, **kwargs):
+            def fail_once(source, dest):
                 if Path(source).name == "b.bin":
                     raise OSError("disk full")
-                return real_copy2(source, dest, *args, **kwargs)
+                return real_copy(source, dest)
 
-            with patch.object(storage.shutil, "copy2", side_effect=fail_once):
+            with patch.object(storage, "copy_file", side_effect=fail_once):
                 with self.assertRaises(OSError):
                     storage.copy_tree_merge(src / "files", dst / "files")
             remaining = [path for path in (dst / "files").rglob("*") if path.is_file()] if (dst / "files").exists() else []

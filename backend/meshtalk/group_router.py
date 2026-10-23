@@ -11,7 +11,7 @@ from typing import Awaitable, Callable
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .database import Database, MAX_QUEUED_GROUP_PER_PEER, extract_mentions, render_mentions_plain
+from .database import Database, MAX_GROUP_MEMBERS, MAX_QUEUED_GROUP_PER_PEER, extract_mentions, render_mentions_plain
 from .encryption import decrypt_as_recipient, encrypt_for_recipient
 from .identity import Identity
 from .peer_manager import PeerConnection, PeerManager
@@ -113,7 +113,11 @@ class GroupRouter:
         stored = await self.db.get_peer(peer_id)
         display_name = peer.display_name if peer else (stored or {}).get("display_name", "Anonymous")
         capable = peer.supports(CAP_GROUP_CHAT) if peer else None
-        await self.db.upsert_group_member(group_id, peer_id, display_name, group_capable=capable)
+        try:
+            await self.db.upsert_group_member(group_id, peer_id, display_name, group_capable=capable)
+        except ValueError:
+            logger.info("Ignored room member for %s: roster limit reached", group_id)
+            return
         if signing_public_key is not None:
             # Endpoint cards are room-encrypted and carry a self-certifying
             # signing key, so members learn each other's verify keys without a
@@ -189,7 +193,7 @@ class GroupRouter:
         })
         await self.db.mark_message_seen(message_id)
         members = [
-            member for member in await self.db.get_group_members(group_id)
+            member for member in await self.db.get_group_members(group_id, limit=MAX_GROUP_MEMBERS)
             if member["peer_id"] != self.identity.peer_id
         ]
         for member in members:
@@ -343,7 +347,25 @@ class GroupRouter:
                 raise ValueError("Invalid group message origin signature") from exc
         elif relayed:
             raise ValueError("Relayed group message missing origin signature")
-        if await self.db.get_group_message(message.message_id) is None:
+        def same_message(row: dict) -> bool:
+            # Content is not compared: a sender legitimately sends recipients
+            # without mention support a pre-rendered copy of the same message.
+            # The origin signature binds content to this sender, so only the
+            # sender may produce variants.
+            return (
+                row["group_id"] == message.group_id
+                and row["sender_id"] == message.sender_id
+                and row["created_at"] == message.created_at
+                and row.get("reply_to_message_id") == message.reply_to_message_id
+            )
+
+        existing = await self.db.get_group_message(message.message_id)
+        if existing is not None and not same_message(existing):
+            # A different message already owns this ID. Never acknowledge it as
+            # delivered: the sender would believe content arrived that did not.
+            logger.warning("Dropped group message %s: ID already used by another message", message.message_id)
+            return
+        if existing is None:
             inserted = await self.db.save_group_message({
                 "message_id": message.message_id,
                 "group_id": message.group_id,
@@ -354,6 +376,12 @@ class GroupRouter:
                 "reply_to_message_id": message.reply_to_message_id,
                 "origin_signature": message.origin_signature or None,
             })
+            if not inserted:
+                # Another handler stored this ID between the lookup and the insert.
+                winner = await self.db.get_group_message(message.message_id)
+                if winner is None or not same_message(winner):
+                    logger.warning("Dropped group message %s: ID already used by another message", message.message_id)
+                    return
             await self.db.mark_message_seen(message.message_id)
             if inserted:
                 await self._emit({
