@@ -57,7 +57,8 @@ test("stages dropped files in a stable temporary directory before confirmation",
   try {
     const [staged] = await stageFilesForConfirmation([source])
     await rm(source)
-    expect(staged).toMatch(/meshtalk-drops-[^/]+\/Screenshot\.png$/)
+    expect(basename(staged!)).toBe("Screenshot.png")
+    expect(basename(dirname(staged!))).toMatch(/^meshtalk-drops-/)
     expect(await readFile(staged!, "utf8")).toBe("image bytes")
     if (process.platform !== "win32") expect((await stat(dirname(staged!))).mode & 0o777).toBe(0o700)
   } finally {
