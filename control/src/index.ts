@@ -285,6 +285,8 @@ function closeClient(socket: ServerWebSocket<ClientData>): void {
   if (socket.data.peerId && socketsByPeerId.get(socket.data.peerId) === socket) {
     socketsByPeerId.delete(socket.data.peerId)
     deviceLimits.delete(socket.data.peerId)
+    // Free the slot this device held in other senders' relay peer limits.
+    for (const limit of deviceLimits.values()) limit.relayPeers.delete(socket.data.peerId)
   }
   connections = Math.max(0, connections - 1)
   const count = (connectionsByIp.get(socket.data.ip) ?? 1) - 1

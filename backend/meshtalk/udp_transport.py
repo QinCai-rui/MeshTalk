@@ -188,6 +188,8 @@ class UdpTransport:
         self._derp_sender: DerpSender | None = None
         self._direct_candidates: dict[str, Endpoint] = {}
         self._last_direct_probe: dict[str, float] = {}
+        # Relay candidates whose card expired while a relay session still used them.
+        self._forgotten_relays: set[str] = set()
         self._sessions: dict[str, Session] = {}
         self._pending_sessions: dict[str, dict[tuple[Endpoint, bool], Session]] = {}
         self._retiring_sessions: dict[bytes, tuple[Session, float]] = {}
@@ -325,6 +327,7 @@ class UdpTransport:
         if peer_id == self.identity.peer_id:
             return
         endpoint = (f"derp:{peer_id}", 0)
+        self._forgotten_relays.discard(peer_id)
         self._derp_candidates[peer_id] = endpoint
         self._derp_peers[endpoint] = peer_id
         if self.relay_enabled and self._derp_sender and (self.force_relay or peer_id not in self._direct_candidates):
@@ -356,11 +359,12 @@ class UdpTransport:
         relay_in_use = bool(active and active.via_relay) or any(
             session.peer_id == peer_id and session.via_relay for session, _ in self._retiring_sessions.values()
         )
-        if not relay_in_use:
-            # An established relay session still needs inbound routing.
-            endpoint = self._derp_candidates.pop(peer_id, None)
-            if endpoint is not None and self._derp_peers.get(endpoint) == peer_id:
-                self._derp_peers.pop(endpoint, None)
+        if relay_in_use:
+            # An established relay session still needs inbound routing; drop
+            # it once that session ends (see _release_forgotten_relay).
+            self._forgotten_relays.add(peer_id)
+        else:
+            self._drop_relay_routing(peer_id)
         attempt = self._attempts.pop(peer_id, None)
         if attempt and attempt.task:
             attempt.task.cancel()
@@ -540,6 +544,24 @@ class UdpTransport:
             if not pending:
                 self._pending_sessions.pop(session.peer_id, None)
         self._retiring_sessions.pop(session.session_id, None)
+        self._release_forgotten_relay(session.peer_id)
+
+    def _drop_relay_routing(self, peer_id: str) -> None:
+        self._forgotten_relays.discard(peer_id)
+        endpoint = self._derp_candidates.pop(peer_id, None)
+        if endpoint is not None and self._derp_peers.get(endpoint) == peer_id:
+            self._derp_peers.pop(endpoint, None)
+
+    def _release_forgotten_relay(self, peer_id: str) -> None:
+        """Clear expired relay routing once no relay session uses it any more."""
+        if peer_id not in self._forgotten_relays:
+            return
+        active = self._sessions.get(peer_id)
+        if (active and active.via_relay) or any(
+            session.peer_id == peer_id and session.via_relay for session, _ in self._retiring_sessions.values()
+        ):
+            return
+        self._drop_relay_routing(peer_id)
 
     def _session_for_route(
         self, peer_id: str, endpoint: Endpoint, via_relay: bool
@@ -622,6 +644,10 @@ class UdpTransport:
         except InvalidSignature as exc:
             raise ValueError("Invalid UDP handshake signature") from exc
         current = self._session_for_route(peer_id, addr, via_relay)
+        pending = self._pending_sessions.get(peer_id, {}).get((addr, via_relay))
+        if pending and pending.remote_nonce == nonce and pending.remote_session_public_key == session_key:
+            # A repeat of an in-progress replacement handshake on a confirmed route.
+            current = pending
         if (
             current and current.remote_nonce == nonce
             and current.remote_session_public_key == session_key

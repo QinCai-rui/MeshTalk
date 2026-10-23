@@ -359,6 +359,8 @@ export class ControlRoom extends DurableObject {
     if (data.peerId && this.socketsByPeerId.get(data.peerId) === socket) {
       this.socketsByPeerId.delete(data.peerId)
       this.deviceLimits.delete(data.peerId)
+      // Free the slot this device held in other senders' relay peer limits.
+      for (const limit of this.deviceLimits.values()) limit.relayPeers.delete(data.peerId)
     }
     this.connections = Math.max(0, this.connections - 1)
     const count = (this.connectionsByIp.get(data.ip) ?? 1) - 1

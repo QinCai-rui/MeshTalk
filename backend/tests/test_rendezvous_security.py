@@ -90,3 +90,21 @@ class RendezvousSecurityTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class RosterReuseTest(unittest.IsolatedAsyncioTestCase):
+    async def test_departed_members_do_not_fill_the_roster(self):
+        from meshtalk import database
+        with tempfile.TemporaryDirectory() as temporary:
+            db = Database(Path(temporary) / 'test.db')
+            await db.connect()
+            try:
+                group = 'a' * 32
+                with patch.object(database, 'MAX_GROUP_MEMBERS', 2):
+                    for number in range(2):
+                        await db.upsert_group_member(group, f'peer-{number}', 'Old')
+                        await db.mark_group_member_left(group, f'peer-{number}')
+                    await db.upsert_group_member(group, 'newcomer', 'New')
+                self.assertIsNotNone(await db.get_group_member(group, 'newcomer'))
+            finally:
+                await db.close()

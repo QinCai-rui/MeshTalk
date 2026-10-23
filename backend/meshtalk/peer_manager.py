@@ -320,11 +320,16 @@ class PeerManager:
         return True, old
 
     def _undo_lan_admission(self, peer: PeerConnection, replaced: PeerConnection | None) -> None:
-        """Roll back an admission whose setup failed before its receive loop ran."""
+        """Roll back an admission whose setup failed before its receive loop ran.
+
+        Falls back to the current UDP connection, matching the receive loop's
+        own cleanup, since the replaced entry may have gone stale meanwhile.
+        """
         if self.peers.get(peer.peer_id) is not peer:
             return
-        if replaced is not None:
-            self.peers[peer.peer_id] = replaced
+        remote = self._udp_peers.get(peer.peer_id)
+        if remote and remote.state == PeerState.CONNECTED:
+            self.peers[peer.peer_id] = remote
         else:
             self.peers.pop(peer.peer_id, None)
 

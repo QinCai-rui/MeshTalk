@@ -269,6 +269,8 @@ HARD_MAX_GROUP_HISTORY_ROWS = 10000
 MAX_QUEUED_GROUP_PER_PEER = 200
 MAX_GROUP_MEMBERS = 256
 MAX_TOTAL_GROUP_MEMBERS = 2048
+# Members who left are kept for history display, but only this many.
+MAX_INACTIVE_GROUP_MEMBERS = 2048
 MAX_SIGNING_ONLY_PEERS = 512
 MAX_INCOMING_REQUESTS = 1024
 MAX_INCOMING_REQUESTS_PER_PEER = 32
@@ -1115,8 +1117,8 @@ class Database:
             """INSERT INTO group_members (group_id, peer_id, display_name, joined_at, last_seen, active, left_at, group_capable)
                SELECT ?, ?, ?, ?, ?, ?, NULL, ?
                WHERE EXISTS (SELECT 1 FROM group_members WHERE group_id = ? AND peer_id = ?)
-                  OR ((SELECT COUNT(*) FROM group_members WHERE group_id = ?) < ?
-                      AND (SELECT COUNT(*) FROM group_members) < ?)
+                  OR ((SELECT COUNT(*) FROM group_members WHERE group_id = ? AND active = 1) < ?
+                      AND (SELECT COUNT(*) FROM group_members WHERE active = 1) < ?)
                ON CONFLICT(group_id, peer_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  last_seen = excluded.last_seen,
@@ -1129,6 +1131,12 @@ class Database:
                  END""",
             (group_id, peer_id, display_name, now, now, int(active), None if group_capable is None else int(group_capable),
              group_id, peer_id, group_id, MAX_GROUP_MEMBERS, MAX_TOTAL_GROUP_MEMBERS),
+        )
+        await self._db.execute(
+            """DELETE FROM group_members WHERE rowid IN (
+                 SELECT rowid FROM group_members WHERE active = 0
+                 ORDER BY COALESCE(left_at, last_seen) DESC LIMIT -1 OFFSET ?)""",
+            (MAX_INACTIVE_GROUP_MEMBERS,),
         )
         await self._db.commit()
         if await self.get_group_member(group_id, peer_id) is None:

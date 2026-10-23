@@ -98,9 +98,6 @@ class FileSecurityTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.manager._still_authorized(transfer, self.friend.peer_id))
 
 
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
-
 
 class FileRevocationStatusTest(FileSecurityTest):
     async def test_local_group_departure_stops_stream(self):
@@ -118,3 +115,7 @@ class FileRevocationStatusTest(FileSecurityTest):
         with patch.object(self.manager, '_send_ack', AsyncMock(side_effect=lambda *a, **k: sent.append(a))):
             await self.manager.resume_for_peer(self.friend.peer_id)
         self.assertEqual(sent, [])
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

@@ -307,6 +307,21 @@ class UdpHandshakeSecurityTest(unittest.IsolatedAsyncioTestCase):
             await wire.close()
 
 
+    async def test_forgotten_relay_routing_is_dropped_when_session_ends(self):
+        wire = _Datagrams()
+        try:
+            wire.confirm()
+            peer_id = wire.b.identity.peer_id
+            active = wire.a._sessions[peer_id]
+            active.via_relay = True
+            wire.a.expect_derp_peer(peer_id)
+            wire.a.forget_candidate(peer_id)
+            self.assertIn(peer_id, wire.a._derp_candidates, "an active relay session lost its routing")
+            wire.a._remove_session(active)
+            self.assertNotIn(peer_id, wire.a._derp_candidates)
+        finally:
+            await wire.close()
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main(["-q", "-p", "no:cacheprovider", __file__]))
