@@ -135,6 +135,49 @@ describe("authenticated DERP control service", () => {
     expect((await dropped).recipient_id).toBe(recipients[8])
   })
 
+  test("unsolicited frames do not use up the recipient's own relay peer slots", async () => {
+    server = startControlServer(0)
+    const url = `ws://127.0.0.1:${server.port}/v1/rendezvous`
+    const victim = await open(url)
+    const victimId = await register(victim)
+    await join(victim)
+    for (let index = 0; index < 9; index += 1) {
+      const sender = await open(url)
+      await register(sender)
+      await join(sender)
+      sender.send(JSON.stringify({ type: "relay", recipient_id: victimId, payload: "AA==" }))
+    }
+    const friend = await open(url)
+    const friendId = await register(friend)
+    await join(friend)
+    const relayed = waitFor(friend, (message) => message.type === "relay")
+    victim.send(JSON.stringify({ type: "relay", recipient_id: friendId, payload: "AA==" }))
+    expect((await relayed).peer_id).toBe(victimId)
+  })
+
+  test("refuses to change a registered identity on the same connection", async () => {
+    server = startControlServer(0)
+    const socket = await open(`ws://127.0.0.1:${server.port}/v1/rendezvous`)
+    const challenge = waitFor(socket, (message) => message.type === "device_challenge")
+    const sign_up = (current: Record<string, unknown>) => {
+      const { privateKey, publicKey } = generateKeyPairSync("ed25519")
+      const key = Buffer.from(publicKey.export({ format: "der", type: "spki" })).subarray(-32)
+      const signed = {
+        challenge_id: current.challenge_id, issued_at: Math.floor(Date.now() / 1000), kind: "meshtalk-device-register-v1",
+        nonce: current.nonce, peer_id: createHash("sha256").update(key).digest("hex"), signing_public_key: key.toString("hex"), v: 1,
+      }
+      const signature = sign(null, Buffer.from(JSON.stringify(signed, Object.keys(signed).sort())), privateKey).toString("hex")
+      return JSON.stringify({ type: "device_register", ...signed, signature })
+    }
+    const current = await challenge
+    const registered = waitFor(socket, (message) => message.type === "device_registered")
+    socket.send(sign_up(current))
+    await registered
+    const error = waitFor(socket, (message) => message.type === "error")
+    socket.send(sign_up(current))
+    expect((await error).error).toBe("Device identity cannot change on a connection")
+  })
+
   test("closes with code 1008 for malformed JSON", async () => {
     server = startControlServer(0)
     const socket = await open(`ws://127.0.0.1:${server.port}/v1/rendezvous`)

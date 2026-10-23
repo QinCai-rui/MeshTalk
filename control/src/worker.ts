@@ -26,7 +26,14 @@ import {
   MAX_CONNECTIONS,
   MAX_CONNECTIONS_PER_IP,
   MAX_CONTROL_MESSAGES_PER_MINUTE,
+  MAX_CONTROL_MESSAGE_BYTES,
   MAX_PEER_FETCHES_PER_MINUTE,
+  MAX_PENDING_MESSAGES,
+  MAX_PENDING_MESSAGE_BYTES,
+  MAX_PENDING_MESSAGES_PER_CLIENT,
+  MAX_PENDING_MESSAGE_BYTES_PER_CLIENT,
+  MAX_PENDING_MESSAGES_PER_IP,
+  MAX_PENDING_MESSAGE_BYTES_PER_IP,
   MAX_RELAY_FRAME_LENGTH,
   MAX_RELAY_FRAMES_PER_SECOND,
   MAX_RELAY_PEERS_PER_DEVICE,
@@ -58,6 +65,8 @@ type ClientData = {
   challenge: string
   challengeExpiresAt: number
   peerId?: string
+  pendingMessages: number
+  pendingBytes: number
 }
 
 type ControlMessage = {
@@ -88,8 +97,16 @@ type RoomState = {
 
 type DeviceLimit = {
   tokens: number
+  receiveTokens: number
   updatedAt: number
   relayPeers: Map<string, number>
+}
+
+type PendingMessage = {
+  socket: WebSocket
+  data: ClientData
+  message: ControlMessage
+  bytes: number
 }
 
 const encoder = new TextEncoder()
@@ -163,7 +180,11 @@ export class ControlRoom extends DurableObject {
   private readonly clients = new Map<WebSocket, ClientData>()
   private connections = 0
   private retainedBytes = 0
-  private queue: Promise<void> = Promise.resolve()
+  private queue: PendingMessage[] = []
+  private draining = false
+  private pendingMessages = 0
+  private pendingBytes = 0
+  private readonly pendingByIp = new Map<string, { messages: number, bytes: number }>()
 
   constructor(ctx: ConstructorParameters<typeof DurableObject>[0], env: { CONTROL_RELAY_ENABLED?: string }) {
     super(ctx, env)
@@ -205,19 +226,21 @@ export class ControlRoom extends DurableObject {
       challengeId: toBase64Url(randomBytes(16)),
       challenge: toHex(randomBytes(32)),
       challengeExpiresAt: Math.floor(Date.now() / 1000) + 60,
+      pendingMessages: 0,
+      pendingBytes: 0,
     }
     this.clients.set(server, data)
     this.connections += 1
     this.connectionsByIp.set(ip, (this.connectionsByIp.get(ip) ?? 0) + 1)
 
     server.addEventListener("message", (event) => {
-      this.enqueue(() => this.handleMessage(server, event.data))
+      this.admitMessage(server, event.data)
     })
-    server.addEventListener("error", () => this.enqueue(() => this.handleClose(server)))
+    server.addEventListener("error", () => this.rejectClient(server, new Error("WebSocket error")))
     server.addEventListener("close", (event) => {
-      // Acknowledge the close handshake before tearing down room state.
+      // Cancel pending work immediately, even while registration awaits crypto.
+      this.handleClose(server)
       try { server.close(event.code, event.reason) } catch {}
-      this.enqueue(() => this.handleClose(server))
     })
 
     send(server, {
@@ -230,36 +253,85 @@ export class ControlRoom extends DurableObject {
     return new Response(null, { status: 101, webSocket: client })
   }
 
-  // Serialize handlers so the awaits in device registration cannot interleave
-  // with another message and corrupt room or device state.
-  private enqueue(task: () => Promise<void> | void): void {
-    this.queue = this.queue.then(task).catch(() => {})
-  }
-
-  private async handleMessage(socket: WebSocket, raw: string | ArrayBuffer): Promise<void> {
+  private admitMessage(socket: WebSocket, raw: string | ArrayBuffer): void {
     const data = this.clients.get(socket)
     if (!data) return
-    let message: ControlMessage
     try {
-      message = JSON.parse(typeof raw === "string" ? raw : decoder.decode(raw)) as ControlMessage
+      // Bound raw input before decoding, parsing, or retaining a queued task.
+      if (typeof raw !== "string" && !(raw instanceof ArrayBuffer)) throw new Error("Invalid control message")
+      if ((typeof raw === "string" ? raw.length : raw.byteLength) > MAX_CONTROL_MESSAGE_BYTES) throw new Error("Control message is too large")
+      const bytes = typeof raw === "string" ? encoder.encode(raw).byteLength : raw.byteLength
+      if (bytes > MAX_CONTROL_MESSAGE_BYTES) throw new Error("Control message is too large")
+      const ip = this.pendingByIp.get(data.ip) ?? { messages: 0, bytes: 0 }
+      if (
+        this.pendingMessages >= MAX_PENDING_MESSAGES || this.pendingBytes + bytes > MAX_PENDING_MESSAGE_BYTES
+        || data.pendingMessages >= MAX_PENDING_MESSAGES_PER_CLIENT || data.pendingBytes + bytes > MAX_PENDING_MESSAGE_BYTES_PER_CLIENT
+        || ip.messages >= MAX_PENDING_MESSAGES_PER_IP || ip.bytes + bytes > MAX_PENDING_MESSAGE_BYTES_PER_IP
+      ) throw new Error("Control message queue is full")
+      const message = JSON.parse(typeof raw === "string" ? raw : decoder.decode(raw)) as ControlMessage
+      if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("Invalid control message")
+      if (!data.peerId && message.type !== "device_register") throw new Error("Device registration required")
+      if (message.type === "relay" && typeof message.recipient_id === "string" && typeof message.payload === "string") this.checkRelayRateLimit(data)
+      else this.checkRateLimit(socket, data, message.type)
+      data.pendingMessages += 1
+      data.pendingBytes += bytes
+      ip.messages += 1
+      ip.bytes += bytes
+      this.pendingByIp.set(data.ip, ip)
+      this.pendingMessages += 1
+      this.pendingBytes += bytes
+      this.queue.push({ socket, data, message, bytes })
+      void this.drainQueue()
     } catch (error) {
-      send(socket, { type: "error", error: error instanceof Error ? error.message : "Invalid request" })
-      socket.close(1008, "Invalid control message")
-      return
+      this.rejectClient(socket, error)
     }
+  }
+
+  private releasePending(entry: PendingMessage): void {
+    entry.data.pendingMessages -= 1
+    entry.data.pendingBytes -= entry.bytes
+    this.pendingMessages -= 1
+    this.pendingBytes -= entry.bytes
+    const ip = this.pendingByIp.get(entry.data.ip)!
+    ip.messages -= 1
+    ip.bytes -= entry.bytes
+    if (!ip.messages) this.pendingByIp.delete(entry.data.ip)
+  }
+
+  private async drainQueue(): Promise<void> {
+    if (this.draining) return
+    this.draining = true
+    try {
+      let entry: PendingMessage | undefined
+      while ((entry = this.queue.shift())) {
+        try { await this.handleMessage(entry.socket, entry.message) }
+        catch (error) { this.rejectClient(entry.socket, error) }
+        finally { this.releasePending(entry) }
+      }
+    } finally { this.draining = false }
+  }
+
+  private rejectClient(socket: WebSocket, error: unknown): void {
+    this.handleClose(socket)
+    try { send(socket, { type: "error", error: error instanceof Error ? error.message : "Invalid request" }) } catch {}
+    try { socket.close(1008, "Invalid control message") } catch {}
+  }
+
+  // Only admitted messages enter this serialized handler. Close can run during
+  // registration's awaits, so registration must recheck ownership before commit.
+  private async handleMessage(socket: WebSocket, message: ControlMessage): Promise<void> {
+    const data = this.clients.get(socket)
+    if (!data) return
     try {
       if (message.type === "device_register") {
-        this.checkRateLimit(socket, data, message.type)
         await this.registerDevice(socket, data, message)
         return
       }
       if (!data.peerId) throw new Error("Device registration required")
       if (message.type === "relay" && typeof message.recipient_id === "string" && typeof message.payload === "string") {
-        this.checkRelayRateLimit(data)
         this.relayDatagram(socket, data, message.recipient_id, message.payload)
         return
       }
-      this.checkRateLimit(socket, data, message.type)
       if (message.type === "join" && typeof message.room_id === "string" && typeof message.room_auth === "string") {
         this.joinRoom(socket, data, message.room_id, message.room_auth)
       } else if (message.type === "leave" && typeof message.room_id === "string") {
@@ -270,24 +342,28 @@ export class ControlRoom extends DurableObject {
         this.fetchPeers(socket, data, message.room_id)
       } else throw new Error("Invalid control message")
     } catch (error) {
-      send(socket, { type: "error", error: error instanceof Error ? error.message : "Invalid request" })
-      socket.close(1008, "Invalid control message")
+      this.rejectClient(socket, error)
     }
   }
 
   private handleClose(socket: WebSocket): void {
     const data = this.clients.get(socket)
     if (!data) return
-    for (const roomId of [...data.rooms]) this.leaveRoom(socket, data, roomId)
+    this.clients.delete(socket)
+    this.queue = this.queue.filter((entry) => {
+      if (entry.socket !== socket) return true
+      this.releasePending(entry)
+      return false
+    })
     if (data.peerId && this.socketsByPeerId.get(data.peerId) === socket) {
       this.socketsByPeerId.delete(data.peerId)
       this.deviceLimits.delete(data.peerId)
     }
-    this.clients.delete(socket)
     this.connections = Math.max(0, this.connections - 1)
     const count = (this.connectionsByIp.get(data.ip) ?? 1) - 1
     if (count > 0) this.connectionsByIp.set(data.ip, count)
     else this.connectionsByIp.delete(data.ip)
+    for (const roomId of [...data.rooms]) this.leaveRoom(socket, data, roomId)
   }
 
   private async registerDevice(socket: WebSocket, data: ClientData, message: ControlMessage): Promise<void> {
@@ -299,6 +375,7 @@ export class ControlRoom extends DurableObject {
       || typeof message.signing_public_key !== "string" || !HEX_32.test(message.signing_public_key)
       || typeof message.signature !== "string" || !HEX_64.test(message.signature)
     ) throw new Error("Invalid device registration")
+    if (data.peerId && data.peerId !== message.peer_id) throw new Error("Device identity cannot change on a connection")
     const key = fromHex(message.signing_public_key)
     if (await sha256Hex(key) !== message.peer_id) throw new Error("Device identity mismatch")
     const signed = {
@@ -313,12 +390,16 @@ export class ControlRoom extends DurableObject {
     if (!await verifyEd25519(message.signing_public_key, message.signature, canonical(signed))) {
       throw new Error("Invalid device signature")
     }
+    if (this.clients.get(socket) !== data) return
     const previous = this.socketsByPeerId.get(message.peer_id)
-    if (previous && previous !== socket) previous.close(4000, "Replaced by a newer device session")
     data.peerId = message.peer_id
     this.socketsByPeerId.set(message.peer_id, socket)
+    if (previous && previous !== socket) {
+      this.handleClose(previous)
+      try { previous.close(4000, "Replaced by a newer device session") } catch {}
+    }
     if (!this.deviceLimits.has(message.peer_id)) {
-      this.deviceLimits.set(message.peer_id, { tokens: RELAY_BURST_BYTES, updatedAt: Date.now(), relayPeers: new Map() })
+      this.deviceLimits.set(message.peer_id, { tokens: RELAY_BURST_BYTES, receiveTokens: RELAY_BURST_BYTES, updatedAt: Date.now(), relayPeers: new Map() })
     }
     send(socket, { type: "device_registered", peer_id: message.peer_id, relay_enabled: this.relayEnabled, v: 1 })
   }
@@ -442,18 +523,17 @@ export class ControlRoom extends DurableObject {
       const limit = this.deviceLimits.get(id)
       if (!limit) throw new Error("Relay device is not registered")
       limit.tokens = Math.min(RELAY_BURST_BYTES, limit.tokens + (now - limit.updatedAt) * RELAY_BYTES_PER_SECOND / 1000)
+      limit.receiveTokens = Math.min(RELAY_BURST_BYTES, limit.receiveTokens + (now - limit.updatedAt) * RELAY_BYTES_PER_SECOND / 1000)
       limit.updatedAt = now
-      for (const [remoteId, seenAt] of limit.relayPeers) if (now - seenAt > RELAY_PEER_IDLE_MS) limit.relayPeers.delete(remoteId)
       return limit
     })
-    if (limits.some((limit) => limit.tokens < bytes)) return false
-    if (
-      (!limits[0].relayPeers.has(recipientId) && limits[0].relayPeers.size >= MAX_RELAY_PEERS_PER_DEVICE)
-      || (!limits[1].relayPeers.has(peerId) && limits[1].relayPeers.size >= MAX_RELAY_PEERS_PER_DEVICE)
-    ) return false
-    limits[0].relayPeers.set(recipientId, now)
-    limits[1].relayPeers.set(peerId, now)
-    for (const limit of limits) limit.tokens -= bytes
+    const [sender, recipient] = limits
+    for (const [remoteId, seenAt] of sender.relayPeers) if (now - seenAt > RELAY_PEER_IDLE_MS) sender.relayPeers.delete(remoteId)
+    if (sender.tokens < bytes || recipient.receiveTokens < bytes) return false
+    if (!sender.relayPeers.has(recipientId) && sender.relayPeers.size >= MAX_RELAY_PEERS_PER_DEVICE) return false
+    sender.relayPeers.set(recipientId, now)
+    sender.tokens -= bytes
+    recipient.receiveTokens -= bytes
     return true
   }
 
