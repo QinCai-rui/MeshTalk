@@ -60,6 +60,18 @@ On a first integrity failure the receiver recreates the file, clears recorded
 chunks, and sends one full `missing` request. A second failure remains failed.
 Successful completion persists the status and sends `FILE_ACK_V2(completed)`.
 
+An accepted offer creates a sparse file sized to the declared length. Before
+creating it, the receiver checks its incomplete inbound reservations: at most 128
+files and 4 GiB in total, at most 64 files and 2 GiB from one peer, and 64 MiB of
+free disk space kept in reserve. An offer over these limits gets a `missing` ACK
+so the sender retries later. An incomplete file that receives no new chunk for 24
+hours is deleted; its history row stays, marked failed. Completed files are
+never deleted automatically.
+
+A sender serves at most 64 `missing` requests per peer per minute, bounded by
+bytes as well. Long sends recheck friendship, blocking, and group membership
+every 32 chunks and stop when the recipient is no longer allowed.
+
 ## Groups, batches, and captions
 
 A group file uses one shared `file_id`, but data is pairwise encrypted and
