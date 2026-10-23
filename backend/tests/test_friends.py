@@ -496,14 +496,14 @@ class FriendManagerTest(unittest.IsolatedAsyncioTestCase):
         ) as cursor:
             self.assertEqual((await cursor.fetchone())[0], 1)
 
-    async def test_blocked_notice_for_unknown_message_is_harmless(self):
+    async def test_blocked_notice_for_unknown_message_is_ignored(self):
         await self._connect_peers()
         payload = self._signed_blocked("never-existed", self.identity_b, self.identity_b)
         await self.friend_a.handle_packet(
             self._peer_from(self.manager_a, self.identity_b),
             Packet(PacketType.MESSAGE_BLOCKED, payload.encode()),
         )
-        self.assertEqual(self.message_blocked_events[0]["message_id"], "never-existed")
+        self.assertEqual(self.message_blocked_events, [])
 
     async def test_blocked_notice_drops_local_friend(self):
         await self._become_friends()

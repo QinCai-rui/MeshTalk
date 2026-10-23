@@ -11,6 +11,7 @@ import hashlib
 import os
 import json
 import re
+import stat
 from pathlib import Path
 
 import aiosqlite
@@ -264,6 +265,46 @@ HARD_MAX_GROUP_HISTORY_ROWS = 10000
 # Upper bound on queued group packets per recipient; beyond this the sender
 # stops queueing (marks unavailable) instead of growing the queue without end.
 MAX_QUEUED_GROUP_PER_PEER = 200
+MAX_GROUP_MEMBERS = 256
+MAX_TOTAL_GROUP_MEMBERS = 2048
+MAX_SIGNING_ONLY_PEERS = 512
+MAX_INCOMING_REQUESTS = 1024
+MAX_INCOMING_REQUESTS_PER_PEER = 32
+MAX_PENDING_INCOMING_REQUESTS = 256
+# A peer may re-send after a decline, but only a few times per hour, so the
+# cancel-and-resend loop cannot keep filling the request list.
+FRIEND_REQUEST_WINDOW = 3600
+MAX_REQUESTS_PER_WINDOW = 3
+
+# Keep these transitions inside a single SQLite statement. A Python lock or a
+# savepoint on the shared connection cannot protect against another coroutine's
+# commit between the request update and the friendship write.
+AUTHORIZATION_SCHEMA = """
+CREATE TRIGGER IF NOT EXISTS block_revokes_permission
+AFTER INSERT ON blocked_peers BEGIN
+    DELETE FROM friends WHERE peer_id = NEW.peer_id;
+    UPDATE friend_requests SET status = 'declined', responded_at = NEW.created_at
+      WHERE status = 'pending' AND (sender_id = NEW.peer_id OR recipient_id = NEW.peer_id);
+END;
+CREATE TRIGGER IF NOT EXISTS blocked_friend_insert
+BEFORE INSERT ON friends WHEN EXISTS (SELECT 1 FROM blocked_peers WHERE peer_id = NEW.peer_id)
+BEGIN SELECT RAISE(IGNORE); END;
+CREATE TRIGGER IF NOT EXISTS blocked_request_acceptance
+BEFORE UPDATE OF status ON friend_requests
+WHEN NEW.status = 'accepted' AND EXISTS (
+    SELECT 1 FROM blocked_peers WHERE peer_id IN (NEW.sender_id, NEW.recipient_id))
+BEGIN SELECT RAISE(IGNORE); END;
+CREATE TRIGGER IF NOT EXISTS accepted_request_grants_permission
+AFTER UPDATE OF status ON friend_requests
+WHEN OLD.status = 'pending' AND NEW.status = 'accepted'
+BEGIN
+    INSERT INTO friends (peer_id, display_name, created_at)
+    VALUES (CASE NEW.direction WHEN 'incoming' THEN NEW.sender_id ELSE NEW.recipient_id END,
+            CASE NEW.direction WHEN 'incoming' THEN NEW.sender_name ELSE NEW.recipient_name END,
+            NEW.responded_at)
+    ON CONFLICT(peer_id) DO UPDATE SET display_name = excluded.display_name;
+END;
+"""
 
 
 class Database:
@@ -277,6 +318,29 @@ class Database:
 
     async def connect(self) -> None:
         """Connect to the database and apply schema migrations."""
+        # SQLite inherits the main file's permissions for newly created journals
+        # and WAL files. Restrict existing sidecars too, before SQLite opens any.
+        # The containing directory must not let other users replace these names.
+        parent = self.db_path.parent.stat()
+        if os.name != "nt" and (parent.st_uid != os.getuid() or (parent.st_mode & 0o002 and not parent.st_mode & 0o1000)):
+            raise ValueError("Database directory must be owned by this user and not writable by everyone")
+        for suffix in ("", "-journal", "-wal", "-shm"):
+            flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+            if not suffix:
+                flags |= os.O_CREAT
+            try:
+                descriptor = os.open(str(self.db_path) + suffix, flags, 0o600)
+            except FileNotFoundError:
+                if suffix:
+                    continue
+                raise
+            try:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+                    raise ValueError("Database files must be private regular files")
+                os.fchmod(descriptor, 0o600)
+            finally:
+                os.close(descriptor)
         self._db = await aiosqlite.connect(str(self.db_path))
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
@@ -335,6 +399,14 @@ class Database:
             await self._db.execute("ALTER TABLE friend_requests ADD COLUMN recipient_id TEXT NOT NULL DEFAULT ''")
         if "recipient_name" not in friend_request_columns:
             await self._db.execute("ALTER TABLE friend_requests ADD COLUMN recipient_name TEXT NOT NULL DEFAULT ''")
+        if "admitted_at" not in friend_request_columns:
+            await self._db.execute("ALTER TABLE friend_requests ADD COLUMN admitted_at REAL NOT NULL DEFAULT 0")
+        await self._db.executescript(AUTHORIZATION_SCHEMA)
+        # Repair contradictory permission rows left by older versions.
+        await self._db.execute("DELETE FROM friends WHERE peer_id IN (SELECT peer_id FROM blocked_peers)")
+        await self._db.execute("""UPDATE friend_requests SET status = 'declined', responded_at = ?
+            WHERE status = 'pending' AND (sender_id IN (SELECT peer_id FROM blocked_peers)
+                OR recipient_id IN (SELECT peer_id FROM blocked_peers))""", (time.time(),))
         group_member_columns = {row[1] async for row in await self._db.execute("PRAGMA table_info(group_members)")}
         if "group_capable" not in group_member_columns:
             await self._db.execute("ALTER TABLE group_members ADD COLUMN group_capable INTEGER")
@@ -493,7 +565,9 @@ class Database:
             return True
         await self._db.execute(
             """INSERT INTO peers (peer_id, display_name, public_key, signing_public_key, is_online)
-               VALUES (?, ?, ?, ?, 0)
+               SELECT ?, ?, ?, ?, 0
+               WHERE (SELECT COUNT(*) FROM peers WHERE public_key IS NULL) < ?
+                  OR EXISTS (SELECT 1 FROM peers WHERE peer_id = ?)
                ON CONFLICT(peer_id) DO UPDATE SET
                  signing_public_key = excluded.signing_public_key""",
             (
@@ -501,10 +575,11 @@ class Database:
                 (existing or {}).get("display_name", "Anonymous"),
                 (existing or {}).get("public_key"),
                 bytes(signing_public_key),
+                MAX_SIGNING_ONLY_PEERS, peer_id,
             ),
         )
         await self._db.commit()
-        return True
+        return (await self.get_peer(peer_id) or {}).get("signing_public_key") == bytes(signing_public_key)
 
     async def peer_supports(self, peer_id: str, capability: str) -> bool:
         """Check a capability learned from the peer's most recent handshake."""
@@ -726,13 +801,16 @@ class Database:
         oldest = page[-1]["sequence"] if page else None
         return {"messages": list(reversed(rows)), "next_before": oldest if more else None}
 
-    async def save_message(self, msg: dict) -> None:
+    async def save_message(self, msg: dict, *, require_friend: bool = False) -> bool:
         """Store a message in the database with encrypted content."""
-        await self._db.execute(
+        cursor = await self._db.execute(
             """INSERT OR IGNORE INTO messages
                 (message_id, sender_id, recipient_id, content, encrypted_content,
                   created_at, hop_count, max_hops, read_at, blocked, queued, failed, received_at, reply_to_message_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                 WHERE ? = 0 OR (
+                    EXISTS (SELECT 1 FROM friends WHERE peer_id = ?)
+                    AND NOT EXISTS (SELECT 1 FROM blocked_peers WHERE peer_id = ?))""",
             (
                 msg["message_id"],
                 msg["sender_id"],
@@ -748,9 +826,11 @@ class Database:
                 msg.get("failed", 0),
                 msg.get("received_at"),
                 msg.get("reply_to_message_id"),
+                int(require_friend), msg["sender_id"], msg["sender_id"],
             ),
         )
         await self._db.commit()
+        return cursor.rowcount > 0
 
     async def mark_conversation_read(self, local_peer_id: str, remote_peer_id: str) -> None:
         """Mark all messages from a specific peer as read."""
@@ -785,6 +865,12 @@ class Database:
         # Queue rows that exhausted their retry budget are never selected
         # again; reap them so a malicious peer cannot grow the table forever.
         await self._db.execute("DELETE FROM outgoing_queue WHERE attempts >= 5")
+        # Answered incoming requests only feed the per-peer and total request
+        # limits; age them out so those limits do not become permanent.
+        await self._db.execute(
+            "DELETE FROM friend_requests WHERE direction = 'incoming' AND status != 'pending' AND COALESCE(responded_at, created_at) < ?",
+            (now - 30 * 86400,),
+        )
         await self._db.commit()
 
     async def has_queued_payload(self, recipient_id: str, packet_type: int, payload: bytes) -> bool:
@@ -859,13 +945,15 @@ class Database:
         ) as cursor:
             return [dict(row) async for row in cursor]
 
-    async def mark_message_delivered(self, message_id: str) -> None:
+    async def mark_message_delivered(self, message_id: str, sender_id: str, recipient_id: str) -> bool:
         """Mark a message as delivered to its recipient."""
-        await self._db.execute(
-            "UPDATE messages SET delivered = 1, queued = 0, received_at = ? WHERE message_id = ?",
-            (time.time(), message_id),
+        cursor = await self._db.execute(
+            """UPDATE messages SET delivered = 1, queued = 0, received_at = ?
+               WHERE message_id = ? AND sender_id = ? AND recipient_id = ?""",
+            (time.time(), message_id, sender_id, recipient_id),
         )
         await self._db.commit()
+        return cursor.rowcount > 0
 
     async def mark_message_sent(self, message_id: str) -> None:
         """Mark a message as successfully sent (not necessarily delivered)."""
@@ -881,12 +969,14 @@ class Database:
         )
         await self._db.commit()
 
-    async def mark_message_blocked(self, message_id: str) -> None:
+    async def mark_message_blocked(self, message_id: str, sender_id: str, recipient_id: str) -> bool:
         """Mark a message as blocked by the recipient."""
-        await self._db.execute(
-            "UPDATE messages SET blocked = 1 WHERE message_id = ?", (message_id,)
+        cursor = await self._db.execute(
+            "UPDATE messages SET blocked = 1 WHERE message_id = ? AND sender_id = ? AND recipient_id = ?",
+            (message_id, sender_id, recipient_id),
         )
         await self._db.commit()
+        return cursor.rowcount > 0
 
     async def mark_message_failed(self, message_id: str) -> None:
         """Mark a message as failed to send."""
@@ -1013,7 +1103,10 @@ class Database:
         now = time.time()
         await self._db.execute(
             """INSERT INTO group_members (group_id, peer_id, display_name, joined_at, last_seen, active, left_at, group_capable)
-               VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+               SELECT ?, ?, ?, ?, ?, ?, NULL, ?
+               WHERE EXISTS (SELECT 1 FROM group_members WHERE group_id = ? AND peer_id = ?)
+                  OR ((SELECT COUNT(*) FROM group_members WHERE group_id = ?) < ?
+                      AND (SELECT COUNT(*) FROM group_members) < ?)
                ON CONFLICT(group_id, peer_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  last_seen = excluded.last_seen,
@@ -1024,9 +1117,12 @@ class Database:
                    WHEN group_members.active = 0 AND excluded.active = 1 THEN 0
                    ELSE group_members.join_announced
                  END""",
-            (group_id, peer_id, display_name, now, now, int(active), None if group_capable is None else int(group_capable)),
+            (group_id, peer_id, display_name, now, now, int(active), None if group_capable is None else int(group_capable),
+             group_id, peer_id, group_id, MAX_GROUP_MEMBERS, MAX_TOTAL_GROUP_MEMBERS),
         )
         await self._db.commit()
+        if await self.get_group_member(group_id, peer_id) is None:
+            raise ValueError("Group roster identity limit reached")
         return existing is None or not bool(existing["active"])
 
     async def claim_group_join_announcement(self, group_id: str, peer_id: str) -> bool:
@@ -1047,13 +1143,17 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
-    async def get_group_members(self, group_id: str, include_inactive: bool = False) -> list[dict]:
+    async def get_group_members(self, group_id: str, include_inactive: bool = False, *, limit: int | None = None) -> list[dict]:
         """Retrieve all members of a group, optionally including inactive members."""
         query = "SELECT * FROM group_members WHERE group_id = ?"
         if not include_inactive:
             query += " AND active = 1"
         query += " ORDER BY display_name"
-        async with self._db.execute(query, (group_id,)) as cursor:
+        params: tuple = (group_id,)
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (group_id, limit)
+        async with self._db.execute(query, params) as cursor:
             return [dict(row) async for row in cursor]
 
     async def mark_group_member_left(self, group_id: str, peer_id: str) -> None:
@@ -1306,7 +1406,8 @@ class Database:
     async def is_friend(self, peer_id: str) -> bool:
         """Check if a peer is in the friends list."""
         async with self._db.execute(
-            "SELECT 1 FROM friends WHERE peer_id = ?", (peer_id,)
+            """SELECT 1 FROM friends WHERE peer_id = ?
+               AND NOT EXISTS (SELECT 1 FROM blocked_peers WHERE peer_id = ?)""", (peer_id, peer_id)
         ) as cursor:
             return await cursor.fetchone() is not None
 
@@ -1317,12 +1418,22 @@ class Database:
         ) as cursor:
             return [dict(row) async for row in cursor]
 
-    async def save_friend_request(self, request: dict) -> None:
+    async def save_friend_request(self, request: dict) -> bool:
         """Store a friend request in the database."""
-        await self._db.execute(
+        now = time.time()
+        cursor = await self._db.execute(
             """INSERT OR IGNORE INTO friend_requests
-               (request_id, sender_id, sender_name, recipient_id, recipient_name, note, created_at, direction, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (request_id, sender_id, sender_name, recipient_id, recipient_name, note, created_at, direction, status, admitted_at)
+               SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+               WHERE NOT EXISTS (SELECT 1 FROM blocked_peers WHERE peer_id IN (?, ?))
+                 AND (? != 'incoming' OR (
+                   (SELECT COUNT(*) FROM friend_requests WHERE direction = 'incoming') < ?
+                   AND (SELECT COUNT(*) FROM friend_requests WHERE direction = 'incoming' AND sender_id = ?) < ?
+                   AND (SELECT COUNT(*) FROM friend_requests WHERE direction = 'incoming' AND status = 'pending') < ?
+                   AND NOT EXISTS (SELECT 1 FROM friend_requests WHERE direction = 'incoming' AND sender_id = ?
+                       AND status = 'pending')
+                   AND (SELECT COUNT(*) FROM friend_requests WHERE direction = 'incoming' AND sender_id = ?
+                       AND admitted_at > ?) < ?))""",
             (
                 request["request_id"],
                 request["sender_id"],
@@ -1333,9 +1444,28 @@ class Database:
                 request["created_at"],
                 request["direction"],
                 request["status"],
+                now, request["sender_id"], request.get("recipient_id", ""), request["direction"],
+                MAX_INCOMING_REQUESTS, request["sender_id"], MAX_INCOMING_REQUESTS_PER_PEER,
+                MAX_PENDING_INCOMING_REQUESTS, request["sender_id"],
+                request["sender_id"], now - FRIEND_REQUEST_WINDOW, MAX_REQUESTS_PER_WINDOW,
             ),
         )
         await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def resolve_friend_request(self, request_id: str, local_id: str, peer_id: str,
+                                     direction: str, status: str) -> bool:
+        """Claim a still-pending request for its actual endpoints in one statement."""
+        sender_id, recipient_id = (peer_id, local_id) if direction == "incoming" else (local_id, peer_id)
+        cursor = await self._db.execute(
+            """UPDATE friend_requests SET status = ?, responded_at = ?
+               WHERE request_id = ? AND direction = ? AND status = 'pending'
+                 AND sender_id = ? AND recipient_id = ?
+                 AND NOT EXISTS (SELECT 1 FROM blocked_peers WHERE peer_id = ?)""",
+            (status, time.time(), request_id, direction, sender_id, recipient_id, peer_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
 
     async def get_friend_request(self, request_id: str) -> dict | None:
         """Retrieve a specific friend request by request ID."""
@@ -1426,6 +1556,14 @@ class Database:
             return [dict(row) async for row in cursor]
 
     # ------------------------------------------------------------------ file transfers
+    async def inbound_file_usage(self) -> dict:
+        """Count all unfinished inbound reservations, including failed transfers."""
+        async with self._db.execute(
+            """SELECT COUNT(*) AS incomplete_count, COALESCE(SUM(file_size), 0) AS incomplete_bytes
+               FROM file_transfers WHERE direction = 'inbound' AND status != 'completed'"""
+        ) as cursor:
+            return dict(await cursor.fetchone())
+
     async def save_file_transfer(self, transfer: dict) -> None:
         """Store or update a file transfer record in the database."""
         await self._db.execute(
