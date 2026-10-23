@@ -270,7 +270,8 @@ export class ControlRoom extends DurableObject {
       ) throw new Error("Control message queue is full")
       const message = JSON.parse(typeof raw === "string" ? raw : decoder.decode(raw)) as ControlMessage
       if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("Invalid control message")
-      if (!data.peerId && message.type !== "device_register") throw new Error("Device registration required")
+      // Unregistered frames may queue behind registration; handleMessage rejects
+      // them if registration has not completed by the time they run.
       if (message.type === "relay" && typeof message.recipient_id === "string" && typeof message.payload === "string") this.checkRelayRateLimit(data)
       else this.checkRateLimit(socket, data, message.type)
       data.pendingMessages += 1

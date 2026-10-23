@@ -159,7 +159,7 @@ describe("authenticated DERP control service", () => {
     server = startControlServer(0)
     const socket = await open(`ws://127.0.0.1:${server.port}/v1/rendezvous`)
     const challenge = waitFor(socket, (message) => message.type === "device_challenge")
-    const sign_up = (current: Record<string, unknown>) => {
+    const signRegistration = (current: Record<string, unknown>) => {
       const { privateKey, publicKey } = generateKeyPairSync("ed25519")
       const key = Buffer.from(publicKey.export({ format: "der", type: "spki" })).subarray(-32)
       const signed = {
@@ -171,10 +171,10 @@ describe("authenticated DERP control service", () => {
     }
     const current = await challenge
     const registered = waitFor(socket, (message) => message.type === "device_registered")
-    socket.send(sign_up(current))
+    socket.send(signRegistration(current))
     await registered
     const error = waitFor(socket, (message) => message.type === "error")
-    socket.send(sign_up(current))
+    socket.send(signRegistration(current))
     expect((await error).error).toBe("Device identity cannot change on a connection")
   })
 
