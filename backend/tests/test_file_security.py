@@ -100,3 +100,21 @@ class FileSecurityTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class FileRevocationStatusTest(FileSecurityTest):
+    async def test_local_group_departure_stops_stream(self):
+        transfer = {'group_id': 'a' * 32}
+        with patch.object(self.manager, '_group_recipient_eligible', AsyncMock(return_value=True)), \
+                patch.object(self.manager, '_active_group_sender', AsyncMock(return_value=False)):
+            self.assertFalse(await self.manager._still_authorized(transfer, self.friend.peer_id))
+
+    async def test_expired_reservation_is_not_resumed(self):
+        file_id = await self.offer()
+        await self.db.update_file_transfer(file_id, status='failed', file_path=None)
+        sent = []
+        peer = connection(self.friend)
+        self.manager.peer_manager.get_connected_peer = lambda _: peer
+        with patch.object(self.manager, '_send_ack', AsyncMock(side_effect=lambda *a, **k: sent.append(a))):
+            await self.manager.resume_for_peer(self.friend.peer_id)
+        self.assertEqual(sent, [])

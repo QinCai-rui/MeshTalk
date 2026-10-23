@@ -347,12 +347,20 @@ class GroupRouter:
                 raise ValueError("Invalid group message origin signature") from exc
         elif relayed:
             raise ValueError("Relayed group message missing origin signature")
+        def same_message(row: dict) -> bool:
+            # Content is not compared: a sender legitimately sends recipients
+            # without mention support a pre-rendered copy of the same message.
+            # The origin signature binds content to this sender, so only the
+            # sender may produce variants.
+            return (
+                row["group_id"] == message.group_id
+                and row["sender_id"] == message.sender_id
+                and row["created_at"] == message.created_at
+                and row.get("reply_to_message_id") == message.reply_to_message_id
+            )
+
         existing = await self.db.get_group_message(message.message_id)
-        if existing is not None and (
-            existing["group_id"] != message.group_id
-            or existing["sender_id"] != message.sender_id
-            or existing["created_at"] != message.created_at
-        ):
+        if existing is not None and not same_message(existing):
             # A different message already owns this ID. Never acknowledge it as
             # delivered: the sender would believe content arrived that did not.
             logger.warning("Dropped group message %s: ID already used by another message", message.message_id)
@@ -368,6 +376,12 @@ class GroupRouter:
                 "reply_to_message_id": message.reply_to_message_id,
                 "origin_signature": message.origin_signature or None,
             })
+            if not inserted:
+                # Another handler stored this ID between the lookup and the insert.
+                winner = await self.db.get_group_message(message.message_id)
+                if winner is None or not same_message(winner):
+                    logger.warning("Dropped group message %s: ID already used by another message", message.message_id)
+                    return
             await self.db.mark_message_seen(message.message_id)
             if inserted:
                 await self._emit({

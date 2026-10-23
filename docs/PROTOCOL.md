@@ -758,9 +758,13 @@ tracked identity's card is not seen for 10 minutes, its UDP discovery and relay
 metadata is dropped; established sessions are not affected.
 
 A received group message whose ID already belongs to a stored message from a
-different sender, group, or timestamp is dropped without a GROUP_MESSAGE_ACK.
-The original sender therefore never sees a false delivery. Storing both copies
-needs a (group, sender, message) key migration that has not been done.
+different sender, group, timestamp, or reply target is dropped without a
+GROUP_MESSAGE_ACK. This also holds when two handlers race to store the same ID.
+The original sender therefore never sees a false delivery. Content is not
+compared, because a sender legitimately sends a pre-rendered copy to members
+without mention support, and the origin signature already binds content to its
+sender. Storing both copies needs a (group, sender, message) key migration that
+has not been done.
 
 `GROUP_MESSAGE` contains:
 

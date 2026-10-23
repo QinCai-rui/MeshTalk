@@ -633,7 +633,8 @@ class FileTransferManager:
         if await self.db.is_peer_blocked(recipient):
             return False
         if transfer["group_id"]:
-            return await self._group_recipient_eligible(transfer["group_id"], recipient)
+            return (await self._active_group_sender(transfer["group_id"])
+                    and await self._group_recipient_eligible(transfer["group_id"], recipient))
         return await self.db.is_friend(recipient)
 
     async def _stream_ranges(self, peer, transfer, recipient, ranges) -> bool:
@@ -954,6 +955,9 @@ class FileTransferManager:
             if transfer["status"] == "completed":
                 await self._send_ack(peer, transfer["file_id"], "completed")
             elif transfer["status"] in ("transferring", "failed"):
+                if not transfer.get("file_path"):
+                    # Expired reservation: its partial file was deleted.
+                    continue
                 missing = await self.db.get_missing_file_chunk_ranges(transfer["file_id"], transfer["total_chunks"])
                 if not missing and transfer["status"] == "failed":
                     missing = [(0, transfer["total_chunks"] - 1)]
@@ -1137,6 +1141,8 @@ class FileTransferManager:
             raise ValueError("Storage location is being changed")
         if not transfer.get("file_sha256") or transfer["direction"] != "inbound" or transfer["status"] not in ("transferring", "pending", "failed") or transfer["sender_id"] != chunk.sender_id or transfer["recipient_id"] != chunk.recipient_id or transfer["group_id"] != chunk.group_id or transfer["total_chunks"] != chunk.total_chunks:
             raise ValueError("File chunk does not match its offer")
+        if not transfer.get("file_path"):
+            raise ValueError("File reservation has expired")
         if await self.db.is_file_chunk_received(chunk.file_id, chunk.chunk_index):
             return
         try:
@@ -1284,11 +1290,11 @@ class FileTransferManager:
                     if not await self._stream_ranges(peer, transfer, peer.peer_id, ranges):
                         if transfer["group_id"]:
                             delivery = await self.db.get_file_delivery(transfer["file_id"], peer.peer_id)
-                            if delivery and delivery["status"] == "failed":
+                            if delivery and delivery["status"] in ("failed", "unavailable"):
                                 return
                         else:
                             current = await self.db.get_file_transfer(transfer["file_id"])
-                            if current and current["status"] == "failed":
+                            if current and current["status"] in ("failed", "unavailable"):
                                 return
                         await self._set_delivery(transfer, peer.peer_id, "queued")
                         return

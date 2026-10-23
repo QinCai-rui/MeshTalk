@@ -352,10 +352,14 @@ class UdpTransport:
         self._direct_candidates.pop(peer_id, None)
         self._expected_endpoints.pop(peer_id, None)
         self._last_direct_probe.pop(peer_id, None)
-        endpoint = self._derp_candidates.pop(peer_id, None)
-        if endpoint is not None and self._derp_peers.get(endpoint) == peer_id:
-            active = self._sessions.get(peer_id)
-            if not (active and active.via_relay):
+        active = self._sessions.get(peer_id)
+        relay_in_use = bool(active and active.via_relay) or any(
+            session.peer_id == peer_id and session.via_relay for session, _ in self._retiring_sessions.values()
+        )
+        if not relay_in_use:
+            # An established relay session still needs inbound routing.
+            endpoint = self._derp_candidates.pop(peer_id, None)
+            if endpoint is not None and self._derp_peers.get(endpoint) == peer_id:
                 self._derp_peers.pop(endpoint, None)
         attempt = self._attempts.pop(peer_id, None)
         if attempt and attempt.task:
