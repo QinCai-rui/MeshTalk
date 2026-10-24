@@ -1,6 +1,6 @@
 [package]
 name = "meshtalk-desktop"
-version = "0.34.2"
+version = "0.34.3"
 edition = "2021"
 license = "GPL-3.0-only"
 
