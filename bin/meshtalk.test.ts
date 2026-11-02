@@ -140,7 +140,12 @@ test("installation status does not create an absent installation", async () => {
 
 test.each(["empty", "invalid"])("installer refuses an %s process list before changing an installation", async (mode) => {
   const root = join(temporary, `unsafe-${mode}`)
-  const result = await run(join(first, releaseFiles[0]), ["--install-from", first, "--install-dir", root], mode, { MESHTALK_TEST_PROCESS_LIST: mode })
+  // Expected inspection failures write diagnostics; keep them out of later
+  // background-update assertions that require a clean helper log.
+  const result = await run(join(first, releaseFiles[0]), ["--install-from", first, "--install-dir", root], mode, {
+    MESHTALK_TEST_PROCESS_LIST: mode,
+    MESHTALK_DATA_DIR: join(temporary, `unsafe-${mode}-data`),
+  })
   expect(result.code).not.toBe(0)
   expect(existsSync(root)).toBe(false)
 })
