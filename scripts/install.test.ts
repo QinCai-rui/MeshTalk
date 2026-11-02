@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 
@@ -58,7 +58,10 @@ function expectUnknownPreserved(f: ReturnType<typeof fixture>) {
 describe("Bash installer release handoff", () => {
   test("uninstalls a private-store installation without command-directory metadata", () => {
     const f = fixture()
-    writeFileSync(join(f.destination, "meshtalk"), `#!/usr/bin/env bash
+    rmSync(join(f.destination, "meshtalk"))
+    const launcher = join(f.root, "private-launcher")
+    symlinkSync(launcher, join(f.destination, "meshtalk"))
+    writeFileSync(launcher, `#!/usr/bin/env bash
 if [[ $1 == --install-protocol ]]; then echo 1
 elif [[ $1 == --uninstall-releases ]]; then printf '%s\\n' "$@" > "$DESTINATION/arguments"
 else exit 2
@@ -69,6 +72,13 @@ fi
     expect(result.exitCode).toBe(0)
     expect(readFileSync(join(f.destination, "arguments"), "utf8")).toBe(`--uninstall-releases\n--install-dir\n${f.destination}\n`)
     expect(readFileSync(join(f.destination, "unrelated"), "utf8")).toBe("keep me")
+  })
+
+  test("managed detection does not execute an ordinary historical flat launcher", () => {
+    const f = uninstallFixture("", 'touch "$DESTINATION/launcher-ran"; echo 1')
+    const result = run(f, 'if has_managed_installation; then exit 7; fi')
+    expect(result.exitCode).toBe(0)
+    expect(existsSync(join(f.destination, "launcher-ran"))).toBe(false)
   })
 
   test.each(["", "--yes"])("asks before closing running instances and forwards consent without a user flag: %s", options => {

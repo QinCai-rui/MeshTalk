@@ -22,15 +22,17 @@ type Options = {
   yes?: boolean
   nonInteractive?: boolean
   closeRunning?: boolean
+  privateEvidence?: boolean
 }
 
-function run(action: "install" | "uninstall", options: Options = {}) {
+function run(action: "install" | "uninstall" | "detect", options: Options = {}) {
   const root = mkdtempSync(join(tmpdir(), "meshtalk-powershell-test-"))
   roots.push(root)
   const destination = join(root, "installed files")
   const extracted = join(root, "downloaded files")
   mkdirSync(destination)
   mkdirSync(extracted)
+  if (options.privateEvidence !== false) writeFileSync(join(destination, ".meshtalk-entry.json"), "{}")
   const helper = `
 Add-Content -LiteralPath $env:CALLS -Value (ConvertTo-Json -InputObject @{ path = $PSCommandPath; args = @($args) } -Compress)
 if ($args[0] -eq '--install-protocol') { Write-Output '1'; exit 0 }
@@ -81,8 +83,10 @@ $script:AssumeYes = $env:ASSUME_YES -eq 'true'
 $script:CloseRunningFlag = $env:CLOSE_RUNNING -eq 'true'
 $code = 0
 try {
-    if (-not (Test-ManagedInstallation)) { throw 'Private-store installation was not detected without root metadata.' }
-    if ($env:ACTION -eq 'install') { Install-Extracted -ExtractDir $env:EXTRACTED }
+    if ($env:ACTION -eq 'detect') {
+        if (Test-ManagedInstallation) { throw 'Historical flat installation was incorrectly detected as managed.' }
+    } elseif (-not (Test-ManagedInstallation)) { throw 'Private-store installation was not detected without root metadata.' }
+    elseif ($env:ACTION -eq 'install') { Install-Extracted -ExtractDir $env:EXTRACTED }
     else { Uninstall-ManagedReleases }
 } catch {
     Write-Host "FAILURE: $_"
@@ -121,6 +125,12 @@ exit $code
 if (!powershell) console.warn("Skipping executable PowerShell installer tests: neither pwsh nor powershell.exe is available.")
 
 describe.skipIf(!powershell)("PowerShell installer close permission", () => {
+  test("managed detection does not execute an ordinary historical flat launcher", () => {
+    const f = run("detect", { privateEvidence: false })
+    expect(f.result.exitCode).toBe(0)
+    expect(f.calls).toEqual([])
+  }, powershellTimeoutMs)
+
   for (const action of ["install", "uninstall"] as const) {
     const mutation = action === "install" ? "--install-from" : "--uninstall-releases"
     const mutations = (calls: { path: string; args: string[] }[]) => calls.filter(call => call.args[0] === mutation)

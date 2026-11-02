@@ -84,6 +84,8 @@ afterAll(() => {
 
 async function run(executable: string, args: string[], name: string, extraEnv: Record<string, string> = {}) {
   const child = Bun.spawn([executable, ...args], {
+    // Windows searches the working directory before PATH for native programs.
+    cwd: process.platform === "win32" && (extraEnv.MESHTALK_TEST_STATUS_INSPECTOR || extraEnv.MESHTALK_TEST_PENDING_INSPECTION || extraEnv.MESHTALK_TEST_PROCESS_LIST) ? join(tools, "status") : tools,
     env: { ...process.env, PATH: `${tools}${delimiter}${process.env.PATH ?? ""}`, MESHTALK_DATA_DIR: join(temporary, "data"), MESHTALK_ANALYTICS: "off", ...extraEnv },
     stdout: "pipe", stderr: "pipe",
   })
@@ -230,7 +232,8 @@ test("compiled uninstall preserves unrelated version directories and removes bac
   writeFileSync(join(unrelated, "keep"), "not MeshTalk")
   const executable = join(root, releaseFiles[0])
   expect((await run(executable, ["--version"], "uninstall")).code).toBe(0)
-  expect((await run(join(first, releaseFiles[0]), ["--uninstall-releases", "--install-dir", root], "uninstall")).code).toBe(0)
+  const removed = await run(join(first, releaseFiles[0]), ["--uninstall-releases", "--install-dir", root], "uninstall")
+  expect(removed).toEqual({ code: 0, stdout: "", stderr: "" })
   expect(readFileSync(join(unrelated, "keep"), "utf8")).toBe("not MeshTalk")
   expect(existsSync(join(store, ".meshtalk-install.json"))).toBe(false)
   expect(existsSync(join(store, ".meshtalk-install.json.bak"))).toBe(false)

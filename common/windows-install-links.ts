@@ -177,7 +177,7 @@ export function windowsLinkStore(installDir: string, recover = false): string | 
       if (ordinary(legacy)) {
         owner(legacy, entry, true)
         const interrupted = journal(legacy, entry)
-        if (interrupted && ordinary(interrupted.retired) && canLinkWindowsDirectory(interrupted.retired)) return legacy
+        if (interrupted && ordinary(interrupted.retired) && canLinkWindowsDirectory(interrupted.retired)) return realpathSync(legacy)
       }
     }
     const visibleTarget = visible?.isSymbolicLink() ? linkTarget(entry) : null
@@ -185,11 +185,11 @@ export function windowsLinkStore(installDir: string, recover = false): string | 
     owner(store, entry, recover)
     const current = join(store, "current")
     if (!junction(entry, current)) return null
-    if (!stat(current)) return store
+    if (!stat(current)) return realpathSync(store)
     const target = linkTarget(current)
     releaseTarget(store, target)
     if (!junction(current, target) || (stat(target) && !same(realpathSync(entry), target))) return null
-    return store
+    return realpathSync(store)
   } catch { return null }
 }
 
@@ -232,11 +232,12 @@ export function publishWindowsEntry(storeRoot: string, installDir: string, relea
   let migration = journal(store, entry)
   if (migration && stat(migration.retired) && !canLinkWindowsDirectory(migration.retired)) throw new Error("MeshTalk retired directory contains unexpected files.")
   const visible = stat(entry)
+  const visibleTarget = visible?.isSymbolicLink() ? linkTarget(entry) : undefined
   let previousStore: string | null = null
   if (visible?.isSymbolicLink()) {
     if (!junction(entry, current)) {
       previousStore = windowsLinkStore(entry)
-      if (!previousStore || same(previousStore, store)) throw new Error("Unexpected MeshTalk visible link.")
+      if (!previousStore || same(previousStore, store) || !same(visibleTarget!, join(previousStore, "current"))) throw new Error("Unexpected MeshTalk visible link.")
     }
   } else if (visible && !canLinkWindowsDirectory(entry)) throw new Error("MeshTalk entry is a shared directory.")
   if (migration && stat(migration.retired) && visible && !visible.isSymbolicLink()) throw new Error("Both migration paths exist; refusing to overwrite either.")
@@ -253,7 +254,9 @@ export function publishWindowsEntry(storeRoot: string, installDir: string, relea
   let moved = false
   try {
     if (visible?.isSymbolicLink()) {
-      if (previousStore) native(entry, current, join(previousStore, "current"))
+      // Keep the reparse point's exact spelling for the native race check, even
+      // when ownership validation returned the canonical long store path.
+      if (previousStore) native(entry, current, visibleTarget)
       return
     }
     if (visible) {
@@ -285,7 +288,8 @@ export function cleanupWindowsMigration(storeRoot: string, installDir: string): 
   owner(store, entry)
   const value = journal(store, entry)
   if (!value) return
-  if (windowsLinkStore(entry) !== store) throw new Error("MeshTalk migration entry is not published.")
+  const linked = windowsLinkStore(entry)
+  if (!linked || !same(linked, store)) throw new Error("MeshTalk migration entry is not published.")
   if (stat(value.retired)) {
     if (!canLinkWindowsDirectory(value.retired)) throw new Error("Refusing to remove unknown migration contents.")
     rmSync(value.retired, { recursive: true })
@@ -296,6 +300,7 @@ export function cleanupWindowsMigration(storeRoot: string, installDir: string): 
 export function removeWindowsEntry(storeRoot: string, installDir: string): void {
   const store = resolve(storeRoot), entry = resolve(installDir)
   owner(store, entry)
-  if (windowsLinkStore(entry) !== store) throw new Error("Refusing to remove an unowned MeshTalk entry.")
+  const linked = windowsLinkStore(entry)
+  if (!linked || !same(linked, store)) throw new Error("Refusing to remove an unowned MeshTalk entry.")
   unlinkSync(entry)
 }

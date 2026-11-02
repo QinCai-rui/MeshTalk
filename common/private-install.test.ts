@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -11,6 +11,8 @@ let entry: string
 let previousData: string | undefined
 const unix = test.skipIf(process.platform === "win32")
 const windows = test.skipIf(process.platform !== "win32")
+// Native junction checks start several cold PowerShell processes per scenario.
+if (process.platform === "win32") setDefaultTimeout(120000)
 
 beforeEach(() => {
   directory = physicalPath(mkdtempSync(join(tmpdir(), "meshtalk-private-install-")))
@@ -48,6 +50,17 @@ test("default installs put complete releases in the configured private store", (
     expect(readdirSync(entry)).toEqual([releaseFiles[0]])
     expect(lstatSync(join(entry, releaseFiles[0])).isSymbolicLink()).toBe(true)
   }
+})
+
+test("public commands resolve their original private store after the data directory changes", () => {
+  if (process.platform === "win32") writeFileSync(join(entry, "other-command.exe"), "keep")
+  installFromDirectory(source("1"), entry, "1")
+  const original = managedInstallRoot(entry)
+  process.env.MESHTALK_DATA_DIR = join(directory, "another-data-directory")
+  expect(managedInstallRoot(entry)).toBe(original)
+  const launcher = prepareInstalledLauncher(join(entry, releaseFiles[0]))!
+  expect(launcher.root).toBe(original)
+  releaseUsage(launcher)
 })
 
 unix("first launch copies an old managed store and dispatches into the private pair", () => {

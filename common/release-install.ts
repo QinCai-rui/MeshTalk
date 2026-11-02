@@ -601,7 +601,7 @@ function cleanupRelocation(root: string, state: Selection): void {
         try {
           if (lstatSync(current).isSymbolicLink()) {
             const target = readlinkSync(current).replace(/^\\\\\?\\/, "")
-            if (dirname(target) === join(previous, "versions") && value.releases.includes(basename(target))) rmSync(current)
+            if (sameInstallationPath(dirname(target), join(previous, "versions")) && value.releases.includes(basename(target))) rmSync(current)
           }
         } catch {}
       }
@@ -938,7 +938,9 @@ export function installFromDirectory(source: string, installDir: string, version
   if (process.platform === "win32" && !options.keepFlat) mkdirSync(dirname(resolve(installDir)), { recursive: true })
   else mkdirSync(installDir, { recursive: true })
   let root = process.platform === "win32" && !lstatSync(installDir, { throwIfNoEntry: false }) ? windowsLinkStore(installDir, true) ?? resolve(installDir) : managedInstallRoot(installDir)
-  if (process.platform === "win32" && root !== resolve(installDir) && !existsSync(installDir) && !installationStoreEntry(root)) {
+  // A dangling visible junction is already published. Leave its damaged
+  // selectors for explicit repair below instead of treating it as a lost entry.
+  if (process.platform === "win32" && root !== resolve(installDir) && !lstatSync(installDir, { throwIfNoEntry: false }) && !installationStoreEntry(root)) {
     withInstallLock(root, () => {
       const state = readSelection(root)
       if (state.layout === "directory-link" && state.current) publishEntry(root, state)
@@ -967,10 +969,10 @@ export function installFromDirectory(source: string, installDir: string, version
     // launches never silently discard it or choose an arbitrary release.
     let state: Selection
     try { state = readSelection(root) } catch { state = { schema: 1 } }
-    if (!state.layout && !entry && process.platform === "win32" && !installationStoreEntry(root) && regularFile(join(root, ".meshtalk-store.json"))) {
+    if (!state.layout && !entry && process.platform === "win32" && regularFile(join(root, ".meshtalk-store.json"))) {
       const marker = JSON.parse(readFileSync(join(root, ".meshtalk-store.json"), "utf8"))
       if (marker.schema === 1 && typeof marker.entry === "string" && windowsLinkStore(marker.entry, true) === root) state = { ...state, layout: "directory-link", entry: marker.entry }
-      else throw new Error("MeshTalk's directory-link ownership could not be verified. The installation was left unchanged.")
+      else if (!installationStoreEntry(root)) throw new Error("MeshTalk's directory-link ownership could not be verified. The installation was left unchanged.")
     }
     if (options.expectedRelease && (state.pending ?? state.current) !== options.expectedRelease) return
     const pending = stageDirectory(root, source, version)

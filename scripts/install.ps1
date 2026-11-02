@@ -928,7 +928,13 @@ function Test-ManagedInstallation {
     if (Test-WindowsLinkStore) { return $true }
     # Private stores have no selector beside the public command.
     $launcher = Join-Path $script:InstallDirSel $script:LauncherName
-    if ((Test-Path -LiteralPath $launcher) -and (Test-InstallProtocol -Launcher $launcher)) { return $true }
+    # Historical flat launchers may start the app for unknown arguments.
+    $entryItem = Get-Item -LiteralPath $script:InstallDirSel -Force -ErrorAction SilentlyContinue
+    $launcherItem = Get-Item -LiteralPath $launcher -Force -ErrorAction SilentlyContinue
+    $privateEntry = Test-Path -LiteralPath (Join-Path $script:InstallDirSel '.meshtalk-entry.json')
+    $linkedEntry = $entryItem -and ($entryItem.Attributes -band [IO.FileAttributes]::ReparsePoint)
+    $linkedLauncher = $launcherItem -and ($launcherItem.Attributes -band [IO.FileAttributes]::ReparsePoint)
+    if (($privateEntry -or $linkedEntry -or $linkedLauncher) -and (Test-Path -LiteralPath $launcher) -and (Test-InstallProtocol -Launcher $launcher)) { return $true }
     return $false
 }
 

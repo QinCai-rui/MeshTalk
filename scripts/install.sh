@@ -876,8 +876,10 @@ has_managed_installation() {
   done
   has_windows_link_store && return 0
   # Private stores keep their metadata outside the public command directory.
-  # Let the installed launcher resolve its store rather than duplicating paths.
-  if [[ -e $INSTALL_DIR/$LAUNCHER_NAME ]] && supports_install_protocol "$INSTALL_DIR/$LAUNCHER_NAME"; then return 0; fi
+  # Historical flat launchers may start the app for unknown arguments.
+  if [[ -e $INSTALL_DIR/.meshtalk-entry.json || -L $INSTALL_DIR || -L $INSTALL_DIR/$LAUNCHER_NAME ]]; then
+    if [[ -e $INSTALL_DIR/$LAUNCHER_NAME ]] && supports_install_protocol "$INSTALL_DIR/$LAUNCHER_NAME"; then return 0; fi
+  fi
   return 1
 }
 
