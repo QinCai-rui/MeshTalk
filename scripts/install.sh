@@ -875,6 +875,9 @@ has_managed_installation() {
     [[ ! -e $INSTALL_DIR/$marker && ! -L $INSTALL_DIR/$marker ]] || return 0
   done
   has_windows_link_store && return 0
+  # Private stores keep their metadata outside the public command directory.
+  # Let the installed launcher resolve its store rather than duplicating paths.
+  if [[ -e $INSTALL_DIR/$LAUNCHER_NAME ]] && supports_install_protocol "$INSTALL_DIR/$LAUNCHER_NAME"; then return 0; fi
   return 1
 }
 

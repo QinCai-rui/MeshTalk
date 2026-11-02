@@ -58,7 +58,7 @@ $tokens = $null
 $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:INSTALLER, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count -ne 0) { throw ($parseErrors | Out-String) }
-$names = @('Test-InstallProtocol', 'Confirm-InstallClosePermission', 'Install-Extracted', 'Uninstall-ManagedReleases')
+$names = @('Test-ManagedInstallation', 'Test-WindowsLinkStore', 'Test-InstallProtocol', 'Confirm-InstallClosePermission', 'Install-Extracted', 'Uninstall-ManagedReleases')
 $functions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $names }, $false))
 if ($functions.Count -ne $names.Count) { throw 'Missing installer function.' }
 foreach ($definition in $functions) { . ([scriptblock]::Create($definition.Extent.Text)) }
@@ -81,6 +81,7 @@ $script:AssumeYes = $env:ASSUME_YES -eq 'true'
 $script:CloseRunningFlag = $env:CLOSE_RUNNING -eq 'true'
 $code = 0
 try {
+    if (-not (Test-ManagedInstallation)) { throw 'Private-store installation was not detected without root metadata.' }
     if ($env:ACTION -eq 'install') { Install-Extracted -ExtractDir $env:EXTRACTED }
     else { Uninstall-ManagedReleases }
 } catch {

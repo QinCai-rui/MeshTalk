@@ -926,6 +926,9 @@ function Test-ManagedInstallation {
         if (Test-Path -LiteralPath (Join-Path $script:InstallDirSel $marker)) { return $true }
     }
     if (Test-WindowsLinkStore) { return $true }
+    # Private stores have no selector beside the public command.
+    $launcher = Join-Path $script:InstallDirSel $script:LauncherName
+    if ((Test-Path -LiteralPath $launcher) -and (Test-InstallProtocol -Launcher $launcher)) { return $true }
     return $false
 }
 

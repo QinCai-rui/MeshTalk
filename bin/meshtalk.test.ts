@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
 import { managedInstallRoot, processMayBeAlive, releaseFiles, stageReleaseDirectory } from "../common/release-install"
@@ -8,10 +8,13 @@ let temporary: string
 let first: string
 let second: string
 let tools: string
+let previousDataDir: string | undefined
 const suffix = process.platform === "win32" ? ".exe" : ""
 
 beforeAll(async () => {
   temporary = mkdtempSync(join(tmpdir(), "meshtalk-compiled-update-"))
+  previousDataDir = process.env.MESHTALK_DATA_DIR
+  process.env.MESHTALK_DATA_DIR = join(temporary, "data")
   tools = join(temporary, "tools")
   mkdirSync(tools)
   // Keep a developer's windows and parallel test runs out of these isolated
@@ -74,12 +77,14 @@ beforeAll(async () => {
 }, 120000)
 
 afterAll(() => {
+  if (previousDataDir === undefined) delete process.env.MESHTALK_DATA_DIR
+  else process.env.MESHTALK_DATA_DIR = previousDataDir
   if (temporary) rmSync(temporary, { recursive: true, force: true })
 })
 
 async function run(executable: string, args: string[], name: string, extraEnv: Record<string, string> = {}) {
   const child = Bun.spawn([executable, ...args], {
-    env: { ...process.env, PATH: `${tools}${delimiter}${process.env.PATH ?? ""}`, MESHTALK_DATA_DIR: join(temporary, `data-${name}`), MESHTALK_ANALYTICS: "off", ...extraEnv },
+    env: { ...process.env, PATH: `${tools}${delimiter}${process.env.PATH ?? ""}`, MESHTALK_DATA_DIR: join(temporary, "data"), MESHTALK_ANALYTICS: "off", ...extraEnv },
     stdout: "pipe", stderr: "pipe",
   })
   const [stdout, stderr, code] = await Promise.all([
@@ -149,6 +154,11 @@ test("the existing command updates its launcher code and preserves arguments aft
   const root = join(temporary, "managed install with spaces")
   const executable = join(root, releaseFiles[0])
   expect((await run(join(first, releaseFiles[0]), ["--install-from", first, "--install-dir", root], "managed")).code).toBe(0)
+  if (process.platform !== "win32") {
+    expect(readdirSync(root)).toEqual([releaseFiles[0]])
+    expect(lstatSync(executable).isSymbolicLink()).toBe(true)
+    expect(managedInstallRoot(root)).not.toBe(root)
+  }
   const bootstrap = executableDigest(executable)
   expect(await run(executable, ["--version"], "managed")).toEqual({ stdout: "1.0.0", stderr: "", code: 0 })
   expect((await run(join(second, releaseFiles[0]), ["--install-from", second, "--install-dir", root], "managed")).code).toBe(0)
@@ -179,7 +189,7 @@ test.each(process.platform === "win32" ? ["simulated", "native"] : ["native"])("
   if (process.platform !== "win32") expect(executableDigest(executable)).not.toBe(bootstrap)
   else {
     const expected = executableDigest(join(second, releaseFiles[0]))
-    const marker = join(root, ".meshtalk-flat-helper.json")
+    const marker = join(managedInstallRoot(root), ".meshtalk-flat-helper.json")
     const deadline = Date.now() + 60000
     let helperPid: number | undefined
     while (Date.now() < deadline) {
@@ -187,7 +197,7 @@ test.each(process.platform === "win32" ? ["simulated", "native"] : ["native"])("
       if (!existsSync(marker) && (!helperPid || !processMayBeAlive(helperPid))) break
       await Bun.sleep(250)
     }
-    const helperLog = join(temporary, `data-${data}`, "update-helper.log")
+    const helperLog = join(temporary, "data", "update-helper.log")
     const diagnostics = existsSync(helperLog) ? readFileSync(helperLog, "utf8").trim() : ""
     expect({ digest: executableDigest(executable), diagnostics }).toEqual({ digest: expected, diagnostics: "" })
     if (inspectionMode === "simulated") {
@@ -224,4 +234,27 @@ test("compiled uninstall preserves unrelated version directories and removes bac
   expect(readFileSync(join(unrelated, "keep"), "utf8")).toBe("not MeshTalk")
   expect(existsSync(join(store, ".meshtalk-install.json"))).toBe(false)
   expect(existsSync(join(store, ".meshtalk-install.json.bak"))).toBe(false)
+}, 120000)
+
+test.skipIf(process.platform === "win32")("compiled startup migrates the old command-directory store and deletes its owned files", async () => {
+  const entry = join(temporary, "legacy managed bin")
+  const id = `release-${"a".repeat(32)}`
+  const release = join(entry, "versions", id)
+  mkdirSync(release, { recursive: true })
+  const files: Record<string, string> = {}
+  for (const file of releaseFiles) {
+    copyFileSync(join(first, file), join(release, file))
+    files[file] = executableDigest(join(release, file))
+  }
+  writeFileSync(join(release, ".meshtalk-release.json"), JSON.stringify({ schema: 1, version: "1.0.0", files }))
+  const state = JSON.stringify({ schema: 1, layout: "file-link", current: id, confirmed: id })
+  writeFileSync(join(entry, ".meshtalk-install.json"), state)
+  writeFileSync(join(entry, ".meshtalk-install.json.bak"), state)
+  symlinkSync(join("versions", id), join(entry, ".meshtalk-current"))
+  symlinkSync(join(".meshtalk-current", releaseFiles[0]), join(entry, releaseFiles[0]))
+  writeFileSync(join(entry, "unrelated"), "keep")
+  expect(await run(join(entry, releaseFiles[0]), ["--version"], "old-managed")).toEqual({ stdout: "1.0.0", stderr: "", code: 0 })
+  expect(readdirSync(entry).sort()).toEqual(["meshtalk", "unrelated"])
+  expect(managedInstallRoot(entry)).not.toBe(entry)
+  expect(readFileSync(join(entry, "unrelated"), "utf8")).toBe("keep")
 }, 120000)

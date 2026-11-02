@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve } from "path";
 import { chmodSync, closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, statSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { checkForUpdate, githubRepository, importLegacyWindowsUpdate, installRelease, isReleaseInstallDir, logUpdateHelper, releaseInstallDir, saveGithubRepository, saveGithubToken, takeUpdateRestartPath, UPDATE_RESTART_EXIT_CODE } from "../common/updater";
-import { cleanupReleases, INSTALL_PROTOCOL, installationRoot, installFromDirectory, managedInstallRoot, pendingFlatInstallation, prepareInstalledLauncher, prepareUpdateRestart, releaseFlatHelper, releaseUsage, retainChildRelease, retainInstallerRelease, scheduleFlatEntryUpdate, stageReleaseDirectory, uninstallReleaseInstallation, type InstalledLauncher } from "../common/release-install";
+import { cleanupReleases, INSTALL_PROTOCOL, installationProcessRoots, installationRoot, installFromDirectory, managedInstallRoot, pendingFlatInstallation, prepareInstalledLauncher, prepareUpdateRestart, releaseFlatHelper, releaseUsage, retainChildRelease, retainInstallerRelease, scheduleFlatEntryUpdate, stageReleaseDirectory, uninstallReleaseInstallation, type InstalledLauncher } from "../common/release-install";
 import { closeInstallationProcesses, installationProcessPids, waitForInstallationToStop } from "../common/install-processes";
 import { physicalPath as realpathSync } from "../common/install-paths";
 import { main as cliMain } from "../cli/src/index";
@@ -469,8 +469,7 @@ function startBackend(backend: Component, daemonise = true): ChildProcess {
 
 async function closeForInstallation(destination: string): Promise<void> {
   if (!existsSync(destination)) return;
-  const root = managedInstallRoot(destination);
-  const additional = root === realpathSync(destination) ? [] : [root];
+  const additional = installationProcessRoots(destination);
   if (installationProcessPids(destination, additional).length === 0) return;
   console.log("Closing MeshTalk for installation. Active sessions and file transfers will be interrupted.");
   // TUI windows already exit when their authenticated backend disconnects.
@@ -496,8 +495,7 @@ async function main() {
       console.log("stopped");
       return;
     }
-    const root = managedInstallRoot(destination);
-    const additional = root === realpathSync(destination) ? [] : [root];
+    const additional = installationProcessRoots(destination);
     console.log(installationProcessPids(destination, additional).length > 0 ? "running" : "stopped");
     return;
   }
@@ -519,7 +517,7 @@ async function main() {
         const remaining = deadline - Date.now();
         if (remaining <= 0) return;
         phase = "waiting for verified process inspection";
-        if (!await waitForInstallationToStop(destination, [], remaining)) {
+        if (!await waitForInstallationToStop(destination, installationProcessRoots(destination), remaining)) {
           logUpdateHelper("Offline entry refresh deferred because running processes or process inspection did not settle.");
           return;
         }

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process"
 import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { installationEntryPath, physicalPath as realpathSync } from "./install-paths"
+import { installationStoreEntry, privateInstallationStore } from "./installation-store"
 
 const STATE = ".meshtalk-install.json"
 const JOURNAL = ".meshtalk-migration.json"
@@ -60,6 +61,10 @@ export function canLinkWindowsDirectory(installDir: string): boolean {
 }
 
 export function windowsStorePath(installDir: string): string {
+  return privateInstallationStore(installDir)
+}
+
+export function legacyWindowsStorePath(installDir: string): string {
   const entry = process.platform === "win32" ? installationEntryPath(installDir) : resolve(installDir)
   if (entry === dirname(entry)) throw new Error("A filesystem root cannot be a MeshTalk entry.")
   return join(dirname(entry), `.${basename(entry)}.meshtalk-install`)
@@ -128,7 +133,8 @@ function local(path: string): void {
 function owner(storeRoot: string, installDir: string, recover = false): void {
   local(storeRoot)
   local(dirname(installDir))
-  const expected = windowsStorePath(installDir)
+  const ownedEntry = installationStoreEntry(storeRoot)
+  const expected = ownedEntry && same(ownedEntry, installDir) ? storeRoot : legacyWindowsStorePath(installDir)
   // GetModuleFileName (compiled executables) and ordinary filesystem lookups
   // can spell the same Windows directory differently. Verify the physical
   // ordinary directories, not just their caller-supplied path strings.
@@ -163,7 +169,19 @@ export function windowsLinkStore(installDir: string, recover = false): string | 
   if (process.platform !== "win32") return null
   try {
     const entry = resolve(installDir)
-    const store = windowsStorePath(entry)
+    // Derive the store from the actual junction, not just today's default. Old
+    // sibling stores remain valid while their running processes finish.
+    const visible = stat(entry)
+    if (!visible && recover) {
+      const legacy = legacyWindowsStorePath(entry)
+      if (ordinary(legacy)) {
+        owner(legacy, entry, true)
+        const interrupted = journal(legacy, entry)
+        if (interrupted && ordinary(interrupted.retired) && canLinkWindowsDirectory(interrupted.retired)) return legacy
+      }
+    }
+    const visibleTarget = visible?.isSymbolicLink() ? linkTarget(entry) : null
+    const store = visibleTarget && basename(visibleTarget) === "current" ? dirname(visibleTarget) : windowsStorePath(entry)
     owner(store, entry, recover)
     const current = join(store, "current")
     if (!junction(entry, current)) return null
@@ -214,8 +232,12 @@ export function publishWindowsEntry(storeRoot: string, installDir: string, relea
   let migration = journal(store, entry)
   if (migration && stat(migration.retired) && !canLinkWindowsDirectory(migration.retired)) throw new Error("MeshTalk retired directory contains unexpected files.")
   const visible = stat(entry)
+  let previousStore: string | null = null
   if (visible?.isSymbolicLink()) {
-    if (!junction(entry, current)) throw new Error("Unexpected MeshTalk visible link.")
+    if (!junction(entry, current)) {
+      previousStore = windowsLinkStore(entry)
+      if (!previousStore || same(previousStore, store)) throw new Error("Unexpected MeshTalk visible link.")
+    }
   } else if (visible && !canLinkWindowsDirectory(entry)) throw new Error("MeshTalk entry is a shared directory.")
   if (migration && stat(migration.retired) && visible && !visible.isSymbolicLink()) throw new Error("Both migration paths exist; refusing to overwrite either.")
   // Publish current before touching the old directory; native failures leave it intact.
@@ -230,7 +252,10 @@ export function publishWindowsEntry(storeRoot: string, installDir: string, relea
   else if (!same(previous!, release)) native(current, release, previous)
   let moved = false
   try {
-    if (visible?.isSymbolicLink()) return
+    if (visible?.isSymbolicLink()) {
+      if (previousStore) native(entry, current, join(previousStore, "current"))
+      return
+    }
     if (visible) {
       if (!migration) {
         migration = { schema: 1, entry, retired: join(dirname(entry), `.${basename(entry)}.meshtalk-retired-${randomUUID()}`) }

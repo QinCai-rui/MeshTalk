@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
-import { activateRelease, cleanupReleases, installFromDirectory, managedInstallRoot, pendingFlatInstallation, prepareInstalledLauncher, prepareUpdateRestart, releaseFiles, releaseUsage, retainChildRelease, stageReleaseDirectory, uninstallReleaseInstallation } from "./release-install"
+import { activateRelease, cleanupReleases, installFromDirectory as installDirectory, managedInstallRoot, pendingFlatInstallation, prepareInstalledLauncher as prepareLauncher, prepareUpdateRestart, releaseFiles, releaseUsage, retainChildRelease, stageReleaseDirectory, uninstallReleaseInstallation } from "./release-install"
 import { physicalPath as realpathSync } from "./install-paths"
 
 const stateFile = ".meshtalk-install.json"
@@ -11,10 +11,21 @@ type Selection = { schema: 1; current?: string; pending?: string; bootstrap?: st
 let directory: string
 let root: string
 let children: ReturnType<typeof Bun.spawn>[]
+let previousData: string | undefined
+// Keep this suite focused on the previous layout's selection and recovery
+// guarantees. private-install.test.ts exercises default relocation separately.
+function installFromDirectory(...args: Parameters<typeof installDirectory>): void {
+  installDirectory(args[0], args[1], args[2], { ...args[3], privateStore: false })
+}
+function prepareInstalledLauncher(...args: Parameters<typeof prepareLauncher>): ReturnType<typeof prepareLauncher> {
+  return prepareLauncher(args[0], args[1], args[2], { privateStore: false })
+}
 const windowsTest = (name: string, action: () => void | Promise<void>) => test.skipIf(process.platform !== "win32")(name, action, 120000)
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "meshtalk-release-test-"))
+  previousData = process.env.MESHTALK_DATA_DIR
+  process.env.MESHTALK_DATA_DIR = join(directory, "data")
   root = join(directory, "install")
   mkdirSync(root)
   root = realpathSync(root)
@@ -30,6 +41,8 @@ afterEach(async () => {
     await child.exited
   }
   rmSync(directory, { recursive: true, force: true })
+  if (previousData === undefined) delete process.env.MESHTALK_DATA_DIR
+  else process.env.MESHTALK_DATA_DIR = previousData
 })
 
 function source(version: string): string {
@@ -326,7 +339,7 @@ describe("release installation", () => {
         rename(source, target)
       }}))
       const { installFromDirectory } = await import(${JSON.stringify(modulePath)})
-      try { installFromDirectory(${JSON.stringify(nextSource)}, ${JSON.stringify(root)}, "2.0.0") }
+      try { installFromDirectory(${JSON.stringify(nextSource)}, ${JSON.stringify(root)}, "2.0.0", { privateStore: false }) }
       catch (error) { console.log(error.code); process.exit(72) }
     `)
     expect(await child.exited).toBe(failure === "locked" ? 72 : 73)
@@ -833,7 +846,7 @@ describe("release installation", () => {
     const installer = spawn(`
       import { installFromDirectory } from ${JSON.stringify(modulePath)}
       console.log("installing")
-      installFromDirectory(${JSON.stringify(nextSource)}, ${JSON.stringify(root)}, "2.0.0")
+      installFromDirectory(${JSON.stringify(nextSource)}, ${JSON.stringify(root)}, "2.0.0", { privateStore: false })
     `)
     const installerOutput = installer.stdout.getReader()
     expect(new TextDecoder().decode((await installerOutput.read()).value)).toContain("installing")

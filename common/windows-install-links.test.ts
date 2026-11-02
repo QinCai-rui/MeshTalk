@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as childProcess from "node:child_process"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
-import { canLinkWindowsDirectory, cleanupWindowsMigration, publishWindowsEntry, removeWindowsEntry, windowsLinkStore, windowsStorePath } from "./windows-install-links"
+import { canLinkWindowsDirectory, cleanupWindowsMigration, publishWindowsEntry, removeWindowsEntry, windowsLinkStore, legacyWindowsStorePath as windowsStorePath } from "./windows-install-links"
 import { physicalPath } from "./install-paths"
 
 const directories: string[] = []

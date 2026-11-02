@@ -10,7 +10,13 @@ Release archives still contain `meshtalk` and `meshtalk-backend` (`.exe` on
 Windows). This is intentional: older, already-shipped updaters require that
 layout to install a release containing the new updater.
 
-A managed installation keeps complete releases and update state together:
+A managed installation keeps complete releases and update state in a private
+store under `~/.meshtalk/packages/standalone/`. Separate command installation
+paths have separate stores. The public command directory is not the release
+store. `MESHTALK_DATA_DIR` relocates this private storage with the application
+data for isolated installations.
+
+Each store contains:
 
 ```text
 .meshtalk-install.json                 current/pending release selection
@@ -28,14 +34,14 @@ Windows compatibility requires it:
 
 | Installation | Command entry | What updates |
 | --- | --- | --- |
-| Linux/macOS, including shared `~/.local/bin` | `meshtalk` symlink through `.meshtalk-current` to a release | The complete launcher and backend |
+| Linux/macOS, including shared `~/.local/bin` | One `meshtalk` symlink into the private store | The complete launcher and backend |
 | Windows dedicated folder | Existing folder becomes a junction through `current` to a release | The complete launcher and backend |
 | Windows shared folder, or a flat installation awaiting migration | Existing executable forwards to the selected release | The payload immediately; the forwarding executable once all instances have stopped |
 
 There is **no permanently retained old launcher**. Unix switches an atomically
 renamed symlink. Windows retargets its `current` junction in place, rather than
-deleting it before creating a replacement. Its release store is a hidden sibling
-named `.<installation-folder>.meshtalk-install`, outside the visible junction.
+deleting it before creating a replacement. Its release store is outside the
+visible junction, under the same private storage directory used on Unix.
 State, the lock, and process records therefore never move when a release changes.
 
 A launcher resolves its executable to a physical release before finding the
@@ -102,6 +108,12 @@ and no legacy process needs it. A Windows compatibility entry is refreshed to
 the selected version, not exempted from future launcher fixes.
 
 ## Existing installations and recovery
+
+Migration removes MeshTalk-owned files from the old command-directory store
+after publishing the private store. Unrelated commands and unowned release
+directories are not removed. A legacy installation that is still in use defers
+migration until its other processes stop. Migration does not keep a permanent
+copy of the old store in the command directory.
 
 - A complete flat installation is copied into a verified release on the first
   launch of the new launcher. Unix then replaces the command's directory entry
@@ -178,8 +190,11 @@ may prevent verification.
 Managed uninstall delegates release cleanup to the same locked implementation
 and preserves unrelated files, including in a shared `~/.local/bin`. If the
 launcher cannot execute, the scripts leave release directories for inspection
-rather than guessing their ownership. The small lock database is intentionally
-retained so concurrent installers cannot acquire different lock-file inodes.
+rather than guessing their ownership. Uninstall retains the private store's small
+lock database so concurrent installers cannot acquire different lock-file inodes.
+Relocation removes the obsolete command-directory lock after closing its old-store
+transaction. Already-running historical installers do not understand the private
+store protocol; do not run an old installer concurrently with migration.
 
 Updates do not migrate or delete `MESHTALK_DATA_DIR`, identity keys, message
 history, settings, or consent. There is no wire-protocol or cryptography change.
