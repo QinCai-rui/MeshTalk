@@ -1,9 +1,22 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import { installRelease, isNewerVersion, isStagingWithinInstallDir, isStableVersion, parsePendingUpdate, readUpdateChannel, saveUpdateChannel, type UpdateProgress } from "./updater"
-import { prepareInstalledLauncher, releaseUsage } from "./release-install"
+import { managedInstallRoot, prepareInstalledLauncher, releaseUsage } from "./release-install"
+
+let installHome: string
+let previousDataDir: string | undefined
+beforeEach(() => {
+  previousDataDir = process.env.MESHTALK_DATA_DIR
+  installHome = mkdtempSync(join(tmpdir(), "meshtalk-updater-home-"))
+  process.env.MESHTALK_DATA_DIR = installHome
+})
+afterEach(() => {
+  if (previousDataDir === undefined) delete process.env.MESHTALK_DATA_DIR
+  else process.env.MESHTALK_DATA_DIR = previousDataDir
+  rmSync(installHome, { recursive: true, force: true })
+})
 
 describe("isStableVersion", () => {
   test("recognizes stable and snapshot versions", () => {
@@ -217,7 +230,7 @@ test.each([true, false])("installRelease streams the archive and reports each in
   if (managed) {
     const launcher = prepareInstalledLauncher(join(installDir, files[0]))!
     releaseUsage(launcher)
-    current = JSON.parse(readFileSync(join(installDir, ".meshtalk-install.json"), "utf8")).current
+    current = JSON.parse(readFileSync(join(managedInstallRoot(installDir), ".meshtalk-install.json"), "utf8")).current
   }
   // Run tar with cwd + relative names: MSYS/Git-Bash tar treats `C:\...`
   // absolute paths as remote (`C: resolve failed`).
@@ -238,14 +251,15 @@ test.each([true, false])("installRelease streams the archive and reports each in
       downloadUrl: `http://127.0.0.1:${server.port}/release.tar.gz`,
       digest: `sha256:${digest}`,
     }, installDir, (event) => progress.push(event))
-    const selection = JSON.parse(readFileSync(join(installDir, ".meshtalk-install.json"), "utf8"))
+    const store = managedInstallRoot(installDir)
+    const selection = JSON.parse(readFileSync(join(store, ".meshtalk-install.json"), "utf8"))
     if (managed) expect(selection.current).toBe(current)
     else expect(selection.pending).toBeUndefined()
     const selected = managed ? selection.pending : selection.current
     expect(selected).toMatch(/^release-[a-f0-9]{32}$/)
     for (const name of files) {
-      expect(readFileSync(join(installDir, name), "utf8")).toBe(`${!managed && name === files[0] ? "new" : "old"} ${name}`)
-      expect(readFileSync(join(installDir, "versions", selected, name), "utf8")).toBe(`new ${name}`)
+      if (name === files[0] || managed || process.platform === "win32") expect(readFileSync(join(installDir, name), "utf8")).toBe(`${!managed && name === files[0] ? "new" : "old"} ${name}`)
+      expect(readFileSync(join(store, "versions", selected, name), "utf8")).toBe(`new ${name}`)
     }
     expect(progress.map((event) => event.step)).toContain("Staging verified release for restart")
     expect(progress.some((event) => event.current === 1 && event.total === 6 && event.receivedBytes === archiveBytes.length && event.totalBytes === archiveBytes.length)).toBe(true)
