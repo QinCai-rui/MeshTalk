@@ -57,6 +57,7 @@ beforeAll(async () => {
   if (await inspectorBuild.exited !== 0) throw new Error(inspectorErrors)
   if (process.platform === "win32") {
     mkdirSync(join(tools, "status"))
+    copyFileSync(join(tools, "tasklist.exe"), join(tools, "status", "tasklist.exe"))
     copyFileSync(join(tools, "tasklist.exe"), join(tools, "status", "powershell.exe"))
   }
   for (const version of ["1.0.0", "2.0.0"]) {
@@ -204,8 +205,10 @@ test.each(process.platform === "win32" ? ["simulated", "native"] : ["native"])("
     expect({ digest: executableDigest(executable), diagnostics }).toEqual({ digest: expected, diagnostics: "" })
     if (inspectionMode === "simulated") {
       const attempts: { phase: string; digest: string }[] = JSON.parse(readFileSync(inspection, "utf8"))
-      expect(attempts.map((attempt) => attempt.phase)).toEqual(["failed", "running", "stopped"])
-      expect(attempts.map((attempt) => attempt.digest)).toEqual([bootstrap, bootstrap, bootstrap])
+      expect(attempts.slice(0, 3).map((attempt) => attempt.phase)).toEqual(["failed", "running", "stopped"])
+      // Migration can inspect again under its locks before replacing the entry.
+      expect(attempts.slice(3).every((attempt) => attempt.phase === "stopped")).toBe(true)
+      expect(attempts.map((attempt) => attempt.digest)).toEqual(attempts.map(() => bootstrap))
     }
     expect(existsSync(marker)).toBe(false)
     if (helperPid) expect(processMayBeAlive(helperPid)).toBe(false)
